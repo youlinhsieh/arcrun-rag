@@ -1,0 +1,247 @@
+# rag_ingest（cards 版 v2）— 定稿卡 push → 機械切塊＋解析三元組行 → KBDB（arcrun-rag 包件）
+#
+# 血統：2026-07-17 demo 管線反轉的 rag_ingest v2 之 repo 落地（T-pack-v2）——原版定義只存
+#   demo WEBHOOKS KV 讀不回，本檔照 07-17 實測行為重建，即日起是 repo 真相源。
+#   （v1「collected/ 原文直切塊」版＝rag-ingest.yaml，本機 collector 鏈仍用它；本檔是
+#   產品主線：只吃 __CARDS_PREFIX__ 定稿卡＝總庫零原文垃圾。）
+#
+# 觸發：Gitea repo webhook（push）指向 POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest/trigger
+#（與 rag_extract 掛同一個 repo 的兩條 webhook；本件靠路徑前綴只認 cards）
+#
+# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __GITEA_BASE__ / __GITEA_TOKEN__ /
+#   __HTTP_REQ_URL__ / __CODE_URL__ / __CARDS_PREFIX__（生產 system-dev/wiki/cards/；
+#   測試可換 cards-test 前綴完全隔離）
+#
+# v2 與 v1 的差異：
+#   ① 只吃 __CARDS_PREFIX__ 下的 .md（定稿卡），blocks 機械切塊同 v1。
+#   ② 解析卡內「## 關聯」的 `A >> 謂詞 >> B` 行 → 逐條寫 triplet（帶 source_uri）——
+#      graph 第一次有內容級三元組；另保留每卡一條 part_of 目錄邊。
+#      foreach 教訓：rel 物件自帶全部欄位（跨節點模板在 foreach 內不展開）。
+#   ③ removed 分支：deprecate 該卡 blocks ＋ triplet 比對「subject==卡名 **或**
+#      source_uri==gitea://<路徑>」——治 2026-07-18 實撞的 G9 缺口（內容邊主詞≠卡名
+#      逃過下架，恐龍殘影實例）。
+#   ④ 無 AUTO_DIGEST（卡已是精耕，不再叫 rag_wiki_digest）。
+
+name: rag_ingest
+description: >
+  Gitea push webhook → 濾出 __CARDS_PREFIX__ 下新增/修改的定稿卡 → 機械切塊寫 KBDB blocks
+  ＋解析「## 關聯」行寫 triplets（帶 source_uri）＋每卡一條 part_of；刪卡 → blocks/triplets
+  標 deprecated（含 source_uri 比對，治 G9 主詞≠卡名缺口）。（T-pack-v2 repo 真相源）
+
+flow:
+  - "input >> ON_SUCCESS >> collect_changed"
+  - "collect_changed >> 對每個 file >> fetch_raw"
+  - "fetch_raw >> ON_SUCCESS >> parse_card"
+  - "parse_card >> 對每個 block >> post_block"
+  - "parse_card >> 對每個 rel >> post_triplet"
+  # removed 分支：刪卡 → 該卡 entries＋triplets 標 deprecated
+  - "collect_changed >> 對每個 removed_file >> list_dead_blocks"
+  - "list_dead_blocks >> ON_SUCCESS >> build_deprecations"
+  - "build_deprecations >> 對每個 dead_entry >> deprecate_entry"
+  - "build_deprecations >> ON_SUCCESS >> list_triplets"
+  - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
+  - "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+
+config:
+  collect_changed:
+    component: "__CODE_URL__"
+    code: |
+      let commits = input.commits;
+      if (typeof commits === 'string') { try { commits = JSON.parse(commits); } catch (e) { commits = []; } }
+      if (!Array.isArray(commits)) commits = [];
+      const seen = new Set();
+      const files = [];
+      const ref = String(input.after || '');
+      const repo = String(input.repo_full || '');
+      function pageOf(p) { return p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/, ''); }
+      for (const c of commits) {
+        for (const p of [].concat(c.added || [], c.modified || [])) {
+          if (p.indexOf('__CARDS_PREFIX__') !== 0) continue;
+          if (!/\.md$/.test(p)) continue;
+          if (seen.has(p)) continue;
+          seen.add(p);
+          files.push({ path: p, page_name: pageOf(p), ref: ref, repo_full: repo, enc_path: encodeURIComponent(p).replace(/%2F/g, '/') });
+        }
+      }
+      const removedSeen = new Set();
+      const removed_files = [];
+      for (const c of commits) {
+        for (const p of (c.removed || [])) {
+          if (p.indexOf('__CARDS_PREFIX__') !== 0) continue;
+          if (!/\.md$/.test(p)) continue;
+          if (seen.has(p) || removedSeen.has(p)) continue;
+          removedSeen.add(p);
+          removed_files.push({ path: p, page_name: pageOf(p), source_uri: 'gitea://' + p });
+        }
+      }
+      return { success: true, files: files, count: files.length,
+               removed_files: removed_files, removed_count: removed_files.length };
+    input:
+      commits: "{{input.commits}}"
+      after: "{{input.after}}"
+      repo_full: "{{input.repository.full_name}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576
+
+  fetch_raw:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__GITEA_BASE__/api/v1/repos/{{file.repo_full}}/raw/{{file.enc_path}}?ref={{file.ref}}"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+
+  # 機械切塊（標題行為界，同 v1）＋解析「## 關聯」三元組行＋part_of 目錄邊
+  parse_card:
+    component: "__CODE_URL__"
+    code: |
+      const md = String(input.raw == null ? '' : input.raw);
+      const relPath = String(input.path || 'unknown.md');
+      const pageName = String(input.page_name || relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.md$/, ''));
+      const srcUri = 'gitea://' + relPath;
+      const chunks = [];
+      let cur = [];
+      for (const line of md.split('\n')) {
+        if (/^#{1,6}\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\n').trim()); cur = []; }
+        cur.push(line);
+      }
+      if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
+      const blocks = chunks.map(function (content, i) {
+        return { content: content, page_name: pageName, source: srcUri + '#' + i };
+      });
+      // 「## 關聯」段的 `A >> p >> B` 行（rel 自帶全部欄位＝foreach 安全）
+      const rels = [];
+      const relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#|\n---|$)/.exec(md);
+      if (relSec) {
+        for (const line of relSec[1].split('\n')) {
+          const m = /^\s*[-*]\s*(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
+          if (!m) continue;
+          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active' });
+        }
+      }
+      // 每卡一條 part_of 目錄邊（總圖的 hub 骨架）
+      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active' });
+      return { success: true, blocks: blocks, block_count: blocks.length,
+               rels: rels, rel_count: rels.length, page_name: pageName };
+    input:
+      raw: "{{fetch_raw.data.body}}"
+      path: "{{file.path}}"
+      page_name: "{{file.page_name}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  post_block:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      entry_type: "block"
+      content: "{{block.content}}"
+      owner_id: "__NAMESPACE__"
+      page_name: "{{block.page_name}}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"embed\":true}"
+
+  post_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/records"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      template: "triplet"
+      owner_id: "__NAMESPACE__"
+      values:
+        subject: "{{rel.subject}}"
+        predicate: "{{rel.predicate}}"
+        object: "{{rel.object}}"
+        source_uri: "{{rel.source_uri}}"
+        status: "{{rel.status}}"
+
+  # ── removed 分支 ──────────────────────────────────────────────
+  list_dead_blocks:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{removed_file.page_name}}&owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+
+  build_deprecations:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const a = parse(input.blocks_body);
+      const entries = (a && a.entries) || [];
+      const dead_entries = [];
+      for (const e of entries) {
+        let meta = {};
+        if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
+        if (meta.status === 'deprecated') continue;
+        meta.status = 'deprecated';
+        meta.deprecated_reason = 'source_removed';
+        dead_entries.push({ id: e.id, metadata_json: JSON.stringify(meta) });
+      }
+      return { success: true, dead_entries: dead_entries, dead_count: dead_entries.length,
+               page_name: String(input.page_name || ''), source_uri: String(input.source_uri || '') };
+    input:
+      blocks_body: "{{list_dead_blocks.data.body}}"
+      page_name: "{{removed_file.page_name}}"
+      source_uri: "{{removed_file.source_uri}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  deprecate_entry:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/entries/{{dead_entry.id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      metadata_json: "{{dead_entry.metadata_json}}"
+
+  list_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+
+  # subject==卡名 或 source_uri==本卡 → 全下架（治 G9 主詞≠卡名缺口）
+  pick_dead_triplets:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      let records = (body && Array.isArray(body.records)) ? body.records : [];
+      const page = String(input.page_name || '');
+      const srcUri = String(input.source_uri || '');
+      const dead_records = [];
+      for (const r of records) {
+        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
+        if (!v || v.status === 'deprecated' || !r.record_id) continue;
+        const hit = v.subject === page || (srcUri && v.source_uri === srcUri);
+        if (!hit) continue;
+        dead_records.push({ record_id: r.record_id });
+      }
+      return { success: true, dead_records: dead_records, count: dead_records.length };
+    input:
+      body: "{{list_triplets.data.body}}"
+      # 從迭代物件取（foreach 隔節點模板不展開——build_deprecations 已隔一站）
+      page_name: "{{removed_file.page_name}}"
+      source_uri: "{{removed_file.source_uri}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  deprecate_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/records/{{dead_record.record_id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      values:
+        status: "deprecated"

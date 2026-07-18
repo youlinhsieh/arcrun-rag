@@ -1,0 +1,82 @@
+# rag_extract — 原稿 → LLM 萃定稿知識卡 → commit cards/ ＋ 維護 00-INDEX（arcrun-rag 包件）
+#
+# 血統：2026-07-17 demo 管線反轉（T-flip demo 版）的 rag_extract 之 repo 落地（T-pack-v2）——
+#   原版定義只存 demo WEBHOOKS KV 讀不回，本檔照 07-17 實測行為重建，即日起是 repo 真相源。
+#
+# 鏈位：docs/ 原稿 push → 本件（萃卡＋INDEX）→ cards/ push → rag_ingest（cards 版）→ KBDB。
+#   原稿零進庫（總庫只吃定稿）；刪原稿的下架走 rag_reset/人工刪 cards（ingest removed 分支接手）。
+#
+# 觸發：Gitea repo webhook（push 事件）指向
+#   POST {cypher}/webhooks/named/__NAMESPACE__/rag_extract/trigger
+#
+# 佔位參數（sed 代入；install/push-demo-workflow.sh 已支援）：
+#   __NAMESPACE__ / __GITEA_BASE__ / __GITEA_TOKEN__ / __HTTP_REQ_URL__ / __CODE_URL__ / __CYPHER_BASE__
+#   __LLM_MODEL__（demo＝gemma-4-31b-it）/ __GEMINI_API_KEY__（G10 妥協：嵌定義，輪換重推）
+#   __DOCS_PREFIX__＝原稿目錄前綴（生產 docs/；測試可換 docs-test/ 完全隔離）
+#   __CARDS_DIR__＝定稿卡目錄（生產 system-dev/wiki/cards；測試 cards-test）
+#   __INDEX_PATH__＝藏書索引（生產 system-dev/wiki/00-INDEX.md）
+#
+# ⚠️ 兩支一組（dispatcher＋one）：本件只解析 push payload 並 per-file 派發給
+#   rag_extract_one（rag-extract-one.local.yaml）；萃取/提交都在 one 的直鏈裡。
+#   原因＝foreach 內 code 輸出餵 http/trigger 不展開（實撞四種寫法），部署時兩支都要推。
+#
+# 前置（installer 責任）：__CARDS_DIR__ 目錄存在（.gitkeep）＋ __INDEX_PATH__ 骨架存在——
+#   兩者缺任一，contents API 會 404 斷鏈（Gitea API 無「不存在回空」語意）。
+# 已知誠實限制：多檔同批 push 的 INDEX 併發 race（單檔無虞）；卡名＝原稿檔名
+#   （同名即覆蓋舊卡＝更新語意）。Gemma 思考輸出＝取最後一個非 thought part（one 的
+#   clean_card），行首 # 淨化只是第二道保險。
+
+name: rag_extract
+description: >
+  Gitea push webhook → 濾出 __DOCS_PREFIX__ 下新增/修改的 .md 原稿 → LLM（__LLM_MODEL__）
+  萃取重寫成定稿知識卡 → commit 到 __CARDS_DIR__ ＋ 自動維護 __INDEX_PATH__ 藏書索引。
+  原稿不進庫；cards push 會再觸發 rag_ingest 入庫。（T-pack-v2 repo 真相源）
+
+flow:
+  - "input >> ON_SUCCESS >> collect_changed"
+  - "collect_changed >> 對每個 file >> dispatch"
+
+config:
+  collect_changed:
+    component: "__CODE_URL__"
+    code: |
+      let commits = input.commits;
+      if (typeof commits === 'string') { try { commits = JSON.parse(commits); } catch (e) { commits = []; } }
+      if (!Array.isArray(commits)) commits = [];
+      const seen = new Set();
+      const files = [];
+      const ref = String(input.after || '');
+      const repo = String(input.repo_full || '');
+      for (const c of commits) {
+        for (const p of [].concat(c.added || [], c.modified || [])) {
+          if (p.indexOf('__DOCS_PREFIX__') !== 0) continue;
+          if (!/\.md$/.test(p)) continue;
+          if (/(^|\/)00-/.test(p)) continue;
+          if (seen.has(p)) continue;
+          seen.add(p);
+          const base = p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/, '');
+          files.push({ path: p, page_name: base, ref: ref, repo_full: repo, enc_path: encodeURIComponent(p).replace(/%2F/g, '/') });
+        }
+      }
+      return { success: true, files: files, count: files.length };
+    input:
+      commits: "{{input.commits}}"
+      after: "{{input.after}}"
+      repo_full: "{{input.repository.full_name}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576
+
+  # per-file 派發（body_json 全用迭代物件引用＝foreach 內唯一穩定引用型）
+  dispatch:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__CYPHER_BASE__/webhooks/named/__NAMESPACE__/rag_extract_one/trigger"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      path: "{{file.path}}"
+      page_name: "{{file.page_name}}"
+      ref: "{{file.ref}}"
+      repo_full: "{{file.repo_full}}"
+      enc_path: "{{file.enc_path}}"

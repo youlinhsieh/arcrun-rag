@@ -66,12 +66,20 @@ node install/ensure-templates.mjs      # KBDB templates（triplet/entity/portal_
 # workflows：以 workflows/*.local.yaml 為準 sed 佔位值後推（佔位說明見各 yaml 檔頭）
 bash install/push-demo-workflow.sh workflows/graph-neighbors.local.yaml
 bash install/push-demo-workflow.sh workflows/rag-chat.local.yaml
-# （NS/CYPHER/KBDB/HTTPREQ/CODE 環境變數改成你的實例 URL——腳本檔頭有說明）
+bash install/push-demo-workflow.sh workflows/rag-extract.local.yaml       # 萃取鏈 dispatcher
+bash install/push-demo-workflow.sh workflows/rag-extract-one.local.yaml   # 萃取鏈 per-file 直鏈（兩支一組）
+bash install/push-demo-workflow.sh workflows/rag-ingest-cards.local.yaml  # 定稿卡入庫（v2）
+# （NS/CYPHER/KBDB/HTTPREQ/CODE/GITEA_*/GEMINI_API_KEY/DOCS_PREFIX/CARDS_DIR/INDEX_PATH
+#   環境變數改成你的實例值——腳本檔頭有說明）
 ```
 
-⚠️ v1 誠實缺口：**萃取鏈（rag_extract → 定稿卡 → rag_ingest v2）的打包還在收尾**——
-目前 repo 內的 rag-ingest.yaml 是舊鏈（原文直切塊）。封測期裝到這裡代表：上傳可入庫、
-三模式查詢與問 AI 可用，但「LLM 萃定稿卡」那層等打包完成後補推（我們會通知）。
+再到知識庫 repo 的 Settings → Webhooks 掛兩條 push webhook（同一個 repo）：
+`…/webhooks/named/<你的NS>/rag_extract/trigger` 與 `…/webhooks/named/<你的NS>/rag_ingest/trigger`
+——原稿 push 觸發萃卡、定稿卡 push 觸發入庫，靠路徑前綴各認各的。
+前置：`CARDS_DIR` 目錄（放個 .gitkeep）與 `INDEX_PATH` 骨架檔要先存在，否則 contents API 404 斷鏈。
+
+（2026-07-18 更新：萃取鏈 rag_extract → 定稿卡 → rag_ingest v2 已完成打包並全鏈實測——
+上傳原稿 → LLM 萃定稿卡 → 自動維護索引 → 卡入庫（blocks＋知識圖譜三元組）→ 刪卡自動下架。）
 
 ## 5. Portal（多人入口）
 

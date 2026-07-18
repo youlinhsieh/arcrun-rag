@@ -1,0 +1,248 @@
+# rag_extract_one — 單檔萃取直鏈（rag_extract 派發的工作單元）
+#
+# 為什麼是「dispatcher＋one」兩段式（2026-07-18 實撞定案）：
+#   foreach 內只有三種模板引用可靠——①迭代物件 ②緊鄰 code→code ③http 節點輸出；
+#   code 節點輸出餵給 http/trigger_workflow 一律不展開（trigger_workflow input、
+#   http body/body_json/URL 都撞過字面量）。
+#   → rag_extract（dispatcher）foreach 只做 per-file 派發（body_json 全用迭代物件引用），
+#     本件收 input 後走**無 foreach 直鏈**：直鏈上所有跨節點引用皆可用（rag_chat 10 節點前例）。
+#
+# 觸發：由 rag_extract 派發（POST /webhooks/named/__NAMESPACE__/rag_extract_one/trigger，
+#   input：path/page_name/ref/repo_full/enc_path）。
+# 前置（installer）：__CARDS_DIR__ 目錄存在（.gitkeep）＋ __INDEX_PATH__ 骨架存在。
+# 已知限制：多檔同批派發時 INDEX 有併發 race（單檔無虞，與 demo 現役一致）。
+
+name: rag_extract_one
+description: >
+  單檔萃取直鏈：抓原稿 → LLM 萃定稿卡（__LLM_MODEL__）→ 淨化 → commit __CARDS_DIR__
+  ＋ 維護 __INDEX_PATH__。由 rag_extract 派發，一檔一跑。（T-pack-v2）
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_raw"
+  - "fetch_raw >> ON_SUCCESS >> ask_llm"
+  - "ask_llm >> ON_SUCCESS >> clean_card"
+  - "clean_card >> ON_SUCCESS >> get_cards_dir"
+  - "get_cards_dir >> ON_SUCCESS >> build_card_put"
+  - "build_card_put >> ON_SUCCESS >> put_card"
+  - "put_card >> ON_SUCCESS >> get_index"
+  - "get_index >> ON_SUCCESS >> build_index_put"
+  - "build_index_put >> ON_SUCCESS >> put_index"
+
+config:
+  fetch_raw:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repo_full}}/raw/{{input.enc_path}}?ref={{input.ref}}"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+
+  ask_llm:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent?key=__GEMINI_API_KEY__"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      contents:
+        - parts:
+            - text: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{fetch_raw.data.body}}"
+      generationConfig:
+        temperature: 0.2
+        maxOutputTokens: 8192
+
+  clean_card:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function b64(str) {
+        const bytes = [];
+        for (let i = 0; i < str.length; i++) {
+          let c = str.codePointAt(i);
+          if (c > 0xFFFF) i++;
+          if (c < 0x80) bytes.push(c);
+          else if (c < 0x800) bytes.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+          else if (c < 0x10000) bytes.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+          else bytes.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        }
+        const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        let out = '';
+        for (let i = 0; i < bytes.length; i += 3) {
+          const a = bytes[i], b = bytes[i + 1], c2 = bytes[i + 2];
+          out += T[a >> 2];
+          out += T[((a & 3) << 4) | ((b == null ? 0 : b) >> 4)];
+          out += b == null ? '=' : T[((b & 15) << 2) | ((c2 == null ? 0 : c2) >> 6)];
+          out += c2 == null ? '=' : T[c2 & 63];
+        }
+        return out;
+      }
+      const body = parse(input.llm_body);
+      let text = '';
+      try {
+        const parts = body.candidates[0].content.parts || [];
+        // gemma-4-31b 是思考型模型：parts[0] 是 thought=true 的思考、真答案在最後一個非 thought part
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
+        }
+        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
+      } catch (e) { text = ''; }
+      // 淨化：取最後一個「行首 # 」開始（Gemma 草稿在前）
+      const lines = text.split('\n');
+      let start = -1;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (/^#\s/.test(lines[i])) { start = i; break;
+        }
+      }
+      // 容錯：沒有行首「# 」時退而找「## 一句話定義」重建（Gemma 偶爾漏頂標題）
+      if (start === -1) {
+        for (let i = 0; i < lines.length; i++) {
+          if (/^##\s*一句話定義/.test(lines[i])) { start = i; break; }
+        }
+      }
+      if (start === -1) return { success: false, error: 'LLM 輸出裡找不到卡片（無行首 # 標題，也無一句話定義段）' };
+      let card = lines.slice(start).join('\n').trim();
+      if (!/^#\s/.test(card)) card = '# ' + String(input.page_name || '') + '\n' + card;
+      const page = String(input.page_name || '');
+      // 首行強制為卡名（LLM 偶爾自作主張改標題）
+      card = '# ' + page + '\n' + card.split('\n').slice(1).join('\n');
+      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_extract/__LLM_MODEL__）\n';
+      // gloss＝「## 一句話定義」下第一個非空行（INDEX 用）
+      let gloss = '';
+      const m = /##\s*一句話定義\s*\n+([^\n]+)/.exec(card);
+      if (m) gloss = m[1].trim();
+      const fname = page + '.md';
+      return { success: true, card_b64: b64(card), gloss: gloss, fname: fname,
+               card_path_enc: encodeURIComponent('__CARDS_DIR__/' + fname).replace(/%2F/g, '/'),
+               page_name: page, repo_full: String(input.repo_full || '') };
+    input:
+      llm_body: "{{ask_llm.data.body}}"
+      page_name: "{{input.page_name}}"
+      src_path: "{{input.path}}"
+      repo_full: "{{input.repo_full}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 2097152
+
+  get_cards_dir:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repo_full}}/contents/__CARDS_DIR__?ref=main"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+
+  build_card_put:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      let list = parse(input.dir_body);
+      if (!Array.isArray(list)) list = [];
+      const fname = String(input.fname || '');
+      let sha = '';
+      for (const f of list) { if (f && f.name === fname) { sha = String(f.sha || ''); break; } }
+      const payload = { content: String(input.card_b64 || ''), message: 'rag_extract: 定稿卡 ' + String(input.page_name || ''), branch: 'main' };
+      if (sha) payload.sha = sha;
+      return { success: true, payload: payload };
+    input:
+      dir_body: "{{get_cards_dir.data.body}}"
+      fname: "{{clean_card.data.fname}}"
+      card_b64: "{{clean_card.data.card_b64}}"
+      page_name: "{{clean_card.data.page_name}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  put_card:
+    component: "__HTTP_REQ_URL__"
+    method: PUT
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repo_full}}/contents/{{clean_card.data.card_path_enc}}"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+      Content-Type: "application/json"
+    body_json: "{{build_card_put.data.payload}}"
+
+  get_index:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repo_full}}/contents/__INDEX_PATH__?ref=main"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+
+  build_index_put:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function b64d(s) {
+        const T = {};
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('').forEach(function (ch, i) { T[ch] = i; });
+        s = String(s).replace(/[^A-Za-z0-9+/]/g, '');
+        const bytes = [];
+        for (let i = 0; i + 1 < s.length; i += 4) {
+          const b2 = T[s[i + 2]], b3 = T[s[i + 3]];
+          const n = (T[s[i]] << 18) | (T[s[i + 1]] << 12) | ((b2 == null ? 0 : b2) << 6) | (b3 == null ? 0 : b3);
+          bytes.push((n >> 16) & 255);
+          if (b2 != null) bytes.push((n >> 8) & 255);
+          if (b3 != null) bytes.push(n & 255);
+        }
+        let out = '';
+        for (let i = 0; i < bytes.length;) {
+          const b0 = bytes[i++];
+          if (b0 < 0x80) out += String.fromCharCode(b0);
+          else if (b0 < 0xE0) out += String.fromCharCode(((b0 & 31) << 6) | (bytes[i++] & 63));
+          else if (b0 < 0xF0) out += String.fromCharCode(((b0 & 15) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63));
+          else { const cp = ((b0 & 7) << 18) | ((bytes[i++] & 63) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63); out += String.fromCodePoint(cp); }
+        }
+        return out;
+      }
+      function b64(str) {
+        const bytes = [];
+        for (let i = 0; i < str.length; i++) {
+          let c = str.codePointAt(i);
+          if (c > 0xFFFF) i++;
+          if (c < 0x80) bytes.push(c);
+          else if (c < 0x800) bytes.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+          else if (c < 0x10000) bytes.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+          else bytes.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        }
+        const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        let out = '';
+        for (let i = 0; i < bytes.length; i += 3) {
+          const a = bytes[i], b = bytes[i + 1], c2 = bytes[i + 2];
+          out += T[a >> 2];
+          out += T[((a & 3) << 4) | ((b == null ? 0 : b) >> 4)];
+          out += b == null ? '=' : T[((b & 15) << 2) | ((c2 == null ? 0 : c2) >> 6)];
+          out += c2 == null ? '=' : T[c2 & 63];
+        }
+        return out;
+      }
+      const fileMeta = parse(input.index_body) || {};
+      const idx = b64d(fileMeta.content || '');
+      const page = String(input.page_name || '');
+      const cardsDirName = '__CARDS_DIR__'.split('/').pop();
+      const line = '- [[' + cardsDirName + '/' + page + ']] — ' + String(input.gloss || '（無一句話定義）');
+      const lines = idx.split('\n');
+      let replaced = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf('[[' + cardsDirName + '/' + page + ']]') !== -1) { lines[i] = line; replaced = true; break; }
+      }
+      if (!replaced) {
+        let insertAt = lines.length;
+        while (insertAt > 0 && !lines[insertAt - 1].trim()) insertAt--;
+        lines.splice(insertAt, 0, line);
+      }
+      const payload = { content: b64(lines.join('\n')), message: 'rag_extract: INDEX 更新 ' + page, branch: 'main', sha: String(fileMeta.sha || '') };
+      return { success: true, payload: payload };
+    input:
+      index_body: "{{get_index.data.body}}"
+      page_name: "{{clean_card.data.page_name}}"
+      gloss: "{{clean_card.data.gloss}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 2097152
+
+  put_index:
+    component: "__HTTP_REQ_URL__"
+    method: PUT
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repo_full}}/contents/__INDEX_PATH__"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+      Content-Type: "application/json"
+    body_json: "{{build_index_put.data.payload}}"

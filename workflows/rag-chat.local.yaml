@@ -279,7 +279,14 @@ config:
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const body = parse(input.llm_body);
       let text = '';
-      try { text = String(body.candidates[0].content.parts[0].text || ''); } catch (e) { text = ''; }
+      try {
+        const parts = body.candidates[0].content.parts || [];
+        // gemma-4-31b 是思考型模型：parts[0] 是 thought=true 的思考、真答案在最後一個非 thought part
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
+        }
+        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
+      } catch (e) { text = ''; }
       // Gemma 淨化（實撞三型）：①草稿在【答】前 ②英文自檢清單拖在【答】後
       // ③自檢清單「文字裡提到【答】」→ lastIndexOf 會撈到假標記。
       // 規則：只認「行首」的【答】行（清單提到的都在句中），取最後一條；
