@@ -8,3 +8,6 @@ node_modules/
 
 # arcrun 執行配置（含 instance 指向，不進版控；uncle6-deploy-record §一 的規約補洞）
 .arcrun.yaml
+
+# GitHub 公開 mirror 工作目錄(publish-github.sh 產物)
+.github-public/

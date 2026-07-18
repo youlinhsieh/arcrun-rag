@@ -12,7 +12,7 @@ self-hosted：裝在你自己的 Cloudflare 帳號或你自己的電腦，資料
 
 ## 先玩再說（2 分鐘，免安裝免註冊）
 
-**https://rag-demo.arcrun.dev/portal**　帳號 `test@arcrun.demo`／密碼 `RagDemo-2026`
+**https://rag-demo.arcrun.dev/portal**　（封測帳密見 [5 分鐘測試指南](docs/demo/客戶測試指南.md)，或向我們索取）
 
 👉 照著 **[5 分鐘測試指南](docs/demo/客戶測試指南.md)** 走一輪：上傳一份文件 → 一分鐘後三種搜尋＋總圖＋問 AI。
 
