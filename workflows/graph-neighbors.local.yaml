@@ -1,0 +1,87 @@
+# graph_neighbors — 知識圖譜 1..N 跳鄰居查詢（arcrun-rag 包件）
+#
+# 血統：arcrun-rag repo workflows/graph-neighbors.yaml（T5-graph，canonical 版）的
+#   安裝參數化版。canonical 版用零件名（component: http_request/code）——上游 G1 缺口
+#   （wasmWorkerUrl 寫死 workers.dev）使零件名在本機/地端跑不通，故包版把零件引用
+#   參數化成 URL 佔位，installer 代入本機零件 worker。BFS code 與 canonical 同邏輯
+#   （多一層 body 字串容忍，P1 spike 實測形狀）。
+#
+# 觸發（同步查詢）：
+#   GET {cypher}/q/__NAMESPACE__/graph_neighbors?node=<節點>&depth=2&template=triplet&namespace=__NAMESPACE__&kbdb_base=__KBDB_BASE__
+
+name: graph_neighbors
+description: >
+  同步查詢：從 KBDB triplet 記錄建鄰接表，記憶體 BFS 找 N 跳鄰居。
+  arcrun-rag 產品包版（零件走安裝時代入的 worker URL）。
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_triplets"
+  - "fetch_triplets >> ON_SUCCESS >> bfs_neighbors"
+
+config:
+  fetch_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}"
+    headers:
+      Accept: "application/json"
+
+  bfs_neighbors:
+    component: "__CODE_URL__"
+    code: |
+      let records = input.records;
+      if (typeof records === 'string') { try { records = JSON.parse(records); } catch (e) { records = []; } }
+      if (records && !Array.isArray(records) && Array.isArray(records.records)) records = records.records;
+      if (!Array.isArray(records)) records = [];
+      const start = String(input.start == null ? '' : input.start);
+      const maxDepth = Math.max(1, parseInt(String(input.depth == null ? 1 : input.depth), 10) || 1);
+      const directed = String(input.directed == null ? '' : input.directed) === 'true';
+      if (!start) return { success: false, error: 'graph_neighbors 缺 start（node）參數' };
+      // 比對用正規化 key（NFKC＋小寫＋trim）：搜「rag」要能命中節點「RAG」；顯示一律用庫裡原名。
+      function norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }
+      const adj = new Map();
+      const display = new Map();
+      function addEdge(from, to, predicate) {
+        const fk = norm(from), tk = norm(to);
+        if (!display.has(fk)) display.set(fk, String(from).trim());
+        if (!display.has(tk)) display.set(tk, String(to).trim());
+        if (!adj.has(fk)) adj.set(fk, []);
+        adj.get(fk).push({ node: tk, predicate: predicate });
+      }
+      for (const r of records) {
+        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : r;
+        if (!v || typeof v !== 'object') continue;
+        if (v.status === 'deprecated') continue;
+        const s = v.subject, p = v.predicate, o = v.object;
+        if (!s || !o) continue;
+        addEdge(s, o, p);
+        if (!directed) addEdge(o, s, p);
+      }
+      const startKey = norm(start);
+      const resolvedStart = display.get(startKey) || start;
+      const visited = new Set([startKey]);
+      let frontier = [startKey];
+      const neighbors = [];
+      for (let d = 1; d <= maxDepth; d++) {
+        const next = [];
+        for (const cur of frontier) {
+          const outs = adj.get(cur) || [];
+          for (const e of outs) {
+            if (visited.has(e.node)) continue;
+            visited.add(e.node);
+            neighbors.push({ node: display.get(e.node) || e.node, predicate: e.predicate, from: display.get(cur) || cur, depth: d });
+            next.push(e.node);
+          }
+        }
+        frontier = next;
+        if (frontier.length === 0) break;
+      }
+      return { success: true, start: resolvedStart, query: start, depth: maxDepth, directed: directed, neighbors: neighbors, count: neighbors.length };
+    input:
+      records: "{{fetch_triplets.data.body}}"
+      start: "{{input.node}}"
+      depth: "{{input.depth}}"
+      directed: "{{input.directed}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152

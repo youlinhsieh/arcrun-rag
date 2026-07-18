@@ -1,0 +1,108 @@
+# rag_wiki_digest — LLM Wiki 精耕（arcrun-rag 包件，provider seam＝Gemini）
+#
+# 血統：mira wiki_synthesis V3（polaris/mira/arcrun/wiki_synthesis.yaml）的移植——
+#   但**不是照搬**：V3 綁已退役零件（claude_api/kbdb_get/kbdb_create_block/comp_passthrough）
+#   ＋寫死 leo 庫的 infra block id，無法也不該直接移植。本件保留其本質
+#   「raw blocks → LLM 蒸餾 → wiki 頁寫回庫」，改用現行鐵律形態：
+#   外部 API 一條路（http_request 打 Gemini generateContent，rag-wave1 design §5、
+#   gemini-generate.yaml 同款），KBDB 讀寫走 API。
+# 誠實差距（列缺口，不假裝同等）：V3 的 multi-entity classify、index-entry 維護、
+#   stub wiki page、facet paragraphs＝未移植；本件一檔一 wiki 摘要頁。
+#
+# 觸發（同步查詢；key 走 POST body 不進 URL log）：
+#   POST {cypher}/webhooks/named/rag_wiki_digest/query
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"page_name":"<文件頁名>","gemini_key":"<AI Studio key>"}'
+#   生產形態：gemini_key 改 {{credential.gemini_api_key}}（CF Secrets 機制，T5 已驗）；
+#   本機 miniflare 無 credential 解密鏈 → key 由呼叫端注入（已知本機限制）。
+#
+# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
+
+name: rag_wiki_digest
+description: >
+  對指定 page_name 的 blocks 做 LLM 精耕：撈 blocks → 組 prompt → Gemini 生成 wiki 摘要
+  （繁中、含要點與關鍵實體）→ 寫回 KBDB（entry_type=wiki，page_name=wiki-{原頁名}）。
+  「知識庫自己長 wiki」——mira wiki_synthesis 本質的產品包版，換源＝換 recipe 不換引擎。
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_blocks"
+  - "fetch_blocks >> ON_SUCCESS >> compose_prompt"
+  - "compose_prompt >> ON_SUCCESS >> gemini_call"
+  - "gemini_call >> ON_SUCCESS >> extract_text"
+  - "extract_text >> ON_SUCCESS >> write_wiki"
+
+config:
+  # 1) 撈該頁全部 blocks（API-as-Wall）。
+  fetch_blocks:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?entry_type=block&page_name={{input.page_name}}&owner_id=__NAMESPACE__&limit=50"
+    headers:
+      Accept: "application/json"
+
+  # 2) 組 prompt（純字串組裝，決定性）。
+  compose_prompt:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }
+      const entries = (body && Array.isArray(body.entries)) ? body.entries : [];
+      if (entries.length === 0) return { success: false, error: 'page_name 查無 blocks，先跑 ingest' };
+      const page = String(input.page_name || '');
+      const corpus = entries.map((e, i) => '[block ' + i + ']\n' + String(e.content || '')).join('\n\n');
+      const prompt = '你是企業知識庫的 wiki 維護員。以下是文件「' + page + '」的原始段落。\n' +
+        '請用正體中文輸出一頁 wiki 摘要（純 markdown、不要 code fence），結構：\n' +
+        '# ' + page + '\n## 一句話定義\n## 要點\n## 關鍵實體\n（每個實體一行，格式：實體名 — 一句話）\n\n' +
+        '--- 原始段落 ---\n\n' + corpus;
+      return { success: true, prompt: prompt, block_count: entries.length };
+    input:
+      body: "{{fetch_blocks.data.body}}"
+      page_name: "{{input.page_name}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  # 3) Gemini generateContent（http_request＋body_json 顯式白名單——
+  #    不用 auth-recipe 捷徑，避免上游 ctx 攤平污染 body，gemini-generate.yaml 實測教訓）。
+  gemini_call:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers:
+      Content-Type: "application/json"
+      x-goog-api-key: "{{input.gemini_key}}"
+    body_json:
+      contents:
+        - parts:
+            - text: "{{compose_prompt.data.prompt}}"
+
+  # 4) 從 Gemini 回應抽純文字。
+  extract_text:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      const text = body && body.candidates && body.candidates[0] &&
+        body.candidates[0].content && body.candidates[0].content.parts &&
+        body.candidates[0].content.parts.map(p => p.text || '').join('');
+      if (!text) return { success: false, error: 'Gemini 回應無文字（' + JSON.stringify(body).slice(0, 200) + '）' };
+      return { success: true, wiki_md: text };
+    input:
+      body: "{{gemini_call.data.body}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  # 5) 寫回 KBDB（entry_type=wiki；精耕產物與 raw block 分型，查詢兩者都命中）。
+  write_wiki:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      entry_type: "wiki"
+      content: "{{extract_text.data.wiki_md}}"
+      owner_id: "__NAMESPACE__"
+      page_name: "wiki-{{input.page_name}}"
+      metadata_json: "{\"source\":\"rag_wiki_digest\",\"provider\":\"gemini-2.5-flash\",\"embed\":true}"

@@ -1,0 +1,20 @@
+# notify_owner — 管理員 Telegram 通知道（arcrun-rag 包件，選配）
+#
+# 血統：polaris/mira/workflows/notify-leo.yaml 的參數化版——chat_id 從寫死 leo 手機
+#   改佔位（裝機時代入客戶管理員 chat_id）。telegram_send 是 recipe（零件已降級，
+#   Arcrun#13）；bot token 生產走 `acr creds push`（telegram_bot_token → {{auth.bot_token}}）。
+# 本機 demo：miniflare 無 credential 解密鏈 → 本件僅隨包附上、不在本機驗（誠實跳過）。
+#
+# 佔位參數：__TELEGRAM_CHAT_ID__
+
+name: notify_owner
+description: 通知知識庫管理員的 Telegram 通道（訊息開頭建議署名來源系統）。
+
+flow:
+  - "input >> ON_SUCCESS >> send"
+
+config:
+  send:
+    component: telegram_send
+    chat_id: "__TELEGRAM_CHAT_ID__"
+    text: "{{input.text}}"

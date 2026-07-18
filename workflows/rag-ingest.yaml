@@ -1,0 +1,276 @@
+# rag_ingest — 知識 repo push → 機械切塊 → KBDB（arcrun-rag 包件）
+#
+# 血統：km_wiki_ingest_drain「§穩態變體」（matrix/arcrun registry/examples/km-wiki-ingest
+#   workflow.yaml 檔尾）的落實——Gitea push webhook 只處理 delta 檔，量小天生不撞
+#   subrequest 頂、不需限速。Mira 實例的 cron drain（一 tick 一卡）是首灌形態；
+#   本件是產品穩態形態（collector push 即觸發，事件驅動不輪詢）。
+# 對照 leo 手動步驟：leo 自己是「手動 push wiki 卡 → cron drain 慢慢吃」；
+#   用戶版＝collector 自動 commit/push → Gitea webhook 打本 workflow → 秒級進庫。
+#
+# 觸發：Gitea repo webhook（push 事件）指向
+#   POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest/trigger
+#   payload＝Gitea 原生 push payload（commits[].added/modified、after、repository.full_name）。
+#
+# 佔位參數（installer 以 sed 代入；生產部署由安裝器/AI 代入客戶值）：
+#   __NAMESPACE__      租戶 namespace（owner_id）
+#   __KBDB_BASE__      KBDB base URL（本機 http://127.0.0.1:8787）
+#   __GITEA_BASE__     Gitea base URL（本機 http://127.0.0.1:3300）
+#   __GITEA_TOKEN__    Gitea API token（讀 raw 檔用；生產應改走 credential 機制——已知缺口）
+#   __HTTP_REQ_URL__   http_request 零件 worker URL（本機 http://127.0.0.1:8789；上游 G1 缺口的繞法）
+#   __CODE_URL__       code 零件 worker URL（本機 http://127.0.0.1:8790）
+#
+# G9（2026-07-13 補）：removed（刪檔）→ deprecated 分支已實作——collector 鏡像刪除送
+#   commits[].removed，本件對應把該頁 entries（block＋wiki）與 triplet 標 status=deprecated。
+#   append-only 不物理刪：entries 走 PATCH metadata_json 併入 status（deprecate via status
+#   slot＝變形 CRUD）；triplet 走 PATCH /records/:id 翻 status slot（KBDB issue #6 機制）。
+#   誠實限制：keyword search（/entries/search）尚不過濾 deprecated（KBDB base 無 metadata
+#   filter，屬上游能力）；graph 查詢已過濾（graph-neighbors 略過 status=deprecated）。
+#
+# G11（2026-07-13 leo 拍板：預設開）：每檔 ingest 完自動接 rag_wiki_digest（Gemini 精耕）。
+#   用 arcrun 原生 trigger_workflow 內建零件（in-process，mira_feed_watcher 同款）——不是
+#   workflow 回呼 LLM 判斷；Gemini 呼叫在 rag_wiki_digest 內走 http_request 打外部 API（合法）。
+#   開關＝installer 的 AUTO_DIGEST（預設 true）；false 時 installer 剝掉
+#   「# AUTO_DIGEST FLOW」行與「# AUTO_DIGEST BEGIN..END」段再 push。
+#   ⚠ 成本：每檔一次 Gemini API 呼叫；__GEMINI_API_KEY__ 本機由 installer sed 代入
+#   （與 __GITEA_TOKEN__ 同款妥協）；生產改 {{credential.gemini_api_key}}。
+#
+# 已知誠實限制：
+#   - 只吃 collected/**/*.md（collector 的輸出目錄）。
+#   - blocks 直write /entries（機械、零 LLM）；wiki 精耕在 rag_wiki_digest（G11 自動接鏈）。
+#   - 同一 push 內「刪又加回」的檔以 ingest 為準（不進 removed 分支）。
+
+name: rag_ingest
+description: >
+  Gitea push webhook → 濾出 collected/ 下新增/修改的 .md → 逐檔抓 raw → 機械切塊
+  → 寫 KBDB entries（block）＋每檔一條 triplet（文件 part_of 知識庫）。零 LLM、冪等靠
+  page_name+source 溯源。arcrun-rag 產品包穩態 ingest（km_wiki_ingest 穩態變體落實）。
+
+flow:
+  - "input >> ON_SUCCESS >> collect_changed"
+  - "collect_changed >> 對每個 file >> fetch_raw"
+  - "fetch_raw >> ON_SUCCESS >> parse_blocks"
+  - "parse_blocks >> 對每個 block >> post_block"
+  - "parse_blocks >> ON_SUCCESS >> post_triplet"
+  - "post_triplet >> ON_SUCCESS >> trigger_digest" # AUTO_DIGEST FLOW
+  # G9 removed 分支：刪檔 → 該頁 entries＋triplet 標 deprecated（append-only，不物理刪）
+  - "collect_changed >> 對每個 removed_file >> list_dead_blocks"
+  - "list_dead_blocks >> ON_SUCCESS >> list_dead_wiki"
+  - "list_dead_wiki >> ON_SUCCESS >> build_deprecations"
+  - "build_deprecations >> 對每個 dead_entry >> deprecate_entry"
+  - "build_deprecations >> ON_SUCCESS >> list_triplets"
+  - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
+  - "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+
+config:
+  # 1) 從 push payload 收斂變更清單：commits[].added+modified → collected/**/*.md，去重。
+  collect_changed:
+    component: "__CODE_URL__"
+    code: |
+      let commits = input.commits;
+      if (typeof commits === 'string') { try { commits = JSON.parse(commits); } catch (e) { commits = []; } }
+      if (!Array.isArray(commits)) commits = [];
+      const seen = new Set();
+      const files = [];
+      for (const c of commits) {
+        for (const p of [...(c.added || []), ...(c.modified || [])]) {
+          if (!/^collected\/.*\.md$/.test(p)) continue;
+          if (seen.has(p)) continue;
+          seen.add(p);
+          files.push({ path: p });
+        }
+      }
+      // G9：removed → 待 deprecate 清單（同 push 內又加回的以 ingest 為準，跳過）
+      const removedSeen = new Set();
+      const removed_files = [];
+      for (const c of commits) {
+        for (const p of (c.removed || [])) {
+          if (!/^collected\/.*\.md$/.test(p)) continue;
+          if (seen.has(p) || removedSeen.has(p)) continue;
+          removedSeen.add(p);
+          const page = p.replace(/^collected\//, '').replace(/\.md$/, '');
+          removed_files.push({ path: p, page_name: page, wiki_page: 'wiki-' + page });
+        }
+      }
+      return { success: true, files: files, count: files.length,
+               removed_files: removed_files, removed_count: removed_files.length,
+               ref: String(input.after || '') };
+    input:
+      commits: "{{input.commits}}"
+      after: "{{input.after}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576
+
+  # 2) 逐檔抓 raw（釘在 push 的 commit sha，避免 race）。
+  fetch_raw:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__GITEA_BASE__/api/v1/repos/{{input.repository.full_name}}/raw/{{file.path}}?ref={{collect_changed.data.ref}}"
+    headers:
+      Authorization: "token __GITEA_TOKEN__"
+
+  # 3) 機械切塊（標題行為界，同 P1 spike ingest-md.mjs 邏輯；零 LLM、決定性）。
+  parse_blocks:
+    component: "__CODE_URL__"
+    code: |
+      const md = String(input.raw == null ? '' : input.raw);
+      const relPath = String(input.path || 'unknown.md');
+      const pageName = relPath.replace(/^collected\//, '').replace(/\.md$/, '');
+      const chunks = [];
+      let cur = [];
+      for (const line of md.split('\n')) {
+        if (/^#{1,6}\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\n').trim()); cur = []; }
+        cur.push(line);
+      }
+      if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
+      const blocks = chunks.map((content, i) => ({
+        content: content,
+        page_name: pageName,
+        source: 'gitea://' + relPath + '#' + i,
+      }));
+      return { success: true, blocks: blocks, block_count: blocks.length, page_name: pageName, rel_path: relPath };
+    input:
+      raw: "{{fetch_raw.data.body}}"
+      path: "{{file.path}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  # 4) 每個 block 寫一筆 entry（API-as-Wall，零 SQL；embed:true＝有 vectorize 的部署會自動嵌入）。
+  post_block:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      entry_type: "block"
+      content: "{{block.content}}"
+      owner_id: "__NAMESPACE__"
+      page_name: "{{block.page_name}}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"embed\":true}"
+
+  # 5) 每檔一條 triplet：文件 part_of 知識庫 → 圖譜隨檔案自動長（graph_neighbors 查得到）。
+  #    template=triplet（kbdb-graph-plugin 同名 schema，slots 對齊，未來插件/精耕直接相容）。
+  post_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/records"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      template: "triplet"
+      owner_id: "__NAMESPACE__"
+      values:
+        subject: "{{parse_blocks.data.page_name}}"
+        predicate: "part_of"
+        object: "knowledge-base"
+        source_uri: "gitea://{{parse_blocks.data.rel_path}}"
+        status: "active"
+
+  # AUTO_DIGEST BEGIN（G11：ingest 完自動接 Gemini 精耕；AUTO_DIGEST=false 時 installer 剝掉本段）
+  # trigger_workflow＝arcrun 內建 orchestration 零件（in-process call，非 http 自打、非回呼 LLM 判斷）。
+  trigger_digest:
+    component: trigger_workflow
+    workflow_name: "rag_wiki_digest"
+    api_key: "__NAMESPACE__"
+    input:
+      page_name: "{{parse_blocks.data.page_name}}"
+      gemini_key: "__GEMINI_API_KEY__"
+  # AUTO_DIGEST END
+
+  # ── G9 removed 分支 ──────────────────────────────────────────────────
+  # 6) 刪檔頁的 block entries。
+  list_dead_blocks:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{removed_file.page_name}}&owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+
+  # 7) 刪檔頁的精耕 wiki entry（G11 產物 wiki-<頁名>，一併下架）。
+  list_dead_wiki:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{removed_file.wiki_page}}&owner_id=__NAMESPACE__&limit=50"
+    headers:
+      Accept: "application/json"
+
+  # 8) 合併兩批 entries → 各自 metadata_json 併入 status=deprecated（保留原 source/embed，冪等）。
+  build_deprecations:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const a = parse(input.blocks_body), w = parse(input.wiki_body);
+      const entries = [].concat((a && a.entries) || [], (w && w.entries) || []);
+      const dead_entries = [];
+      for (const e of entries) {
+        let meta = {};
+        if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
+        if (meta.status === 'deprecated') continue;
+        meta.status = 'deprecated';
+        meta.deprecated_reason = 'source_removed';
+        dead_entries.push({ id: e.id, metadata_json: JSON.stringify(meta) });
+      }
+      return { success: true, dead_entries: dead_entries, dead_count: dead_entries.length,
+               page_name: String(input.page_name || '') };
+    input:
+      blocks_body: "{{list_dead_blocks.data.body}}"
+      wiki_body: "{{list_dead_wiki.data.body}}"
+      page_name: "{{removed_file.page_name}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  # 9) 逐 entry PATCH（append-only：改 metadata 標記，不 DELETE）。
+  deprecate_entry:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/entries/{{dead_entry.id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      metadata_json: "{{dead_entry.metadata_json}}"
+
+  # 10) 撈 triplet 記錄，挑出該頁未 deprecated 的。
+  list_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__"
+    headers:
+      Accept: "application/json"
+
+  pick_dead_triplets:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      let records = (body && Array.isArray(body.records)) ? body.records : [];
+      const page = String(input.page_name || '');
+      const dead_records = [];
+      for (const r of records) {
+        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
+        if (!v || v.subject !== page) continue;
+        if (v.status === 'deprecated') continue;
+        if (!r.record_id) continue;
+        dead_records.push({ record_id: r.record_id });
+      }
+      return { success: true, dead_records: dead_records, count: dead_records.length };
+    input:
+      body: "{{list_triplets.data.body}}"
+      page_name: "{{removed_file.page_name}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  # 11) 翻 triplet 的 status slot（PATCH /records/:id，KBDB issue #6「deprecate＝翻 slot 值」機制；
+  #     graph_neighbors BFS 已過濾 status=deprecated → 圖上即消失）。
+  deprecate_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/records/{{dead_record.record_id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      values:
+        status: "deprecated"

@@ -1,0 +1,336 @@
+# rag_chat — 同步問答：keyword＋semantic＋graph 三路檢索 → Gemma 組答案（arcrun-rag demo 包件）
+#
+# 血統：2026-07-17 demo 化四件套的 rag_chat（雲端總管 API 直推版）之 v2 落地——
+#   v1 定義只存在 WEBHOOKS KV（無讀回 API），本檔即日起是 rag_chat 的 repo 真相源。
+#
+# v2 重做（2026-07-18，leo 客戶測試回饋「問 RAG 卻引用會議室規範」）：
+#   病根＝v1「semantic 前兩個命中頁全 blocks 聚合」——英文 embed 模型嵌中文（Arcrun#59）＋
+#   殘影向量（#58）讓 semantic 排名近乎雜訊，單發散彈就能把整頁無關文件拖進出處。
+#   v2 選頁改「IDF 加權字面重疊」主導（demo 量級直接撈全庫 active blocks 在 code 內計分，
+#   實測六題全對），semantic/keyword 降為小加分；並補檢索衛生：
+#   ① tombstone「（舊管線產物…」與 metadata status=deprecated 一律排除（keyword 面上游
+#      #46 家族不濾，這裡客端濾）。
+#   ② 次命中頁需門檻（≥max(3, 0.4×主頁分)），單發雜訊進不了出處。
+#   ③ graph 實體比對正規化（NFKC＋小寫），與 graph_neighbors 同款。
+#   ④ 出處帶 source（gitea:// 路徑），portal 可做來源回溯連結。
+#   誠實限制：殘影向量/embed 模型是上游 #58/#59，本件是檢索端繞法不是治本；
+#   全庫撈 blocks 的做法適用 demo 量級（≤500 blocks），正式版要回到索引面解。
+#
+# 觸發（同步查詢）：
+#   GET  {cypher}/q/__NAMESPACE__/rag_chat?question=<問題>
+#   POST {cypher}/webhooks/named/rag_chat/query  -H "X-Arcrun-API-Key: __NAMESPACE__"  -d '{"question":"…"}'
+#   → 直接回 { answer, sources:[{n,mode,page,source}], graph_facts:[…] }
+#
+# 佔位參數（推送前 sed 代入）：
+#   __NAMESPACE__        租戶 namespace（demo）
+#   __KBDB_BASE__        KBDB base URL
+#   __HTTP_REQ_URL__     http_request 零件 worker URL
+#   __CODE_URL__         code 零件 worker URL
+#   __GEMINI_API_KEY__   AI Studio key（G10 同款妥協：嵌定義；生產改 {{credential.*}}，輪換要重推）
+#   __LLM_MODEL__        模型 id（demo＝gemma-4-31b-it，leo 指定的地端模型預演）
+#
+# 已知誠實限制：
+#   - Gemma 會吐思考草稿 → 提示詞要求最後一行以【答】開頭，finalize 取最後一個【答】之後。
+
+name: rag_chat
+description: >
+  同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Gemma 把檢索
+  結果組成回答（繁中、附出處）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。
+  v2：選頁改 IDF 字面重疊主導＋tombstone/deprecated 過濾＋次頁門檻＋graph 比對正規化。
+
+flow:
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> kw_search"
+  - "kw_search >> ON_SUCCESS >> sem_search"
+  - "sem_search >> ON_SUCCESS >> fetch_triplets"
+  - "fetch_triplets >> ON_SUCCESS >> fetch_blocks_a"
+  - "fetch_blocks_a >> ON_SUCCESS >> fetch_blocks_b"
+  - "fetch_blocks_b >> ON_SUCCESS >> fetch_blocks_c"
+  - "fetch_blocks_c >> ON_SUCCESS >> assemble"
+  - "assemble >> ON_SUCCESS >> ask_llm"
+  - "ask_llm >> ON_SUCCESS >> finalize"
+
+config:
+  # 0) CJK 進 URL 模板必先 encodeURIComponent（agent-memory §7 實撞教訓）。
+  prep:
+    component: "__CODE_URL__"
+    code: |
+      const q = String(input.question == null ? '' : input.question).trim();
+      if (!q) return { success: false, error: 'rag_chat 缺 question 參數' };
+      return { success: true, question: q, q_enc: encodeURIComponent(q) };
+    input:
+      question: "{{input.question}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 1) keyword 檢索（與搜尋頁同一 API；整句 LIKE，命中＝強佐證小加分）。
+  kw_search:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=15"
+    headers:
+      Accept: "application/json"
+
+  # 2) semantic 檢索（與搜尋頁同一 API；上游 #58/#59 未修前只當小加分）。
+  sem_search:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&mode=semantic&limit=15"
+    headers:
+      Accept: "application/json"
+
+  # 3) graph：撈全表 triplet（demo 量級），實體比對在 assemble 內做。
+  fetch_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__"
+    headers:
+      Accept: "application/json"
+
+  # 4) 全庫 active blocks（IDF 計分的語料底）。http_request 零件回應上限 ~64KB（2026-07-18
+  #    實測 44KB 通過/83KB 失敗）→ 分三段 limit=60 撈，容量 180 blocks；demo 每日 rag_reset
+  #    清場，量級足夠。正式版要回到索引面解，不靠全庫撈。
+  fetch_blocks_a:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=0"
+    headers:
+      Accept: "application/json"
+
+  fetch_blocks_b:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=60"
+    headers:
+      Accept: "application/json"
+
+  fetch_blocks_c:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=120"
+    headers:
+      Accept: "application/json"
+
+  # 5) 計分選頁＋聚合＋編號＋組 prompt（單一 code 節點，決定性零 LLM）。
+  assemble:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }
+      const TOMB = '（舊管線產物';
+      function usable(e) {
+        if (!e || typeof e !== 'object') return false;
+        if (!e.page_name) return false;
+        const c = String(e.content || '');
+        if (!c.trim() || c.indexOf(TOMB) === 0 || c.indexOf('（重複頁') === 0) return false;
+        if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); if (m && m.status === 'deprecated') return false; } catch (err) {} }
+        return true;
+      }
+      function srcOf(e) { if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); return String(m.source || ''); } catch (err) {} } return ''; }
+      function chunkIdx(src) { const m = /#(\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }
+      function toksOf(text) {
+        const t = norm(text);
+        const out = new Set();
+        const ascii = t.match(/[a-z0-9]{2,}/g) || [];
+        for (const w of ascii) out.add(w);
+        const cjk = t.replace(/[^一-鿿]/g, ' ');
+        for (const seg of cjk.split(/\s+/)) {
+          for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));
+        }
+        return out;
+      }
+      const question = String(input.question || '');
+      const qToks = toksOf(question);
+      // 全庫 blocks（三段分頁合併）→ usable → 去重（同頁同內容；同名卡 create-only 疊出的重複只留一份）
+      const all = [].concat(
+        ((parse(input.blocks_a) || {}).entries) || [],
+        ((parse(input.blocks_b) || {}).entries) || [],
+        ((parse(input.blocks_c) || {}).entries) || []
+      );
+      const seenKey = new Set();
+      const blocks = [];
+      for (const e of all) {
+        if (!usable(e)) continue;
+        const k = e.page_name + '|' + String(e.content).trim();
+        if (seenKey.has(k)) continue;
+        seenKey.add(k);
+        blocks.push(e);
+      }
+      // IDF：token 出現在越少 block 越有鑑別力
+      const N = blocks.length || 1;
+      const df = new Map();
+      const bToks = [];
+      for (const e of blocks) {
+        const ts = toksOf(e.content);
+        bToks.push(ts);
+        for (const t of ts) df.set(t, (df.get(t) || 0) + 1);
+      }
+      const pageBlockScores = new Map();
+      blocks.forEach(function (e, i) {
+        let sc = 0;
+        for (const t of qToks) {
+          if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));
+        }
+        if (sc <= 0) return;
+        if (!pageBlockScores.has(e.page_name)) pageBlockScores.set(e.page_name, []);
+        pageBlockScores.get(e.page_name).push(sc);
+      });
+      const score = new Map();
+      for (const entry of pageBlockScores) {
+        const top3 = entry[1].slice().sort(function (a, b) { return b - a; }).slice(0, 3);
+        score.set(entry[0], top3.reduce(function (a, b) { return a + b; }, 0));
+      }
+      // keyword / semantic 小加分（與搜尋頁同一套 API 的佐證訊號）
+      const kw = parse(input.kw_body), sem = parse(input.sem_body);
+      for (const e of ((kw && kw.entries) || []).filter(usable)) score.set(e.page_name, (score.get(e.page_name) || 0) + 2);
+      ((sem && sem.entries) || []).filter(usable).slice(0, 10).forEach(function (e) {
+        score.set(e.page_name, (score.get(e.page_name) || 0) + 0.4);
+      });
+      const pages = Array.from(score.keys()).sort(function (a, b) { return (score.get(b) || 0) - (score.get(a) || 0); });
+      const p1 = pages[0] || '';
+      const s1 = score.get(p1) || 0;
+      // 次頁門檻：分數 ≥ max(3, 0.4×主頁分)——單發雜訊進不了出處
+      let p2 = '';
+      if (pages.length > 1) {
+        const cand = pages[1];
+        const s2 = score.get(cand) || 0;
+        if (s2 >= Math.max(3, 0.4 * s1)) p2 = cand;
+      }
+      // graph_facts：問句包含的實體（正規化比對）之邊
+      let records = ((parse(input.tp_body) || {}).records) || [];
+      if (!Array.isArray(records)) records = [];
+      const qn = norm(question);
+      const facts = [];
+      const seenFact = new Set();
+      for (const r of records) {
+        const v = (r && r.values && typeof r.values === 'object') ? r.values : r;
+        if (!v || v.status === 'deprecated' || !v.subject || !v.object) continue;
+        const sN = norm(v.subject), oN = norm(v.object);
+        const hit = (sN.length >= 2 && qn.indexOf(sN) !== -1) || (oN.length >= 2 && qn.indexOf(oN) !== -1);
+        if (!hit) continue;
+        const line = v.subject + ' ' + (v.predicate || '→') + ' ' + v.object;
+        if (seenFact.has(line)) continue;
+        seenFact.add(line);
+        facts.push(line);
+        if (facts.length >= 12) break;
+      }
+      // 聚合選中頁 blocks（主頁在前、各頁按 chunk 序），8000 字上限
+      const picked = [];
+      function take(page, mode) {
+        if (!page) return;
+        const es = blocks.filter(function (e) { return e.page_name === page; });
+        es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });
+        for (const e of es) picked.push({ page: page, mode: mode, content: String(e.content), source: srcOf(e) });
+      }
+      take(p1, '主命中頁');
+      if (p2 && p2 !== p1) take(p2, '相關頁');
+      let budget = 8000;
+      const ctxBlocks = [];
+      for (const bk of picked) {
+        if (budget <= 0) break;
+        let c = bk.content;
+        if (c.length > budget) c = c.slice(0, budget);
+        budget -= c.length;
+        ctxBlocks.push({ page: bk.page, mode: bk.mode, content: c, source: bk.source });
+      }
+      const sources = ctxBlocks.map(function (bk, i) { return { n: i + 1, mode: bk.mode, page: bk.page, source: bk.source }; });
+      let ctx = '';
+      ctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自《' + bk.page + '》）\n' + bk.content + '\n\n'; });
+      const factsTxt = facts.length ? ('已知知識關聯（也是可引用的資料，可據此回答）：\n' + facts.map(function (f) { return '- ' + f; }).join('\n') + '\n\n') : '';
+      const prompt = '你是企業知識庫問答助手。只根據下面提供的資料回答，資料裡沒有的不要編造；' +
+        '引用時標注資料編號如 [1]、[2]。\n\n' +
+        factsTxt + '資料：\n' + (ctx || '（沒有找到相關資料）\n') +
+        '\n問題：' + question + '\n\n' +
+        '輸出規則（嚴格遵守）：不要輸出思考過程或英文草稿，只輸出一行——' +
+        '以【答】開頭、用正體中文、一段話、帶 [n] 引用；資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';
+      return { success: true, prompt: prompt, sources: sources, graph_facts: facts, p1: p1, p2: p2, has_ctx: ctxBlocks.length > 0 };
+    input:
+      kw_body: "{{kw_search.data.body}}"
+      sem_body: "{{sem_search.data.body}}"
+      tp_body: "{{fetch_triplets.data.body}}"
+      blocks_a: "{{fetch_blocks_a.data.body}}"
+      blocks_b: "{{fetch_blocks_b.data.body}}"
+      blocks_c: "{{fetch_blocks_c.data.body}}"
+      question: "{{prep.data.question}}"
+    limits:
+      timeout_ms: 8000
+      max_output_bytes: 4194304
+
+  # 6) Gemma 生成（G10 同款妥協：key 嵌定義；輪換記得重推）。
+  ask_llm:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent?key=__GEMINI_API_KEY__"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      contents:
+        - parts:
+            - text: "{{assemble.data.prompt}}"
+      generationConfig:
+        temperature: 0.2
+        maxOutputTokens: 2048
+
+  # 7) 抽最終答案（最後一個【答】之後；Gemma 思考草稿淨化）。
+  finalize:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const body = parse(input.llm_body);
+      let text = '';
+      try { text = String(body.candidates[0].content.parts[0].text || ''); } catch (e) { text = ''; }
+      // Gemma 淨化（實撞三型）：①草稿在【答】前 ②英文自檢清單拖在【答】後
+      // ③自檢清單「文字裡提到【答】」→ lastIndexOf 會撈到假標記。
+      // 規則：只認「行首」的【答】行（清單提到的都在句中），取最後一條；
+      // 無標記 fallback＝取「中文字數 ≥8 且多於英文字母數」的最後一段（自檢清單過不了這關）。
+      function cjkCount(s) { const m = s.match(/[一-鿿]/g); return m ? m.length : 0; }
+      function asciiCount(s) { const m = s.match(/[a-zA-Z]/g); return m ? m.length : 0; }
+      // 剝殼器：把行首的 bullet／引號／「Answer:」「Draft:」式單詞冒號／【答】標記
+      // **循環剝到穩定**——Gemma 的前綴組合順序不定（實撞過「*   【答】」「Draft: 【答】」
+      // 「Answer: * 【答】」三型），單趟剝不乾淨。
+      function peel(line) {
+        let t = String(line).trim(), prev = null;
+        while (t !== prev) {
+          prev = t;
+          t = t.replace(/^[\s*\-•>#"'』]+/, '');
+          t = t.replace(/^[A-Za-z][\w ]{0,14}[:：]\s*/, '');
+          t = t.replace(/^【答】\s*/, '');
+          t = t.trim();
+        }
+        return t;
+      }
+      let answer = '';
+      const lines = text.split('\n');
+      // 第一優先：含行首（剝殼後緊接）【答】標記的行，取最後一條——
+      // 自檢清單提到【答】時是完整英文句中段，剝殼後開頭不會是【答】。
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!/【答】/.test(lines[i])) continue;
+        const raw = String(lines[i]);
+        // 剝掉標記前的殼後必須直達【答】，才算真標記行（排除 "Starts with 【答】? Yes" 型）
+        const head = raw.slice(0, raw.indexOf('【答】'));
+        if (!/^[\s*\-•>#"'』]*(?:[A-Za-z][\w ]{0,14}[:：])?[\s*\-•>#"'』]*$/.test(head)) continue;
+        const t = peel(raw);
+        if (cjkCount(t) >= 4) { answer = t; break; }
+      }
+      // fallback：最後一條「像中文答案」的行——剝殼後中文字 ≥8，且不是自檢清單型（?/Yes/No 收尾）。
+      if (!answer) {
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const t = peel(lines[i]);
+          if (cjkCount(t) >= 8 && !/(\?|\byes\b|\bno\b)\s*[.!。]?\s*$/i.test(t)) {
+            answer = t;
+            break;
+          }
+        }
+      }
+      if (!answer) answer = '（知識庫裡沒有找到足以回答的資料。）';
+      const sources = Array.isArray(input.sources) ? input.sources : [];
+      const facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];
+      return { success: true, answer: answer, sources: sources, graph_facts: facts };
+    input:
+      llm_body: "{{ask_llm.data.body}}"
+      sources: "{{assemble.data.sources}}"
+      graph_facts: "{{assemble.data.graph_facts}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576

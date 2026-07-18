@@ -1,0 +1,36 @@
+name: gemini_generate
+description: >
+  T5-provider 最小驗證 workflow：精耕/圖萃取換源示範——用 `http_request` 零件（非
+  claude_api 零件）打 Google Gemini generateContent，換源＝換 config 裡的 url/credential，
+  不是換引擎（design §5）。credential 走 CF Secrets 新機制：`acr creds push`
+  （gemini_api_key）已存進 leo21c Workers Secrets，workflow 用
+  `{{credential.gemini_api_key}}` 注入 header，執行時由 auth_static_key WASM 解密回填
+  （graph-executor.ts resolveCredentialRefs，design §8），workflow 本身不碰明碼 key。
+  ⚠️ 用 `http_request`＋`body_json`（非 `component: gemini` auth-recipe 捷徑）：
+  auth-recipe 零件（makeAuthRecipeRunner）把整個 ctx（含上游 trigger 傳入的所有欄位，
+  如這裡的 prompt/input namespace）攤平當 request body，會把 Gemini 不認得的欄位
+  一起送出去（實測撞到：400 Unknown name "prompt"/"input"）。http_request 的
+  `body_json` 是顯式白名單，只送你指定的欄位，才不會被上游 ctx 污染——這是本輪
+  實測學到的框架眉角，非 bug，記在此供下次抄範例的人避坑。
+
+# ── 觸發（同步查詢 trigger）──
+#   GET  https://{你的-cypher-domain}/q/{namespace}/gemini_generate?prompt=...
+#   POST https://{你的-cypher-domain}/webhooks/named/gemini_generate/query
+#        -H "X-Arcrun-API-Key: {namespace}" -d '{"prompt":"..."}'
+#   → 回 http_request 零件輸出（{success,status,data:{body:<Gemini API 原始回應 JSON 字串>}}）。
+
+flow:
+  - "input >> ON_SUCCESS >> gemini_call"
+
+config:
+  gemini_call:
+    component: http_request
+    method: POST
+    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers:
+      Content-Type: "application/json"
+      x-goog-api-key: "{{credential.gemini_api_key}}"
+    body_json:
+      contents:
+        - parts:
+            - text: "{{input.prompt}}"

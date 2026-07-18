@@ -1,0 +1,10 @@
+{
+  "name": "arcrun-rag-collector",
+  "version": "0.1.0",
+  "description": "收集端骨架（rag-wave1 T3）：watch 客戶知識資料夾 → 轉檔 → git commit/push",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "chokidar": "^3.6.0"
+  }
+}

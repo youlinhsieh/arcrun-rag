@@ -1,0 +1,10 @@
+# 機敏值不進版控（env.sample 只有 key 名）
+.env
+# 本機 demo 執行期資料（install.sh 產生；PACKAGE-STAGING「不落 repo」規約）
+install/state/
+install/logs/
+node_modules/
+.DS_Store
+
+# arcrun 執行配置（含 instance 指向，不進版控；uncle6-deploy-record §一 的規約補洞）
+.arcrun.yaml

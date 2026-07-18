@@ -1,0 +1,113 @@
+name: graph_traverse
+description: >
+  同步查詢：給一個起點 → 從 KBDB triplet 記錄建無向鄰接表 → 記憶體 BFS 逐層走訪到 depth 上限 →
+  同步回「每層每節點＋其全部邊」清單。這是「查詢面工作流」示範，取代 graph plugin 內建的
+  GET /graph/traverse。對照 kbdb-graph-plugin graph-traverse.ts 的 traverseGraph()（逐層 BFS、
+  每節點回其接觸到的全部 triplet 邊，非只回新發現節點——與 graph_neighbors.yaml 的輸出形狀不同，
+  這裡是逐層快照，那邊是新節點清單）。
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠️ 先改成你自己的 KBDB URL（self-hosted 必看）
+#   fetch_triplets 的 base URL 走 {{input.kbdb_base}} 參數（每次呼叫帶），沒有寫死官方庫。
+#   照抄本示範時，把觸發參數 kbdb_base 換成你自己部署的 KBDB 對外 URL。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── kbdb_base 該帶哪種 URL（1042）── 同 graph-neighbors.yaml，見該檔說明。
+
+# ── 觸發（同步查詢 trigger，非 202）──
+#   GET  https://{你的-cypher-domain}/q/{namespace}/graph_traverse?start=Arcrun&depth=2&template=graph_triplet&namespace={namespace}&kbdb_base=https://{你的-kbdb-domain}
+#   POST https://{你的-cypher-domain}/webhooks/named/graph_traverse/query
+#        -H "X-Arcrun-API-Key: {namespace}"
+#        -d '{"start":"Arcrun","depth":2,"template":"graph_triplet","namespace":"{namespace}","kbdb_base":"https://{你的-kbdb-domain}"}'
+#   → 直接回 { success, start, depth, nodes:[{node,level,edges}], nodeCount }（最終節點輸出本身）。
+#   （敏感輸入用 POST /query：GET /q/ 的 query string 會進各層 log，見 description.md 同款警示。）
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_triplets"
+  - "fetch_triplets >> ON_SUCCESS >> bfs_traverse"
+
+config:
+  # 1) 撈本租戶的 triplet 記錄。同 graph-neighbors.yaml：template/namespace/kbdb_base 皆呼叫者帶，不寫死。
+  fetch_triplets:
+    component: http_request
+    method: GET
+    url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}"
+    headers:
+      Accept: "application/json"
+
+  # 2) ★ 記憶體 BFS 逐層走訪（通用 code 零件，sandbox inline JS，無 LLM、無 fs/網路，stdin→stdout JSON）。
+  #    對照 kbdb-graph-plugin graph-traverse.ts:23-51 的 traverseGraph()：把 triplet 當無向邊
+  #    （subject <-> object），從 start 逐層 BFS 到 depth 上限，每層每節點回其接觸到的全部邊
+  #    （不像 graph_neighbors 只回「首次發現」的節點，這裡連 start 自己 level=0 也回、且每節點帶全部邊）。
+  bfs_traverse:
+    component: code
+    code: |
+      // graph_traverse — 記憶體 BFS 逐層走訪（純函式、決定性、零 token）。
+      // input（由下方 input: 映射解析後注入）：
+      //   records[] : triplet 記錄（{ values:{subject,predicate,object} } 或扁平 {subject,predicate,object}）
+      //   start     : 起點節點名（字串）
+      //   depth     : 最大跳數（字串或數字，來自 query string 時是字串），上限鎖 5（同 plugin）
+
+      const records = Array.isArray(input.records) ? input.records : [];
+      const start = String(input.start == null ? '' : input.start);
+      const rawDepth = Math.max(0, parseInt(String(input.depth == null ? 2 : input.depth), 10) || 0);
+      const maxDepth = Math.min(rawDepth, 5);
+
+      if (!start) {
+        return { success: false, error: 'graph_traverse 缺 start 參數' };
+      }
+
+      // 正規化每筆記錄成扁平 triplet {subject,predicate,object,...}（相容 http_request 回的
+      // { values: {...} } 包裝，或已扁平的形式）。
+      function flatten(r) {
+        return (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : r;
+      }
+      const triplets = [];
+      for (const r of records) {
+        const v = flatten(r);
+        if (!v || typeof v !== 'object' || !v.subject || !v.object) continue;
+        triplets.push(v);
+      }
+
+      // 無向鄰接表：node -> 與之相連的全部 triplet（比照 graph-traverse.ts buildAdjacency）。
+      const adj = new Map();
+      function push(node, t) {
+        if (!adj.has(node)) adj.set(node, []);
+        adj.get(node).push(t);
+      }
+      for (const t of triplets) {
+        push(t.subject, t);
+        if (t.object !== t.subject) push(t.object, t);
+      }
+
+      // 逐層 BFS：每節點回 { node, level, edges }，level<=maxDepth 才收；隊列式展開（同 plugin queue）。
+      const visited = new Set();
+      const queue = [{ node: start, level: 0 }];
+      const nodes = [];
+      let qi = 0;
+      while (qi < queue.length) {
+        const cur = queue[qi]; qi++;
+        if (visited.has(cur.node) || cur.level > maxDepth) continue;
+        visited.add(cur.node);
+        const edges = adj.get(cur.node) || [];
+        nodes.push({ node: cur.node, level: cur.level, edges: edges });
+        for (const t of edges) {
+          const next = t.subject === cur.node ? t.object : t.subject;
+          if (!visited.has(next)) queue.push({ node: next, level: cur.level + 1 });
+        }
+      }
+
+      return {
+        success: true,
+        start: start,
+        depth: maxDepth,
+        nodes: nodes,
+        nodeCount: nodes.length,
+      };
+    input:
+      records: "{{fetch_triplets.data.records}}"
+      start: "{{input.start}}"
+      depth: "{{input.depth}}"
+    limits:
+      timeout_ms: 3000            # 純 CPU BFS，充裕
+      max_output_bytes: 2097152   # 走訪清單上限 2 MiB（呼叫端同步查詢輸出也有 5 MiB 硬上限）
