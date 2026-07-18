@@ -16,7 +16,7 @@ self-hosted：裝在你自己的 Cloudflare 帳號或你自己的電腦，資料
 
 👉 照著 **[5 分鐘測試指南](docs/demo/客戶測試指南.md)** 走一輪：上傳一份文件 → 一分鐘後三種搜尋＋總圖＋問 AI。
 
-![總圖：整座知識庫一張網](https://git.uncle6.me/Leo/arcrun-rag/media/branch/main/docs/images/總圖.png)
+![總圖：整座知識庫一張網](docs/images/總圖.png)
 
 上傳的文件真身存在公開知識庫 [arcrun-rag-demo-knowledge](https://git.uncle6.me/Leo/arcrun-rag-demo-knowledge)——
 你可以親眼看到 AI 萃出來的[定稿卡](https://git.uncle6.me/Leo/arcrun-rag-demo-knowledge/src/branch/main/system-dev/wiki/cards)長什麼樣。
