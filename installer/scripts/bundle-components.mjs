@@ -76,6 +76,29 @@ export const BUNDLE_COMPONENTS = [
     relDir: 'tier2/ui',
     builder: 'ui',
   },
+  {
+    // 🔴 2026-08-10（leo：「今天只要清單含有 MCP 即可」）：**MCP 從來沒被裝過**。
+    //
+    // 病：prod 1.4.30 的 manifest.core 全文沒有 `arcrun-mcp` ⇒ 每個新用戶裝完都沒有 MCP
+    //    ⇒ 產品承諾的「把自己的 AI 接上自己的知識庫」**從第一步就不成立**。
+    //    安裝器那一側其實早就備妥（SERVICE_BINDINGS 有它、部署順序有它、租戶 var 有它、
+    //    KBDB_INTERNAL_TOKEN 同步迴圈也有它）——**唯獨沒有人把它打進 bundle**。
+    //    所以症狀長得像「MCP 壞了」而不是「MCP 不存在」：安裝器對一顆不存在的 worker
+    //    寫 secret，`PUT /scripts/arcrun-mcp/secrets` 回 404，被 try/catch 吃成
+    //    `secretSyncError` 一行字，沒有任何一步會因此紅燈。
+    //    ⇒ 這是本檔存在理由的第二個實例：「**沒有任何一個地方說得出一個 bundle 應該有哪幾顆**」
+    //      ——上次的後果是多了 19 顆，這次是少了關鍵的 1 顆，而少的那顆沒有棘輪會補。
+    //
+    // 依賴：三個 service binding 由安裝器的 SERVICE_BINDINGS 還原。其中
+    //   COMPONENT_REGISTRY → `arcrun-registry` **不在本清單裡**，因此標成 optional
+    //   （見 worker.js SERVICE_BINDINGS 那張表的說明）。
+    // ⚠️ D48 仍然成立：本檔是止血帶，正解是「安裝＝一張清單」（arcrun-rag#37／#39）。
+    //   在正解落地前，「加一筆」就是讓 MCP 真的到得了用戶手上的唯一路徑。
+    name: 'arcrun-mcp',
+    relDir: 'arcrun-mcp',
+    builder: 'core',
+    build: { dir: 'mcp', entry: 'src/index.ts', canonical: null },
+  },
 ];
 
 /** 全部零件名（parity 閘的比對基準）。 */

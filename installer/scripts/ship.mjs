@@ -81,6 +81,8 @@ import { checkArmed, logGithubContact } from './d20-guard.mjs';
 import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, diffAgainstCanonical } from './bundle-components.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
+import { renderBundlesReadme } from './render-bundles-readme.mjs';
+import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -137,6 +139,23 @@ for (const [name, t] of Object.entries(cfg.targets)) {
     console.error(`❌ 登錄簿不完整：目標 \`${name}\` 有安裝器（會有人拿到東西），卻沒宣告 docsSite。`);
     console.error(`   使用者更新完想知道「這版改了什麼」只有文件站可查——沒接上就是出了貨沒有說明。`);
     console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 docsSite（cwd／config／wranglerEnv／accountId／verifyUrl）`);
+    process.exit(2);
+  }
+}
+
+// 🔴 不變式 Ⅵ：**會發佈給用戶的目標，一定要有 githubRelease**（2026-08-10，總管實測發現）
+//   leo：「你的出貨沒有限制你一定要在 github 產生 release？」「那為什麼不改掉？」
+//   `docs-site/.../help/changelog.md` 對用戶承諾「完整發佈紀錄在 GitHub 版本發佈」，
+//   但 `youlinhsieh/arcrun-rag` 的 releases 一個都沒有、公開鏡像停在數週前——
+//   出貨管線從沒有任何一步碰過它。`docs-changelog` 那道閘擋得住「沒寫說明」，
+//   「GitHub 上有沒有這一版」卻完全沒有對應的閘 ⇒ 一個承諾有牙齒、一個沒有，
+//   於是後者每次出貨都安靜漏掉。跟 docsSite 同一種病、同一種解法：宣告成必填，
+//   漏填在任何步驟開跑前就擋下，不是出貨時的一行警告（也不是等用戶點進空頁面才發現）。
+for (const [name, t] of Object.entries(cfg.targets)) {
+  if (t.publish && !t.githubRelease) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 會發佈給用戶（publish=true），卻沒宣告 githubRelease。`);
+    console.error(`   說明文件對用戶承諾「完整發佈紀錄在 GitHub」，沒有這一步就是承諾沒有機械保證。`);
+    console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 githubRelease（repoSlug／mirrorDir／mirrorRemote）`);
     process.exit(2);
   }
 }
@@ -245,6 +264,31 @@ const STEPS = [
     lines.push(`來源：提升自 ${T.promoteFrom}（不重打，不碰 Arcrun repo；見 build 步驟）`);
   } else {
     if (!existsSync(ctx.arcrunRepo)) throw new Error(`來源 repo 不存在：${ctx.arcrunRepo}`);
+    // ── ARCRUN_SOURCE_WORKTREE（2026-08-10 加）────────────────────────────────
+    // 病：`matrix/arcrun` 只有**一份工作區**，卻同時有好幾個 agent 在上面幹活。
+    //     只要有人手上有未提交的改動（那天是 `kbdb/src/actions/entry-crud.ts`，而 kbdb
+    //     **正是 bundle 裡的一顆**），下面那道 dirty 閘就會擋住所有出貨——
+    //     而看起來唯一的「解法」是去 commit 或丟棄別人的半成品，那是比擋住更糟的事。
+    //
+    // 這個逃生門**不放寬任何判準**，只是換一個乾淨的取景窗：
+    //   ① 必須是**同一個 repo 的 git worktree**（比對 `--git-common-dir`）
+    //      ⇒ 擋不掉「打錯 repo」這件事，不變式 Ⅱ 完好
+    //   ② 它自己**一樣要乾淨**，dirty 照樣擋
+    //      ⇒「這版來自哪個 commit」照樣是真的（這才是那道閘真正在保的東西）
+    // 用法：git worktree add /tmp/arcrun-ship HEAD && ARCRUN_SOURCE_WORKTREE=/tmp/arcrun-ship …
+    const wt = process.env.ARCRUN_SOURCE_WORKTREE;
+    if (wt) {
+      const wtPath = resolve(wt);
+      if (!existsSync(wtPath)) throw new Error(`ARCRUN_SOURCE_WORKTREE 不存在：${wtPath}`);
+      const commonOf = (p) => resolve(p, sh('git', ['rev-parse', '--git-common-dir'], p));
+      if (commonOf(wtPath) !== commonOf(ctx.arcrunRepo)) {
+        throw new Error(
+          `ARCRUN_SOURCE_WORKTREE 不是登錄簿宣告那個 repo 的 worktree（拒絕從別的 repo 出貨）：\n` +
+          `       宣告：${ctx.arcrunRepo}\n       給的：${wtPath}`);
+      }
+      ctx.arcrunRepo = wtPath;
+      lines.push(`來源改讀 worktree：${wtPath}（同一個 repo；乾淨度照驗，不放寬）`);
+    }
     const srcDirty = sh('git', ['status', '--porcelain'], ctx.arcrunRepo);
     const srcSha = sh('git', ['rev-parse', '--short', 'HEAD'], ctx.arcrunRepo);
     if (srcDirty && !T.allowDirtySource) {
@@ -792,6 +836,36 @@ const STEPS = [
   return { status: 'done', detail: [`${CHANGELOG_REL} 有 ${ctx.release} 這一版：${line}`] };
 }},
 
+// ── 3.7 readme：bundle repo 的 README 由零件清單算出來，不留會過期的手寫數字 ──
+//
+// 🔴 leo 2026-08-10（總管實測發現）：`youlinhsieh/arcrun-rag-bundles` 的 README
+//   還寫著「25 workers: tier1 components + tier2 engines」，而**同一個 repo 的
+//   manifest.json** 老實宣告 5 顆（release 1.4.30）。兩份數字互相矛盾，而且已經
+//   矛盾超過一版都沒人發現——因為出貨管線從沒有任何一步碰過 README.md，
+//   它是很久以前手打的、之後再也沒有機制核對它還準不準。
+//
+//   這跟 `bundle-components.mjs` 檔頭記的那次「兩份人維護的零件清單」是同一種病，
+//   差別是這次沒有任何機械閘夾住它，連「漂移了」這件事本身都不會被發現。
+//   ⇒ 解法跟那次一樣：README 由 BUNDLE_COMPONENTS（唯一真相源）算出來，
+//     出貨管線每次都重寫這份檔案——內容跟零件清單不同步，在結構上不再可能發生。
+{ id: 'readme', title: 'bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）', mutates: true, async run() {
+  const mPath = join(ctx.bundlesDir, 'manifest.json');
+  if (!existsSync(mPath)) return { status: 'skip', detail: ['manifest.json 還不存在（首次播種前）'] };
+  const m = JSON.parse(readFileSync(mPath, 'utf8'));
+  const text = renderBundlesReadme({
+    release: m.release, source: m.source, built: m.built,
+    hasDaemon: !!(m.daemon && m.daemon.version),
+  });
+  const rPath = join(ctx.bundlesDir, 'README.md');
+  const before = existsSync(rPath) ? readFileSync(rPath, 'utf8') : null;
+  if (before === text) return { status: 'skip', detail: ['README 已是最新（零件清單與版本都沒變）'] };
+  writeFileSync(rPath, text);
+  return { status: 'done', detail: [
+    `README 重寫：${BUNDLE_COMPONENTS.length} 顆零件｜release ${m.release}`,
+    before === null ? '（這個 bundle repo 原本沒有 README，首次產生）' : '（取代舊版手寫內容）',
+  ] };
+}},
+
 // ── 4. commit ────────────────────────────────────────────────────────────
 { id: 'commit', title: '把產物寫進 bundle repo 的版控', mutates: true, async run() {
   if (!sh('git', ['status', '--porcelain'], ctx.bundlesDir)) {
@@ -1108,6 +1182,71 @@ const STEPS = [
       + '\n' + lines.map((l) => `       ｜${l}`).join('\n'));
   }
   return { status: 'done', detail: lines };
+}},
+
+// ── 10. github-release：讓「完整發佈紀錄在 GitHub」這句話變成真的 ──────────────
+//
+// 🔴 leo 2026-08-10：「你的出貨沒有限制你一定要在 github 產生 release？」「那為什麼不改掉？」
+//   放在 verify **之後**（最後一步）：只有全部驗收通過、用戶真的拿得到這一版，
+//   才在 GitHub 上留一筆紀錄——不然等於對用戶宣告一個沒送達的版本。
+//
+// 冪等：同一版重跑 --confirm 不該報錯或建出兩筆——先查 tag 是否已存在，存在就跳過。
+// D20：這裡的 push／API 呼叫是 fetch/execFileSync 開出去的，Bash hook 看不到，
+//   保險檢查與留痕跟 `push` 步驟一樣自己做（checkArmed + logGithubContact）。
+{ id: 'github-release', title: '在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄', mutates: true, async run() {
+  if (!T.githubRelease) return { status: 'skip', detail: ['本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）'] };
+  const G = T.githubRelease;
+  const tag = `v${ctx.release}`;
+
+  const existing = await releaseExists(G.repoSlug, tag).catch((e) => {
+    throw new Error(`查詢 ${G.repoSlug} 是否已有 release ${tag} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
+  });
+  if (existing) {
+    return { status: 'skip', detail: [`GitHub 已有 ${tag}：${existing.html_url}`] };
+  }
+
+  const body = releaseSectionFor(REPO_ROOT, ctx.release);
+  if (!body) {
+    throw new Error(
+      `說明文件裡沒有 ${ctx.release} 這一版可以當作 release 內容（${CHANGELOG_REL}）。\n` +
+      `     這不是「先跳過、之後再補」——少了這一步，使用者點「完整發佈紀錄」永遠是空白。\n` +
+      `     （理論上 docs 步驟已經擋過這個情況，走到這裡還缺，代表 changelog 在兩步之間被改動過）`);
+  }
+
+  // ① 先把公開鏡像（.github-public/）更新到目前 HEAD——scripts/publish-github.sh 本來就有
+  //   這個機制，只是出貨管線從沒呼叫過它，鏡像因此停在最後一次有人手動跑的那天。
+  shLive('bash', [join(REPO_ROOT, 'scripts', 'publish-github.sh')], REPO_ROOT);
+  const mirrorDir = join(REPO_ROOT, G.mirrorDir);
+  const mirrorSha = sh('git', ['rev-parse', 'HEAD'], mirrorDir);
+
+  // ② 保險（未過期）＋ push 鏡像＋自己留痕——與 `push` 步驟同一套規矩，理由同它的註解。
+  const { mission } = checkArmed(INKSTONE_ROOT);
+  const token = process.env.GITHUB_MIRROR_TOKEN || '';
+  if (!token) {
+    throw new Error(
+      `缺 GITHUB_MIRROR_TOKEN（環境變數）。D36 金鑰鐵律：本步驟只讀名字，不落地、不印真身，\n` +
+      `     真身要在啟動這支管線的 shell 裡先 export——查 system-dev/wiki/credentials-map.md 找這把鑰匙在哪。`);
+  }
+  const authB64 = Buffer.from(`${process.env.GITHUB_ACCOUNT_NAME || 'git'}:${token}`).toString('base64');
+  sh('git', ['-c', `http.${G.mirrorRemote}.extraheader=Authorization: Basic ${authB64}`,
+    'push', G.mirrorRemote, 'HEAD:refs/heads/main'], mirrorDir);
+  try {
+    logGithubContact(INKSTONE_ROOT, mission, `push 公開鏡像 → ${G.repoSlug}（HEAD ${mirrorSha.slice(0, 7)}）`);
+  } catch (e) {
+    console.error(`❌❌❌ push 成功了，但寫入 github-contact-log.md 失敗：${e.message}`);
+  }
+
+  // ③ 建 release（target_commitish 指到剛推上去的那個 sha，tag 不存在時 GitHub 會自動建出來）
+  const rel = await createRelease({
+    repoSlug: G.repoSlug, tag, name: ctx.release, body, targetCommitish: mirrorSha, token,
+  });
+  try {
+    logGithubContact(INKSTONE_ROOT, mission, `建立 release ${tag} → ${rel.html_url}`);
+  } catch (e) {
+    console.error(`❌❌❌ release 建立成功了，但寫入 github-contact-log.md 失敗：${e.message}`);
+  }
+
+  return { status: 'done', detail: [`release：${rel.html_url}`, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
 }},
 ];
 

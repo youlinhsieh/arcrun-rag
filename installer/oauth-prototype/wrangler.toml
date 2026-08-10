@@ -47,8 +47,8 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@04d6d0ddd3bfcd07c1d55a70dfcd72397d4e1814"
-BUNDLE_BUILT = "2026-08-09"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@4aace666458e2821c99a72eb7c22fa4626758ca4"
+BUNDLE_BUILT = "2026-08-10"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
 # LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
@@ -97,7 +97,7 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/595a7c6"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/aaa98a5"
 BUNDLE_BUILT = "2026-08-10"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的

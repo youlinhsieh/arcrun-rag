@@ -83,8 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@04d6d0ddd3bfcd07c1d55a70dfcd72397d4e1814';
-const BUNDLE_BUILT = '2026-08-09'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@4aace666458e2821c99a72eb7c22fa4626758ca4';
+const BUNDLE_BUILT = '2026-08-10'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
 function bundleBase(env) {
@@ -862,13 +862,53 @@ async function fetchBundleAsset(primaryUrl, what) {
  * 不用 service binding）。無條件還原＝把 D28 反過來做，還會讓 cypher 綁 13 顆不必要的服務。
  * ⇒ 只還原這張表裡有的，其餘一律不動。
  */
+/*
+ * 🔴 2026-08-10：欄位改成 `{ service, optional? }`——因為 `arcrun-mcp` 進 bundle 清單的那一刻，
+ *   這張表原本隱含的「三個目標都必須在 manifest 裡」就會**擋住整個安裝**。
+ *
+ *   `COMPONENT_REGISTRY → arcrun-registry` 是**唯一一個目標不在 bundle 清單裡**的依賴
+ *   （bundle-components.mjs 是那張清單的唯一真相源）。它服務的是三支「查零件目錄」的工具
+ *   （arcrun_get_component／arcrun_get_component_guide／arcrun_search_components），
+ *   而那三支在 mcp 原始碼裡**本來就寫了 binding 缺席時的誠實回覆**
+ *   （`"Error: COMPONENT_REGISTRY service binding is not configured."`）。
+ *
+ *   為什麼不乾脆把 arcrun-registry 也打進 bundle：它自帶兩個 KV＋一個 AI binding，
+ *   而新用戶那顆會是**空的**（零件目錄的內容不在 bundle 裡）⇒ 多裝一顆 worker、多建兩個 KV，
+ *   換到的是同樣查不到東西，只是換一種說法。⇒ 誠實缺席勝過假裝有。
+ *
+ *   ⚠️ optional **只准用在「目標不在 bundle 清單裡」的依賴**。KBDB／CYPHER_EXECUTOR
+ *   是 MCP 能不能用的命脈（前者缺＝工具全爆，後者缺＝同意頁驗不了 Portal 帳密），
+ *   兩者都在清單裡，因此維持 fail-closed：缺一即當場失敗，不裝出半通的 worker。
+ */
 const SERVICE_BINDINGS = {
   'arcrun-mcp': {
-    COMPONENT_REGISTRY: 'arcrun-registry',
-    CYPHER_EXECUTOR: 'arcrun-cypher-executor',
-    KBDB: 'arcrun-kbdb',
+    COMPONENT_REGISTRY: { service: 'arcrun-registry', optional: true },
+    CYPHER_EXECUTOR: { service: 'arcrun-cypher-executor' },
+    KBDB: { service: 'arcrun-kbdb' },
   },
 };
+
+/**
+ * 這顆 worker 在**這包 manifest** 底下真正綁得起來的 service binding：{binding: 目標worker}。
+ * 必要目標缺席＝丟 InstallError（fail-closed）；optional 目標缺席＝安靜不綁。
+ *
+ * `names`＝manifest.core 的名字集合。判準永遠是「**這包 bundle 有什麼**」，
+ * 不是「這個帳號現在有什麼」——後者會讓 stage（youlin 帳號裡還留著上個世代的
+ * `arcrun-registry`）驗到一條新用戶根本走不到的路，也就是又一次「測試場與出貨物不同」。
+ */
+function resolveServiceBindings(entryName, names) {
+  const spec = SERVICE_BINDINGS[entryName];
+  if (!spec) return null;
+  const out = {};
+  for (const [binding, def] of Object.entries(spec)) {
+    if (names.has(def.service)) { out[binding] = def.service; continue; }
+    if (def.optional) continue;
+    throw new InstallError(`安裝包缺少 ${entryName} 需要的服務 ${def.service}`, {
+      detail: `manifest.core 沒有 ${def.service}（SERVICE_BINDINGS[${entryName}].${binding} 的目標）`,
+    });
+  }
+  return out;
+}
 
 /** 抓懶載 manifest（CI build-bundles.mjs 產出的 bundles/manifest.json）。 */
 async function fetchBundleManifest(env) {
@@ -895,16 +935,13 @@ function reorderForServiceBindings(manifest) {
     (SERVICE_BINDINGS[entry.name] ? dependents : rest).push(entry);
   }
   if (!dependents.length) return manifest;
-  // 目標若根本不在這包 manifest 裡＝打包漏了，寧可當場失敗也不要裝出一顆呼叫即 500 的 worker。
+  // 必要目標若根本不在這包 manifest 裡＝打包漏了，寧可當場失敗也不要裝出一顆呼叫即 500 的 worker。
+  // 2026-08-10：解析結果**當場釘在 entry 上**（`service_bindings`），deployBundledWorker 直接用它。
+  // 為什麼不讓 deploy 那邊再查一次表：它拿不到 manifest ⇒ 只能重查「帳號裡有沒有」，
+  // 那就是兩套判準（這包有什麼 vs 這個帳號有什麼），必然漂移。一次解析、一個答案。
   const names = new Set(manifest.core.map((c) => c.name));
   for (const entry of dependents) {
-    for (const target of Object.values(SERVICE_BINDINGS[entry.name])) {
-      if (!names.has(target)) {
-        throw new InstallError(`安裝包缺少 ${entry.name} 需要的服務 ${target}`, {
-          detail: `manifest.core 沒有 ${target}（SERVICE_BINDINGS[${entry.name}] 的目標）`,
-        });
-      }
-    }
+    entry.service_bindings = resolveServiceBindings(entry.name, names);
   }
   manifest.core = [...rest, ...dependents];
   return manifest;
@@ -1093,12 +1130,21 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   // t151：還原被 strip 掉的 service binding（見 SERVICE_BINDINGS 那張表的說明）。
   // 病灶＝安裝器一個都沒注入 ⇒ env.KBDB／CYPHER_EXECUTOR／COMPONENT_REGISTRY 全 undefined
   // ⇒ 用戶的 AI 一呼叫工具就爆（實測 MCP client 回「KBDB service binding unavailable」）。
-  const svc = SERVICE_BINDINGS[entry.name];
+  // `service_bindings` 由 reorderForServiceBindings 依**這包 manifest** 解析後釘在 entry 上。
+  // 沒被釘過（單顆重推等路徑）就退回照表解析，但此時無從得知 manifest ⇒ 只認必要目標。
+  const svc = entry.service_bindings
+    ?? (SERVICE_BINDINGS[entry.name]
+      ? Object.fromEntries(Object.entries(SERVICE_BINDINGS[entry.name])
+        .filter(([, d]) => !d.optional).map(([b, d]) => [b, d.service]))
+      : null);
   if (svc) {
     // 漂移閘：manifest 說被剝掉的 binding，這張表沒給目標＝新版 bundle 多了一個依賴而沒人補表。
     // 照本檔既有 fail-closed 慣例（缺一即失敗、不假綠）當場擋下，而不是裝出半通的 worker。
+    // ⚠️ 只認「表裡完全沒有這個 binding」＝真漂移；表裡有但因目標不在 bundle 而 optional 略過的
+    //    不算漂移（那是已知取捨，見 SERVICE_BINDINGS 說明）。
+    const known = SERVICE_BINDINGS[entry.name] || {};
     for (const stripped of entry.stripped_services || []) {
-      if (!svc[stripped]) {
+      if (!known[stripped]) {
         throw new InstallError(`${entry.name} 需要的服務 ${stripped} 沒有對應目標`, {
           detail: `manifest.stripped_services 有 ${stripped}，但 SERVICE_BINDINGS[${entry.name}] 沒有它`,
         });
@@ -1173,6 +1219,14 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     // MULTI_TENANT="false"＝self-hosted 單租戶語意（對齊 mcp/wrangler.toml 的註解與 cypher 同名旗標）。
     ...(entry.name === 'arcrun-mcp' && inject.tenant
       ? { MCP_OWNER_NAMESPACE: String(inject.tenant), MULTI_TENANT: 'false' }
+      : {}),
+    // 2026-08-10：MCP 也要能一條 curl 說出「我是哪一版」。
+    // `GET /health` 的 `build` 欄讀的就是這個 var（mcp/src/index.ts）；不給就回 "unknown"
+    // ⇒ 又回到「要判斷某台的 MCP 是哪一代，只能打 /authorize 剖 HTML 數欄位」的土法。
+    // 值＝這次出貨的 release（與 cypher／ui 的 ARCRUN_BUNDLE_VERSION 同一個來源，
+    // 對齊「凡宣告版本一律由產物推導」）。
+    ...(entry.name === 'arcrun-mcp' && inject.bundleRelease
+      ? { MCP_BUILD: String(inject.bundleRelease) }
       : {}),
   };
   for (const [k, v] of Object.entries(vars)) bindings.push({ type: 'plain_text', name: k, text: String(v) });
@@ -1376,33 +1430,21 @@ async function runInstall(env, sid, progress, force) {
     return saved;
   };
 
-  // t151 收尾（#7）：arcrun-mcp 的同意頁「屋主密碼」（MCP_OWNER_SECRET）。
-  // 🔴 2026-08-09 複驗更正：下面「未設會 503」的描述已過期。b8ca98c 起（matrix/arcrun
-  // mcp/src/oauth/routes.ts）/authorize 改驗**用戶自己的 Portal 帳密**（呼叫
-  // CYPHER_EXECUTOR service binding 的 /portal/login），不再檢查這把值——t152（leo 07-31）
-  // 因此把完成頁的「Owner 祕密」卡拔掉（見下方 renderDone 註解）。
-  // **這把祕密現在只服務「還沒升級到 daa047a 以後 bundle 的舊實例」**（那些實例的
-  // arcrun-mcp 仍讀 MCP_OWNER_SECRET env，缺了會 503）；對 bundle 是新的實例來說，
-  // 這是寫爽的、不影響封測者能不能接上——**真正擋封測者的是 CYPHER_EXECUTOR binding
-  // 有沒有注入＋cypher /portal/login 通不通**，不是這把。繼續產生/寫入是為了不砍舊實例的相容性，
-  // 不是因為它還是「唯一一件程式碼」。2026-08-09 對 youlin 實例（yuga3bse）的真連線複驗：
-  // GET /authorize 回的同意頁欄位是「Portal 帳號／Portal 密碼」（非 Owner 祕密），
-  // 且經真連線 arcrun_list_skills 拿回 8 支 skill（tools/list 由 500→200 且真能呼叫），
-  // 證實封測者接自己 AI 這條路目前是通的（見 Gitea #7 comment）。
-  // 金鑰**跟著實例走**（同 kbdbToken 的 t141 教訓）：存 INSTALLER_KV mcpsecret:<accountId>，
-  // 重裝拿到同一把 ⇒ 舊實例用戶已記下的密碼不會失效。沿用既有 crypto 強隨機寫法，不另開第二套金鑰路（D36）。
-  const ensureMcpOwnerSecret = async (accId) => {
-    if (progress.result.mcpOwnerSecret) return progress.result.mcpOwnerSecret;
-    const k = 'mcpsecret:' + accId;
-    let saved = await env.INSTALLER_KV.get(k).catch(() => null);
-    if (!saved) {
-      const sb = crypto.getRandomValues(new Uint8Array(32));
-      saved = Array.from(sb, (b) => b.toString(16).padStart(2, '0')).join('');
-      await env.INSTALLER_KV.put(k, saved).catch(() => {});
-    }
-    progress.result.mcpOwnerSecret = saved;
-    return saved;
-  };
+  // 🔴 2026-08-10：`MCP_OWNER_SECRET` 的產生與下發**整段拆掉**（原 t151 收尾 #7）。
+  //
+  // 為什麼現在才能拆、也必須拆：這一版起 `arcrun-mcp` **進了 bundle 清單**
+  // （bundle-components.mjs）⇒ 安裝器每次跑都會把**新世代**的 mcp 推上去
+  // （舊實例的 deploy 游標裡從來沒有 arcrun-mcp 這一筆 ⇒ 逐顆跳過的 sha 比對必定 miss ⇒ 必推）。
+  // 而新世代的 `/authorize` 驗的是**用戶自己的 Portal 帳密**（mcp/src/oauth/routes.ts:233，
+  // 走 CYPHER_EXECUTOR service binding 打 /portal/login），全檔對 MCP_OWNER_SECRET
+  // 只剩 `types.ts` 一個沒人讀的選填欄位。
+  // ⇒ 留著它＝**在同一次安裝裡同時佈署兩代認證的殘骸**：多一次 CF API 寫入、
+  //   多一把沒有任何程式碼會讀的 32 bytes、以及一個會誤導下一個讀這段的人的訊號
+  //   （「所以到底要不要給用戶那把密碼？」——答案是不要，同意頁根本沒有那個欄位）。
+  // 保留的相容性論述在這一版失效：它當初的理由是「不砍還沒升級的舊實例」，
+  // 但安裝器現在就是那個升級動作本身。
+  // ⚠️ 既有的 `mcpsecret:<accountId>` KV 條目**不刪**（不做不可逆的清理），只是不再讀寫。
+  // 驗法：裝完打 `GET /health` 應回 `auth: "portal-login"`——那就是「這台是新世代」的證據。
 
   const setStep = async (id, state, note) => {
     const s = progress.steps.find((x) => x.id === id);
@@ -1457,7 +1499,6 @@ async function runInstall(env, sid, progress, force) {
     // 接力續跑：上一輪已經 done，沿用結果，不再打 CF /accounts（省額度給 deploy 迴圈）
     accountId = progress.result.accountId;
     await ensureKbdbToken(accountId); // t141
-    await ensureMcpOwnerSecret(accountId); // t151#7：早生成＋隨 progress 持久化，重入不重生
     accountName = progress.result.accountName;
   } else {
     try {
@@ -1494,7 +1535,6 @@ async function runInstall(env, sid, progress, force) {
       accountName = picked.name;
       progress.result.accountId = accountId;
       await ensureKbdbToken(accountId); // t141
-      await ensureMcpOwnerSecret(accountId); // t151#7：早生成＋隨 progress 持久化，重入不重生
       progress.result.accountName = accountName;
       progress.result.accounts = accounts.map((a) => ({ id: a.id, name: a.name }));
       await setStep('account', 'done', `使用「${accountName}」`);
@@ -1879,18 +1919,17 @@ async function runInstall(env, sid, progress, force) {
       // （t115：沒 token 一律 401），而 mcp/src/lib/kbdb-client.ts 是拿 env.KBDB_INTERNAL_TOKEN
       // 當 Bearer 送。⇒ **只補 service binding 的話，錯誤只會從 500 變成 401，工具還是不能用。**
       // 這裡沿用既有的 putWorkerSecretDirect（D36 認可的那條路），不另開第二套金鑰傳遞法。
+      // 🔴 2026-08-10：這個迴圈**在今天以前每次都是失敗收場**，而且沒有任何一步會紅燈。
+      //   `arcrun-mcp` 不在 bundle 清單裡 ⇒ 新用戶帳號裡沒有這顆 script ⇒
+      //   `PUT /scripts/arcrun-mcp/secrets` 回 404 ⇒ 這裡 throw ⇒ 被下面的 catch 吃成
+      //   `secretSyncError` 一行字（連 `secretsSynced` 都沒設成 true，也沒人在看）。
+      //   kbdb 與 cypher 是因為排在迴圈前兩位才「剛好」拿到金鑰——**靠順序活著**。
+      //   把 mcp 打進 bundle 之後這條路才第一次真的走得完。
       for (const sn of ['arcrun-kbdb', 'arcrun-cypher-executor', 'arcrun-mcp']) {
         await putWorkerSecretDirect(token, accountId, sn, 'KBDB_INTERNAL_TOKEN', kbdbToken);
       }
-      // t151 收尾（#7）：arcrun-mcp 的同意頁屋主密碼。**這把跟 KBDB_INTERNAL_TOKEN 不同**——
-      // 前者本來是給用戶在同意頁輸入的，後者是 MCP↔kbdb 內部授權。
-      // 🔴 2026-08-09：t152（leo 07-31）＋ Arcrun b8ca98c 已把「缺它會拒發」這段作廢——
-      // /authorize 現在驗的是 Portal 帳密（同意頁欄位已改，完成頁的顯示卡也已拔掉）。
-      // 繼續寫入只為了不砍「還沒升級到新 bundle 的舊實例」的相容性，**不是封測者接不上的
-      // 真因**；真正要通的是下面這段 KBDB_INTERNAL_TOKEN 三顆 service binding。沿用既有
-      // putWorkerSecretDirect（D36 那條路）。
-      const mcpOwnerSecret = await ensureMcpOwnerSecret(accountId);
-      await putWorkerSecretDirect(token, accountId, 'arcrun-mcp', 'MCP_OWNER_SECRET', mcpOwnerSecret);
+      // MCP_OWNER_SECRET 的下發已於 2026-08-10 拆除（見上方 ensureKbdbToken 下面那段說明）：
+      // 新世代 /authorize 驗的是 Portal 帳密，沒有任何程式碼會讀那把值。
       progress.result.secretsSynced = true;
     } catch (e) {
       progress.result.secretSyncError = String((e && e.message) || e);
@@ -2373,8 +2412,9 @@ function renderDone(p){
   // t152（leo 07-31 原話「現在立刻拿掉這一塊」）：t151 曾在此顯示 MCP 屋主密碼卡＝
   // **又一次違反 t79「完成頁只給網址」**（同類第 3 次：t76 下載小幫手卡→t151 密碼卡→本次拔）。
   // 且密碼已作廢——b8ca98c 起 MCP 認證改 portal 帳密（daa047a bundle 即新版），用戶不需要這串。
-  // **後端 ensureMcpOwnerSecret＋putWorkerSecretDirect 保留**（舊實例的 arcrun-mcp 仍讀
-  // MCP_OWNER_SECRET env，缺它 /authorize 回 server_error；只拔 UI 顯示）。
+  // 🔴 2026-08-10 更新：後端那半（ensureMcpOwnerSecret＋putWorkerSecretDirect）**也拆掉了**。
+  // 上面那句「舊實例仍讀 MCP_OWNER_SECRET」在 arcrun-mcp 進 bundle 之後失效——
+  // 安裝器本身就是把舊實例升級成新世代的那個動作。詳見 runInstall 內的說明。
 
   // t79（leo 2026-07-28 定調）：**安裝完成頁只給網址，其餘一律不放**。
   // leo 原話：「建立你的帳號、下載同步小幫手、接下來可以做什麼**都是在 portal 做**，

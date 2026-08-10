@@ -1148,16 +1148,66 @@ function servicesOf(meta) {
   );
 }
 
-test('t151 arcrun-mcp：三個 service binding 都注入，且指向同帳號內的正確 worker', async () => {
+/** 走真正的入口（fetchBundleManifest → reorderForServiceBindings）解析出的那份 entry。
+ *  直接拿 mcpEntry 餵 deployBundledWorker ＝繞過解析，測到的不是安裝器真的會走的路。 */
+function mcpEntryResolvedWith(names) {
+  const core = [...names.map((n) => ({ name: n })), mcpEntry];
+  return reorderForServiceBindings({ core }).core.find((c) => c.name === 'arcrun-mcp');
+}
+
+test('t151 arcrun-mcp：命脈 service binding 都注入，且指向同帳號內的正確 worker', async () => {
   const env = { BUNDLE_BASE: BASE };
   const { captured } = installBundleFetch();
   try {
-    await deployBundledWorker(env, 'tok', 'acct', mcpEntry, mcpResources, mcpInject);
+    // 🔴 2026-08-10：**bundle 清單裡沒有 arcrun-registry**（bundle-components.mjs 是唯一真相源）
+    //    ⇒ COMPONENT_REGISTRY 是 optional，安靜不綁；命脈那兩個照舊 fail-closed。
+    const entry = mcpEntryResolvedWith(['arcrun-kbdb', 'arcrun-cypher-executor']);
+    await deployBundledWorker(env, 'tok', 'acct', entry, mcpResources, mcpInject);
     assert.deepEqual(servicesOf(captured()), {
-      COMPONENT_REGISTRY: 'arcrun-registry',
       CYPHER_EXECUTOR: 'arcrun-cypher-executor',
       KBDB: 'arcrun-kbdb', // ⚠️ 不是舊服務名 inkstone-kbdb-api
     });
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('🔴 2026-08-10 optional：bundle 裡若真有 arcrun-registry，COMPONENT_REGISTRY 就要綁回去', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    // optional 的語意是「**這包沒有就不綁**」，不是「永遠不綁」——
+    // 哪天 registry 進了清單，這條路要自己接回來，不必再改 SERVICE_BINDINGS。
+    const entry = mcpEntryResolvedWith(['arcrun-kbdb', 'arcrun-cypher-executor', 'arcrun-registry']);
+    await deployBundledWorker(env, 'tok', 'acct', entry, mcpResources, mcpInject);
+    assert.deepEqual(servicesOf(captured()), {
+      CYPHER_EXECUTOR: 'arcrun-cypher-executor',
+      KBDB: 'arcrun-kbdb',
+      COMPONENT_REGISTRY: 'arcrun-registry',
+    });
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('🔴 2026-08-10 MCP_BUILD：裝出來的 MCP 要能用一條 curl 說出自己是哪一版', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const m = installBundleFetch();
+  try {
+    const entry = mcpEntryResolvedWith(['arcrun-kbdb', 'arcrun-cypher-executor']);
+    await deployBundledWorker(env, 'tok', 'acct', entry, mcpResources,
+      { ...mcpInject, bundleRelease: '1.4.31' });
+    // mcp/src/index.ts 的 GET /health 讀 env.MCP_BUILD；不給就回 "unknown"
+    // ⇒ 又回到「要判斷某台是哪一代，只能打 /authorize 剖 HTML」的土法。
+    assert.equal(varsOf(m.captured()).MCP_BUILD, '1.4.31');
+  } finally {
+    restoreFetch();
+  }
+  const m2 = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct', baseEntry, baseResources,
+      { ...mcpInject, bundleRelease: '1.4.31' });
+    assert.equal(varsOf(m2.captured()).MCP_BUILD, undefined, 'MCP 專屬 var 不該外溢到其他 worker');
   } finally {
     restoreFetch();
   }
@@ -1213,20 +1263,23 @@ test('t151 租戶對齊：MCP 拿到自己的 namespace（不是 leo），其他
   }
 });
 
-test('t151 部署順序：arcrun-mcp 必須排在它依賴的 arcrun-registry 之後', () => {
+test('t151 部署順序：arcrun-mcp 必須排在它依賴的服務之後', () => {
   const manifest = {
     core: [
       { name: 'arcrun-code' },
       { name: 'arcrun-cypher-executor' },
       { name: 'arcrun-kbdb' },
-      { name: 'arcrun-mcp' },      // 真 manifest 就是這個順序（24 早於 26）
+      { name: 'arcrun-mcp' },      // 真 manifest 就是這個順序（mcp 早於它的依賴）
       { name: 'arcrun-rag-ui' },
       { name: 'arcrun-registry' },
     ],
   };
   const names = reorderForServiceBindings(manifest).core.map((c) => c.name);
-  for (const target of Object.values(SERVICE_BINDINGS['arcrun-mcp'])) {
-    assert.ok(names.indexOf(target) < names.indexOf('arcrun-mcp'), `${target} 必須早於 arcrun-mcp`);
+  // ⚠️ 2026-08-10：這裡原本是 `Object.values(SERVICE_BINDINGS['arcrun-mcp'])`——欄位改成
+  //    物件之後那樣寫會拿到 `[object Object]`，`indexOf` 一律 -1 ⇒ **斷言永遠通過**（假綠）。
+  //    改成讀 `.service`，這條線才真的還在量東西。
+  for (const def of Object.values(SERVICE_BINDINGS['arcrun-mcp'])) {
+    assert.ok(names.indexOf(def.service) < names.indexOf('arcrun-mcp'), `${def.service} 必須早於 arcrun-mcp`);
   }
   // 其餘零件的相對順序不可被打亂（tier1 先、tier2 後的語意要保住）
   assert.deepEqual(names.filter((n) => n !== 'arcrun-mcp'), [
@@ -1234,18 +1287,41 @@ test('t151 部署順序：arcrun-mcp 必須排在它依賴的 arcrun-registry �
   ]);
 });
 
-test('t151 打包漏顆 → fail-closed：依賴的目標不在 manifest 裡就當場失敗', () => {
+test('t151 打包漏顆 → fail-closed：**命脈**依賴不在 manifest 裡就當場失敗', () => {
   assert.throws(
     () => reorderForServiceBindings({ core: [{ name: 'arcrun-mcp' }, { name: 'arcrun-kbdb' }] }),
-    /arcrun-registry|arcrun-cypher-executor/
+    /arcrun-cypher-executor/,
+    'cypher 缺席＝同意頁驗不了 Portal 帳密，必須當場失敗'
+  );
+  assert.throws(
+    () => reorderForServiceBindings({ core: [{ name: 'arcrun-mcp' }, { name: 'arcrun-cypher-executor' }] }),
+    /arcrun-kbdb/,
+    'kbdb 缺席＝所有工具都查不到東西，必須當場失敗'
   );
 });
 
-// t151 收尾（#7）：安裝器要生成並下發 arcrun-mcp 的 MCP_OWNER_SECRET——缺它每個封測者都死在同意頁。
-// 這是 full-runInstall 級的觸發測試：coreCount:2（< 3 顆/輪）⇒ 一輪裝完 → 走進部署後的 secret 區塊，
-// installFetch 的 calls 錄下對 arcrun-mcp/secrets 的那次 PUT 供斷言（workflows 步驟隨後 404 失敗無妨，
-// 因為 secret 區塊在它之前就跑完了，同 installStallFixFetch 既有設計）。
-test('t151 收尾（#7）：安裝器生成 MCP_OWNER_SECRET、設進 arcrun-mcp、跟著實例走（重裝同一把）', async () => {
+test('🔴 2026-08-10 optional 不得擋安裝：registry 不在清單裡是**已知取捨**，不是打包漏了', () => {
+  const manifest = { core: [{ name: 'arcrun-mcp' }, { name: 'arcrun-kbdb' }, { name: 'arcrun-cypher-executor' }] };
+  // 這就是新用戶會拿到的那包（bundle-components.mjs 沒有 arcrun-registry）。
+  // 若這裡丟錯 ⇒ 每個新用戶的安裝都會**整趟停在 cache 步**。
+  const out = reorderForServiceBindings(manifest);
+  const mcp = out.core.find((c) => c.name === 'arcrun-mcp');
+  assert.deepEqual(mcp.service_bindings, {
+    CYPHER_EXECUTOR: 'arcrun-cypher-executor',
+    KBDB: 'arcrun-kbdb',
+  });
+});
+
+// 🔴 2026-08-10：這條測試**翻面**了。原本它保的是「安裝器要下發 MCP_OWNER_SECRET」（t151#7）；
+// 現在保的是**一次安裝只佈署一代認證**——不准再出現舊世代的殘骸。
+//
+// 為什麼翻面：`arcrun-mcp` 從這一版起進了 bundle 清單 ⇒ 安裝器每次跑都會把**新世代** mcp 推上去，
+// 而新世代 /authorize 驗的是用戶自己的 Portal 帳密（mcp/src/oauth/routes.ts:233），
+// 全檔對 MCP_OWNER_SECRET 只剩 types.ts 一個沒人讀的選填欄位。
+// 舊測試的理由「缺它封測者死在同意頁」在 b8ca98c 之後就不成立了（同意頁根本沒有那個欄位）。
+//
+// 這是 full-runInstall 級的觸發測試：coreCount:2（< 3 顆/輪）⇒ 一輪裝完 → 走進部署後的 secret 區塊。
+test('🔴 2026-08-10 一次安裝只佈署一代認證：不再下發 MCP_OWNER_SECRET，但 KBDB 金鑰照舊要同步', async () => {
   const env = { INSTALLER_KV: makeKV() };
   const sid = 'sid-mcp-secret';
   await seedInstallSession(env, sid, 'mcp@test.example');
@@ -1260,26 +1336,25 @@ test('t151 收尾（#7）：安裝器生成 MCP_OWNER_SECRET、設進 arcrun-mcp
     restoreFetch();
   }
 
-  // ① 觸發斷言：安裝器對 arcrun-mcp 設了 MCP_OWNER_SECRET（沒觸發過的機制不算）。
-  const mcpPuts = calls.filter((c) =>
-    c.method === 'PUT' &&
-    /\/workers\/scripts\/arcrun-mcp\/secrets$/.test(c.url) &&
-    c.body && JSON.parse(c.body).name === 'MCP_OWNER_SECRET'
-  );
-  assert.ok(mcpPuts.length > 0, '安裝器必須對 arcrun-mcp 設 MCP_OWNER_SECRET（缺它封測者死在同意頁）');
-  const lastSet = JSON.parse(mcpPuts[mcpPuts.length - 1].body);
-  assert.equal(lastSet.type, 'secret_text');
-  assert.match(lastSet.text, /^[0-9a-f]{64}$/, 'secret 應為 32 bytes 強隨機十六進位');
+  const secretPuts = calls.filter((c) => c.method === 'PUT' && /\/secrets$/.test(c.url) && c.body);
+  const named = (n) => secretPuts.filter((c) => JSON.parse(c.body).name === n);
 
-  // ② 三者一致（真正要保的不變量）：**設進 worker 的 = 完成頁顯示給用戶的 = 存進 INSTALLER_KV**。
-  //    跟著實例走靠 mcpsecret:<accountId>（與 kbdbToken 的 t141 同一機制）；生產環境 KV 立即持久化 ⇒
-  //    重裝讀回同一把、用戶記下的密碼不失效。（本 mock KV 於 streaming 多輪路徑會逐輪重生——同 kbdbToken
-  //    在此測試路徑的既有行為，非本改動引入——故只斷言最終快照三者一致，不斷言跨輪單值。）
-  const shown = (await env.INSTALLER_KV.get(`prog:${sid}`, 'json')).result.mcpOwnerSecret;
-  const persisted = await env.INSTALLER_KV.get('mcpsecret:acct-1');
-  assert.equal(shown, lastSet.text, '完成頁顯示的 secret 必須就是最後設進 arcrun-mcp 的那把');
-  assert.equal(persisted, lastSet.text, 'MCP_OWNER_SECRET 必須存 INSTALLER_KV mcpsecret:<accountId>（給重裝沿用）');
-  assert.match(shown, /^[0-9a-f]{64}$/);
+  // ① 舊世代的殘骸不准再出現（值沒人讀、還會讓下一個讀這段的人以為要給用戶一把密碼）
+  assert.equal(named('MCP_OWNER_SECRET').length, 0,
+    'MCP_OWNER_SECRET 已作廢（新世代 /authorize 驗 Portal 帳密），不該再寫進任何 worker');
+  const prog = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.equal(prog.result.mcpOwnerSecret, undefined, '進度快照也不該再留這把值');
+
+  // ② 真正的命脈要保住：MCP↔KBDB 的內部授權金鑰**三顆都要寫到**
+  //    （kbdb 是 fail-closed，沒 token 一律 401 ⇒ 漏掉 mcp 這顆＝工具全 401）
+  const kbdbTok = named('KBDB_INTERNAL_TOKEN');
+  const targets = new Set(kbdbTok.map((c) => c.url.match(/\/workers\/scripts\/([^/]+)\/secrets$/)[1]));
+  for (const w of ['arcrun-kbdb', 'arcrun-cypher-executor', 'arcrun-mcp']) {
+    assert.ok(targets.has(w), `${w} 必須拿到 KBDB_INTERNAL_TOKEN`);
+  }
+  assert.equal(prog.result.secretsSynced, true,
+    '這個迴圈在 mcp 進 bundle 之前每次都死在 404（被 catch 吃掉，沒人紅燈）——現在必須真的走得完');
+  assert.equal(JSON.parse(kbdbTok[0].body).type, 'secret_text');
 });
 
 // ---------------------------------------------------------------------------

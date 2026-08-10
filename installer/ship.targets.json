@@ -118,6 +118,21 @@
         "installerBase": "https://install.arcrun.dev",
         "fullChain": true
       },
+      "githubRelease": {
+        "_": [
+          "讓「完整發佈紀錄在 GitHub」這句承諾變成真的（2026-08-10，總管實測發現）。",
+          "docs-site 的 changelog.md 對用戶寫死一句：「完整發佈紀錄在這裡：GitHub 版本發佈」，",
+          "但 youlinhsieh/arcrun-rag 的 releases 一個都沒有、公開鏡像停在數週前——出貨管線",
+          "從沒有任何一步碰過它。這一欄是不變式 Ⅵ 的必填項：有它，ship.mjs 才會在出貨完",
+          "驗收全過之後，把公開鏡像 push 到 GitHub 並建一筆 release（見 github-release.mjs）。",
+          "mirrorDir 對應 scripts/publish-github.sh 的預設輸出目錄（.github-public/）；",
+          "mirrorRemote 是那個 mirror 的 GitHub 遠端網址（push 認證走環境變數",
+          "GITHUB_MIRROR_TOKEN，不落地不進版控——查 credentials-map.md）。"
+        ],
+        "repoSlug": "youlinhsieh/arcrun-rag",
+        "mirrorDir": ".github-public",
+        "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git"
+      },
       "docsSite": {
         "_": [
           "prod 說明文件站（arcrun-rag#27，2026-08-09 補）。",
