@@ -216,6 +216,7 @@ const ctx = {
   pinChanged: false, pushed: false,
   promote: null, // 提升路徑（見 build 步驟）用來把「來源是誰、期望的指紋/版本是什麼」帶到 version 步驟
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
+  sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
 };
 
 // 🔴 leo 2026-08-08：「arm 推的是 uncle6 把 stage 的 bundle 推到 prod 的 bundle」
@@ -249,13 +250,41 @@ const STEPS = [
   //     🔴 2026-08-09（arcrun-rag#27）：舊版只查檔案存不存在，**不查過不過期**——
   //     一份三天前的舊保險檔一樣會放行（8/8 23:16 那份至今還在，就是這樣被發現的）。
   //     checkArmed()（d20-guard.mjs）補上過期檢查，並把 mission 帶出來給 push 步驟留痕用。
+  //
+  // 🔴 D65 二次補述（leo 2026-08-11）：「arm 是開炮，不是開始工作」「計劃時間應該多於
+  //   執行時間⋯⋯arm 的閘應該是 100% 有信心後發炮」「你檢查 stage 不用限制在 arm 的時間」。
+  //   08-10 實錄：leo 23:31 解保險，出貨在 23:33／23:38 各失敗一次，23:41 才成功——
+  //   兩次失敗都事前可發現（其中一次純粹是缺 GITHUB_MIRROR_TOKEN 這種環境前置）。
+  //   病根是**這裡原本不分 CONFIRM，一律要求先有 `.github-armed`**——連「只是想預演看看
+  //   prod 現在會不會過」都被擋在 arm 之前，逼人必須先解保險才能發現問題，等於用
+  //   「延長 arm 窗口」在換取檢查時間（leo 明講不准這樣解）。
+  //   ⇒ 改成：**只有真的 `--confirm`（真的要開炮）才需要保險已解**；純預演（不管
+  //   `--target` 是不是 prod）不查 `.github-armed`，讓「解保險之前就能把所有不需要
+  //   保險的事跑完並確認會過」在結構上成立，不必等 leo 開閘才能看到問題。
+  //   真正的防呆沒有變弱：所有 `mutates:true` 的步驟本來就只在 `CONFIRM` 才執行
+  //   （見下面主迴圈），所以拿掉的只是「連看都要先解保險」，不是「連做都不用解保險」。
   if (T.requiresArm) {
-    const { mission, expiresAt } = checkArmed(INKSTONE_ROOT);
-    ctx.armMission = mission;
-    lines.push(`保險已解（未過期，還剩 ${Math.max(0, Math.round((expiresAt - Date.now() / 1000) / 60))} 分鐘）：任務＝${mission}`);
+    if (CONFIRM) {
+      const { mission, expiresAt } = checkArmed(INKSTONE_ROOT);
+      ctx.armMission = mission;
+      lines.push(`保險已解（未過期，還剩 ${Math.max(0, Math.round((expiresAt - Date.now() / 1000) / 60))} 分鐘）：任務＝${mission}`);
+    } else {
+      lines.push(`目標會發佈（publish=true）——這是預演，不必先解保險就能檢查到這裡（arm 只在真的 --confirm 時才需要）`);
+    }
   } else {
     lines.push(`目標不發佈（publish=false）⇒ 不需要 leo 開閘`);
   }
+
+  // (a2) 發佈目標要用到的環境前置（憑證存不存在，不使用、不外洩值）——**不管有沒有
+  //   --confirm 都先查**，這樣「解保險之前」就能看到會不會因為缺前置環境而失敗，
+  //   不必等真的打到 github-release 那一步才發現（08-10 那兩次失敗其中一次正是這樣）。
+  if (T.githubRelease && !process.env.GITHUB_MIRROR_TOKEN) {
+    throw new Error(
+      `缺 GITHUB_MIRROR_TOKEN（環境變數）——github-release 步驟會需要它，現在就能發現，\n` +
+      `     不必等解保險、打到那一步才失敗。查 system-dev/wiki/credentials-map.md 找這把鑰匙在哪，\n` +
+      `     在啟動本管線的 shell 裡先 export（D36 金鑰鐵律：只讀名字，不落地、不印真身）。`);
+  }
+  if (T.githubRelease) lines.push('GITHUB_MIRROR_TOKEN 已就位（github-release 步驟需要它）');
 
   // (b) 產物來源：**只有「重打」目標才碰 Arcrun 原始碼**。
   //     提升目標（T.promoteFrom）不重打、不讀 Arcrun repo——它的「來源」是
@@ -827,6 +856,7 @@ const STEPS = [
     ctx.release = m.release;
     ctx.daemonVersion = m.daemon && m.daemon.version;
     ctx.built = m.built;
+    ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
     return { status: 'done', detail: [
       `指紋核對通過：與 ${ctx.promote.srcName}@${ctx.promote.srcSha.slice(0, 7)} 完全相同（${fingerprint}）`,
       `built ${m.built}（繼承 ${ctx.promote.srcName}；同一份內容不會有兩個建置日）`,
@@ -841,6 +871,7 @@ const STEPS = [
   ctx.release = release;
   ctx.daemonVersion = m.daemon && m.daemon.version;
   ctx.built = m.built;   // 使用者在 /api/latest 看到的建置日；verify 會拿它跟線上對
+  ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
   const bumped = ctx.releaseBefore && ctx.releaseBefore !== release;
   return { status: 'done', detail: [
     bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1）`
@@ -1330,14 +1361,14 @@ let failedAt = null;
 const results = [];
 for (const [i, step] of RUN_STEPS.entries()) {
   const n = `${i + 1}/${RUN_STEPS.length}`;
-  if (failedAt) { results.push({ id: step.id, status: 'not-run' }); continue; }
+  if (failedAt) { results.push({ id: step.id, title: step.title, status: 'not-run' }); continue; }
   if (step.mutates && !CONFIRM) {
     // 預演：build/version 會寫本機工作目錄，但不推不部署 ⇒ 允許；其餘改變外界的一律不做。
     const localOnly = step.id === 'build' || step.id === 'version';
     if (!localOnly) {
       console.log(`⏸  ${n} ${step.id}｜${step.title}`);
       console.log(`     預演不執行（加 --confirm 才會做）`);
-      results.push({ id: step.id, status: 'planned' });
+      results.push({ id: step.id, title: step.title, status: 'planned' });
       continue;
     }
   }
@@ -1347,11 +1378,11 @@ for (const [i, step] of RUN_STEPS.entries()) {
     const mark = r.status === 'skip' ? '⏭ 跳過' : '✅ 完成';
     console.log(`   ${mark}`);
     for (const d of [].concat(r.detail || [])) console.log(`     ${d}`);
-    results.push({ id: step.id, status: r.status });
+    results.push({ id: step.id, title: step.title, status: r.status });
   } catch (e) {
     console.log(`   ❌ 斷在這一步`);
     console.log(String(e.message).split('\n').map((l) => `     ${l}`).join('\n'));
-    results.push({ id: step.id, status: 'failed' });
+    results.push({ id: step.id, title: step.title, status: 'failed' });
     failedAt = step.id;
   }
   console.log('');
@@ -1362,6 +1393,25 @@ for (const r of results) {
   const icon = { done: '✅', skip: '⏭', planned: '⏸', failed: '❌', 'not-run': '⛔' }[r.status];
   const note = { planned: '（預演未執行）', 'not-run': '（前面斷了，沒跑）', skip: '（不需要做）' }[r.status] || '';
   console.log(`   ${icon} ${r.id}${note ? '　' + note : ''}`);
+}
+
+// ── 出貨報告：左右對照表，出貨當下自動產生（D65 二次補述，leo 2026-08-11）───────
+// leo：「按照出貨單，每次完成出貨就會看到一張表，左邊是 stage 10 站打勾，右邊是
+//   prod 10 站打勾，就是一個出貨報告是立刻有的。」「立刻有的」＝管線自己產生，
+//   不是事後由 AI 手寫——手寫會挑好聽的講，機器產的表沒得挑。
+// 只在真的 `--confirm`（這才是「出貨」）才記；預演／--verify-only 不算一次出貨，
+// 不寫進 ledger（否則「上次幾站」會被預演污染，變得不可信）。
+// 即使斷在某一步也要記——斷在哪、記到哪，這正是報告要讓人一眼看到的東西。
+if (CONFIRM && !VERIFY_ONLY && ctx.release) {
+  const { recordRun, renderComparisonTable, reportPath } = await import('./ship-report.mjs');
+  recordRun(REPO_ROOT, {
+    release: ctx.release, target: TARGET_NAME, results,
+    sourceCommit: ctx.sourceCommit || null,
+  });
+  const table = renderComparisonTable(REPO_ROOT, ctx.release);
+  console.log('\n' + table + '\n');
+  writeFileSync(reportPath(REPO_ROOT), table + '\n');
+  console.log(`📋 已寫入 installer/ship-report.md ＋ installer/ship-report.json（記得跟這次出貨一起 commit）`);
 }
 
 if (failedAt) {
