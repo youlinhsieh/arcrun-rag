@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arcrun.dev/schemas/kbdb-ingest-request.v1.schema.json",
+  "title": "KBDB Ingest Request v1",
+  "description": "未來 kbdb ingest 端點（規劃名 POST /entries/ingest；kbdb 現況「尚無」此端點，本檔是先凍結的合約）的請求 schema。結構性不變式（SDD ingest-hash-trigger design §6-1）：source_hash 頂層必填，缺＝HTTP 400，不是警告。儲存映射（kbdb 表不變鐵律）：kbdb 不加任何欄位——source_hash 落地於 entries.metadata_json 的 $.source_hash（SQLite json_extract 可過濾），本 schema 只約束「請求」形狀，不要求 kbdb 改表。冪等語意（design §5）：以 source_hash 為 idempotency key，同 source_hash 重送 → 200 {\"status\":\"already_ingested\"}，不重跑 LLM、不重寫 entry；首次成功 → 200/201 {\"status\":\"ingested\"}。daemon 可無腦重試。",
+  "type": "object",
+  "required": ["schema_version", "source_hash", "owner_id", "path"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "本請求的 schema 版本，凍結為 1。"
+    },
+    "source_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "必填（缺＝400）。原稿內容 hash＝冪等鍵。儲存走 metadata_json.$.source_hash——不是要 kbdb 加欄位（表不變鐵律）；查「這份原稿進過沒」用 json_extract(metadata_json,'$.source_hash')。"
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "必填。租戶/namespace 隔離鍵，沿用 kbdb 現行 CreateEntryInput 的 owner_id 語意。"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "必填。來源相對路徑（資料夾根為基準）。儲存映射：metadata_json.$.source_path；「路徑↔hash」映射歸 KBDB 管，改名只動這裡、不重萃（design §4）。"
+    },
+    "folder_id": {
+      "type": "string",
+      "description": "選填。來源資料夾識別碼（同 collector-trigger payload 的 folder_id）。儲存映射：metadata_json.$.folder_id。"
+    },
+    "page_name": {
+      "type": "string",
+      "description": "選填。頁名（預設＝path 去目錄去 .md）。沿用 kbdb 現行 page_name 欄位。"
+    },
+    "r2_key": {
+      "type": "string",
+      "pattern": "^raw/[0-9a-f]{64}$",
+      "description": "選填。原稿 R2 content-addressed key（raw/<sha256 hex>）。儲存映射：metadata_json.$.r2_key——任一定稿卡可循此反查原稿（R2 驗收）。"
+    },
+    "content": {
+      "type": "string",
+      "description": "選填。內文（markdown）。與 r2_key 至少一者建議提供：小檔可 inline，大檔只給 r2_key 由 workflow 端撈。"
+    },
+    "content_type": {
+      "type": "string",
+      "description": "選填。原稿 MIME/格式提示（如 text/markdown）。儲存映射：metadata_json.$.content_type。"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "選填。其餘來源類資訊，整包併入 metadata_json（不落獨立欄位＝守表不變鐵律）。",
+      "additionalProperties": true
+    }
+  }
+}

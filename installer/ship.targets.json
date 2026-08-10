@@ -1,0 +1,146 @@
+{
+  "_": [
+    "ship.targets.json — 出貨目標的**唯一登錄簿**（leo 2026-08-08 立）。",
+    "",
+    "leo 原話：「每次做一樣的事，結果會打錯實例，就是你的出貨閘是錯的。",
+    "          寫對的應該每次都機械式的做同一件事，寫錯位置也會被它修正。」",
+    "",
+    "設計原則（四條，缺一就會回到 08-08 那天）：",
+    "  ① 目標**只能從這裡選**，不能用手打路徑／網址／帳號。",
+    "     ship.mjs 不接受 --bundles <path>；只接受 --target <這裡的 key>。",
+    "  ② 每個目標自帶「它是誰」的全部座標（bundle repo remote／CF 帳號／",
+    "     安裝器 worker env／釘子 URL 樣板／驗收網址）⇒ 打錯目標打不進去：",
+    "     本機 clone 的 origin 與這裡宣告的不符 ⇒ 當場擋下。",
+    "  ③ publish=true 的目標＝**會讓封測者拿到東西**，必須先過 leo 的人閘",
+    "     （scripts/github-arm.sh 產生的 .github-armed），AI 不得自造。",
+    "  ③.5 有 `installer` 的目標（＝真的有人會拿到東西）**必須宣告 `docsSite`**",
+    "     （2026-08-09，arcrun-rag#27）。null 不再是「這個目標沒有文件站」，而是登錄簿漏填，",
+    "     ship.mjs 在任何步驟開跑前就 exit 2。由來：prod 的 docsSite 是 null ⇒ 文件站",
+    "     從沒進過出貨鏈 ⇒ 使用者更新到 v0.18.25，說明文件卻停在 v0.18.24。",
+    "  ④ 有 promoteFrom 的目標＝**提升，不重打**（2026-08-08 leo：「⑥ 是提升不是重打」）。",
+    "     它複製 promoteFrom 指到的目標已驗證過的內容，用內容指紋核對「複製後==來源」，",
+    "     不符當場失敗；版本號直接繼承來源。詳見 ship.mjs 檔頭「不變式 Ⅳ」。",
+    "",
+    "改這個檔＝改出貨會打到哪裡，等同改鐵律：要在 commit 說明理由。"
+  ],
+
+  "source": {
+    "_": "產物來源（所有目標共用；目標只決定「送到哪」，不決定「從哪來」）",
+    "arcrunRepo": "../../matrix/arcrun",
+    "uiDir": "console-ui/public"
+  },
+
+  "targets": {
+    "selftest": {
+      "label": "selftest（本機臨時目標；只建、只算版本、不推不部署）",
+      "publish": false,
+      "requiresArm": false,
+      "allowDirtySource": true,
+      "bundles": {
+        "dir": "/private/tmp/arcrun-ship-selftest/bundles",
+        "remote": "local-selftest",
+        "branch": "main",
+        "seedFrom": "/private/tmp/arcrun-rag-bundles-staging"
+      },
+      "pin": null,
+      "installer": null,
+      "verify": null
+    },
+
+    "stage": {
+      "label": "stage（封測驗證場：Gitea staging bundle repo ＋ staging 安裝器）",
+      "publish": false,
+      "requiresArm": false,
+      "allowDirtySource": false,
+      "bundles": {
+        "dir": "/private/tmp/arcrun-rag-bundles-staging",
+        "remote": "git.uncle6.me/Leo/arcrun-rag-bundles-staging",
+        "branch": "main"
+      },
+      "pin": {
+        "template": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/{sha7}",
+        "shaLen": 7
+      },
+      "installer": {
+        "cwd": "installer/oauth-prototype",
+        "config": "wrangler.toml",
+        "wranglerEnv": "staging",
+        "varsSection": "env.staging.vars",
+        "mirrorConstants": false,
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "accountNote": "uncle6（官方件所在帳號）；staging worker 與 prod 同帳號不同 worker 名"
+      },
+      "verify": {
+        "installerBase": "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
+      },
+      "docsSite": {
+        "_": "s2（stage-environment SDD）：文件站 stage 版，2026-08-09 加。同帳號不同 worker 名，不掛網域。",
+        "cwd": "docs-site",
+        "config": "wrangler.toml",
+        "wranglerEnv": "staging",
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "verifyUrl": "https://arcrun-docs-staging.uncle6-me.workers.dev/docs/"
+      }
+    },
+
+    "prod": {
+      "label": "prod（正式出貨：封測者按更新就會拿到）",
+      "publish": true,
+      "requiresArm": true,
+      "allowDirtySource": false,
+      "promoteFrom": "stage",
+      "_promoteFrom": [
+        "2026-08-08 leo：「arm 推的是 uncle6 把 stage 的 bundle 推到 prod 的 bundle」",
+        "                「⑥ 是提升不是重打」。",
+        "prod 不再從 Arcrun 原始碼重打——它複製 `promoteFrom` 指到的目標（stage）已提交、",
+        "已通過完整 --confirm 驗收的內容，並用內容指紋核對「複製後==來源宣告」，",
+        "不符當場失敗。版本號直接繼承來源，不是各自累計。詳見 ship.mjs 檔頭「不變式 Ⅳ」。"
+      ],
+      "bundles": {
+        "dir": "/private/tmp/arcrun-rag-bundles",
+        "remote": "github.com/youlinhsieh/arcrun-rag-bundles",
+        "branch": "main"
+      },
+      "pin": {
+        "template": "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@{sha40}",
+        "shaLen": 40
+      },
+      "installer": {
+        "cwd": "installer/oauth-prototype",
+        "config": "wrangler.toml",
+        "wranglerEnv": null,
+        "varsSection": "vars",
+        "mirrorConstants": true,
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "accountNote": "uncle6；install.arcrun.dev 就是這顆 worker"
+      },
+      "verify": {
+        "installerBase": "https://install.arcrun.dev",
+        "fullChain": true
+      },
+      "docsSite": {
+        "_": [
+          "prod 說明文件站（arcrun-rag#27，2026-08-09 補）。",
+          "",
+          "為什麼今天才有：這一欄之前是 null，出貨時那一步印「本目標沒有文件站」安靜跳過",
+          "——而 `arcrun-docs` 這顆 worker 一直是真的存在、靠人手動 `wrangler deploy`。",
+          "結果 1.4.29 推 prod 後 `rag.arcrun.dev/docs/help/changelog/` 停在 v0.18.24，",
+          "封測者當天按更新拿到的是 v0.18.25 ⇒ **他更新完，查不到自己拿到的是什麼。**",
+          "leo 原話：「你推完 prod 以後有去檢查上架的東西是否正確嗎？⋯⋯有沒有上 docs？」",
+          "",
+          "現在 ship.mjs 的不變式 Ⅴ 規定「有安裝器的目標一定要有文件站」，",
+          "漏填不再是出貨時的一行警告，是登錄簿驗證階段就不准開跑。",
+          "",
+          "wranglerEnv=null ⇒ 走 wrangler.toml 的預設環境（就是掛 rag.arcrun.dev/docs/* 的那顆）。",
+          "⚠️ 這一欄會讓**下一次 prod 出貨**同時部署文件站；它與其他 prod 步驟一樣受 D20 人閘管。"
+        ],
+        "cwd": "docs-site",
+        "config": "wrangler.toml",
+        "wranglerEnv": null,
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "accountNote": "uncle6；rag.arcrun.dev/docs/* 就是這顆 worker（arcrun-docs）",
+        "verifyUrl": "https://rag.arcrun.dev/docs/"
+      }
+    }
+  }
+}

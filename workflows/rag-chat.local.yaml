@@ -1,4 +1,4 @@
-# rag_chat — 同步問答：keyword＋semantic＋graph 三路檢索 → Gemma 組答案（arcrun-rag demo 包件）
+# rag_chat — 同步問答：keyword＋semantic＋graph 三路檢索 → LLM 組答案（arcrun-rag 包件）
 #
 # 血統：2026-07-17 demo 化四件套的 rag_chat（雲端總管 API 直推版）之 v2 落地——
 #   v1 定義只存在 WEBHOOKS KV（無讀回 API），本檔即日起是 rag_chat 的 repo 真相源。
@@ -24,18 +24,23 @@
 # 佔位參數（推送前 sed 代入）：
 #   __NAMESPACE__        租戶 namespace（demo）
 #   __KBDB_BASE__        KBDB base URL
+#   __KBDB_TOKEN__       KBDB_INTERNAL_TOKEN（安裝器產生，workflow 帶 Bearer 授權）
 #   __HTTP_REQ_URL__     http_request 零件 worker URL
 #   __CODE_URL__         code 零件 worker URL
-#   __GEMINI_API_KEY__   AI Studio key（G10 同款妥協：嵌定義；生產改 {{credential.*}}，輪換要重推）
-#   __LLM_MODEL__        模型 id（demo＝gemma-4-31b-it，leo 指定的地端模型預演）
+#   （LLM 相關的佔位全部消失：生成改走 `workers_ai_chat` recipe ⇒ 免金鑰、免模型佔位。
+#    要換模型／換供應商＝改那筆 recipe，本檔不動。詳見 ask_llm 節點註解）
 #
-# 已知誠實限制：
-#   - Gemma 會吐思考草稿 → 提示詞要求最後一行以【答】開頭，finalize 取最後一個【答】之後。
+# v3（2026-08-03，Gitea arcrun-rag#9／CP rag-beta 關 7）：
+#   生成端由 Gemini `gemma-4-31b-it` 改走 **Workers AI**（`workers_ai_chat` recipe，auth: binding）。
+#   兩件事同時解決：
+#     ① **免金鑰**——封測者不填任何 API key，裝完就能問答（原本非填 Gemini key 不可，否則整個問答不能用）
+#     ② **變快**——同型提問實測 16.87 s → 2.2 s
+#   連帶：`finalize` 從 2786 字元縮到幾行（回應解讀搬進 recipe 的 response_map，換源才不會壞）。
 
 name: rag_chat
 description: >
-  同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Gemma 把檢索
-  結果組成回答（繁中、附出處）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。
+  同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Workers AI
+  把檢索結果組成回答（繁中、附出處，**免金鑰**）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。
   v2：選頁改 IDF 字面重疊主導＋tombstone/deprecated 過濾＋次頁門檻＋graph 比對正規化。
 
 flow:
@@ -71,6 +76,7 @@ config:
     url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=15"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   # 2) semantic 檢索（與搜尋頁同一 API；上游 #58/#59 未修前只當小加分）。
   sem_search:
@@ -79,6 +85,7 @@ config:
     url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&mode=semantic&limit=15"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   # 3) graph：撈全表 triplet（demo 量級），實體比對在 assemble 內做。
   fetch_triplets:
@@ -87,6 +94,7 @@ config:
     url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   # 4) 全庫 active blocks（IDF 計分的語料底）。http_request 零件回應上限 ~64KB（2026-07-18
   #    實測 44KB 通過/83KB 失敗）→ 分三段 limit=60 撈，容量 180 blocks；demo 每日 rag_reset
@@ -97,6 +105,7 @@ config:
     url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=0"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   fetch_blocks_b:
     component: "__HTTP_REQ_URL__"
@@ -104,6 +113,7 @@ config:
     url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=60"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   fetch_blocks_c:
     component: "__HTTP_REQ_URL__"
@@ -111,6 +121,7 @@ config:
     url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=120"
     headers:
       Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   # 5) 計分選頁＋聚合＋編號＋組 prompt（單一 code 節點，決定性零 LLM）。
   assemble:
@@ -257,85 +268,46 @@ config:
       timeout_ms: 8000
       max_output_bytes: 4194304
 
-  # 6) Gemma 生成（G10 同款妥協：key 嵌定義；輪換記得重推）。
+  # 6) 生成 —— **走 Workers AI，不需要任何 API 金鑰**（Gitea arcrun-rag#9／CP rag-beta 關 7）。
+  #
+  #    這個節點只寫「用哪個 recipe」與「餵什麼」。打哪個模型、body 長什麼樣、回應怎麼取值，
+  #    全在 `workers_ai_chat` recipe 裡（Arcrun cypher-executor 的 seed，裝完 /init/seed 就有）
+  #    ⇒ **換模型／換供應商＝改那一筆 recipe，本檔不動**。這就是「換源＝換 recipe 不是換引擎」。
+  #
+  #    為什麼能免金鑰：recipe 宣告 `auth: binding` + `binding_name: AI` ⇒ 引擎直接用
+  #    cypher 自己的 `env.AI` binding（cypher 的 requires.ai 本來就是 true，安裝器不必改）。
+  #
+  #    2026-08-03 實測（1.4.4 實例，真實長度 RAG prompt）：
+  #      舊路徑 Gemini `gemma-4-31b-it`               16.87 s，且吐整段英文思考草稿
+  #      新路徑 Workers AI llama-4-scout-17b          2.37／2.17 s，直接給乾淨的【答】行
+  #    ⇒ 快 7 倍以上，且不必再淨化思考草稿。
   ask_llm:
-    component: "__HTTP_REQ_URL__"
-    method: POST
-    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent?key=__GEMINI_API_KEY__"
-    headers:
-      Content-Type: "application/json"
-    body_json:
-      contents:
-        - parts:
-            - text: "{{assemble.data.prompt}}"
-      generationConfig:
-        temperature: 0.2
-        maxOutputTokens: 2048
+    component: "workers_ai_chat"
+    prompt: "{{assemble.data.prompt}}"
 
-  # 7) 抽最終答案（最後一個【答】之後；Gemma 思考草稿淨化）。
+  # 7) 收尾：把答案與出處包成回應。
+  #
+  #    **從 2786 字元縮到這幾行**——因為「回應怎麼解讀」已經搬進 recipe 的 response_map
+  #    （text_path／answer_marker／strip_prefixes），那才是它該待的地方：各家 LLM 回應形狀不同，
+  #    所以它屬於「換源時要跟著換的東西」＝recipe，不是 workflow。
+  #    舊版在這裡手寫 Gemini 的 candidates[0].content.parts、剔 thought=true、循環剝殼、
+  #    靠中文字數比例猜哪行是答案——那些全是為了 Gemma 思考型模型寫的，換源必壞。
+  #
+  #    這裡只留一件 workflow 該做的事：**沒拿到答案時誠實說沒有，不編造**（mindset §7）。
   finalize:
     component: "__CODE_URL__"
     code: |
-      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
-      const body = parse(input.llm_body);
-      let text = '';
-      try {
-        const parts = body.candidates[0].content.parts || [];
-        // gemma-4-31b 是思考型模型：parts[0] 是 thought=true 的思考、真答案在最後一個非 thought part
-        for (let i = parts.length - 1; i >= 0; i--) {
-          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
-        }
-        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
-      } catch (e) { text = ''; }
-      // Gemma 淨化（實撞三型）：①草稿在【答】前 ②英文自檢清單拖在【答】後
-      // ③自檢清單「文字裡提到【答】」→ lastIndexOf 會撈到假標記。
-      // 規則：只認「行首」的【答】行（清單提到的都在句中），取最後一條；
-      // 無標記 fallback＝取「中文字數 ≥8 且多於英文字母數」的最後一段（自檢清單過不了這關）。
-      function cjkCount(s) { const m = s.match(/[一-鿿]/g); return m ? m.length : 0; }
-      function asciiCount(s) { const m = s.match(/[a-zA-Z]/g); return m ? m.length : 0; }
-      // 剝殼器：把行首的 bullet／引號／「Answer:」「Draft:」式單詞冒號／【答】標記
-      // **循環剝到穩定**——Gemma 的前綴組合順序不定（實撞過「*   【答】」「Draft: 【答】」
-      // 「Answer: * 【答】」三型），單趟剝不乾淨。
-      function peel(line) {
-        let t = String(line).trim(), prev = null;
-        while (t !== prev) {
-          prev = t;
-          t = t.replace(/^[\s*\-•>#"'』]+/, '');
-          t = t.replace(/^[A-Za-z][\w ]{0,14}[:：]\s*/, '');
-          t = t.replace(/^【答】\s*/, '');
-          t = t.trim();
-        }
-        return t;
-      }
-      let answer = '';
-      const lines = text.split('\n');
-      // 第一優先：含行首（剝殼後緊接）【答】標記的行，取最後一條——
-      // 自檢清單提到【答】時是完整英文句中段，剝殼後開頭不會是【答】。
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!/【答】/.test(lines[i])) continue;
-        const raw = String(lines[i]);
-        // 剝掉標記前的殼後必須直達【答】，才算真標記行（排除 "Starts with 【答】? Yes" 型）
-        const head = raw.slice(0, raw.indexOf('【答】'));
-        if (!/^[\s*\-•>#"'』]*(?:[A-Za-z][\w ]{0,14}[:：])?[\s*\-•>#"'』]*$/.test(head)) continue;
-        const t = peel(raw);
-        if (cjkCount(t) >= 4) { answer = t; break; }
-      }
-      // fallback：最後一條「像中文答案」的行——剝殼後中文字 ≥8，且不是自檢清單型（?/Yes/No 收尾）。
-      if (!answer) {
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const t = peel(lines[i]);
-          if (cjkCount(t) >= 8 && !/(\?|\byes\b|\bno\b)\s*[.!。]?\s*$/i.test(t)) {
-            answer = t;
-            break;
-          }
-        }
-      }
-      if (!answer) answer = '（知識庫裡沒有找到足以回答的資料。）';
+      const answer = String(input.answer == null ? '' : input.answer).trim();
       const sources = Array.isArray(input.sources) ? input.sources : [];
       const facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];
-      return { success: true, answer: answer, sources: sources, graph_facts: facts };
+      return {
+        success: true,
+        answer: answer || '（知識庫裡沒有找到足以回答的資料。）',
+        sources: answer ? sources : [],
+        graph_facts: facts
+      };
     input:
-      llm_body: "{{ask_llm.data.body}}"
+      answer: "{{ask_llm.text}}"
       sources: "{{assemble.data.sources}}"
       graph_facts: "{{assemble.data.graph_facts}}"
     limits:

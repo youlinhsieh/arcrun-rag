@@ -1,0 +1,152 @@
+# tasks-project-sync — tasks.md ⇄ GitHub Project 單向投影
+#
+# 來源：issue #16；設計：system-dev/docs/3-specs/tasks-project-projection/design.md
+#
+# ── 這份 workflow 的職責邊界（很重要，別搞混）──────────────────
+# arcrun workflow 在 Cloudflare Workers / WASM 上「遠端」執行，沒有本地檔案系統、
+# 沒有 git、沒有 shell。所以「讀 tasks.md / 跑 git diff / 把 <!-- gh:id --> 回寫 md」
+# 這三件事 **不是、也不該是 workflow 的步驟**——它們由本地觸發端（CC / push 後本機腳本）
+# 先做完，把「分類好的 task 增量」當 input 餵進來（acr run -i tasks_json=...）。
+#
+#   本地端（住 template，CC/shell 跑）：讀 tasks.md → git diff → 分類四動作 → 回寫 id
+#                       │  acr run tasks-project-sync -i ...（把增量餵進來）
+#                       ▼
+#   遠端 workflow（這份 yaml）：foreach 增量 → switch 動作 → github API 投影
+#
+# → 因此本 workflow 只負責「拿到分類好的增量後，打 GitHub API 投影成 issue/Project」。
+#   單向：只寫 GitHub，永不回改 tasks.md（回寫 id 是本地端的事，且只在新 task 做一次）。
+#
+# ── 輸入（由本地觸發端用 acr run -i 餵）──────────────────────────
+#   owner       GitHub repo owner（例：your-github-account）
+#   repo        GitHub repo 名
+#   project_id  GitHub Projects v2 的 node id（投影目標，唯讀看板）
+#   tasks_json  本地分類好的增量陣列，每筆形如：
+#               { action: "create|close|edit|archive",
+#                 gh: 42,                         # 已有 id 的帶上（create 無）
+#                 title: "...", body: "...",
+#                 subsystem: "wiki-architecture", # = SDD folder 名，當 label 分組
+#                 assignee: "...", due: "..." }
+#
+# ── credential ─────────────────────────────────────────────────
+#   github_token（acr auth-recipe scaffold github → 填 credentials.yaml → acr creds push）
+#
+# ⚠️ 端到端（acr push 真部署 + acr run 真投影）尚未經 leo21c 驗證。
+#    本檔為 code-done 骨架；真部署時 GitHub API 的欄位細節（Projects v2 GraphQL）
+#    可能要按實測微調，屆時於 issue #16 回報。
+
+name: tasks_project_sync
+description: >
+  把 SDD tasks.md 的待辦增量單向投影成唯讀 GitHub Project（issue CRUD + 加進 Project）。
+  本地端先讀檔/git diff/分類/回寫 id，這份只負責拿增量打 GitHub API。md 當家、單向、不反向同步。
+
+# ── flow（三元組：A >> 關係詞 >> B）─────────────────────────────
+# 對每筆增量 → 依 action 路由到四種 GitHub 動作。
+flow:
+  - "input >> 完成後 >> each_task"
+  - "each_task >> 對每個 task >> route_action"
+  # 四種動作（issue 定案）：新增/關閉/編輯/封存
+  - "route_action >> 完成後 >> gh_create"
+  - "route_action >> 完成後 >> gh_close"
+  - "route_action >> 完成後 >> gh_edit"
+  - "route_action >> 完成後 >> gh_archive"
+  # 新建的 issue 投影進 Project（唯讀看板）
+  - "gh_create >> 完成後 >> add_to_project"
+
+config:
+  # 逐筆迭代本地餵進來的分類增量
+  each_task:
+    component: foreach_control
+    iterator: task
+
+  # 依 action 欄位分流到四種 GitHub 動作
+  route_action:
+    component: switch
+    key: "{{task.action}}"
+    cases:
+      create: gh_create     # 有文字、無 id → 建 issue（id 由本地端回寫 md）
+      close: gh_close        # 有 id 且 [ ]→[x] → 關 issue
+      edit: gh_edit          # 有 id 且 文字/負責人/日期改 → 編輯 issue
+      archive: gh_archive    # id 在但整行不見 → 關閉/封存
+
+  # ── 動作 1：建 issue（REST POST /repos/:owner/:repo/issues）──
+  # 回傳的 issue number 由本地觸發端接住、回寫 <!-- gh:number --> 到那一行。
+  # ⚠️ 用 http_request（arcrun registry 沒有 github 零件，21 內建確認過）；
+  #    auth 走 credential：{{creds.github_token}}（acr creds push 上傳，不寫死 token）。
+  gh_create:
+    component: http_request
+    url: "https://api.github.com/repos/{{owner}}/{{repo}}/issues"
+    method: POST
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {{creds.github_token}}"
+      User-Agent: "arcrun-tasks-project-sync"
+    body:
+      title: "{{task.title}}"
+      body: "{{task.body}}"
+      labels:
+        - "{{task.subsystem}}"   # 子系統 label 分組（= SDD folder 名）
+      assignees:
+        - "{{task.assignee}}"
+
+  # ── 動作 2：關 issue（state=closed）──
+  gh_close:
+    component: http_request
+    url: "https://api.github.com/repos/{{owner}}/{{repo}}/issues/{{task.gh}}"
+    method: PATCH
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {{creds.github_token}}"
+      User-Agent: "arcrun-tasks-project-sync"
+    body:
+      state: closed
+
+  # ── 動作 3：編輯 issue（標題/內文/負責人）──
+  gh_edit:
+    component: http_request
+    url: "https://api.github.com/repos/{{owner}}/{{repo}}/issues/{{task.gh}}"
+    method: PATCH
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {{creds.github_token}}"
+      User-Agent: "arcrun-tasks-project-sync"
+    body:
+      title: "{{task.title}}"
+      body: "{{task.body}}"
+      assignees:
+        - "{{task.assignee}}"
+
+  # ── 動作 4：封存（行不見 = 關閉，標 not_planned 表示非完成而是移除）──
+  gh_archive:
+    component: http_request
+    url: "https://api.github.com/repos/{{owner}}/{{repo}}/issues/{{task.gh}}"
+    method: PATCH
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {{creds.github_token}}"
+      User-Agent: "arcrun-tasks-project-sync"
+    body:
+      state: closed
+      state_reason: not_planned
+
+  # ── 投影進 GitHub Projects v2（GraphQL）──
+  # Projects v2 只有 GraphQL，REST 沒有。用 http_request 打 /graphql。
+  # ⚠️ 待 leo21c 端到端驗：addProjectV2ItemById 需要 content node id（issue 的 GraphQL id，
+  #    非 issue number），實測時可能要多一步「先查 issue node id」。屆時於 #16 回報。
+  add_to_project:
+    component: http_request
+    url: "https://api.github.com/graphql"
+    method: POST
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {{creds.github_token}}"
+      User-Agent: "arcrun-tasks-project-sync"
+    body:
+      query: >
+        mutation($project: ID!, $content: ID!) {
+          addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
+            item { id }
+          }
+        }
+      variables:
+        project: "{{project_id}}"
+        content: "{{gh_create.node_id}}"

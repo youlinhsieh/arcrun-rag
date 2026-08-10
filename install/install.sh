@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # arcrun-rag 本機一鍵安裝（零 Cloudflare 帳號）
-# 裝三件：① Gitea 容器（知識 repo 真相源）② Arcrun 引擎（miniflare 本機）③ collector（watch 資料夾）
+# 裝三件：① Gitea 容器（⚠ deprecated，見下）② Arcrun 引擎（miniflare 本機）③ collector（⚠ 改版中）
 # ＋ 包內容物：KBDB templates、rag_ingest / graph_neighbors / rag_wiki_digest workflows。
 # 冪等：重跑不炸（容器存在就跳過、node_modules 存在就跳過、template/workflow 覆寫註冊）。
+#
+# ⚠ DEPRECATED 路徑註記（SDD ingest-hash-trigger task 4，2026-07-19）：本腳本的 GITEA_*
+#   段（容器/token/webhook 接線）在 ingest 路徑已不再需要——rag_ingest 已改吃 collector
+#   sync payload＋R2 原稿（workflows/rag-ingest.yaml v3、collector/README.md）。腳本先不刪
+#   （demo 尚未切換）；切換日照 README「Gitea 退場切換 checklist」把本腳本改接 Go collector
+#   ＋本機 R2 替代（或直接指 CF 版安裝），Gitea 段整段拆除。
 set -uo pipefail
 
 # ── 路徑（repo 內相對定位，不寫死任何機器的絕對路徑）─────────────────────
@@ -25,6 +31,7 @@ GITEA_ADMIN="${GITEA_ADMIN:-ragadmin}"
 GITEA_PASS="${GITEA_PASS:-rag-demo-Pass1}"
 GITEA_ORG="${GITEA_ORG:-$NS}"
 GITEA_REPO="${GITEA_REPO:-knowledge}"
+LIBRARY="${LIBRARY:-kb}"                          # 藏書地圖庫名（library-map M3 歸庫鍵）
 WATCH_DIR="${WATCH_DIR:-$HOME/arcrun-rag-demo/knowledge-inbox}"
 STATE="${RAG_STATE_DIR:-$INSTALL_DIR/state}"; LOGS="${RAG_LOG_DIR:-$INSTALL_DIR/logs}"
 GITEA_BASE="http://127.0.0.1:$GITEA_PORT"
@@ -57,7 +64,7 @@ command -v pnpm >/dev/null || die "缺 pnpm：npm i -g pnpm"
 command -v wrangler >/dev/null || die "缺全域 wrangler：npm i -g wrangler（要 4.98+）"
 command -v git >/dev/null || die "缺 git"
 docker ps >/dev/null 2>&1 || die "docker 不可用（OrbStack/Docker Desktop 要先開）"
-[ -d "$ARCRUN_REPO/kbdb" ] || die "找不到 Arcrun 引擎 checkout（${ARCRUN_REPO}）；git clone https://git.uncle6.me/Leo/Arcrun.git"
+[ -d "$ARCRUN_REPO/kbdb" ] || die "找不到 Arcrun 引擎 checkout（${ARCRUN_REPO}）；git clone https://github.com/youlinhsieh/Arcrun.git"
 command -v markitdown >/dev/null && ok "markitdown 有（docx/pptx/pdf 轉檔可用）" || echo "⚠ markitdown 沒裝（docx 轉檔不可用；pip install 'markitdown[docx,pptx,pdf]'）"
 if [ "$AUTO_DIGEST" = "true" ] && [ -z "$GEMINI_API_KEY" ]; then
   AUTO_DIGEST=false
@@ -182,6 +189,7 @@ for src in rag-ingest.yaml graph-neighbors.local.yaml rag-wiki-digest.yaml; do
       -e "s|__GEMINI_API_KEY__|$GEMINI_API_KEY|g" \
       -e "s|__HTTP_REQ_URL__|http://127.0.0.1:$HTTPREQ_PORT|g" \
       -e "s|__CODE_URL__|http://127.0.0.1:$CODE_PORT|g" \
+      -e "s|__LIBRARY__|$LIBRARY|g" \
       "$WORKFLOWS_SRC/$src" > "$WFLOCAL/$wf.yaml"
   # AUTO_DIGEST=false → 剝掉 rag-ingest 的自動接鏈段（G11 開關；標記行見 rag-ingest.yaml）
   if [ "$wf" = "rag-ingest" ] && [ "$AUTO_DIGEST" != "true" ]; then
@@ -194,27 +202,15 @@ for src in rag-ingest.yaml graph-neighbors.local.yaml rag-wiki-digest.yaml; do
     && ok "workflow $wf 註冊" || die "workflow $wf push 失敗（$LOGS/acr-push.log）"
 done
 
-# ── 步驟 5：collector（watch 知識資料夾 → Gitea）────────────────────────────
-step "5/6 collector"
-if [ ! -d "$STATE/collector" ]; then
-  mkdir -p "$STATE/collector"
-  cp "$COLLECTOR_SRC"/*.js "$COLLECTOR_SRC"/package.json "$COLLECTOR_SRC"/package-lock.json "$STATE/collector/" || die "collector 原始碼複製失敗"
-fi
-[ -d "$STATE/collector/node_modules" ] || (cd "$STATE/collector" && npm ci >/dev/null 2>&1) || die "collector 依賴安裝失敗"
+# ── 步驟 5：collector ── ⚠ DEPRECATED（SDD ingest-hash-trigger task 4，2026-07-19）──
+# legacy Node collector（watch → git push → Gitea webhook）已自 repo 刪除；現役＝Go 版
+# `collector sync`（scan → R2 → named-webhook，見 collector/README.md）。本機一鍵鏈的
+# 「Gitea 容器＋push webhook」段（步驟 1 與本步驟）同屬待拆除路徑——切換日（README
+# 「Gitea 退場切換 checklist」）把本腳本改接 Go collector；在那之前本步驟跳過、
+# 丟檔自動 ingest 在本機一鍵環境暫不可用（引擎/查詢面不受影響）。
+step "5/6 collector（已改版，本步驟跳過）"
 mkdir -p "$WATCH_DIR"
-if [ ! -d "$STATE/knowledge-repo/.git" ]; then
-  git clone "http://$GITEA_ADMIN:$GITEA_TOKEN@127.0.0.1:$GITEA_PORT/$GITEA_ORG/$GITEA_REPO.git" \
-    "$STATE/knowledge-repo" >/dev/null 2>&1 || die "knowledge repo clone 失敗"
-  (cd "$STATE/knowledge-repo" && git config user.name collector && git config user.email collector@localhost && git lfs install --local >/dev/null 2>&1 || true)
-fi
-COLL_PIDF="$STATE/collector.pid"
-if [ -f "$COLL_PIDF" ] && kill -0 "$(cat "$COLL_PIDF")" 2>/dev/null; then
-  ok "collector 已在跑（pid $(cat "$COLL_PIDF")）"
-else
-  (cd "$STATE/collector" && WATCH_DIR="$WATCH_DIR" TARGET_REPO_DIR="$STATE/knowledge-repo" \
-    DEBOUNCE_MS=3000 nohup node index.js > "$LOGS/collector.log" 2>&1 & echo $! > "$COLL_PIDF")
-  ok "collector watch 中：$WATCH_DIR"
-fi
+ok "⚠ legacy collector 已移除；自動 ingest 改由 Go 版 collector sync 提供（collector/README.md），本機一鍵鏈待切換日改接"
 
 # ── 步驟 6：完成頁 ───────────────────────────────────────────────────────
 step "6/6 完成"
@@ -222,9 +218,10 @@ cat <<EOF
 
 ✅ 裝完了。你的知識庫已經在動：
 
-  1. 把 .md（有 markitdown 也可 .docx/.pptx/.pdf）丟進：
+  1. 知識資料夾：
        $WATCH_DIR
-  2. 約 5 秒後 collector 自動 commit → push → Gitea webhook → ingest 進庫。
+  2. ⚠ 丟檔自動 ingest 暫不可用（legacy collector 已移除、Go 版 sync 待接本機鏈，
+     見 collector/README.md 與 README「Gitea 退場切換 checklist」）。
   3. 打開管理 Console（首次會引導設 email/密碼）：
        $CYPHER_BASE/console
      「總庫搜尋」頁直接搜你丟進去的內容。

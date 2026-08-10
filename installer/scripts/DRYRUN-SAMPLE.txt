@@ -1,0 +1,32 @@
+[deploy-all] repo root: <ARCRUN_REPO_ROOT>
+[deploy-all] mode: DRY-RUN（不真部署）
+[deploy-all] tier1（零件）: 20｜tier2（引擎）: 4｜合計: 24 worker
+[deploy-all] KV 提供: 9/9（齊）
+[deploy-all] D1 id: 有｜subdomain: insttest-acct｜embed: false
+
+  [ 1/24] tier1 array_ops              KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 2/24] tier1 auth_oauth2            KV注入 2 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 3/24] tier1 auth_service_account   KV注入 2 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 4/24] tier1 auth_static_key        KV注入 2 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 5/24] tier1 cron                   KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 6/24] tier1 date_ops               KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 7/24] tier1 filter                 KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 8/24] tier1 foreach_control        KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [ 9/24] tier1 http_request           KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [10/24] tier1 if_control             KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [11/24] tier1 merge                  KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [12/24] tier1 number_ops             KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [13/24] tier1 platform_crypto        KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [14/24] tier1 set                    KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [15/24] tier1 string_ops             KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [16/24] tier1 switch                 KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [17/24] tier1 try_catch              KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [18/24] tier1 validate_json          KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [19/24] tier1 wait                   KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [20/24] tier1 code                   KV注入 0 · MULTI_TENANT=false · strip[[[routes]]]
+  [21/24] tier2 cypher-executor        KV注入 7 · subdomain✓ · CF_ACCOUNT_ID✓ · D1✓ · MULTI_TENANT=false · KBDB_BASE_URL✓ · strip[[ai],[[routes]]]
+  [22/24] tier2 registry               KV注入 2 · MULTI_TENANT=false · strip[[ai],[[routes]]]
+  [23/24] tier2 kbdb                   KV注入 0 · D1✓ · MULTI_TENANT=false
+  [24/24] tier2 mcp                    KV注入 1 · MULTI_TENANT=false · strip[[[routes]]]
+
+[deploy-all] DRY-RUN 完成。斷言：worker=24（期望 24 → PASS）｜REQUIRED_KV=9（期望 9 → PASS）

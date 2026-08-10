@@ -1,0 +1,14 @@
+build/bin
+node_modules
+frontend/dist
+
+# Windows 打包中間產物（t196）：exe 與 msix 解開後的 root/ 都是可重現的產物，
+# 每次重編都變動、且是二進位 ⇒ 不進版控（產物走 bundles repo 出貨）。
+arcrun-collector.exe
+dist-msix/root/
+
+# 打包產物（t196／2026-08-05）：dmg／zip／msix 都是可重現的產物，
+# 真身走 bundles repo 出貨（github.com/youlinhsieh/arcrun-rag-bundles）。
+# 進版控只會讓 repo 膨脹，且每次重編都變動、每次都來吵未推警察。
+dist/
+dist-msix/

@@ -1,0 +1,151 @@
+# rag_takedown_direct — daemon 直送下架（v1「無 R2、無 Gitea」同步模式的刪檔配套）
+#
+# 為什麼要獨立一支（2026-07-20 live e2e 實撞定案）：
+#   既有 rag_ingest 的 removed 分支在 collect_changed 有 __CARDS_PREFIX__ 閘（isCard：路徑必須
+#   在 cards 前綴下），direct 模式的檔在資料夾根（如「加班規定.md」）→ 被閘擋掉、零下架。
+#   → direct 模式自帶一支不含前綴閘的下架 workflow，按 page_name/path 精準 deprecate。
+#   邏輯＝rag_ingest removed 分支的 kbdb 操作原樣搬過來（list_dead_blocks→build_deprecations→
+#   deprecate_entry ＋ triplet 下架），但改成「單檔直鏈」（daemon 一檔一 POST，無 foreach）。
+#
+# dogfooding：下架＝kbdb **DELETE**（真刪 entries／records；2026-08-05 leo：「要可以刪除
+#   KBDB 的存檔，先前只有 deprecated」——原檔已刪的卡沒有回溯價值，留著只讓庫變大），
+#   全在 Arcrun workflow，daemon 只送 {page_name, path}。
+#
+# 觸發（daemon 偵測到刪檔）：
+#   POST {cypher}/webhooks/named/__NAMESPACE__/rag_takedown_direct/trigger
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"page_name":"加班規定","path":"加班規定.md"}'
+#
+# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
+
+name: rag_takedown_direct
+description: >
+  daemon 直送下架（v1 無 R2）：按 page_name 撈 kbdb blocks、逐筆核對 source_path 後
+  **真刪**；對應 triplets（subject==頁名 或 source_uri==kb://path）一併真刪。
+  （2026-08-05 由 deprecate 改真刪；順帶清掉既有的 deprecated 舊垃圾。）（task 11）
+
+flow:
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> list_dead_blocks"
+  - "list_dead_blocks >> ON_SUCCESS >> build_deprecations"
+  - "build_deprecations >> 對每個 dead_entry >> deprecate_entry"
+  - "build_deprecations >> ON_SUCCESS >> list_triplets"
+  - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
+  - "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+
+config:
+  # CJK page_name 進 URL query 前先 encodeURIComponent（agent-memory §7 實撞教訓）。
+  prep:
+    component: "__CODE_URL__"
+    code: |
+      const page = String(input.page_name == null ? '' : input.page_name).trim();
+      if (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };
+      const path = String(input.path || (page + '.md'));
+      return { success: true, page_name: page, page_enc: encodeURIComponent(page),
+               path: path, source_uri: 'kb://' + path };
+    input:
+      page_name: "{{input.page_name}}"
+      path: "{{input.path}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  list_dead_blocks:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 逐筆核對（防「同頁名不同卡」誤殺）：meta.source_path === 刪卡路徑，或 meta.source 以
+  # kb://<路徑># 開頭；兩者皆無（老資料）＝fallback page_name 相等即殺（本清單已按 page_name 查）。
+  build_deprecations:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const a = parse(input.blocks_body);
+      const entries = (a && a.entries) || [];
+      const path = String(input.path || '');
+      const kbPrefix = 'kb://' + path + '#';
+      const dead_entries = [];
+      for (const e of entries) {
+        let meta = {};
+        if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
+        // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，
+        // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。
+        const mPath = String(meta.source_path || '');
+        const mSrc = String(meta.source || '');
+        const hasPath = mPath !== '';
+        const hasKbSrc = mSrc.indexOf('kb://') === 0;
+        let hit;
+        if (hasPath || hasKbSrc) {
+          hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);
+        } else {
+          hit = true;
+        }
+        if (!hit) continue;
+        dead_entries.push({ id: e.id });   // 真刪只需要 id
+      }
+      return { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };
+    input:
+      blocks_body: "{{list_dead_blocks.data.body}}"
+      path: "{{prep.data.path}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  # 🔴 2026-08-05 改真刪（leo：「要可以刪除 KBDB 的存檔，先前只有 deprecated」）：
+  #   原本 PATCH 成 status=deprecated ⇒ 資料**永遠留在庫裡**，只是查詢時被濾掉。
+  #   實測 youlin：374 個 block 裡 23 筆是 deprecated 垃圾（6%），且只會越積越多
+  #   ——原檔都刪了，這些卡沒有回溯價值，留著只是讓庫變大、備份變慢。
+  #   kbdb 本來就有真刪（entries.ts:214 / records.ts:84），不需要新機制。
+  deprecate_entry:
+    component: "__HTTP_REQ_URL__"
+    method: DELETE
+    url: "__KBDB_BASE__/entries/{{dead_entry.id}}"
+    headers:
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # subject==頁名 或 source_uri==本卡 → 全下架（治 G9 主詞≠卡名缺口）。
+  pick_dead_triplets:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      let records = (body && Array.isArray(body.records)) ? body.records : [];
+      const page = String(input.page_name || '');
+      const srcUri = String(input.source_uri || '');
+      const dead_records = [];
+      for (const r of records) {
+        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
+        // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。
+        if (!v || !r.record_id) continue;
+        const hit = v.subject === page || (srcUri && v.source_uri === srcUri);
+        if (!hit) continue;
+        dead_records.push({ record_id: r.record_id });
+      }
+      return { success: true, dead_records: dead_records, count: dead_records.length };
+    input:
+      body: "{{list_triplets.data.body}}"
+      page_name: "{{prep.data.page_name}}"
+      source_uri: "{{prep.data.source_uri}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  # 同上，改真刪（2026-08-05）。
+  deprecate_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: DELETE
+    url: "__KBDB_BASE__/records/{{dead_record.record_id}}"
+    headers:
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"

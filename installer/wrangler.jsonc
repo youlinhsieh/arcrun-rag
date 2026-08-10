@@ -1,0 +1,60 @@
+{
+  // ─────────────────────────────────────────────────────────────────────────────
+  // arcrun-rag 一鍵安裝器 worker（「工地主任」）— one-click-installer-design.md C 段。
+  //
+  // Deploy 按鈕（deploy.workers.cloudflare.com/?url=<公開鏡像>&subdirectory=installer）會讀本檔：
+  //   - 自動開通並綁定下面宣告的 9 個 KV + D1 `arcrun-kbdb`（全綁到「安裝器 worker」自己）
+  //   - 在設定頁列出 secrets 欄（ARCRUN_CODE / GEMINI_API_KEY）給用戶填
+  //   - 之後跑 Builds 自訂 deploy command：node scripts/deploy-all.mjs && npx wrangler deploy
+  //
+  // account_id 寫死 uncle6＝**官方件所在帳號**（官方安裝器 install.arcrun.dev 就是這顆）。
+  // 🔴 部署它＝出貨動作，需 leo 開閘；別拿它當測試場（測試一律 youlin，見 repo CLAUDE.md）。
+  // ─────────────────────────────────────────────────────────────────────────────
+  "name": "arcrun-rag-installer",
+  "main": "src/index.js",
+  "compatibility_date": "2025-02-19",
+  "workers_dev": true,
+  "account_id": "58309bb90fd93ad6d0fe0aae99170e9d",
+
+  "vars": {
+    // 中央發碼 / 驗碼 API（官方 landing，指這裡是對的）。
+    "LANDING_VERIFY_URL": "https://arcrun-landing.uncle6-me.workers.dev/api/verify-code",
+    // 安裝器自檢 / 補完時要打的既有實例端點。部署完成後這些 worker 都在用戶自己 subdomain 下；
+    // Builds deploy command 可用 --var 覆寫成真實 subdomain（見 README）。預設留空 → 前端顯示「待偵測」。
+    "WORKER_SUBDOMAIN": "",
+    "CYPHER_BASE": "",
+    "KBDB_BASE": "",
+    "HTTP_REQ_URL": "",
+    "CODE_URL": "",
+    "LLM_MODEL": "gemma-4-31b-it",
+    "NAMESPACE": "demo"
+  },
+
+  // 9 把 KV：binding 名照 deploy.ts REQUIRED_KV_NAMESPACES。按鈕自動開通後綁到安裝器 worker。
+  // 安裝器本身只實際讀寫 SESSIONS_KV（記進度 / 綁 email）；其餘綁在這裡是為了「讓按鈕替 24 個
+  // 平台 worker 一次把 namespace 開好」，其 id 由 Builds 環境轉交 deploy-all.mjs 注入各 worker toml。
+  "kv_namespaces": [
+    { "binding": "WEBHOOKS", "id": "" },
+    { "binding": "CREDENTIALS_KV", "id": "" },
+    { "binding": "RECIPES", "id": "" },
+    { "binding": "USERS_KV", "id": "" },
+    { "binding": "SESSIONS_KV", "id": "" },
+    { "binding": "ANALYTICS_KV", "id": "" },
+    { "binding": "EXEC_CONTEXT", "id": "" },
+    { "binding": "SUBMISSIONS_KV", "id": "" },
+    { "binding": "OAUTH_KV", "id": "" }
+  ],
+
+  // D1 arcrun-kbdb：安裝器自帶 binding（TEST_D1），/api/finish 用它跑 migration（零 CF token；
+  // 設計指定的唯一「安裝器直碰 D1」例外＝建表 migration）。與 24 個 worker 共用同一顆 D1。
+  "d1_databases": [
+    { "binding": "TEST_D1", "database_name": "arcrun-kbdb", "database_id": "" }
+  ]
+
+  // ── secrets（Deploy 按鈕設定頁填；不進版控）──────────────────────────────────
+  // wrangler.jsonc 無法宣告 secret 值，Deploy 按鈕靠下列「約定名 + README/landing 提示」收集：
+  //   ARCRUN_CODE     封測辨識碼——去 landing 頁填 email 換取（driver：旅程環 5 閉環）。
+  //   GEMINI_API_KEY  Google AI Studio key（aistudio.google.com/apikey，免費層夠測）——推 RAG workflow 用。
+  //   CF_API_TOKEN    （必要）建 Vectorize index（語意搜尋）＋代設 worker secrets 用；需 Vectorize:Edit scope。不給則安裝日誌印手動指令，語意搜尋需手動開通。
+  // 部署後也可： npx wrangler secret put ARCRUN_CODE --name arcrun-rag-installer
+}

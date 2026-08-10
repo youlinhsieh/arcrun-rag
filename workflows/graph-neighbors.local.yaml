@@ -25,6 +25,10 @@ config:
     url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}"
     headers:
       Accept: "application/json"
+      # 🔴 t195（2026-08-05）：與收卡端同一個病——D36（07-29）把全體改走 credential，
+      #   但那筆修補只落在 fix/cis-round3-install，main／feat/daemon 都沒合併
+      #   ⇒ 這支圖譜查詢在 main 上一直沒帶授權。kbdb 的牆是 worker 層級，GET 一樣要帶。
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
   bfs_neighbors:
     component: "__CODE_URL__"

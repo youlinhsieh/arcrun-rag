@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>Arcrun</title>
+  <!-- 🔴 共用底層：色票／字體／紙張紋理的**唯一真相源**是 arcrun-cis/css/arcrun-cis.css。
+       leo 08-04：「不會這裡又寫了一個新的 CSS？前面剛剛才說過不要創造新的？」
+       ⇒ 這份是複製進來給 build 用的，**要改配色去改 arcrun-cis/css/ 那份**。 -->
+  <link rel="stylesheet" href="./src/arcrun-cis.css"/>
+  <link rel="stylesheet" href="./src/style.css"/>
+</head>
+<body>
+<div id="app">
+  <!-- ── 左側邊欄（Google Drive 風格；leo：「左方側邊欄，在右方替換頁面」）── -->
+  <aside id="side">
+    <div class="brand">
+      <img class="wm-ink"   src="./src/assets/arcrun-lockup-h-ink-trimmed.png" alt="Arcrun"/>
+      <img class="wm-paper" src="./src/assets/arcrun-lockup-h-paper-trimmed.png" alt="Arcrun"/>
+    </div>
+
+    <!-- 側邊欄由 JS 依帳號數動態產生（每個知識庫一頁，leo 08-04 指定） -->
+    <nav id="nav"></nav>
+
+    <div class="side-foot">
+      <div class="ver" id="ver"></div>
+    </div>
+  </aside>
+
+  <!-- ── 右側內容區（換頁）── -->
+  <section id="content">
+    <header>
+      <div class="status">
+        <div class="big" id="statusBig">啟動中…</div>
+        <div class="sub" id="statusSub"></div>
+      </div>
+      <button id="themeBtn" title="切換淺色／深色">◐</button>
+      <button class="primary" id="btnSync">立刻同步</button>
+    </header>
+    <main id="page"></main>
+  </section>
+</div>
+
+<!-- 內嵌覆蓋層，不另開小視窗 -->
+<div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
+
+<script src="./src/main.js" type="module"></script>
+</body>
+</html>

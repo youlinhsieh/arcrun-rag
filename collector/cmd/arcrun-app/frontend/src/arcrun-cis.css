@@ -1,0 +1,33 @@
+/* arcrun-cis.css — Arcrun 全站共用樣式底層（唯一真相源）
+ *
+ * 🔴 leo 2026-08-04：「不會這裡又寫了一個新的 CSS？前面剛剛才說過**不要創造新的**？」
+ *
+ * 病根：portal 的樣式**內嵌在 HTML 裡**（單一 <style>），沒有獨立檔
+ * ⇒ portal／landing／install／daemon **各自抄一份** ⇒ 必然漂移。
+ * ⇒ 抽出這一份，四邊都引用它。**要改配色只改這裡。**
+ *
+ * 內容＝CIS 官方色票（arcrun-cis/README.md 的 Colour 表）＋字體＋紙張紋理。
+ * 這裡**只放共用底層**，各站自己的版面/元件樣式仍在各站。
+ */
+
+:root {
+    --paper-a: #FDFCFB; --paper-b: #F2F1ED;
+    --ink: #17181A; --ink-rgb: 23,24,26;
+    --amber: #B04A2F; --amber-rgb: 176,74,47;
+    --ok: #1d7a48; --ok-rgb: 29,122,72; --ok-soft: #1d6b40;
+    --err: #b03a26; --err-rgb: 176,58,38;
+    --well: rgba(23,24,26,.06); --well2: rgba(23,24,26,.08);
+    --bar-bg: #F2F1ED; --track: rgba(23,24,26,.12); --knob: #FDFCFB;
+  }
+  :root[data-theme="dark"] {
+    --paper-a: #1b1c1e; --paper-b: #1e1f21;
+    --ink: #FDFCFB; --ink-rgb: 253,252,251;
+    --amber: #D9784F; --amber-rgb: 217,120,79;
+    --ok: #7fe0a8; --ok-rgb: 63,190,120; --ok-soft: #a8e8c4;
+    --err: #e58575; --err-rgb: 217,95,76;
+    --well: rgba(0,0,0,.25); --well2: rgba(0,0,0,.3);
+    --bar-bg: #17181A; --track: rgba(255,255,255,.08); --knob: #FDFCFB;
+  }
+
+html, body { margin: 0; background: repeating-linear-gradient(0deg,var(--paper-a) 0px,var(--paper-a) 3px,var(--paper-b) 3px,var(--paper-b) 4px); color: var(--ink);
+    font-family: -apple-system, "IBM Plex Sans", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; font-size: 16px; -webkit-font-smoothing: antialiased; }

@@ -1,0 +1,8 @@
+---
+// Header.astro — 覆寫 Starlight 預設 Header，在它上面加一條跨站導覽（t185）。
+// 只做「包一層」，不重寫 Starlight 自己的 header（搜尋框／目錄鈕等全部保留）。
+import Default from '@astrojs/starlight/components/Header.astro';
+import SiteNav from './SiteNav.astro';
+---
+<SiteNav />
+<Default><slot /></Default>

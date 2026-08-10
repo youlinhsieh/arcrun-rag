@@ -1,0 +1,730 @@
+[
+  {
+    "file": "graph-neighbors.local.yaml",
+    "name": "graph_neighbors",
+    "description": "同步查詢：從 KBDB triplet 記錄建鄰接表，記憶體 BFS 找 N 跳鄰居。 arcrun-rag 產品包版（零件走安裝時代入的 worker URL）。\n",
+    "flow": [
+      "input >> ON_SUCCESS >> fetch_triplets",
+      "fetch_triplets >> ON_SUCCESS >> bfs_neighbors"
+    ],
+    "config": {
+      "fetch_triplets": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "bfs_neighbors": {
+        "component": "__CODE_URL__",
+        "code": "let records = input.records;\nif (typeof records === 'string') { try { records = JSON.parse(records); } catch (e) { records = []; } }\nif (records && !Array.isArray(records) && Array.isArray(records.records)) records = records.records;\nif (!Array.isArray(records)) records = [];\nconst start = String(input.start == null ? '' : input.start);\nconst maxDepth = Math.max(1, parseInt(String(input.depth == null ? 1 : input.depth), 10) || 1);\nconst directed = String(input.directed == null ? '' : input.directed) === 'true';\nif (!start) return { success: false, error: 'graph_neighbors 缺 start（node）參數' };\n// 比對用正規化 key（NFKC＋小寫＋trim）：搜「rag」要能命中節點「RAG」；顯示一律用庫裡原名。\nfunction norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }\nconst adj = new Map();\nconst display = new Map();\nfunction addEdge(from, to, predicate) {\n  const fk = norm(from), tk = norm(to);\n  if (!display.has(fk)) display.set(fk, String(from).trim());\n  if (!display.has(tk)) display.set(tk, String(to).trim());\n  if (!adj.has(fk)) adj.set(fk, []);\n  adj.get(fk).push({ node: tk, predicate: predicate });\n}\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : r;\n  if (!v || typeof v !== 'object') continue;\n  if (v.status === 'deprecated') continue;\n  const s = v.subject, p = v.predicate, o = v.object;\n  if (!s || !o) continue;\n  addEdge(s, o, p);\n  if (!directed) addEdge(o, s, p);\n}\nconst startKey = norm(start);\nconst resolvedStart = display.get(startKey) || start;\nconst visited = new Set([startKey]);\nlet frontier = [startKey];\nconst neighbors = [];\nfor (let d = 1; d <= maxDepth; d++) {\n  const next = [];\n  for (const cur of frontier) {\n    const outs = adj.get(cur) || [];\n    for (const e of outs) {\n      if (visited.has(e.node)) continue;\n      visited.add(e.node);\n      neighbors.push({ node: display.get(e.node) || e.node, predicate: e.predicate, from: display.get(cur) || cur, depth: d });\n      next.push(e.node);\n    }\n  }\n  frontier = next;\n  if (frontier.length === 0) break;\n}\nreturn { success: true, start: resolvedStart, query: start, depth: maxDepth, directed: directed, neighbors: neighbors, count: neighbors.length };\n",
+        "input": {
+          "records": "{{fetch_triplets.data.body}}",
+          "start": "{{input.node}}",
+          "depth": "{{input.depth}}",
+          "directed": "{{input.directed}}"
+        },
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 2097152
+        }
+      }
+    },
+    "placeholders": [
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "fetch_triplets",
+          "type": "Component",
+          "componentId": "fetch_triplets",
+          "label": "fetch_triplets"
+        },
+        {
+          "id": "bfs_neighbors",
+          "type": "Component",
+          "componentId": "bfs_neighbors",
+          "label": "bfs_neighbors"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "fetch_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_triplets",
+          "to": "bfs_neighbors",
+          "type": "ON_SUCCESS"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-chat.local.yaml",
+    "name": "rag_chat",
+    "description": "同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Workers AI 把檢索結果組成回答（繁中、附出處，**免金鑰**）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。 v2：選頁改 IDF 字面重疊主導＋tombstone/deprecated 過濾＋次頁門檻＋graph 比對正規化。\n",
+    "flow": [
+      "input >> ON_SUCCESS >> prep",
+      "prep >> ON_SUCCESS >> kw_search",
+      "kw_search >> ON_SUCCESS >> sem_search",
+      "sem_search >> ON_SUCCESS >> fetch_triplets",
+      "fetch_triplets >> ON_SUCCESS >> fetch_blocks_a",
+      "fetch_blocks_a >> ON_SUCCESS >> fetch_blocks_b",
+      "fetch_blocks_b >> ON_SUCCESS >> fetch_blocks_c",
+      "fetch_blocks_c >> ON_SUCCESS >> assemble",
+      "assemble >> ON_SUCCESS >> ask_llm",
+      "ask_llm >> ON_SUCCESS >> finalize"
+    ],
+    "config": {
+      "prep": {
+        "component": "__CODE_URL__",
+        "code": "const q = String(input.question == null ? '' : input.question).trim();\nif (!q) return { success: false, error: 'rag_chat 缺 question 參數' };\nreturn { success: true, question: q, q_enc: encodeURIComponent(q) };\n",
+        "input": {
+          "question": "{{input.question}}"
+        },
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "kw_search": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=15",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "sem_search": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&mode=semantic&limit=15",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_triplets": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_blocks_a": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=0",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_blocks_b": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=60",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_blocks_c": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=120",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "assemble": {
+        "component": "__CODE_URL__",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nfunction norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }\nconst TOMB = '（舊管線產物';\nfunction usable(e) {\n  if (!e || typeof e !== 'object') return false;\n  if (!e.page_name) return false;\n  const c = String(e.content || '');\n  if (!c.trim() || c.indexOf(TOMB) === 0 || c.indexOf('（重複頁') === 0) return false;\n  if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); if (m && m.status === 'deprecated') return false; } catch (err) {} }\n  return true;\n}\nfunction srcOf(e) { if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); return String(m.source || ''); } catch (err) {} } return ''; }\nfunction chunkIdx(src) { const m = /#(\\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }\nfunction toksOf(text) {\n  const t = norm(text);\n  const out = new Set();\n  const ascii = t.match(/[a-z0-9]{2,}/g) || [];\n  for (const w of ascii) out.add(w);\n  const cjk = t.replace(/[^一-鿿]/g, ' ');\n  for (const seg of cjk.split(/\\s+/)) {\n    for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));\n  }\n  return out;\n}\nconst question = String(input.question || '');\nconst qToks = toksOf(question);\n// 全庫 blocks（三段分頁合併）→ usable → 去重（同頁同內容；同名卡 create-only 疊出的重複只留一份）\nconst all = [].concat(\n  ((parse(input.blocks_a) || {}).entries) || [],\n  ((parse(input.blocks_b) || {}).entries) || [],\n  ((parse(input.blocks_c) || {}).entries) || []\n);\nconst seenKey = new Set();\nconst blocks = [];\nfor (const e of all) {\n  if (!usable(e)) continue;\n  const k = e.page_name + '|' + String(e.content).trim();\n  if (seenKey.has(k)) continue;\n  seenKey.add(k);\n  blocks.push(e);\n}\n// IDF：token 出現在越少 block 越有鑑別力\nconst N = blocks.length || 1;\nconst df = new Map();\nconst bToks = [];\nfor (const e of blocks) {\n  const ts = toksOf(e.content);\n  bToks.push(ts);\n  for (const t of ts) df.set(t, (df.get(t) || 0) + 1);\n}\nconst pageBlockScores = new Map();\nblocks.forEach(function (e, i) {\n  let sc = 0;\n  for (const t of qToks) {\n    if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));\n  }\n  if (sc <= 0) return;\n  if (!pageBlockScores.has(e.page_name)) pageBlockScores.set(e.page_name, []);\n  pageBlockScores.get(e.page_name).push(sc);\n});\nconst score = new Map();\nfor (const entry of pageBlockScores) {\n  const top3 = entry[1].slice().sort(function (a, b) { return b - a; }).slice(0, 3);\n  score.set(entry[0], top3.reduce(function (a, b) { return a + b; }, 0));\n}\n// keyword / semantic 小加分（與搜尋頁同一套 API 的佐證訊號）\nconst kw = parse(input.kw_body), sem = parse(input.sem_body);\nfor (const e of ((kw && kw.entries) || []).filter(usable)) score.set(e.page_name, (score.get(e.page_name) || 0) + 2);\n((sem && sem.entries) || []).filter(usable).slice(0, 10).forEach(function (e) {\n  score.set(e.page_name, (score.get(e.page_name) || 0) + 0.4);\n});\nconst pages = Array.from(score.keys()).sort(function (a, b) { return (score.get(b) || 0) - (score.get(a) || 0); });\nconst p1 = pages[0] || '';\nconst s1 = score.get(p1) || 0;\n// 次頁門檻：分數 ≥ max(3, 0.4×主頁分)——單發雜訊進不了出處\nlet p2 = '';\nif (pages.length > 1) {\n  const cand = pages[1];\n  const s2 = score.get(cand) || 0;\n  if (s2 >= Math.max(3, 0.4 * s1)) p2 = cand;\n}\n// graph_facts：問句包含的實體（正規化比對）之邊\nlet records = ((parse(input.tp_body) || {}).records) || [];\nif (!Array.isArray(records)) records = [];\nconst qn = norm(question);\nconst facts = [];\nconst seenFact = new Set();\nfor (const r of records) {\n  const v = (r && r.values && typeof r.values === 'object') ? r.values : r;\n  if (!v || v.status === 'deprecated' || !v.subject || !v.object) continue;\n  const sN = norm(v.subject), oN = norm(v.object);\n  const hit = (sN.length >= 2 && qn.indexOf(sN) !== -1) || (oN.length >= 2 && qn.indexOf(oN) !== -1);\n  if (!hit) continue;\n  const line = v.subject + ' ' + (v.predicate || '→') + ' ' + v.object;\n  if (seenFact.has(line)) continue;\n  seenFact.add(line);\n  facts.push(line);\n  if (facts.length >= 12) break;\n}\n// 聚合選中頁 blocks（主頁在前、各頁按 chunk 序），8000 字上限\nconst picked = [];\nfunction take(page, mode) {\n  if (!page) return;\n  const es = blocks.filter(function (e) { return e.page_name === page; });\n  es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });\n  for (const e of es) picked.push({ page: page, mode: mode, content: String(e.content), source: srcOf(e) });\n}\ntake(p1, '主命中頁');\nif (p2 && p2 !== p1) take(p2, '相關頁');\nlet budget = 8000;\nconst ctxBlocks = [];\nfor (const bk of picked) {\n  if (budget <= 0) break;\n  let c = bk.content;\n  if (c.length > budget) c = c.slice(0, budget);\n  budget -= c.length;\n  ctxBlocks.push({ page: bk.page, mode: bk.mode, content: c, source: bk.source });\n}\nconst sources = ctxBlocks.map(function (bk, i) { return { n: i + 1, mode: bk.mode, page: bk.page, source: bk.source }; });\nlet ctx = '';\nctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自《' + bk.page + '》）\\n' + bk.content + '\\n\\n'; });\nconst factsTxt = facts.length ? ('已知知識關聯（也是可引用的資料，可據此回答）：\\n' + facts.map(function (f) { return '- ' + f; }).join('\\n') + '\\n\\n') : '';\nconst prompt = '你是企業知識庫問答助手。只根據下面提供的資料回答，資料裡沒有的不要編造；' +\n  '引用時標注資料編號如 [1]、[2]。\\n\\n' +\n  factsTxt + '資料：\\n' + (ctx || '（沒有找到相關資料）\\n') +\n  '\\n問題：' + question + '\\n\\n' +\n  '輸出規則（嚴格遵守）：不要輸出思考過程或英文草稿，只輸出一行——' +\n  '以【答】開頭、用正體中文、一段話、帶 [n] 引用；資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';\nreturn { success: true, prompt: prompt, sources: sources, graph_facts: facts, p1: p1, p2: p2, has_ctx: ctxBlocks.length > 0 };\n",
+        "input": {
+          "kw_body": "{{kw_search.data.body}}",
+          "sem_body": "{{sem_search.data.body}}",
+          "tp_body": "{{fetch_triplets.data.body}}",
+          "blocks_a": "{{fetch_blocks_a.data.body}}",
+          "blocks_b": "{{fetch_blocks_b.data.body}}",
+          "blocks_c": "{{fetch_blocks_c.data.body}}",
+          "question": "{{prep.data.question}}"
+        },
+        "limits": {
+          "timeout_ms": 8000,
+          "max_output_bytes": 4194304
+        }
+      },
+      "ask_llm": {
+        "component": "workers_ai_chat",
+        "prompt": "{{assemble.data.prompt}}"
+      },
+      "finalize": {
+        "component": "__CODE_URL__",
+        "code": "const answer = String(input.answer == null ? '' : input.answer).trim();\nconst sources = Array.isArray(input.sources) ? input.sources : [];\nconst facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];\nreturn {\n  success: true,\n  answer: answer || '（知識庫裡沒有找到足以回答的資料。）',\n  sources: answer ? sources : [],\n  graph_facts: facts\n};\n",
+        "input": {
+          "answer": "{{ask_llm.text}}",
+          "sources": "{{assemble.data.sources}}",
+          "graph_facts": "{{assemble.data.graph_facts}}"
+        },
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 1048576
+        }
+      }
+    },
+    "placeholders": [
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__KBDB_TOKEN__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "prep",
+          "type": "Component",
+          "componentId": "prep",
+          "label": "prep"
+        },
+        {
+          "id": "kw_search",
+          "type": "Component",
+          "componentId": "kw_search",
+          "label": "kw_search"
+        },
+        {
+          "id": "sem_search",
+          "type": "Component",
+          "componentId": "sem_search",
+          "label": "sem_search"
+        },
+        {
+          "id": "fetch_triplets",
+          "type": "Component",
+          "componentId": "fetch_triplets",
+          "label": "fetch_triplets"
+        },
+        {
+          "id": "fetch_blocks_a",
+          "type": "Component",
+          "componentId": "fetch_blocks_a",
+          "label": "fetch_blocks_a"
+        },
+        {
+          "id": "fetch_blocks_b",
+          "type": "Component",
+          "componentId": "fetch_blocks_b",
+          "label": "fetch_blocks_b"
+        },
+        {
+          "id": "fetch_blocks_c",
+          "type": "Component",
+          "componentId": "fetch_blocks_c",
+          "label": "fetch_blocks_c"
+        },
+        {
+          "id": "assemble",
+          "type": "Component",
+          "componentId": "assemble",
+          "label": "assemble"
+        },
+        {
+          "id": "ask_llm",
+          "type": "Component",
+          "componentId": "ask_llm",
+          "label": "ask_llm"
+        },
+        {
+          "id": "finalize",
+          "type": "Component",
+          "componentId": "finalize",
+          "label": "finalize"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "prep",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep",
+          "to": "kw_search",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "kw_search",
+          "to": "sem_search",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "sem_search",
+          "to": "fetch_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_triplets",
+          "to": "fetch_blocks_a",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_blocks_a",
+          "to": "fetch_blocks_b",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_blocks_b",
+          "to": "fetch_blocks_c",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_blocks_c",
+          "to": "assemble",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "assemble",
+          "to": "ask_llm",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "ask_llm",
+          "to": "finalize",
+          "type": "ON_SUCCESS"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-ingest-card.local.yaml",
+    "name": "rag_ingest_card",
+    "description": "收本地萃好的 wiki 卡（inline card_content）→ 機械切塊寫 KBDB blocks ＋解析「## 關聯」 寫 triplets（source_uri=kb://path，帶 library）。零 LLM（寫 KBDB 仍需 kbdb_internal_token）， 是四步定稿（本地萃卡）唯一的雲端收口。（daemon-beta task 5）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> list_old_blocks",
+      "list_old_blocks >> ON_SUCCESS >> list_old_triplets",
+      "list_old_triplets >> ON_SUCCESS >> pick_stale",
+      "pick_stale >> 對每個 dead_entry >> delete_entry",
+      "pick_stale >> 對每個 dead_record >> delete_record",
+      "pick_stale >> ON_SUCCESS >> parse_card",
+      "parse_card >> 對每個 block >> post_block",
+      "parse_card >> 對每個 rel >> post_triplet"
+    ],
+    "config": {
+      "list_old_blocks": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{input.page_name}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_triplets": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "pick_stale": {
+        "component": "__CODE_URL__",
+        "input": {
+          "blocks_body": "{{list_old_blocks.data.body}}",
+          "triplets_body": "{{list_old_triplets.data.body}}",
+          "path": "{{input.path}}",
+          "page_name": "{{input.page_name}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst page = String(input.page_name || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && e.id) dead_entry.push({ id: e.id });\n}\nconst ar = parse(input.triplets_body);\nconst recs = (ar && (ar.records || ar.result)) || [];\nconst dead_record = [];\nfor (const r of recs) {\n  const v = r.values || r;\n  const src = String(v.source_uri || '');\n  const subj = String(v.subject || '');\n  const rid = r.record_id || r.id;\n  if (!rid) continue;\n  const hit = (path && src.indexOf('kb://' + path) === 0) || (!src && page && subj === page);\n  if (hit) dead_record.push({ record_id: rid });\n}\nreturn { dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+      },
+      "delete_entry": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "DELETE",
+        "url": "__KBDB_BASE__/entries/{{dead_entry.id}}",
+        "headers": {
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "delete_record": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "DELETE",
+        "url": "__KBDB_BASE__/records/{{dead_record.record_id}}",
+        "headers": {
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "parse_card": {
+        "component": "__CODE_URL__",
+        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\nconst srcPath = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath, library: lib };\n});\nconst rels = [];\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib });\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
+        "input": {
+          "card": "{{input.card_content}}",
+          "page_name": "{{input.page_name}}",
+          "path": "{{input.path}}",
+          "library": "{{input.library}}"
+        },
+        "limits": {
+          "timeout_ms": 5000,
+          "max_output_bytes": 4194304
+        }
+      },
+      "post_block": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "entry_type": "block",
+          "content": "{{block.content}}",
+          "owner_id": "__NAMESPACE__",
+          "page_name": "{{block.page_name}}",
+          "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"embed\":true}"
+        }
+      },
+      "post_triplet": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/records",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "template": "triplet",
+          "owner_id": "__NAMESPACE__",
+          "values": {
+            "subject": "{{rel.subject}}",
+            "predicate": "{{rel.predicate}}",
+            "object": "{{rel.object}}",
+            "source_uri": "{{rel.source_uri}}",
+            "status": "{{rel.status}}",
+            "library": "{{rel.library}}"
+          }
+        }
+      }
+    },
+    "placeholders": [
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "list_old_blocks",
+          "type": "Component",
+          "componentId": "list_old_blocks",
+          "label": "list_old_blocks"
+        },
+        {
+          "id": "list_old_triplets",
+          "type": "Component",
+          "componentId": "list_old_triplets",
+          "label": "list_old_triplets"
+        },
+        {
+          "id": "pick_stale",
+          "type": "Component",
+          "componentId": "pick_stale",
+          "label": "pick_stale"
+        },
+        {
+          "id": "delete_entry",
+          "type": "Component",
+          "componentId": "delete_entry",
+          "label": "delete_entry"
+        },
+        {
+          "id": "delete_record",
+          "type": "Component",
+          "componentId": "delete_record",
+          "label": "delete_record"
+        },
+        {
+          "id": "parse_card",
+          "type": "Component",
+          "componentId": "parse_card",
+          "label": "parse_card"
+        },
+        {
+          "id": "post_block",
+          "type": "Component",
+          "componentId": "post_block",
+          "label": "post_block"
+        },
+        {
+          "id": "post_triplet",
+          "type": "Component",
+          "componentId": "post_triplet",
+          "label": "post_triplet"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "list_old_blocks",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks",
+          "to": "list_old_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_triplets",
+          "to": "pick_stale",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "pick_stale",
+          "to": "delete_entry",
+          "type": "FOREACH",
+          "iterator": "dead_entry"
+        },
+        {
+          "from": "pick_stale",
+          "to": "delete_record",
+          "type": "FOREACH",
+          "iterator": "dead_record"
+        },
+        {
+          "from": "pick_stale",
+          "to": "parse_card",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "parse_card",
+          "to": "post_block",
+          "type": "FOREACH",
+          "iterator": "block"
+        },
+        {
+          "from": "parse_card",
+          "to": "post_triplet",
+          "type": "FOREACH",
+          "iterator": "rel"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-takedown-direct.local.yaml",
+    "name": "rag_takedown_direct",
+    "description": "daemon 直送下架（v1 無 R2）：按 page_name 撈 kbdb blocks、逐筆核對 source_path 後 **真刪**；對應 triplets（subject==頁名 或 source_uri==kb://path）一併真刪。 （2026-08-05 由 deprecate 改真刪；順帶清掉既有的 deprecated 舊垃圾。）（task 11）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> prep",
+      "prep >> ON_SUCCESS >> list_dead_blocks",
+      "list_dead_blocks >> ON_SUCCESS >> build_deprecations",
+      "build_deprecations >> 對每個 dead_entry >> deprecate_entry",
+      "build_deprecations >> ON_SUCCESS >> list_triplets",
+      "list_triplets >> ON_SUCCESS >> pick_dead_triplets",
+      "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+    ],
+    "config": {
+      "prep": {
+        "component": "__CODE_URL__",
+        "code": "const page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };\nconst path = String(input.path || (page + '.md'));\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, source_uri: 'kb://' + path };\n",
+        "input": {
+          "page_name": "{{input.page_name}}",
+          "path": "{{input.path}}"
+        },
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "list_dead_blocks": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "build_deprecations": {
+        "component": "__CODE_URL__",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst a = parse(input.blocks_body);\nconst entries = (a && a.entries) || [];\nconst path = String(input.path || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst dead_entries = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，\n  // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else {\n    hit = true;\n  }\n  if (!hit) continue;\n  dead_entries.push({ id: e.id });   // 真刪只需要 id\n}\nreturn { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };\n",
+        "input": {
+          "blocks_body": "{{list_dead_blocks.data.body}}",
+          "path": "{{prep.data.path}}"
+        },
+        "limits": {
+          "timeout_ms": 5000,
+          "max_output_bytes": 4194304
+        }
+      },
+      "deprecate_entry": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "DELETE",
+        "url": "__KBDB_BASE__/entries/{{dead_entry.id}}",
+        "headers": {
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_triplets": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "pick_dead_triplets": {
+        "component": "__CODE_URL__",
+        "code": "let body = input.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nlet records = (body && Array.isArray(body.records)) ? body.records : [];\nconst page = String(input.page_name || '');\nconst srcUri = String(input.source_uri || '');\nconst dead_records = [];\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;\n  // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。\n  if (!v || !r.record_id) continue;\n  const hit = v.subject === page || (srcUri && v.source_uri === srcUri);\n  if (!hit) continue;\n  dead_records.push({ record_id: r.record_id });\n}\nreturn { success: true, dead_records: dead_records, count: dead_records.length };\n",
+        "input": {
+          "body": "{{list_triplets.data.body}}",
+          "page_name": "{{prep.data.page_name}}",
+          "source_uri": "{{prep.data.source_uri}}"
+        },
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 2097152
+        }
+      },
+      "deprecate_triplet": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "DELETE",
+        "url": "__KBDB_BASE__/records/{{dead_record.record_id}}",
+        "headers": {
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      }
+    },
+    "placeholders": [
+      "__CARDS_PREFIX__",
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "prep",
+          "type": "Component",
+          "componentId": "prep",
+          "label": "prep"
+        },
+        {
+          "id": "list_dead_blocks",
+          "type": "Component",
+          "componentId": "list_dead_blocks",
+          "label": "list_dead_blocks"
+        },
+        {
+          "id": "build_deprecations",
+          "type": "Component",
+          "componentId": "build_deprecations",
+          "label": "build_deprecations"
+        },
+        {
+          "id": "deprecate_entry",
+          "type": "Component",
+          "componentId": "deprecate_entry",
+          "label": "deprecate_entry"
+        },
+        {
+          "id": "list_triplets",
+          "type": "Component",
+          "componentId": "list_triplets",
+          "label": "list_triplets"
+        },
+        {
+          "id": "pick_dead_triplets",
+          "type": "Component",
+          "componentId": "pick_dead_triplets",
+          "label": "pick_dead_triplets"
+        },
+        {
+          "id": "deprecate_triplet",
+          "type": "Component",
+          "componentId": "deprecate_triplet",
+          "label": "deprecate_triplet"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "prep",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep",
+          "to": "list_dead_blocks",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks",
+          "to": "build_deprecations",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "build_deprecations",
+          "to": "deprecate_entry",
+          "type": "FOREACH",
+          "iterator": "dead_entry"
+        },
+        {
+          "from": "build_deprecations",
+          "to": "list_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_triplets",
+          "to": "pick_dead_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "pick_dead_triplets",
+          "to": "deprecate_triplet",
+          "type": "FOREACH",
+          "iterator": "dead_record"
+        }
+      ]
+    }
+  }
+]

@@ -1,32 +1,65 @@
-# rag_ingest（cards 版 v2）— 定稿卡 push → 機械切塊＋解析三元組行 → KBDB（arcrun-rag 包件）
+# rag_ingest（cards 版 v3）— collector sync 觸發 → 定稿卡從 R2 撈 → 機械切塊＋解析三元組行 → KBDB
 #
-# 血統：2026-07-17 demo 管線反轉的 rag_ingest v2 之 repo 落地（T-pack-v2）——原版定義只存
-#   demo WEBHOOKS KV 讀不回，本檔照 07-17 實測行為重建，即日起是 repo 真相源。
-#   （v1「collected/ 原文直切塊」版＝rag-ingest.yaml，本機 collector 鏈仍用它；本檔是
-#   產品主線：只吃 __CARDS_PREFIX__ 定稿卡＝總庫零原文垃圾。）
+# 血統：v2（2026-07-18 T-pack-v2，Gitea push webhook 版）→ v3（2026-07-19 SDD
+#   ingest-hash-trigger task 4，de-Gitea）：觸發來源從「Gitea push 事件」改為
+#   「collector sync 直打 named-webhook」，payload 從 Gitea push 格式改為
+#   schemas/collector-trigger.v1.schema.json（逐欄對照＝schemas/MIGRATION-webhook-payload.md）。
+#   named-webhook 端點本身（POST {cypher}/webhooks/named/{ns}/rag_ingest/trigger）是 arcrun
+#   原生觸發機制，design 鐵律段明言保留——換的是「誰打它、帶什麼」，不是端點。
 #
-# 觸發：Gitea repo webhook（push）指向 POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest/trigger
-#（與 rag_extract 掛同一個 repo 的兩條 webhook；本件靠路徑前綴只認 cards）
+# 觸發：collector sync（本機 Go daemon）POST collector-trigger.v1 payload：
+#   { schema_version:1, folder_id, events:[{type:added|modified|removed|renamed, path,
+#     old_path?, source_hash, size?, r2_key?}], warnings:[{code,message,...}] }
 #
-# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __GITEA_BASE__ / __GITEA_TOKEN__ /
-#   __HTTP_REQ_URL__ / __CODE_URL__ / __CARDS_PREFIX__（生產 system-dev/wiki/cards/；
-#   測試可換 cards-test 前綴完全隔離）
+# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__ /
+#   __CARDS_PREFIX__（生產 system-dev/wiki/cards/；測試可換前綴完全隔離）/
+#   __INDEX_PATH__（藏書索引，narrative 抽取用）/ __LIBRARY__（藏書地圖歸庫鍵；demo 預設 kb）/
+#   __CF_ACCOUNT_ID__ / __R2_BUCKET__ / __CF_R2_TOKEN__（R2 原稿讀取：CF REST API Bearer；
+#   sed 佔位同 push-demo-workflow.sh 慣例——生產正解 {{credential.*}}，等 CF_SECRETS_API_TOKEN）
+#   ※ v2 的 GITEA_BASE/GITEA_TOKEN 佔位已作廢（MIGRATION 對照表）。
 #
-# v2 與 v1 的差異：
-#   ① 只吃 __CARDS_PREFIX__ 下的 .md（定稿卡），blocks 機械切塊同 v1。
-#   ② 解析卡內「## 關聯」的 `A >> 謂詞 >> B` 行 → 逐條寫 triplet（帶 source_uri）——
-#      graph 第一次有內容級三元組；另保留每卡一條 part_of 目錄邊。
-#      foreach 教訓：rel 物件自帶全部欄位（跨節點模板在 foreach 內不展開）。
-#   ③ removed 分支：deprecate 該卡 blocks ＋ triplet 比對「subject==卡名 **或**
-#      source_uri==gitea://<路徑>」——治 2026-07-18 實撞的 G9 缺口（內容邊主詞≠卡名
-#      逃過下架，恐龍殘影實例）。
-#   ④ 無 AUTO_DIGEST（卡已是精耕，不再叫 rag_wiki_digest）。
+# v3 與 v2 的差異：
+#   ① 輸入改 events[]（取代 commits[]）；schema_version !== 1 整輪 no-op（誠實擋版本漂移）。
+#   ② 原稿改從 R2 撈：GET https://api.cloudflare.com/client/v4/accounts/__CF_ACCOUNT_ID__/
+#      r2/buckets/__R2_BUCKET__/objects/{r2_key}（collector 已 content-addressed 上傳，
+#      key=raw/<sha256>）。⚠ http_request 零件回應上限 ~64KB（mistakes.md）——定稿卡遠小於此；
+#      超大卡會 fetch 失敗＝該卡跳過，收斂驗收（SDD task 8/9）盯。
+#   ③ source_uri 語意遷移：gitea://<路徑> → kb://<路徑>（repo 概念移除；路徑＝資料夾相對路徑）。
+#      不含 folder_id＝manifest 重建（folder_id 重生成）也不斷鏈；同庫多資料夾撞路徑＝已知縫。
+#      舊資料（gitea:// 前綴）下架時 source_uri 比對不中、僅 subject==卡名 那層兜底——README
+#      切換 checklist 註明。
+#   ④ 新增 renamed 分支（R5）：更新路徑映射（blocks metadata.source / triplets source_uri），
+#      並把 blocks 的 page_name 一併 PATCH 成「新檔名導出頁名」——**頁名不變式**（2026-07-19
+#      二修，總管裁定）：page_name 永遠＝現行檔名導出頁名，removed 查詢因此一發命中（見⑤）。
+#      不 retire、不重萃、不重傳、零 LLM。triplet subject 不動（重萃才會換——設計內）。
+#      kbdb PATCH /entries/:id 可更新 page_name（updateEntry 白名單含 page_name，
+#      kbdb/src/actions/entry-crud.ts 實查）。
+#      跨界搬移補完：renamed「搬進」前綴＝轉 added（r2_key 由 source_hash 導出——renamed 語意
+#      保證同內容已上過 R2）；「搬出」前綴＝轉 removed。collector 無前綴概念，界線由本件補。
+#   ⑤ removed 分支（2026-07-19 live e2e 二修，SDD task 5 前置）：初版「檔名導出 page_name」
+#      查 blocks 撞「R5 改名不動 page_name→檔名漂移」＝改名卡刪除時查 0 筆；一修（27070dd）
+#      改 R2 撈原稿解 H1、三層 foreach（removed_file→dead_card→dead_entry）——live e2e 第二輪
+#      實證 **H1 候選路徑失效**（改名前舊 blocks 零命中；filename 候選全通）。二修＝改立
+#      「頁名不變式」（見④）拆掉整段 H1 複雜度：fetch_dead_raw／resolve_dead_page／dead_card
+#      迭代層全砍，list_dead_blocks 直接 page_name={{removed_file.page_name}}（檔名導出）查詢，
+#      砍回兩層 foreach（既有實證形）——因不變式成立，一發命中。build_deprecations 逐筆核對
+#      （source_path／source kb:// 前綴）防「同頁名不同卡」誤殺——實測正確，保留。triplets
+#      照舊 subject==頁名 或 source_uri 比對（治 G9，實測全通）。
+#      殘餘邊角：改名發生在本修復部署前的舊卡（page_name 從未被 PATCH 過）刪除時可能漏——
+#      一次重萃自癒；今晚 demo 殭屍已由總管手動清。
+#      防呆輪（mass_delete_guard）collector 已壓下 removed 事件，
+#      本件天然不會下架，warnings 隨 collect_changed 輸出留在執行紀錄（notify 由 collector 端
+#      stdout/daemon 負責——cypher IF 邊恆 true，workflow 內無法乾淨 gate 一個 notify 節點）。
+#   ⑥ M3 recompute 尾鏈原樣保留；fetch_index 改從 R2 撈（INDEX 本輪有變更事件才有 r2_key
+#      可撈→narrative 更新；沒有＝ON_FAIL 邊照樣 recompute，不帶 narrative，端點保留舊值）。
+#      commit_hash 作廢（input.after 已死，MIGRATION 表）。
 
 name: rag_ingest
 description: >
-  Gitea push webhook → 濾出 __CARDS_PREFIX__ 下新增/修改的定稿卡 → 機械切塊寫 KBDB blocks
-  ＋解析「## 關聯」行寫 triplets（帶 source_uri）＋每卡一條 part_of；刪卡 → blocks/triplets
-  標 deprecated（含 source_uri 比對，治 G9 主詞≠卡名缺口）。（T-pack-v2 repo 真相源）
+  collector sync 觸發（collector-trigger.v1）→ 濾出 __CARDS_PREFIX__ 下 added/modified 定稿卡
+  → 原稿從 R2（raw/<sha256>）撈 → 機械切塊寫 KBDB blocks＋解析「## 關聯」行寫 triplets
+  （帶 source_uri=kb://路徑）；renamed → 只更新路徑映射（R5）；removed → blocks/triplets 標
+  deprecated（subject==卡名 或 source_uri 比對，治 G9）。（SDD ingest-hash-trigger task 4）
 
 flow:
   - "input >> ON_SUCCESS >> collect_changed"
@@ -34,71 +67,119 @@ flow:
   - "fetch_raw >> ON_SUCCESS >> parse_card"
   - "parse_card >> 對每個 block >> post_block"
   - "parse_card >> 對每個 rel >> post_triplet"
-  # removed 分支：刪卡 → 該卡 entries＋triplets 標 deprecated
+  # renamed 分支（R5）：只更新路徑映射——blocks 的 metadata.source 與 triplets 的 source_uri
+  - "collect_changed >> 對每個 renamed_file >> list_renamed_blocks"
+  - "list_renamed_blocks >> ON_SUCCESS >> build_remaps"
+  - "build_remaps >> 對每個 remap_entry >> patch_remap_entry"
+  - "build_remaps >> ON_SUCCESS >> list_renamed_triplets"
+  - "list_renamed_triplets >> ON_SUCCESS >> pick_renamed_triplets"
+  - "pick_renamed_triplets >> 對每個 remap_record >> remap_triplet"
+  # removed 分支（兩層 foreach＝既有實證形）：頁名不變式成立（renamed 分支 PATCH page_name）
+  # → 直接用現行檔名導出的 page_name 查 blocks 一發命中；逐筆核對防「同頁名不同卡」誤殺。
+  # （一修的 fetch_dead_raw→resolve_dead_page→dead_card 三層 H1 路徑 live e2e 實證失效，已拆。）
   - "collect_changed >> 對每個 removed_file >> list_dead_blocks"
   - "list_dead_blocks >> ON_SUCCESS >> build_deprecations"
   - "build_deprecations >> 對每個 dead_entry >> deprecate_entry"
   - "build_deprecations >> ON_SUCCESS >> list_triplets"
   - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
   - "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+  # M3 藏書地圖：ingest 尾端重算（引擎出邊依 flow 順序逐條 await——本組排在各 FOREACH
+  # 之後＝fetch_index 起跑時 blocks/triplets（含 renamed/removed 分支）已全部落庫，每輪恰好一次）。
+  # 失敗只是地圖舊：http 零件 4xx/5xx 回 success:false 不 throw，不 rollback ingest；
+  # INDEX 撈不到（本輪沒 INDEX 變更事件＝index_r2_key 空）走 ON_FAIL 邊照樣 recompute（不帶 narrative）。
+  - "collect_changed >> ON_SUCCESS >> fetch_index"
+  - "fetch_index >> ON_SUCCESS >> build_recompute"
+  - "fetch_index >> ON_FAIL >> build_recompute"
+  - "build_recompute >> ON_SUCCESS >> post_recompute"
 
 config:
+  # 1) 解析 collector-trigger.v1 payload → 三清單（file / renamed_file / removed_file）。
+  #    每個迭代物件自帶全部下游欄位（foreach 教訓：跨節點模板在 foreach 內不展開）。
   collect_changed:
     component: "__CODE_URL__"
     code: |
-      let commits = input.commits;
-      if (typeof commits === 'string') { try { commits = JSON.parse(commits); } catch (e) { commits = []; } }
-      if (!Array.isArray(commits)) commits = [];
-      const seen = new Set();
-      const files = [];
-      const ref = String(input.after || '');
-      const repo = String(input.repo_full || '');
+      let events = input.events;
+      if (typeof events === 'string') { try { events = JSON.parse(events); } catch (e) { events = []; } }
+      if (!Array.isArray(events)) events = [];
+      let warnings = input.warnings;
+      if (typeof warnings === 'string') { try { warnings = JSON.parse(warnings); } catch (e) { warnings = []; } }
+      if (!Array.isArray(warnings)) warnings = [];
+      // 消費端先驗版本再處理（schema 凍結：欄位變更＝開 v2 新檔）
+      if (String(input.schema_version) !== '1') {
+        return { success: false, error: 'unsupported schema_version: ' + String(input.schema_version) };
+      }
+      function isCard(p) { return typeof p === 'string' && p.indexOf('__CARDS_PREFIX__') === 0 && /\.md$/.test(p); }
       function pageOf(p) { return p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/, ''); }
-      for (const c of commits) {
-        for (const p of [].concat(c.added || [], c.modified || [])) {
-          if (p.indexOf('__CARDS_PREFIX__') !== 0) continue;
-          if (!/\.md$/.test(p)) continue;
-          if (seen.has(p)) continue;
-          seen.add(p);
-          files.push({ path: p, page_name: pageOf(p), ref: ref, repo_full: repo, enc_path: encodeURIComponent(p).replace(/%2F/g, '/') });
+      function uriOf(p) { return 'kb://' + p; }
+      function keyOf(h) { return 'raw/' + String(h || '').replace(/^sha256:/, ''); }
+      const files = [];        // added/modified → 撈原稿重萃
+      const renamed_files = []; // renamed（前綴內→前綴內）→ 只更新路徑映射
+      const removed_files = []; // removed（含 renamed 搬出前綴）→ deprecate
+      const seen = new Set();
+      let index_r2_key = '';   // 本輪若有 INDEX 變更事件，供 M3 narrative 抽取
+      for (const ev of events) {
+        if (!ev || typeof ev !== 'object') continue;
+        const p = String(ev.path || '');
+        if (p === '__INDEX_PATH__' && (ev.type === 'added' || ev.type === 'modified' || ev.type === 'renamed')) {
+          index_r2_key = ev.r2_key || keyOf(ev.source_hash);
+        }
+        if (ev.type === 'added' || ev.type === 'modified') {
+          if (!isCard(p) || !ev.r2_key || seen.has('f:' + p)) continue;
+          seen.add('f:' + p);
+          files.push({ path: p, page_name: pageOf(p), r2_key: ev.r2_key, source_uri: uriOf(p) });
+        } else if (ev.type === 'renamed') {
+          const op = String(ev.old_path || '');
+          const inNew = isCard(p), inOld = isCard(op);
+          if (inNew && inOld) {
+            renamed_files.push({ path: p, old_path: op, page_name_old: pageOf(op),
+                                 source_uri_old: uriOf(op), source_uri_new: uriOf(p) });
+          } else if (inNew && !inOld) {
+            // 搬進前綴＝視同新增卡；r2_key 由 hash 導出（renamed 語意＝同內容早已上過 R2）
+            if (seen.has('f:' + p)) continue;
+            seen.add('f:' + p);
+            files.push({ path: p, page_name: pageOf(p), r2_key: keyOf(ev.source_hash), source_uri: uriOf(p) });
+          } else if (!inNew && inOld) {
+            // 搬出前綴＝視同刪卡（頁名不變式：page_name 永遠＝現行檔名導出，直接可查）
+            removed_files.push({ path: op, page_name: pageOf(op), source_uri: uriOf(op) });
+          }
+        } else if (ev.type === 'removed') {
+          if (!isCard(p) || seen.has('r:' + p)) continue;
+          seen.add('r:' + p);
+          // 頁名不變式（renamed 分支維護 page_name＝現行檔名）→ 檔名導出頁名直接可查
+          removed_files.push({ path: p, page_name: pageOf(p), source_uri: uriOf(p) });
         }
       }
-      const removedSeen = new Set();
-      const removed_files = [];
-      for (const c of commits) {
-        for (const p of (c.removed || [])) {
-          if (p.indexOf('__CARDS_PREFIX__') !== 0) continue;
-          if (!/\.md$/.test(p)) continue;
-          if (seen.has(p) || removedSeen.has(p)) continue;
-          removedSeen.add(p);
-          removed_files.push({ path: p, page_name: pageOf(p), source_uri: 'gitea://' + p });
-        }
-      }
-      return { success: true, files: files, count: files.length,
-               removed_files: removed_files, removed_count: removed_files.length };
+      return { success: true,
+               files: files, count: files.length,
+               renamed_files: renamed_files, renamed_count: renamed_files.length,
+               removed_files: removed_files, removed_count: removed_files.length,
+               warnings: warnings, warning_count: warnings.length,
+               folder_id: String(input.folder_id || ''), index_r2_key: index_r2_key };
     input:
-      commits: "{{input.commits}}"
-      after: "{{input.after}}"
-      repo_full: "{{input.repository.full_name}}"
+      schema_version: "{{input.schema_version}}"
+      folder_id: "{{input.folder_id}}"
+      events: "{{input.events}}"
+      warnings: "{{input.warnings}}"
     limits:
       timeout_ms: 3000
       max_output_bytes: 1048576
 
+  # 2) 原稿從 R2 撈（content-addressed；取代 v2 的 Gitea raw GET）。
   fetch_raw:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__GITEA_BASE__/api/v1/repos/{{file.repo_full}}/raw/{{file.enc_path}}?ref={{file.ref}}"
+    url: "https://api.cloudflare.com/client/v4/accounts/__CF_ACCOUNT_ID__/r2/buckets/__R2_BUCKET__/objects/{{file.r2_key}}"
     headers:
-      Authorization: "token __GITEA_TOKEN__"
+      Authorization: "Bearer __CF_R2_TOKEN__"
 
-  # 機械切塊（標題行為界，同 v1）＋解析「## 關聯」三元組行＋part_of 目錄邊
+  # 3) 機械切塊（標題行為界，同 v2）＋解析「## 關聯」三元組行＋part_of 目錄邊
   parse_card:
     component: "__CODE_URL__"
     code: |
       const md = String(input.raw == null ? '' : input.raw);
-      const relPath = String(input.path || 'unknown.md');
-      const pageName = String(input.page_name || relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.md$/, ''));
-      const srcUri = 'gitea://' + relPath;
+      const pageName = String(input.page_name || 'unknown');
+      const srcUri = String(input.source_uri || '');
+      const srcPath = String(input.path || '');
       const chunks = [];
       let cur = [];
       for (const line of md.split('\n')) {
@@ -106,15 +187,17 @@ config:
         cur.push(line);
       }
       if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
+      // source_path 從第一天寫進 metadata＝removed/renamed 精確比對鍵（與 build_remaps PATCH 同名欄）
       const blocks = chunks.map(function (content, i) {
-        return { content: content, page_name: pageName, source: srcUri + '#' + i };
+        return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath };
       });
-      // 「## 關聯」段的 `A >> p >> B` 行（rel 自帶全部欄位＝foreach 安全）
+      // 「## 關聯」段的 `A >> p >> B` 行（rel 自帶全部欄位＝foreach 安全）。
+      // 列點前綴 optional（2026-07-19 e2e：無列點的裸三元組行被漏萃——段落已限定「## 關聯」，放寬安全）
       const rels = [];
       const relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#|\n---|$)/.exec(md);
       if (relSec) {
         for (const line of relSec[1].split('\n')) {
-          const m = /^\s*[-*]\s*(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
+          const m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
           if (!m) continue;
           rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active' });
         }
@@ -125,8 +208,9 @@ config:
                rels: rels, rel_count: rels.length, page_name: pageName };
     input:
       raw: "{{fetch_raw.data.body}}"
-      path: "{{file.path}}"
       page_name: "{{file.page_name}}"
+      source_uri: "{{file.source_uri}}"
+      path: "{{file.path}}"
     limits:
       timeout_ms: 5000
       max_output_bytes: 4194304
@@ -142,7 +226,7 @@ config:
       content: "{{block.content}}"
       owner_id: "__NAMESPACE__"
       page_name: "{{block.page_name}}"
-      metadata_json: "{\"source\":\"{{block.source}}\",\"embed\":true}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"embed\":true}"
 
   post_triplet:
     component: "__HTTP_REQ_URL__"
@@ -159,8 +243,107 @@ config:
         object: "{{rel.object}}"
         source_uri: "{{rel.source_uri}}"
         status: "{{rel.status}}"
+        # M3：library slot 補寫（M1 optional slot；kbdb 對 template 尚無的 slot 靜默忽略）
+        library: "__LIBRARY__"
 
-  # ── removed 分支 ──────────────────────────────────────────────
+  # ── renamed 分支（R5：只更新路徑映射，不 retire、不重萃、不重傳）───────────
+  list_renamed_blocks:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{renamed_file.page_name_old}}&owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+
+  # 把該卡 blocks 的 metadata.source 前綴 old→new、補 source_path=新路徑（MIGRATION 表
+  # 「metadata_json.$.source_path」映射欄），並把 page_name PATCH 成新檔名導出頁名——
+  # **頁名不變式**（removed 分支一發命中的根據；kbdb updateEntry 白名單含 page_name）。
+  build_remaps:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const a = parse(input.blocks_body);
+      const entries = (a && a.entries) || [];
+      const oldUri = String(input.source_uri_old || '');
+      const newUri = String(input.source_uri_new || '');
+      const newPath = String(input.new_path || '');
+      // 新檔名導出頁名（與 collect_changed 的 pageOf 同語意：basename 去 .md）
+      const newPage = newPath.slice(newPath.lastIndexOf('/') + 1).replace(/\.md$/, '');
+      const remap_entries = [];
+      for (const e of entries) {
+        let meta = {};
+        if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
+        const src = String(meta.source || '');
+        if (!oldUri || src.indexOf(oldUri) !== 0) continue; // 只動本卡來源的 blocks
+        meta.source = newUri + src.slice(oldUri.length);
+        meta.source_path = newPath;
+        remap_entries.push({ id: e.id, metadata_json: JSON.stringify(meta), page_name: newPage });
+      }
+      return { success: true, remap_entries: remap_entries, remap_count: remap_entries.length };
+    input:
+      blocks_body: "{{list_renamed_blocks.data.body}}"
+      source_uri_old: "{{renamed_file.source_uri_old}}"
+      source_uri_new: "{{renamed_file.source_uri_new}}"
+      new_path: "{{renamed_file.path}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  patch_remap_entry:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/entries/{{remap_entry.id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      metadata_json: "{{remap_entry.metadata_json}}"
+      # 頁名不變式：page_name 永遠跟著現行檔名（updateEntry 白名單含 page_name）
+      page_name: "{{remap_entry.page_name}}"
+
+  list_renamed_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+
+  # source_uri==舊 uri 的 triplets → 換成新 uri（status/subject 不動；PATCH /records/:id
+  # 部分 values 合併＝deprecate_triplet 同款已驗證機制）。
+  pick_renamed_triplets:
+    component: "__CODE_URL__"
+    code: |
+      let body = input.body;
+      if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
+      let records = (body && Array.isArray(body.records)) ? body.records : [];
+      const oldUri = String(input.source_uri_old || '');
+      const newUri = String(input.source_uri_new || '');
+      const remap_records = [];
+      for (const r of records) {
+        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
+        if (!v || !r.record_id || !oldUri) continue;
+        if (v.source_uri !== oldUri) continue;
+        remap_records.push({ record_id: r.record_id, source_uri: newUri });
+      }
+      return { success: true, remap_records: remap_records, count: remap_records.length };
+    input:
+      body: "{{list_renamed_triplets.data.body}}"
+      # 從迭代物件取（foreach 隔節點模板不展開——build_remaps 已隔一站）
+      source_uri_old: "{{renamed_file.source_uri_old}}"
+      source_uri_new: "{{renamed_file.source_uri_new}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 2097152
+
+  remap_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/records/{{remap_record.record_id}}"
+    headers:
+      Content-Type: "application/json"
+    body_json:
+      values:
+        source_uri: "{{remap_record.source_uri}}"
+
+  # ── removed 分支（兩層 foreach＝既有實證形；頁名不變式後直查一發命中）──────────
   list_dead_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
@@ -174,11 +357,27 @@ config:
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const a = parse(input.blocks_body);
       const entries = (a && a.entries) || [];
+      const path = String(input.path || '');
+      const kbPrefix = 'kb://' + path + '#';
       const dead_entries = [];
       for (const e of entries) {
         let meta = {};
         if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
         if (meta.status === 'deprecated') continue;
+        // 逐筆核對（防「同頁名不同卡」誤殺；live e2e 實測正確，保留）：meta.source_path ===
+        // 刪卡路徑，或 meta.source 以 kb://<路徑># 開頭；兩者皆無（老資料 gitea:///無 source）
+        // ＝fallback page_name 相等即殺（本清單已按 page_name 查＝現行語意）。
+        const mPath = String(meta.source_path || '');
+        const mSrc = String(meta.source || '');
+        const hasPath = mPath !== '';
+        const hasKbSrc = mSrc.indexOf('kb://') === 0;
+        let hit;
+        if (hasPath || hasKbSrc) {
+          hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);
+        } else {
+          hit = true;
+        }
+        if (!hit) continue;
         meta.status = 'deprecated';
         meta.deprecated_reason = 'source_removed';
         dead_entries.push({ id: e.id, metadata_json: JSON.stringify(meta) });
@@ -187,6 +386,7 @@ config:
                page_name: String(input.page_name || ''), source_uri: String(input.source_uri || '') };
     input:
       blocks_body: "{{list_dead_blocks.data.body}}"
+      path: "{{removed_file.path}}"
       page_name: "{{removed_file.page_name}}"
       source_uri: "{{removed_file.source_uri}}"
     limits:
@@ -209,7 +409,9 @@ config:
     headers:
       Accept: "application/json"
 
-  # subject==卡名 或 source_uri==本卡 → 全下架（治 G9 主詞≠卡名缺口）
+  # subject==卡名 或 source_uri==本卡 → 全下架（治 G9 主詞≠卡名缺口）。
+  # ⚠ 舊資料遷移縫：切換前寫入的 triplets source_uri 是 gitea:// 前綴，比對只中 subject
+  #   那層（README 切換 checklist 註明；一次重萃即自癒）。
   pick_dead_triplets:
     component: "__CODE_URL__"
     code: |
@@ -229,7 +431,8 @@ config:
       return { success: true, dead_records: dead_records, count: dead_records.length };
     input:
       body: "{{list_triplets.data.body}}"
-      # 從迭代物件取（foreach 隔節點模板不展開——build_deprecations 已隔一站）
+      # 從迭代物件取（foreach 隔節點模板不展開——build_deprecations 已隔一站）；
+      # removed_file.page_name＝現行檔名導出頁名（頁名不變式）
       page_name: "{{removed_file.page_name}}"
       source_uri: "{{removed_file.source_uri}}"
     limits:
@@ -245,3 +448,62 @@ config:
     body_json:
       values:
         status: "deprecated"
+
+  # ── M3 藏書地圖：ingest 尾端自動重算（library-map SDD M3；M2 端點已上線）──────
+  # 掛在 collect_changed 出邊尾（foreach 外＝跨節點模板全可用），每輪恰好跑一次。
+  # narrative 來源＝INDEX 檔首段；de-Gitea 後 INDEX 只有「本輪自己有變更事件」才撈得到
+  # （content-addressed：沒有事件就不知道現行 hash）→ index_r2_key 空＝GET 必失敗＝
+  # ON_FAIL 邊照樣 recompute（不帶 narrative，recompute 端保留舊值——INDEX 沒變時舊值即現值）。
+  fetch_index:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "https://api.cloudflare.com/client/v4/accounts/__CF_ACCOUNT_ID__/r2/buckets/__R2_BUCKET__/objects/{{collect_changed.data.index_r2_key}}"
+    headers:
+      Authorization: "Bearer __CF_R2_TOKEN__"
+
+  # narrative 最小可行＝INDEX 第一個「非標題、非空、非引言(>)、非分隔線、非 JSON 形」行，截 60 字；
+  # 抽不到（fetch 失敗/骨架空/全是標題）＝不帶 narrative（誠實）。
+  # fetch_ok 用 {{fetch_index.data.success}} 判定：ON_FAIL 進來時為 false，模板未展開時也非 'true'。
+  # commit_hash 已作廢（Gitea after SHA 不存在了，MIGRATION 表）。
+  build_recompute:
+    component: "__CODE_URL__"
+    code: |
+      const ok = String(input.fetch_ok) === 'true';
+      let narrative = '';
+      if (ok) {
+        const raw = String(input.index_body == null ? '' : input.index_body);
+        for (const line0 of raw.split('\n')) {
+          const line = line0.trim();
+          if (!line) continue;
+          if (/^#{1,6}\s/.test(line)) continue;
+          if (/^(-{3,}|={3,}|\*{3,})$/.test(line)) continue;
+          if (line[0] === '>' || line[0] === '{') continue;
+          if (line.indexOf('<!--') === 0) continue;
+          if (line.indexOf('{{') !== -1) continue;
+          narrative = line.length > 60 ? line.slice(0, 60) : line;
+          break;
+        }
+      }
+      const body = {
+        owner_id: '__NAMESPACE__',
+        triplet_template: 'triplet',
+        source_prefix: 'kb://__CARDS_PREFIX__'
+      };
+      if (narrative) body.narrative = narrative;
+      return { success: true, body: body, narrative: narrative, index_ok: ok };
+    input:
+      index_body: "{{fetch_index.data.body}}"
+      fetch_ok: "{{fetch_index.data.success}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576
+
+  # body_json 物件 passthrough（直鏈上可用；rag-extract-one put_card 同款已實證）。
+  # recompute 失敗（回 success:false）→ 無下游、不影響已完成的 ingest；地圖等下輪自癒。
+  post_recompute:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/map/recompute?library=__LIBRARY__"
+    headers:
+      Content-Type: "application/json"
+    body_json: "{{build_recompute.data.body}}"

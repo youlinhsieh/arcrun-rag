@@ -2,8 +2,8 @@
 
 > 這是唯一推薦的安裝方式：裝在**你自己的 Cloudflare 帳號**（免費層即可起步）。
 > 資料完全屬於你、同事打網址就能用、語意查詢啟用。
-> demo 站（rag-demo.arcrun.dev）就是用這條路裝出來的——本手冊以那次完整排練
-> （`uncle6-deploy-record.md`）為底，v1 誠實標注哪些步驟仍粗糙，封測期我們陪裝。
+> 本手冊以 2026-07-14 那次完整裝機排練為底（內部記錄 `uncle6-deploy-record.md`，屬沿革），
+> v1 誠實標注哪些步驟仍粗糙，封測期我們陪裝。
 >
 > **建議由你的 AI（Claude Code 等）照本手冊執行**，你只做「申請帳號、複製 token」兩件人類的事。
 
@@ -20,8 +20,8 @@
 ## 1. 取碼與身分設定
 
 ```bash
-git clone https://git.uncle6.me/Leo/Arcrun.git ~/Arcrun
-git clone https://git.uncle6.me/Leo/arcrun-rag.git && cd arcrun-rag
+git clone https://github.com/youlinhsieh/Arcrun.git ~/Arcrun
+git clone https://github.com/youlinhsieh/arcrun-rag.git && cd arcrun-rag
 ```
 
 在 `arcrun-rag/.env`（不進版控）寫入：
@@ -45,7 +45,14 @@ node ~/Arcrun/cli/dist/index.js init --self-hosted
 seed API/auth recipes 與 portal templates。**冪等**——失敗重跑即可。
 （demo 排練實績：24/24 worker 全綠、seed 複跑冪等。）
 
-## 3. 開語意查詢（Vectorize，建議做）
+## 3. 語意查詢（Vectorize）——一鍵安裝器已自動完成
+
+`deploy-all.mjs` 會在部署 kbdb 前自動呼叫 CF API 建立 Vectorize index（`arcrun-kbdb-embed`，
+dimensions=768 / cosine）及 4 個 metadata index（owner_id / entry_type / source / library），
+並以 `KBDB_EMBED=true` 取消 kbdb wrangler.toml 內的 vectorize/ai 注解。
+**安裝完成後語意搜尋直接可用，無需額外步驟。**
+
+若 CF_API_TOKEN 缺少 Vectorize:Edit scope，安裝日誌會印出警告及手動指令（deploy 本身不受影響）：
 
 ```bash
 npx wrangler vectorize create arcrun-kbdb-embed --dimensions=768 --metric=cosine
@@ -55,9 +62,7 @@ npx wrangler vectorize create-metadata-index arcrun-kbdb-embed --property-name s
 npx wrangler vectorize create-metadata-index arcrun-kbdb-embed --property-name library --type string
 ```
 
-⚠️ v1 粗糙點：API Token 常缺 Vectorize scope——`wrangler login`（OAuth）跑上面幾行最穩。
-建完 index 後，kbdb 的 wrangler.toml 取消 `[[vectorize]]`／`[ai]` 兩段註解重部 kbdb
-（見 `~/Arcrun/kbdb/wrangler.toml` 內註解），再 `POST /embed/backfill {"reindex":true}`。
+⚠️ Token scope：建 Vectorize 需要 Custom Token 勾 **Vectorize:Edit**（cf-install-guide §0 前置三樣）。
 
 ## 4. 鋪 RAG 層（templates＋workflows）
 
@@ -69,7 +74,7 @@ bash install/push-demo-workflow.sh workflows/rag-chat.local.yaml
 bash install/push-demo-workflow.sh workflows/rag-extract.local.yaml       # 萃取鏈 dispatcher
 bash install/push-demo-workflow.sh workflows/rag-extract-one.local.yaml   # 萃取鏈 per-file 直鏈（兩支一組）
 bash install/push-demo-workflow.sh workflows/rag-ingest-cards.local.yaml  # 定稿卡入庫（v2）
-# （NS/CYPHER/KBDB/HTTPREQ/CODE/GITEA_*/GEMINI_API_KEY/DOCS_PREFIX/CARDS_DIR/INDEX_PATH
+# （NS/CYPHER/KBDB/HTTPREQ/CODE/GITEA_*/GEMINI_API_KEY/DOCS_PREFIX/CARDS_DIR/INDEX_PATH/LIBRARY
 #   環境變數改成你的實例值——腳本檔頭有說明）
 ```
 

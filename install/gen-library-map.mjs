@@ -5,18 +5,27 @@
 // 產出＝知識庫 repo 的 system-dev/wiki/00-MAP.md：給 AI 的定向層（開場注入本檔＝
 // 不用搜尋就知道館藏全貌），也是 portal「總圖」頁的文字版。
 //
-// 用法：node install/gen-library-map.mjs <知識庫repo路徑> [KBDB base] [namespace]
-//   預設 KBDB=https://arcrun-kbdb.uncle6-me.workers.dev、NS=demo。
+// 用法：node install/gen-library-map.mjs <知識庫repo路徑> <KBDB base> <namespace>
 //   產出寫到 <知識庫repo>/system-dev/wiki/00-MAP.md；commit/push 由呼叫者做。
-// 穩態自動重算（ingest 副產品）歸 Arcrun#39 SDD；本腳本是 demo 期的手動/排程重算器。
+// 穩態自動重算（ingest 副產品）歸 Arcrun#39 SDD；本腳本是手動/排程重算器。
+//
+// 🔴 2026-08-08：KBDB／NS 原本預設 `arcrun-kbdb.uncle6-me.workers.dev` + `demo`
+//   ＝已退場的示範站。**預設值本身就是指令**——忘了帶參數就會靜靜打到那裡。
+//   改成必填：沒明講要打哪就報錯，不猜。判準見 repo CLAUDE.md「範例在哪、測試在哪」。
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const repo = process.argv[2];
-const KBDB = process.argv[3] || 'https://arcrun-kbdb.uncle6-me.workers.dev';
-const NS = process.argv[4] || 'demo';
-if (!repo || !existsSync(join(repo, 'system-dev/wiki'))) {
-  console.error('用法：node gen-library-map.mjs <知識庫repo路徑> [KBDB base] [namespace]');
+const KBDB = process.argv[3];
+const NS = process.argv[4];
+if (!repo || !existsSync(join(repo, 'system-dev/wiki')) || !KBDB || !NS) {
+  console.error('用法：node gen-library-map.mjs <知識庫repo路徑> <KBDB base> <namespace>');
+  console.error('  三個參數都必填（不再預設 demo/uncle6——那是已退場的示範站）。');
+  process.exit(1);
+}
+if (/rag-demo\.arcrun\.dev|uncle6-me\.workers\.dev/.test(KBDB)) {  // sanitize-ok
+  console.error('❌ KBDB 指向 uncle6（官方件／已退場的示範站）——一律不碰。');
+  console.error('   測試請用 youlin 實例（見 CLAUDE.md「範例在哪、測試在哪」）。');
   process.exit(1);
 }
 

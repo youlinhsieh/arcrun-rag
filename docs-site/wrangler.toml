@@ -1,0 +1,44 @@
+# arcrun-docs — 說明文件站（Starlight 靜態輸出）
+#
+# leo 2026-08-04：「docs 要**從 rag.arcrun.dev 進去**，不是從 install.arcrun.dev」
+# ⇒ 掛 route `rag.arcrun.dev/docs/*`，與 landing 同網域、不同路徑。
+#   （landing worker 自己不吃 /docs，兩者路由不重疊。）
+#
+# 為什麼用 Worker + assets 而不是 Pages：
+#   本帳號的 Pages API 目前回 8000000 unknown error（2026-08-04 實撞），
+#   Workers 部署一路正常 ⇒ 走能動的那條，不卡在平台問題上。
+name = "arcrun-docs"
+compatibility_date = "2026-07-01"
+account_id = "58309bb90fd93ad6d0fe0aae99170e9d"
+
+[assets]
+directory = "./deploy"
+# not_found_handling：靜態站找不到就回 404 頁（Starlight 有產）
+not_found_handling = "404-page"
+
+[[routes]]
+pattern = "rag.arcrun.dev/docs/*"
+zone_name = "arcrun.dev"
+
+# ---------------------------------------------------------------------------
+# staging 環境（stage-environment SDD s2，2026-08-09）：與 prod 完全分離的測試場。
+#   部署指令＝ `npx wrangler deploy --env staging --config docs-site/wrangler.toml`
+#   - 獨立 worker 名（arcrun-docs-staging），[assets] 每個環境各自宣告，不繼承
+#   - 不綁 custom domain（已裁決，`status.md:6764`：「Stage 直接用 workers.dev 不行？
+#     反正只有你我用」）——用 `arcrun-docs-staging.<sub>.workers.dev/docs/` 即可
+#   - 同帳號（uncle6，官方機制層）不同 worker 名 ⇒ 不覆蓋 prod 的 `arcrun-docs`
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "arcrun-docs-staging"
+# 🔴 實測澄清（2026-08-09）：官方文件說 routes 不繼承，但這支 wrangler（4.100.0）
+# 對 `[[routes]]`（TOML array-of-tables 語法）在 --env 部署時**仍會嘗試套用頂層值**
+# ——實測 PUT 到 .../arcrun-docs-staging/routes 帶的正是頂層那筆 pattern。
+# CF API 安全擋下（409 Conflict, "used by Worker: arcrun-docs"）沒有真的搶到路由，
+# 但仍讓部署以非零 exit code 結束——會炸 ship.mjs 這類看 exit code 的自動化。
+# ⇒ 顯式宣告空陣列覆蓋掉頂層值，不能只是「不寫」。
+routes = []
+workers_dev = true
+
+[env.staging.assets]
+directory = "./deploy"
+not_found_handling = "404-page"

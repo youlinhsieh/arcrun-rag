@@ -1,0 +1,12 @@
+{
+  "watch_folder": "/Users/you/Documents/知識庫",
+  "manifest": "/Users/you/.arcrun-rag/manifest.json",
+  "cypher_url": "https://arcrun-cypher-executor.<your-account>.workers.dev",
+  "namespace": "demo",
+  "api_key": "demo",
+  "library": "kb",
+  "poll_interval_sec": 5,
+  "max_removed_ratio": 0.4,
+  "ingest_workflow": "rag_ingest_direct",
+  "removed_workflow": "rag_takedown_direct"
+}

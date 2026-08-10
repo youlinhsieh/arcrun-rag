@@ -18,7 +18,7 @@
 
 ## 1. 這是什麼
 
-arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：三模式查詢（關鍵字／語意／知識圖譜）＋ MCP。引擎是 [Arcrun](https://git.uncle6.me/Leo/Arcrun)（開源工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
+arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：三模式查詢（關鍵字／語意／知識圖譜）＋ MCP。引擎是 [Arcrun](https://github.com/youlinhsieh/Arcrun)（開源工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
 
 ### 本機測試能看到什麼／看不到什麼（誠實對照表）
 
@@ -53,7 +53,7 @@ arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來
 取得引擎原始碼（URL 已驗證可達；本手冊實測時使用既有 checkout）：
 
 ```bash
-git clone https://git.uncle6.me/Leo/Arcrun.git arcrun
+git clone https://github.com/youlinhsieh/Arcrun.git arcrun
 cd arcrun
 ```
 
@@ -500,5 +500,5 @@ curl "http://127.0.0.1:8788/q/spike/spike_hello_local?text=arcrun"
 
 ## 6. 回報問題
 
-- 有 Gitea 帳號（git.uncle6.me）：開 issue 到 **`Leo/arcrun-rag`**，附：跑到哪一步、完整指令、完整錯誤訊息、`node --version`／`wrangler --version`。
-- 沒有帳號：把上述資訊記成一份文字檔，直接回報給 leo。
+- 開 issue：[github.com/youlinhsieh/arcrun-rag/issues](https://github.com/youlinhsieh/arcrun-rag/issues)（有 GitHub 帳號即可），附：跑到哪一步、完整指令、完整錯誤訊息、`node --version`／`wrangler --version`。
+- 不想開 issue：把上述資訊記成一份文字檔，直接回報給邀請你的人。

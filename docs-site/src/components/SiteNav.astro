@@ -1,0 +1,59 @@
+---
+// SiteNav.astro — 跨站導覽列（leo 2026-08-04：「現在已經有 3 個頁面，rag, install, docs，
+// 後面還會有，你可以做個 nav bar」）。
+//
+// 三個站是**各自獨立部署**的 worker／pages，沒有共用框架 ⇒ 導覽只能各站自己放一份。
+// 這裡是 docs 站的版本；rag／install 兩站要放同樣一條（同樣的連結、同樣的順序），
+// 使用者才不會在站間跳來跳去時失去方向。
+//
+// 原則（leo）：用戶好用、白癡化 ⇒ 用「我要做什麼」命名，不用系統代號。
+const links = [
+  { href: 'https://rag.arcrun.dev/',      label: '首頁',   match: null },
+  { href: 'https://install.arcrun.dev/',  label: '安裝',   match: null },
+  { href: '/docs/',                       label: '說明文件', match: '/docs' },
+];
+const path = Astro.url.pathname;
+---
+
+<nav class="site-nav" aria-label="跨站導覽">
+  <div class="site-nav__inner">
+    {links.map((l) => (
+      <a
+        href={l.href}
+        class:list={['site-nav__link', { 'is-current': l.match && path.startsWith(l.match) }]}
+        aria-current={l.match && path.startsWith(l.match) ? 'page' : undefined}
+      >{l.label}</a>
+    ))}
+  </div>
+</nav>
+
+<style>
+  .site-nav {
+    border-bottom: 1px solid var(--sl-color-hairline);
+    background: var(--sl-color-bg-nav);
+  }
+  .site-nav__inner {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+    max-width: 87.5rem;
+    margin-inline: auto;
+    padding: 0.35rem 1rem;
+  }
+  .site-nav__link {
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+    font-size: var(--sl-text-sm);
+    padding: 0.3rem 0.7rem;
+    border-radius: 0.35rem;
+    line-height: 1.2;
+  }
+  .site-nav__link:hover {
+    color: var(--sl-color-white);
+    background: var(--sl-color-gray-6);
+  }
+  .site-nav__link.is-current {
+    color: var(--sl-color-white);
+    font-weight: 600;
+  }
+</style>

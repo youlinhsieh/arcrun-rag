@@ -1,0 +1,178 @@
+# rag_ingest_direct — daemon 直送萃取入庫（v1「無 R2、無 Gitea」同步模式）
+#
+# 血統：rag_extract_one 的 ask_llm＋clean_card（LLM 萃定稿卡）
+#       ＋ rag_ingest 的 parse_card/post_block/post_triplet（機械切塊＋寫 KBDB）
+#       兩段拼成單一自足直鏈——中間不落 Gitea cards/、不撈 R2 原稿。
+#
+# 為什麼要這支（SDD ingest-hash-trigger task 11，daemon 產品化段）：
+#   既有鏈 collector→R2→rag_ingest 需要 R2 bucket（綁卡）；rag_extract_one 又需要 Gitea repo
+#   （萃卡 commit 到 cards/）。v1 要讓「本機 daemon 監看資料夾 → AI 查得到」在**零 R2、零 Gitea**
+#   下成立：daemon 讀檔內容 inline POST 進本 workflow，一支把「萃卡→切塊→寫 kbdb」全做完。
+#   dogfooding：萃取（LLM）＋切塊＋入庫全在 Arcrun workflow 裡（本檔），daemon 只送 {page_name,
+#   content, path, library}——daemon 內不含任何 LLM/切塊/RAG 邏輯（D29 daemon 薄殼豁免）。
+#
+# 觸發（daemon direct 模式，一檔一 POST）：
+#   POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest_direct/trigger
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"page_name":"報銷政策","content":"…檔案全文…","path":"報銷政策.md","library":"kb"}'
+#
+# 佔位參數（push-demo-workflow.sh sed 代入）：
+#   __NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__ / __LLM_MODEL__
+#   （Gemini key 走憑證庫：x-goog-api-key: {{credential.gemini_api_key}}，免 sed）
+#
+# 與既有鏈的關係：blocks/triplets 的寫法（entry_type=block、page_name、metadata source/
+#   source_path/embed；triplet template）與 rag_ingest 逐欄一致 → rag_chat 一視同仁檢索得到。
+#   source_uri 語意＝kb://<path>（同 rag_ingest v3）；removed 下架仍走 rag_ingest 的 removed
+#   分支（daemon direct 模式的刪檔打 rag_ingest 的 removed 事件——見 collector direct.go）。
+#
+# 已知誠實限制：
+#   - 單檔一鏈、無 foreach 併發，INDEX/藏書地圖不在本鏈維護（v1 不做 M3 recompute，browse 端
+#     地圖等既有 rag_ingest 輪或後續補；rag_chat 的 keyword/IDF 檢索不依賴地圖，驗收不受影響）。
+#   - Gemma 思考輸出＝clean_card 取最後一個非 thought part（沿用 rag_extract_one 實證邏輯）。
+#   - http_request 零件回應/請求體量級：小 .md 無虞；超大檔另議（同既有鏈）。
+
+name: rag_ingest_direct
+description: >
+  daemon 直送萃取入庫（v1 無 R2 無 Gitea）：inline 檔案內容 → LLM（__LLM_MODEL__）萃定稿卡
+  → 機械切塊寫 KBDB blocks ＋解析「## 關聯」寫 triplets（source_uri=kb://path）。
+  一檔一 POST，blocks/triplets 寫法與 rag_ingest 一致，rag_chat 直接檢索得到。（task 11）
+
+flow:
+  - "input >> ON_SUCCESS >> ask_llm"
+  - "ask_llm >> ON_SUCCESS >> clean_card"
+  - "clean_card >> ON_SUCCESS >> parse_card"
+  - "parse_card >> 對每個 block >> post_block"
+  - "parse_card >> 對每個 rel >> post_triplet"
+
+config:
+  # 1) LLM 萃定稿卡（沿用 rag_extract_one ask_llm；原稿改吃 inline {{input.content}}）
+  ask_llm:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent"
+    headers:
+      Content-Type: "application/json"
+      x-goog-api-key: "{{credential.gemini_api_key}}"
+    body_json:
+      contents:
+        - parts:
+            - text: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{input.content}}"
+      generationConfig:
+        temperature: 0.2
+        maxOutputTokens: 8192
+
+  # 2) 淨化 LLM 輸出成純卡片文字（沿用 rag_extract_one clean_card；輸出 card 純文字給 parse_card 切塊）
+  clean_card:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const body = parse(input.llm_body);
+      let text = '';
+      try {
+        const parts = body.candidates[0].content.parts || [];
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
+        }
+        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
+      } catch (e) { text = ''; }
+      const lines = text.split('\n');
+      let start = -1;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (/^#\s/.test(lines[i])) { start = i; break; }
+      }
+      if (start === -1) {
+        for (let i = 0; i < lines.length; i++) {
+          if (/^##\s*一句話定義/.test(lines[i])) { start = i; break; }
+        }
+      }
+      if (start === -1) return { success: false, error: 'LLM 輸出裡找不到卡片（無行首 # 標題，也無一句話定義段）' };
+      let card = lines.slice(start).join('\n').trim();
+      const page = String(input.page_name || '');
+      if (!/^#\s/.test(card)) card = '# ' + page + '\n' + card;
+      card = '# ' + page + '\n' + card.split('\n').slice(1).join('\n');
+      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_ingest_direct/__LLM_MODEL__）\n';
+      let gloss = '';
+      const m = /##\s*一句話定義\s*\n+([^\n]+)/.exec(card);
+      if (m) gloss = m[1].trim();
+      return { success: true, card: card, gloss: gloss, page_name: page };
+    input:
+      llm_body: "{{ask_llm.data.body}}"
+      page_name: "{{input.page_name}}"
+      src_path: "{{input.path}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 2097152
+
+  # 3) 機械切塊（標題行為界）＋解析「## 關聯」三元組行＋part_of 目錄邊（沿用 rag_ingest parse_card）
+  #    source_uri 由 path 導出 kb://<path>；library 從 input 帶入、塞進每個 rel（foreach 內不可跨節點引用）。
+  parse_card:
+    component: "__CODE_URL__"
+    code: |
+      const md = String(input.card == null ? '' : input.card);
+      const pageName = String(input.page_name || 'unknown');
+      const srcPath = String(input.path || (pageName + '.md'));
+      const srcUri = 'kb://' + srcPath;
+      const lib = String(input.library || 'kb');
+      const chunks = [];
+      let cur = [];
+      for (const line of md.split('\n')) {
+        if (/^#{1,6}\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\n').trim()); cur = []; }
+        cur.push(line);
+      }
+      if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
+      const blocks = chunks.map(function (content, i) {
+        return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath, library: lib };
+      });
+      const rels = [];
+      const relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#|\n---|$)/.exec(md);
+      if (relSec) {
+        for (const line of relSec[1].split('\n')) {
+          const m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
+          if (!m) continue;
+          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib });
+        }
+      }
+      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib });
+      return { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };
+    input:
+      card: "{{clean_card.data.card}}"
+      page_name: "{{input.page_name}}"
+      path: "{{input.path}}"
+      library: "{{input.library}}"
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 4194304
+
+  # 4) 寫 KBDB blocks（與 rag_ingest post_block 逐欄一致 → rag_chat 檢索得到）
+  post_block:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      entry_type: "block"
+      content: "{{block.content}}"
+      owner_id: "__NAMESPACE__"
+      page_name: "{{block.page_name}}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"embed\":true}"
+
+  # 5) 寫 KBDB triplets（與 rag_ingest post_triplet 一致；library 從 rel 帶入）
+  post_triplet:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/records"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      template: "triplet"
+      owner_id: "__NAMESPACE__"
+      values:
+        subject: "{{rel.subject}}"
+        predicate: "{{rel.predicate}}"
+        object: "{{rel.object}}"
+        source_uri: "{{rel.source_uri}}"
+        status: "{{rel.status}}"
+        library: "{{rel.library}}"

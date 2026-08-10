@@ -39,9 +39,10 @@ config:
   ask_llm:
     component: "__HTTP_REQ_URL__"
     method: POST
-    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent?key=__GEMINI_API_KEY__"
+    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent"
     headers:
       Content-Type: "application/json"
+      x-goog-api-key: "{{credential.gemini_api_key}}"
     body_json:
       contents:
         - parts:

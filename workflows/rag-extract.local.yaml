@@ -11,7 +11,8 @@
 #
 # 佔位參數（sed 代入；install/push-demo-workflow.sh 已支援）：
 #   __NAMESPACE__ / __GITEA_BASE__ / __GITEA_TOKEN__ / __HTTP_REQ_URL__ / __CODE_URL__ / __CYPHER_BASE__
-#   __LLM_MODEL__（demo＝gemma-4-31b-it）/ __GEMINI_API_KEY__（G10 妥協：嵌定義，輪換重推）
+#   __LLM_MODEL__（demo＝gemma-4-31b-it）
+#   （Gemini key 改憑證庫注入：rag_extract_one 的 x-goog-api-key: {{credential.gemini_api_key}}）
 #   __DOCS_PREFIX__＝原稿目錄前綴（生產 docs/；測試可換 docs-test/ 完全隔離）
 #   __CARDS_DIR__＝定稿卡目錄（生產 system-dev/wiki/cards；測試 cards-test）
 #   __INDEX_PATH__＝藏書索引（生產 system-dev/wiki/00-INDEX.md）

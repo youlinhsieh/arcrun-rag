@@ -1,92 +1,127 @@
-# collector — 收集端骨架（rag-wave1 T3+T4）
+# collector
 
-> design.md §4；跑在**客戶端機器**（NAS/VM，或導入者代管的 VPS），不是 arcrun workflow（arcrun 零件禁檔案系統，見 CLAUDE.md 紅線）。
-> ⚠️ **本骨架端到端（真實 NAS/VM + 真實 Gitea remote + systemd 常駐）需在本機/客戶環境驗，雲端 sandbox 沒有這些條件**——這裡只做得到：程式邏輯本身可跑、對本機臨時目錄的煙測（見下方「已驗證」）。
+> ✂️ **legacy Node 版（Gitea push 鏈）已於 2026-07-19 刪除**（SDD `ingest-hash-trigger` task 4：
+> 「Gitea webhook 接收端程式碼與路由已刪除（git 記錄可查）」）。`index.js`/`transform.js`/
+> `git-sync.js`/`config.js` 那套 watch → git commit/push → Gitea webhook 鏈要考古請看 git 歷史
+> （本檔同 commit 之前的版本有完整說明）。現役＝Go 版 hash 偵測 collector，
+> **不經 git、不經 Gitea**：scan → R2 上傳 → 直打 arcrun named-webhook。
+> Markitdown 轉檔（docx/pptx/pdf→md）能力隨 legacy 一併退場，回歸產品化段 task 11 重做進 Go 版。
 
-## 做什麼
+## Go 版：hash 偵測 collector（SDD ingest-hash-trigger）
 
 ```
-watch 知識資料夾 ──(新增/修改)──► transform（.md passthrough／docx,pptx,pdf→Markitdown）──► 寫入 target repo 工作目錄
-                 ──(刪除)      ──► target repo 移除對應檔
-                                          │
-                                    git add/commit/push
-                                          │
-                              Gitea push webhook（既有機制，非本骨架自建）
-                                          │
-                                  arcrun ingest workflow（另案，如 km_wiki_ingest_drain 同款模式）
+collector scan   --root <知識資料夾> --manifest <manifest.json> [--max-removed-ratio 0.4] [--dry-run]
+collector upload --root <知識資料夾> --manifest <manifest.json> [--max-removed-ratio 0.4] [--dry-run]
+collector sync   --root <知識資料夾> --manifest <manifest.json> [--max-removed-ratio 0.4] [--dry-run]
 ```
 
-**關鍵設計判斷**：collector 的責任止於「commit + push」。design.md §4 說的「打 ingest webhook」＝ Gitea 自己的 push webhook 機制（同 `Leo/Arcrun` `registry/examples/km-wiki-ingest` 已驗證的模式：Gitea push webhook → arcrun workflow），**不是** collector 自己再打一支 HTTP webhook。collector 不需要知道 ingest 的內部細節（哪個 workflow、哪個 KBDB），它只管「客戶檔案的忠實鏡像」進 Gitea repo。
+一次掃描：走訪資料夾（先只認 .md/.markdown/.txt/.docx/.pptx/.pdf）→ mtime+size fast-path
+（沒變→沿用 manifest hash；變了才算 sha256）→ 對照 manifest 產出事件 → 事件 JSON
+（符合 `schemas/collector-trigger.v1.schema.json`）輸出 stdout → 更新 manifest（`--dry-run` 不寫）。
 
-## 事件驅動、不輪詢
+- **事件分類順序（design §3）**：先把本輪 removed×added 以 content_hash 配對成 `renamed`
+  （只更新路徑映射，不 retire、不重萃）；再分 added / modified / removed。
+- **大量刪除防呆（R6）**：removed 數 > manifest 條目 × 40%（`--max-removed-ratio` 可調）→
+  removed 全部不執行、manifest 條目保留、輸出 `mass_delete_guard` 警告。
+- **重試語意**：`ingested_hash` 只會在整條 ingest 鏈成功後回寫（回寫鉤子＝`Manifest.MarkIngested`，
+  由 `sync` 在觸發回 2xx 後呼叫）；掃描與 R2 上傳都不寫它，所以「偵測過但未成功 ingest」的檔
+  每輪都會重發 added/modified——這是設計（design §2），不是 bug；R2 端靠存在檢查 no-op，
+  不會重複上傳。
+- daemon 常駐（launchd）＝產品化段 task 11。
 
-用 `chokidar`（Node）watch 檔案系統事件（inotify/FSEvents，非 polling），對齊「單一 repo、事件驅動」的鐵律。debounce 視窗（預設 3 秒）把同一批變更合併成一次 commit，避免每個檔案獨立 commit 洗歷史。
+### `upload`：R2 content-addressed 原稿上傳（SDD task 3，design §4）
 
-## 刪檔語意
+`upload`＝`scan`＋把本輪 **added/modified** 的原稿上傳 R2（renamed/removed 內容未變/已留底，不上傳）。
 
-檔案在來源資料夾被刪除 → collector 在 target repo 對應路徑也 `git rm` → commit → push。**deprecated 標記不是 collector 的責任**——ingest workflow 收到 Gitea push event 裡的 `removed` 檔案清單後，自己去 KBDB 把對應 entry 標 `status: deprecated`（append-only，不物理刪，見 km-wiki-ingest description.md 冪等設計）。collector 只管檔案鏡像忠實，不碰 KBDB。
+- **走 Cloudflare REST API**（`PUT /accounts/{account_id}/r2/buckets/{bucket}/objects/{key}`，
+  Bearer token）——不用 S3 sigv4，token 模型跟產品其他部分一致（客戶本來就有 CF API token）。
+- **key＝`raw/<sha256hex>`**（不含 `sha256:` 前綴，對齊 `schemas/collector-trigger.v1.schema.json` 的 `r2_key`）。
+- **冪等**：每 key 先做存在檢查，已存在＝`skipped_exists` 不重傳（content-addressed 天然去重）。
+  ⚠️ CF REST API 的 objects 端點**不支援 HEAD**（2026-07-19 live 實測回 405），
+  存在檢查走 `GET`＋`Range: bytes=0-0`（存在＝200/206 只讀 1 byte，404＝不存在）。
+- **完整性**：上傳前重算 sha256 核對事件 hash；檔案在掃描後被改動＝該筆 `failed` 不上傳
+  （不能把新內容塞進舊 hash 的 key），下輪重掃自然帶新 hash。
+- **失敗語意**：任一筆 `failed` → exit code 1；manifest 照存（content_hash 反映現況、
+  `ingested_hash` 不動）＝下輪自動重試。上傳成功也**不**標 ingested——上傳只是鏈的第一環。
+- `--dry-run`：不碰網路、不寫 manifest，只列 `planned` 上傳清單。
+- 輸出 JSON：`{"trigger": <collector-trigger payload>, "uploads": [{path, r2_key, status, error?}]}`，
+  status＝`uploaded`／`skipped_exists`／`failed`／`planned`。
 
-## 轉檔（T4）
+設定（**只走環境變數，絕不落 repo/code**）：
 
-`transform.js`：`.md`/`.markdown` passthrough（frontmatter 補 `source_path` 溯源欄位）；`.docx`/`.pptx`/`.pdf` 呼叫 `markitdown` CLI（子行程，需部署機器已 `pip install markitdown[docx,pptx,pdf]`）轉出 md，輸出路徑副檔名換成 `.md`，同時把**原檔**複製進 target repo 的 `assets/originals/<相對路徑>`（design.md §4「原檔進 LFS」）。`git-sync.js` 的 `ensureGitAttributes()` 在啟動時冪等寫入 `.gitattributes`（`assets/originals/**/*.{pdf,docx,pptx} filter=lfs ...`）。
-
-⚠️ **LFS 是否真的生效待本機驗**：`.gitattributes` 宣告本身雲端驗過內容正確，但 LFS smudge/clean filter 要部署機器裝了 `git-lfs` 並 `git lfs install` 才真的把大檔案存進 LFS store（否則 git 仍會把二進位檔案當一般 blob 存進版控歷史——功能上檔案還是會進 repo，只是沒享受到 LFS 的空間/頻寬優化）。雲端 sandbox 沒有 `git-lfs` 二進位，這段驗不到。
-
-其餘格式（xlsx、圖片等）不在 design.md §4 第一波承諾範圍，仍丟 `NotImplementedError` 並記警告日誌，誠實不假裝轉好。
-
-## 檔案
-
-| 檔案 | 職責 |
+| 變數 | 說明 |
 |---|---|
-| `index.js` | 進入點：watch＋debounce＋事件分派＋原檔複製 |
-| `transform.js` | 檔案 → md 轉換：`.md` passthrough／`docx,pptx,pdf` 走 Markitdown |
-| `git-sync.js` | target repo 的 git add/commit/push 封裝＋`.gitattributes` LFS 宣告 |
-| `config.js` | 環境變數讀取（`WATCH_DIR`/`TARGET_REPO_DIR`/`DEBOUNCE_MS`） |
+| `CF_ACCOUNT_ID` | Cloudflare 帳號 ID |
+| `CF_API_TOKEN` | 有該 bucket R2 read+write 權的 API token |
+| `R2_BUCKET` | 目的 bucket 名（demo＝`arcrun-rag-raw-demo`） |
+| `CF_API_BASE` | 選填，API 基底覆蓋（測試用；預設 `https://api.cloudflare.com/client/v4`） |
 
-## 設定（環境變數）
+測試：`go test ./...`——掃描七項（五情境＋fast-path＋manifest 往返）＋上傳七項
+（新檔上傳／同 hash 重傳 no-op／上傳失敗不標 ingested＋重試／非內容事件不上傳／
+hash 不符不上傳／env 缺漏報錯／MarkIngested 鉤子），httptest mock 對齊真 API 行為（HEAD 405）。
+live e2e（2026-07-19）：uncle6 帳號 `arcrun-rag-raw-demo` bucket 真上傳→重傳 no-op→
+`wrangler r2 object get --remote` 下載 diff 一致、sha256 與 key 相符，全通。
 
-| 變數 | 說明 | 預設 |
-|---|---|---|
-| `WATCH_DIR` | 客戶知識資料夾（來源） | 必填 |
-| `TARGET_REPO_DIR` | 已 clone 好、有 push 權限的 Gitea repo 工作目錄（去向） | 必填 |
-| `TARGET_SUBDIR` | 在 target repo 內落地的子目錄 | `collected/` |
-| `DEBOUNCE_MS` | 合併變更的等待視窗 | `3000` |
-| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | commit 署名 | `collector` / `collector@localhost` |
 
-## 部署（客戶端機器，設計稿——本輪未實際跑 systemd）
+### `sync`：一條龍（SDD task 4）＝ scan → upload → 觸發 ingest → 成功回寫
 
-```ini
-# /etc/systemd/system/arcrun-rag-collector.service（範本，未部署未測）
-[Unit]
-Description=arcrun-rag collector
-After=network.target
+`sync`＝`upload` 再加最後一步：把整輪的 collector-trigger.v1 payload POST 到
+`ARCRUN_TRIGGER_URL`（arcrun named-webhook 完整 URL，如
+`{cypher}/webhooks/named/{ns}/rag_ingest/trigger`——端點是 arcrun 原生觸發機制，
+design 鐵律段明言保留；被刪掉的是「Gitea push 事件」這個來源語意）。
 
-[Service]
-Environment=WATCH_DIR=/mnt/knowledge
-Environment=TARGET_REPO_DIR=/opt/collector-repo
-ExecStart=/usr/bin/node /opt/arcrun-rag/collector/index.js
-Restart=always
-User=collector
+- **回寫語意**：HTTP 2xx 才對本輪送出的 added/modified/renamed 檔呼叫 `Manifest.MarkIngested`；
+  非 2xx／網路錯不回寫＝下輪自然重試（exit 1）。
+- **上傳失敗的事件不送**：schema 約定 added/modified 的 `r2_key`＝原稿已在 R2，上傳失敗還送
+  ＝叫消費端去 404 → 該事件本輪擋下（`dispatch.dropped_paths`），下輪重試補送；同路徑的
+  renamed 也不回寫（防「內容從未上 R2 卻被標 ingested」）。
+- **防呆警告輪照送**：mass_delete_guard 觸發時 removed 事件已被壓下，但 payload 連同
+  `warnings[]` 照送——消費端看得到警告、不執行下架；notify 呈現歸 collector 端輸出／daemon。
+- **無變更輪不發送**（`skipped_no_changes`）。
+- 輸出 JSON：`{"trigger": <實際送出的 payload>, "uploads": [...], "dispatch":
+  {status, http_status?, error?, marked_count, dropped_paths?}}`。
 
-[Install]
-WantedBy=multi-user.target
+設定＝upload 的三個環境變數＋`ARCRUN_TRIGGER_URL`（皆絕不落 repo/code）。
+
+測試：`go test ./...` 19/19——掃描 7＋上傳 7＋sync/trigger 5（成功回寫＋無變更輪不重發／
+失敗不回寫＋修復後重試成功／防呆警告輪照送 warnings 零事件／上傳失敗事件擋下＋renamed
+連坐不回寫／URL env 驗證），全部 httptest mock（**未實跑雲端 e2e**——等切換日與 leo 一起驗）。
+
+## `direct`：daemon 直送萃取、無 R2 同步模式（SDD task 11）
+
+`direct`＝**產品承諾核心的最短路徑**：監看資料夾 → 偵測新增/改動檔（沿用 `Scan` 的 hash 差異
+偵測，與 `sync` 同一套）→ 讀檔內容 **inline POST** 進實例的 `rag_ingest_direct` workflow
+（LLM 萃卡 → 機械切塊 → 寫 kbdb，**全在 Arcrun workflow**）。刪檔 → POST `{page_name, path}`
+進 `rag_takedown_direct`（按 page_name 標 kbdb blocks/triplets `deprecated`）。
+
+**繞開 R2/Gitea**：既有 `sync` 走 collector→R2→`rag_ingest`（要 R2 bucket＝綁卡），`rag_extract_one`
+又要 Gitea repo 落卡。`direct` 兩者都不要——落地「丟檔進資料夾 → AI 查得到」的零綁卡版。
+
+```
+collector direct --config <config.json> [--once] [--dry-run]
 ```
 
-`TARGET_REPO_DIR` 需事先 `git clone`＋設好有 push 權限的 remote（credential 用該機器的 git credential helper 或 SSH key，不是本骨架管的事）。
+- `--once`：掃一輪即退出（測試/cron）；預設常駐輪詢（`poll_interval_sec`，純 stdlib ticker，跨平台）。
+- 設定檔（JSON，見 `install/direct-config.sample.json`）：`watch_folder` / `manifest` /
+  `cypher_url` / `namespace` / `api_key`（空＝namespace）/ `library`（空＝kb）/
+  `poll_interval_sec`（空＝5）/ `max_removed_ratio`（空＝0.4）/ `ingest_workflow`
+  （空＝`rag_ingest_direct`）/ `removed_workflow`（空＝`rag_takedown_direct`）。
+- **dogfooding（D29 daemon 薄殼豁免）**：本模式只「監看／讀檔／算 hash／HTTP POST」原生 Go——
+  萃取/切塊/RAG 一律在實例 workflow，daemon 內零 LLM/切塊邏輯。
+- **回寫語意**：POST 回 2xx 才 `Manifest.MarkIngested`（下輪不重送）；非 2xx 不回寫＝下輪重試。
+- **大量刪除防呆**：沿用 `Scan` 的 `mass_delete_guard`（removed > manifest×`max_removed_ratio`
+  → 本輪不下架、只回報警告）。
 
-## 已驗證（雲端 sandbox 能做到的部分）
+**配套 workflow**（`workflows/rag-ingest-direct.local.yaml` / `rag-takedown-direct.local.yaml`；
+用 `install/push-demo-workflow.sh` 推，env 指向目標實例的 CYPHER/KBDB/HTTPREQ/CODE/LLM_MODEL/LIBRARY）：
+blocks/triplets 寫法與 `rag_ingest` 逐欄一致 → `rag_chat` 一視同仁檢索得到。
+> ⚠️ 下架另立 `rag_takedown_direct` 而非重用 `rag_ingest` removed 分支：後者在 `collect_changed`
+> 有 `__CARDS_PREFIX__` 閘，direct 模式的檔在資料夾根會被擋掉零下架（2026-07-20 live e2e 實撞）。
 
-- `node --check` 語法檢查全過。
-- 本機臨時目錄煙測（非真實客戶環境，兩輪）：起一個 scratch git repo 當 target、一個 scratch 資料夾當 watch 來源：
-  1. **T3 事件機制**：新增/修改/刪除 `.md` 檔案 → collector 正確偵測、寫入/移除、debounce 後產生一次 commit，`git log` 驗到 commit 內容與變更一致。
-  2. **T4 Markitdown**：用 `python-docx` 生一份真實 `.docx`（含標題+段落）丟進 watch 資料夾 → collector 呼叫 `markitdown` 轉出真實 md 內容（人工核對文字與原檔一致）、原檔複製進 `assets/originals/`、`.gitattributes` 正確寫入三種格式的 LFS 宣告、整批 commit+push 送達 bare remote（`git log` 驗證）。
-  
-  **不含**（待本機/客戶環境）：真實 Gitea remote push（需真實 token+repo）、真實 git-lfs smudge/clean filter（sandbox 無 `git-lfs` 二進位）、systemd 常駐、NAS/VM 環境、Gitea push webhook 是否真觸發 ingest workflow。
+**youlin live e2e 實證（2026-07-20，非 mock）**：
+- 丟 `請假規則.md`/`差旅政策.md` → daemon `ingested`(200) → `rag_chat` 帶出處正確作答。
+- 刪 `差旅政策.md` → daemon `removed`(200) → `rag_chat`「知識庫裡沒有這方面資料」（blocks 全 deprecated）。
 
-## 待本機/客戶環境驗（端到端）
-
-1. 真實客戶知識資料夾 watch（含各類真實 docx/pptx/pdf 樣本，非合成測試檔）。
-2. 真實 Gitea remote push（含憑證管理）。
-3. 真實 git-lfs 安裝＋`git lfs track`，確認大檔案真的走 LFS store 而非塞進一般 blob 歷史。
-4. push 後確認 Gitea push webhook 真觸發 ingest workflow（另案）。
-5. systemd 常駐穩定性（重開機自動起、崩潰自動重啟）。
+**跨平台**：純 stdlib、零 CGo、輪詢式偵測（不依賴 fsnotify）→ `GOOS=darwin GOARCH=arm64` /
+`GOOS=windows GOARCH=amd64` 直接交叉編譯（各約 5.6M / 5.9M）。托盤殼（Wails）＋Mac `.app`
+簽章/TCC 是下一刀，且 Mac 打包要在 Mac 上做。

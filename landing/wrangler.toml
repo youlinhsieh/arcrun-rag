@@ -1,0 +1,72 @@
+# arcrun-landing — Arcrun RAG landing page + 啟動碼中央服務
+# 預覽站部在 uncle6 帳號；正式站未來搬 youlin 官方帳號（改 account_id 重部即可）。
+name = "arcrun-landing"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+account_id = "58309bb90fd93ad6d0fe0aae99170e9d"
+
+kv_namespaces = [
+  { binding = "SIGNUPS", id = "ab7b1520e25b4438a7e782cbfae22429" }
+]
+
+# Cloudflare Email Service 寄信 binding（頂層 key，不可放進 [vars]）。
+# arcrun.dev 已在 uncle6 帳號 onboard（enabled:true，DKIM/return-path 自動配），
+# 網域 onboard 後寄件不需再驗證收件人，故不加 allowed_destination_addresses。
+# 寄件地址須屬於已 onboard 的網域（此處 noreply@arcrun.dev）。
+send_email = [
+  { name = "SEND_EMAIL" }
+]
+
+[vars]
+# "true" 時啟用寄啟動碼信（需上方 send_email binding 與帳號已 onboard 的寄件網域）
+EMAIL_ENABLED = "true"
+EMAIL_FROM = "noreply@arcrun.dev"
+# t133：首頁「這次會裝到」顯示的版本。**每次推 bundle 後要跟著更新**
+# （與 installer 的 DEFAULT_BUNDLE_BASE 同一批動作，見 install-flow-map.md §3.7）。
+# 🔴 2026-08-05 移除手抄本（D39：一個事實抄成 N 份必然漂移）。
+# 實撞：出貨換了兩代這裡都沒改，landing 顯示 2026-07-29+919ed39、
+# install 顯示 1.4.12 ⇒ 同一產品兩個版本號。
+# 版本現由 worker.js 向 https://install.arcrun.dev/api/latest 取（真相源＝manifest.release）。
+# SITE_BUNDLE_VERSION = "（已移除，勿再加回來）"
+# arcrun-rag#29（2026-08-09）：「前往安裝」按鈕／辨識碼信／說明文件連結／版本查詢
+# API 用的網址，跟 worker.js DEFAULT_INSTALL_BASE／DEFAULT_DOCS_BASE 常數完全相同，
+# 本次部署對 prod 行為零改變。
+INSTALL_BASE = "https://install.arcrun.dev"
+DOCS_BASE = "https://rag.arcrun.dev/docs"
+
+# ---------------------------------------------------------------------------
+# staging 環境（P10，2026-08-07）：與 prod 完全分離的測試場。
+#   部署指令＝ `npx wrangler deploy --env staging --config landing/wrangler.toml`
+#   - 獨立 worker 名＋獨立 SIGNUPS KV（報名/辨識碼記錄完全不與 prod 共用）
+#   - 觸發原因：08-07 實查發現 prod 報名 19 筆裡 8 筆 @example.com——
+#     舊 staging 安裝器把 LANDING_BASE 直接指向 prod（rag.arcrun.dev），
+#     等於 stage 測試資料全部寫進 prod 的 SIGNUPS。詳
+#     system-dev/docs/3-specs/pending-changes.md P10。
+#   - 不綁 custom domain（走 workers.dev）；要換成 staging-rag.arcrun.dev
+#     需 leo 手動加 DNS（wrangler 登入態沒有 DNS 權限），清單見該次交付回報。
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "arcrun-landing-staging"
+# arcrun-rag#29（2026-08-09）：landing-staging 現在要 fetch 同帳號另一顆 workers.dev
+# worker（arcrun-rag-installer-staging，見上面新加的 INSTALL_BASE）取版本號，實測
+# 撞到跟 installer/oauth-prototype/wrangler.toml [env.staging] 同款的 CF 同帳號
+# workers.dev↔workers.dev self-fetch 擋（1042 族，P10 已記過一次，這裡是反方向）。
+# 這個 flag 讓 fetch() 走公網前門，同帳號也通——見 installer 那份 wrangler.toml
+# 同名 flag 的完整說明。
+compatibility_flags = ["global_fetch_strictly_public"]
+send_email = [
+  { name = "SEND_EMAIL" }
+]
+
+[[env.staging.kv_namespaces]]
+binding = "SIGNUPS"
+id = "8a19ffe38ae246929c563b530e5eb5f7"  # SIGNUPS_STAGING（2026-08-07 建，與 prod SIGNUPS 完全分離）
+
+[env.staging.vars]
+EMAIL_ENABLED = "true"
+EMAIL_FROM = "noreply@arcrun.dev"
+# arcrun-rag#29（2026-08-09）：landing-staging 之前把「前往安裝」按鈕、辨識碼信、
+# /api/latest 版本查詢全部打去 prod——staging 頁面顯示的因此是 prod 的版本號，
+# 不是自己剛出的那個版本；辨識碼信裡的安裝連結也會把測試流程導去 prod 安裝器。
+INSTALL_BASE = "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
+DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"

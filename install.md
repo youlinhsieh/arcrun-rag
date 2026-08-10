@@ -6,7 +6,7 @@
 
 很多企業需要 RAG（讓 AI 能查自己公司的知識），但 RAG 觀念複雜、難以自製。Arcrun RAG 把整套 RAG 元件——同步、轉檔、知識萃取、三種查詢——組合好一次提供，用戶不需要自行開發。
 
-本產品用 [Arcrun](https://git.uncle6.me/Leo/Arcrun) 開發（開源工作流引擎，定位「AI-Friendly 的 n8n」），以高速的 Cloudflare 全球網路做基礎設施。**self-hosted、不是 SaaS**：正式版裝在你自己申請的 Cloudflare 帳號裡，你自己擁有所有數據；本機測試版連 Cloudflare 帳號都不用。
+本產品用 [Arcrun](https://github.com/youlinhsieh/Arcrun) 開發（開源工作流引擎，定位「AI-Friendly 的 n8n」），以高速的 Cloudflare 全球網路做基礎設施。**self-hosted、不是 SaaS**：正式版裝在你自己申請的 Cloudflare 帳號裡，你自己擁有所有數據；本機測試版連 Cloudflare 帳號都不用。
 
 本機側使用 Docker（跑 Gitea 版本庫）、Node.js（檔案收集器）與 Python（markitdown 文件轉檔）。
 

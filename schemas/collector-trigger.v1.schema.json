@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arcrun.dev/schemas/collector-trigger.v1.schema.json",
+  "title": "Collector Trigger Payload v1",
+  "description": "collector daemon → arcrun named-webhook（POST {cypher}/webhooks/named/{ns}/rag_ingest/trigger）的觸發 payload。一批＝一輪掃描一發（renamed 先配對、再 added/modified/removed，順序照 SDD ingest-hash-trigger design §3）。取代舊 Gitea push webhook payload（對照表見 schemas/MIGRATION-webhook-payload.md）。凍結版本：欄位變更＝開 v2 新檔，不就地改。",
+  "type": "object",
+  "required": ["schema_version", "folder_id", "events"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "本 payload 的 schema 版本，凍結為 1。"
+    },
+    "folder_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "collector 對每個被勾選資料夾配發的穩定識別碼（UUID，manifest 建立時生成）。取代舊 payload 的 repository.full_name——不再有 repo 概念。"
+    },
+    "root": {
+      "type": "string",
+      "description": "選填。該資料夾在來源機器上的絕對路徑，僅供除錯/顯示，消費端不得依賴（多裝置下不穩定）。"
+    },
+    "generated_at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "選填。本輪掃描完成的 Unix epoch 秒。"
+    },
+    "events": {
+      "type": "array",
+      "description": "本輪掃描產出的檔案事件。順序：renamed → added → modified → removed。可為空陣列（無變更輪不需要發送，但空發也合法＝no-op）。",
+      "items": { "$ref": "#/$defs/event" }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "非事件類警告（如大量刪除防呆 R6 觸發時，removed 全數壓下、改列一筆警告於此）。",
+      "items": { "$ref": "#/$defs/warning" }
+    }
+  },
+  "$defs": {
+    "sourceHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "內容 hash，格式 sha256:<64 位小寫 hex>。全鏈冪等鍵（design §5）。"
+    },
+    "r2Key": {
+      "type": "string",
+      "pattern": "^raw/[0-9a-f]{64}$",
+      "description": "原稿在 R2 的 content-addressed key：raw/<sha256 hex>（不含 sha256: 前綴）。同內容天然去重（design §4）。"
+    },
+    "event": {
+      "type": "object",
+      "required": ["type", "path", "source_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["added", "modified", "removed", "renamed"],
+          "description": "事件類型。renamed＝同輪 removed×added 以 content_hash 配對成功，只更新路徑映射，消費端不得 retire、不得重萃（R5）。"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "相對於資料夾根的路徑（/ 分隔）。renamed 時為新路徑。"
+        },
+        "old_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "僅 renamed：改名/搬移前的舊路徑。"
+        },
+        "source_hash": {
+          "$ref": "#/$defs/sourceHash",
+          "description": "added/modified/renamed＝現行內容 hash（必填）；removed＝最後已知（manifest 記錄的）內容 hash，供消費端反查要下架哪些卡。"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "檔案位元組數。added/modified 必填。"
+        },
+        "r2_key": {
+          "$ref": "#/$defs/r2Key",
+          "description": "原稿 R2 key。added/modified 必填（daemon 上傳原稿後才發事件；本欄＝raw/<source_hash 的 hex 部分>）。renamed/removed 不需（內容未變/已留底）。"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "enum": ["added", "modified"] } } },
+          "then": { "required": ["source_hash", "size", "r2_key"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "renamed" } } },
+          "then": { "required": ["old_path", "source_hash"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "removed" } } },
+          "then": { "required": ["path", "source_hash"] }
+        }
+      ]
+    },
+    "warning": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "機器可判的警告代碼。已定義：mass_delete_guard（單輪 removed 數 > manifest 條目數 × 門檻，removed 全數不執行，等人確認；R6）。",
+          "examples": ["mass_delete_guard"]
+        },
+        "message": {
+          "type": "string",
+          "description": "人話說明（給 GUI/notify 直接顯示）。"
+        },
+        "removed_count": { "type": "integer", "minimum": 0 },
+        "manifest_count": { "type": "integer", "minimum": 0 },
+        "threshold_ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

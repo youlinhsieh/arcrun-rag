@@ -1,0 +1,303 @@
+/* Arcrun 桌面 App — **版面**樣式（t193）
+ *
+ * 🔴 色票／字體／紙張紋理**不在這裡**——那些在 `arcrun-cis.css`（唯一真相源
+ *    ＝ InkStoneCo/arcrun-cis/css/arcrun-cis.css，portal／landing／install 共用同一份）。
+ *    leo 08-04：「不會這裡又寫了一個新的 CSS？前面剛剛才說過**不要創造新的**？」
+ *    ⇒ 本檔**只准出現版面與元件**，一律用 var(--...)，**不准寫任何 hex 色碼**。
+ *
+ * 版面（leo 08-04 指定，附 Google Drive 截圖）：
+ *   「可以完全模仿 gdrive，**左方側邊欄，在右方替換頁面**，
+ *     你現在做成在底下產生 nav bar，幾乎沒看過這種 nav bar 在下方的，會令人十分不習慣」
+ */
+
+html, body { overflow: hidden; height: 100%; }
+
+/* ── 骨架：左欄固定、右側換頁 ── */
+#app { display: flex; height: 100vh; }
+
+#side {
+  width: 216px; flex: none;   /* 同 portal #sidenav */
+  display: flex; flex-direction: column;
+  padding: 22px 0 14px;
+  border-right: 2px solid rgba(var(--amber-rgb), .35);   /* portal #sidenav 同款 */
+}
+/* 🔴 lockup（CIS，leo 三次點名）——**用裁淨版**，且**不要底板**：
+   ① 官方原始 PNG（1840x560）**只有 32% 高度是實際字形**，上下大量留白
+      ⇒ 同樣 height 看起來字很小，且留白會露出底板＝leo 看到的白底。
+      portal 早就改用**裁淨版**（986x176，比例 5.602，四邊裁到字腔邊緣）。
+      ⇒ 直接用 portal 那兩張（從它的 base64 抽出，存在 arcrun-cis/trimmed/）。
+   ② 兩張裁淨版**都是透明底** ⇒ 深色模式**不需要**也**不可以**再墊 Ink 底板。
+   ③ 尺寸／切換規則逐字照 portal 的 #sidenav .logo。 */
+/* 🔴 leo：「這是 Logo 旁邊**大量空白**」——圖本身已裁淨（實測四邊留白 0），
+   空白來自**版面**：側欄 216px 扣 padding 剩 152px，而 logo 高 24px 時只有 134px。
+   ⇒ 讓 lockup **填滿可用寬度**（高度由 5.602 的比例自動決定，約 27px），
+     並照 CIS「clear space = one chevron height」在下方留呼吸空間。 */
+#side .brand { display: flex; color: var(--ink); padding: 0 32px 22px; }
+#side .brand img { width: 100%; height: auto; display: block; }
+#side .brand .wm-paper { display: none; }
+:root[data-theme="dark"] #side .brand .wm-ink { display: none; }
+:root[data-theme="dark"] #side .brand .wm-paper { display: block; }
+
+/* 側邊欄選中態：**逐字照 portal 的 #sidenav .nav.on**
+   （leo：「參考現在 Portal 的格式⋯⋯這個比現在膠囊反紅精緻，
+     重點是**跟 portal 的形象符合**」）
+   ＝ 不是膠囊實心，而是：amber 字色 ＋ 8% amber 底 ＋ 右側 2px amber 邊。 */
+#side nav { display: flex; flex-direction: column; gap: 4px; }
+#side .nav {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 24px; font-size: 15px; letter-spacing: .08em;
+  color: rgba(var(--ink-rgb), .6);
+  border-right: 2px solid transparent;
+  cursor: pointer; user-select: none;
+}
+#side .nav:hover { color: var(--ink); }
+#side .nav.on {
+  color: var(--amber);
+  background: rgba(var(--amber-rgb), .08);
+  border-right-color: var(--amber);
+  font-weight: 600;
+}
+#side .nav .ic { width: 17px; text-align: center; font-size: 14px; opacity: .85; }
+#side .nav .cnt { margin-left: auto; font-size: 11.5px; opacity: .7; font-family: ui-monospace, Menlo, monospace; }
+#side .nav .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#side .side-foot { margin-top: auto; padding: 12px 22px 0; }
+#side .ver { font-size: 12px; color: rgba(var(--ink-rgb), .35); font-family: ui-monospace, Menlo, monospace; }
+
+#content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+header {
+  padding: 22px 28px 16px;
+  display: flex; align-items: flex-start; gap: 18px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), .1);
+}
+.status { flex: 1; min-width: 0; }
+.status .big { font-size: 18px; font-weight: 600; letter-spacing: .02em; }
+.status .sub { margin-top: 5px; font-size: 13.5px; color: rgba(var(--ink-rgb), .5); }
+/* 同步中會呼吸——「看得出來在動」（issue #17） */
+.status .big.syncing::after {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 9px;
+  border-radius: 50%; background: var(--amber); vertical-align: middle;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+
+main { flex: 1; overflow-y: auto; padding: 20px 28px 28px; }
+
+/* ── 元件：規格**逐字對齊 portal**（leo：「網頁的按鈕比較精緻，跟現有的差異較大」）──
+   portal: .btn  { padding:13px; font-size:16px; font-weight:600; border-radius:10px; border:none; background:var(--amber) }
+           .btn3 { padding:11px 16px; font-size:15px; border-radius:10px; border:1px solid rgba(ink,.25); background:none }
+   這裡只把 padding 依桌面視窗略收（網頁是手機優先、桌面不需要那麼大的點擊區）。 */
+button {
+  padding: 10px 16px; font-size: 14.5px; border-radius: 10px;
+  border: 1px solid rgba(var(--ink-rgb), .25);
+  background: none; color: rgba(var(--ink-rgb), .7);
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+}
+button:hover { background: var(--well); color: var(--ink); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary {
+  border: none; background: var(--amber); color: var(--knob); font-weight: 600;
+}
+button.primary:hover { filter: brightness(1.06); background: var(--amber); }
+button.ghost {
+  border-color: transparent; background: none;
+  color: rgba(var(--ink-rgb), .45); padding: 7px 10px; font-size: 13px;
+}
+button.ghost:hover { color: var(--err); background: transparent; }
+
+/* 主題切換（portal 有，daemon 也要有——leo：「它有淺色佈景？」
+   ⇒ 是，portal **預設淺色**，深色由使用者切換並存 localStorage。 */
+#themeBtn { padding: 7px 11px; font-size: 13px; }
+
+.card {
+  background: var(--well); border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 14px;
+}
+.card h3 { margin: 0 0 4px; font-size: 15px; }
+.card .d { font-size: 13.5px; color: rgba(var(--ink-rgb), .55); line-height: 1.8; }
+.card .row { display: flex; align-items: center; gap: 12px; }
+.card .row .g { flex: 1; min-width: 0; }
+
+/* 「這些檔案還讀不了」清單（G-6.2）。刻意**不用紅色/錯誤色**：
+   這不是使用者做錯了什麼，是我們還沒支援——語氣要是告知，不是指責。 */
+.skiplist { margin: 10px 0 0; padding: 0; list-style: none; }
+.skiplist li {
+  font-size: 13.5px; padding: 6px 0;
+  border-top: 1px solid rgba(var(--ink-rgb), .08);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.skiplist li.more { color: rgba(var(--ink-rgb), .45); }
+
+.acct { padding: 4px 2px 8px; display: flex; align-items: baseline; gap: 10px; }
+.acct .name { font-size: 14.5px; font-weight: 600; }
+.acct .host { font-size: 12px; color: rgba(var(--ink-rgb), .4); font-family: ui-monospace, Menlo, monospace; }
+
+.folder {
+  padding: 11px 15px; margin-bottom: 7px;
+  background: var(--well); border-radius: 10px;
+  display: flex; align-items: center; gap: 12px;
+}
+.folder .path { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder .tag { font-size: 12px; color: var(--ok); white-space: nowrap; }
+
+.big-num { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
+.kv { display: flex; gap: 26px; margin-top: 4px; }
+.kv .k { font-size: 12.5px; color: rgba(var(--ink-rgb), .45); }
+
+.empty { padding: 52px 24px; text-align: center; }
+.empty .t { font-size: 17px; font-weight: 600; margin-bottom: 10px; }
+.empty .d { font-size: 14px; color: rgba(var(--ink-rgb), .55); line-height: 1.9; margin-bottom: 20px; }
+
+/* ── 首次啟動精靈（issue #23）：兩步，讓人隨時知道「我做到哪了」──
+   步驟點沿用首頁「狀態時間軸」同一套配色邏輯（done=--ok、on=--amber），
+   不另外發明一組顏色。 */
+.ob { max-width: 520px; margin: 0 auto; padding-top: 36px; }
+.obdots {
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; margin-bottom: 18px;
+}
+.obdot {
+  width: 26px; height: 26px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12.5px; font-weight: 600; font-family: ui-monospace, Menlo, monospace;
+  background: rgba(var(--ink-rgb), .1); color: rgba(var(--ink-rgb), .45);
+}
+.obdot.on { background: var(--amber); color: var(--knob); }
+.obdot.done { background: var(--ok); color: var(--knob); }
+.obline { width: 40px; height: 2px; background: rgba(var(--ink-rgb), .12); }
+.obcap {
+  font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+  color: rgba(var(--ink-rgb), .4); margin-bottom: 14px;
+}
+.obintro { text-align: left; max-width: 420px; margin: 0 auto 24px; }
+.obintro p { margin: 0 0 10px; }
+.obchoice {
+  display: flex; gap: 14px; margin-top: 22px; text-align: left;
+  flex-wrap: wrap; justify-content: center;
+}
+.obcard {
+  flex: 1 1 200px; max-width: 240px;
+  background: var(--well); border-radius: 12px; padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.obcard .obh { font-size: 14.5px; font-weight: 600; }
+.obcard .d { margin-bottom: 4px; }
+.obcard button { margin-top: auto; }
+
+label.radio { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0; font-size: 14px; cursor: pointer; }
+label.radio input { margin-top: 3px; }
+input[type=text], input[type=password] {
+  width: 100%; box-sizing: border-box; padding: 9px 12px; font-size: 14px;
+  border: 1px solid rgba(var(--ink-rgb), .18); border-radius: 8px;
+  background: var(--paper-b); color: var(--ink);
+}
+.field { margin: 14px 0; }
+.field .lb { font-size: 13px; margin-bottom: 6px; color: rgba(var(--ink-rgb), .6); }
+.err { color: var(--err); font-size: 13px; margin-top: 10px; }
+.acts { display: flex; gap: 8px; margin-top: 18px; }
+
+/* 覆蓋層：只給「確認刪除」這類必須打斷的動作，設定頁一律走右側換頁 */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.42);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity .14s;
+}
+.overlay.on { opacity: 1; pointer-events: auto; }
+.sheet {
+  width: min(460px, calc(100vw - 64px));
+  background: var(--paper-a); color: var(--ink);
+  border: 1px solid rgba(var(--ink-rgb), .12);
+  border-radius: 14px; padding: 22px 24px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.28);
+}
+.sheet h2 { margin: 0 0 6px; font-size: 16.5px; }
+.sheet p { margin: 0 0 4px; font-size: 14px; color: rgba(var(--ink-rgb), .55); line-height: 1.7; }
+.sheet .acts { justify-content: flex-end; }
+
+/* ── 每個知識庫一個獨立分頁（leo 08-04）──
+   「同步資料夾那個頁面如果有 2 個庫，每個庫有 30 個同步資料夾，**放得下嗎**？
+     應該**一個庫有一個頁簽**或是其他方法可以切換。」
+   「『加入資料夾』按下後**會加在哪個帳號**？**有必要每個帳號有獨立的一個頁面**。」
+   ⇒ 側邊欄直接列出每個知識庫；點進去就是那個庫的頁，動作全部作用在它身上，不會加錯。 */
+#side .sec {
+  padding: 16px 26px 6px; font-size: 11.5px; letter-spacing: .08em;
+  color: rgba(var(--ink-rgb), .35);
+}
+#side .nav .cnt {
+  margin-left: auto; font-size: 11.5px; opacity: .7;
+  font-family: ui-monospace, Menlo, monospace;
+}
+#side .nav .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 每個庫的頁首：庫名＋網址＋「開啟知識庫網頁」（leo：不該放首頁，要在各庫上方） */
+.libhead {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 14px; margin-bottom: 14px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), .1);
+}
+.libhead .g { flex: 1; min-width: 0; }
+.libhead .nm { font-size: 16px; font-weight: 600; }
+.libhead .host {
+  font-size: 12px; color: rgba(var(--ink-rgb), .4);
+  font-family: ui-monospace, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 狀態時間軸（leo：「如果看守、發現變化、萃取、上傳… 不同 status 在哪裡顯示？」） */
+.steps { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.step { display: flex; align-items: center; gap: 11px; padding: 7px 0; font-size: 14px; }
+.step .dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: rgba(var(--ink-rgb), .18);
+}
+.step.done .dot { background: var(--ok); }
+.step.now .dot  { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
+.step.now  { font-weight: 600; }
+.step .t { flex: 1; }
+.step .m { font-size: 12.5px; color: rgba(var(--ink-rgb), .45); }
+
+/* 展開收合的細節區塊（<details>，原為 leo 2026-08-06 逐檔失敗卡所寫：
+   「顯示沒通過的名稱，旁邊有個三角形，點擊看到失敗細節，default 摺疊起來」）。
+   t210（2026-08-08）沿用同一套三角形樣式，改包「送不上去」的分類統計。 */
+.fail { border-top: 1px solid rgba(var(--ink-rgb), .10); }
+.fail:first-child { border-top: 0; }
+.fail > summary {
+  cursor: pointer;
+  padding: 10px 2px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+  list-style: revert;       /* 保留原生三角形 */
+}
+.fail > summary::marker { color: var(--amber); }
+.fail[open] > summary { font-weight: 600; }
+
+/* 「送不上去」展開後的分類清單：只有分類名稱與份數兩欄，不逐檔列名
+   （t210 leo 08-08：「不解釋細節……想看細節才展開」——展開後也只到分類為止）。 */
+.breaklist { margin: 8px 0 0; padding: 0; list-style: none; }
+.breaklist li {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 13.5px; padding: 6px 2px;
+  border-top: 1px solid rgba(var(--ink-rgb), .08);
+}
+.breaklist li:first-child { border-top: 0; }
+.breaklist li span:last-child { color: rgba(var(--ink-rgb), .55); white-space: nowrap; }
+
+/* t215（2026-08-08，leo：「在每個知識庫上顯示是否要更新」）——首頁「知識庫版本」卡、
+   各庫頁版本列、側邊欄警示點，三處共用同一組顏色：落後＝--err（同 .err 那個紅），
+   不是額外發明一個「警告色」。 */
+.kblist { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.kbrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 0; border-top: 1px solid rgba(var(--ink-rgb), .08);
+}
+.kbrow:first-child { border-top: 0; }
+.kbrow .nm { font-size: 14px; font-weight: 600; flex: none; }
+.kbrow .right { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.kbver { margin-bottom: 14px; font-size: 13.5px; display: flex; align-items: center; gap: 10px; }
+.warn { color: var(--err); font-size: 13px; }
+#side .nav .dot.warn {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--err); margin-left: 4px;
+}

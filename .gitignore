@@ -11,3 +11,29 @@ node_modules/
 
 # GitHub 公開 mirror 工作目錄(publish-github.sh 產物)
 .github-public/
+
+# Windows 交叉編譯產物（build-windows.sh 生成，不進版控）
+collector/cmd/arcrun-tray/dist-windows/
+collector/cmd/arcrun-tray/dist-msix/
+
+# 本機 `go build` 在原地產出的托盤執行檔（與套件同名，不進版控）
+collector/cmd/arcrun-tray/arcrun-tray
+
+# wrangler 本地快取／狀態（部署產物，不進版控）
+.wrangler/
+
+# docs-site 建置產物（每次 build 重產，不進版控）
+docs-site/dist/
+docs-site/deploy/
+docs-site/node_modules/
+docs-site/.astro/
+
+# Wails 建置產物
+collector/cmd/arcrun-app/build/bin/
+collector/cmd/arcrun-app/frontend/dist/
+collector/cmd/arcrun-app/frontend/node_modules/
+collector/cmd/arcrun-app/frontend/wailsjs/
+
+# 打包產物：.app bundle 不進版控，也別讓 Spotlight 把它們當成「裝好的 App」
+# （leo 2026-08-05：Launchpad 搜 arc 跑出 4 個 Arcrun，其中兩個是 commit 進 repo 的 v0.0.1 退役 fyne 版）
+collector/cmd/**/*.app

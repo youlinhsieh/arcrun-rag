@@ -1,0 +1,127 @@
+name = "arcrun-installer"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# 用到 File / FormData 建 multipart 上傳；標準 Workers runtime 已支援，
+# 這裡不需要 nodejs_compat。
+
+# ---------------------------------------------------------------------------
+# KV：存 OAuth state、session（token）、安裝進度
+# ---------------------------------------------------------------------------
+# ⚠️ 部署前必填：下面的 id 是佔位符，要換成你自己建立的 namespace id。
+#
+#   wrangler kv namespace create INSTALLER_KV
+#   wrangler kv namespace create INSTALLER_KV --preview
+#
+# 指令會印出真實的 id，貼回下面兩個欄位。
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "INSTALLER_KV"
+id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # uncle6 實際值（wiki agent-memory 記載）
+# preview_id 部署不需要（只有 wrangler dev 用）
+
+# t157：對方通道（staging）的 KV，唯讀用——偵測「同帳號被另一通道裝過」（雙通道互蓋警告）。
+# KV 分離後兩通道互不知情，youlin 07-31 就被 staging＋prod 各裝一半成混血實例。
+[[kv_namespaces]]
+binding = "PEER_INSTALLER_KV"
+id = "750c23faf0794d3db317c32f596df9a9"  # staging-INSTALLER_KV
+
+[observability]
+enabled = true
+
+# t156：安裝自續保底——cron 每 2 分掃自家 KV 的 paused_continue／停滯 running 續跑一輪。
+# 頁面接力仍是主路徑；這裡保證「頁面關了安裝照樣走完」。掃自家 KV 非 GitHub 輪詢（D20 無涉）。
+[triggers]
+crons = ["*/2 * * * *"]
+
+# ---------------------------------------------------------------------------
+# prod 設定（P10，2026-08-07）：與 [env.staging.vars] 同一套機制。
+#   下面三個值與 worker.js 的 DEFAULT_LANDING_BASE / DEFAULT_BUNDLE_BASE /
+#   BUNDLE_BUILT 常數**完全相同**——只是把「唯一真相源」從程式碼常數搬到這裡，
+#   本次部署對 prod 行為零改變。
+#   觸發原因：leo 08-07「可以在測試時指到 gitea，正式時指到 github 嗎？」——
+#   worker.js 的 bundleBase()/landingBase() 早就支援 env 覆蓋，但 prod 過去沒有
+#   任何 vars，導致「換 bundle 來源」只能改程式碼常數，跟 staging 走的是兩套機制，
+#   必然漂移（同 D36 金鑰鐵律點名的病）。
+#   ⇒ **以後要換 prod 的 bundle 來源／landing 網址，只改這裡＋wrangler deploy，
+#     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
+[vars]
+LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@04d6d0ddd3bfcd07c1d55a70dfcd72397d4e1814"
+BUNDLE_BUILT = "2026-08-09"
+# arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
+# rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
+# LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
+# DEFAULT_SITE_BASE / DEFAULT_DOCS_BASE 常數完全相同——本次部署對 prod 行為零改變。
+SITE_BASE = "https://rag.arcrun.dev"
+DOCS_BASE = "https://rag.arcrun.dev/docs"
+
+# ---------------------------------------------------------------------------
+# 注意：本安裝器不需要任何 secret。
+# OAuth client 是 PKCE public client，client_id 寫在 worker.js 常數區即可，
+# 不存在 client_secret。請勿在此檔或程式碼中放入任何 token。
+# ---------------------------------------------------------------------------
+
+# 若要綁自訂網域，取消下面註解並改成你的網域。
+# ⚠️ redirect_uri 必須與 OAuth app 註冊的完全一致，換網域要同步更新註冊。
+# routes = [
+#   { pattern = "install.example.com", custom_domain = true }
+# ]
+
+# ---------------------------------------------------------------------------
+# staging 環境（D37，2026-07-31）：與 prod 完全分離的測試場。
+#   部署指令＝ `npx wrangler deploy --env staging --config wrangler.toml`
+#   - 獨立 worker 名＋獨立 INSTALLER_KV（session/進度/金鑰記錄全不與 prod 共用）
+#   - 不綁 custom domain（走 workers.dev）；OAuth redirect_uri 已 PATCH 加進
+#     client 79b44eac 的註冊清單（staging workers.dev callback）
+#   - BUNDLE_BASE 蓋掉 prod 釘點 → Gitea raw 釘 commit（不走 jsDelivr、不碰 GitHub）
+#   - BUNDLE_BUILT＝釘點 manifest.built（D37 單一真相源：換釘點時跟著 manifest 改）
+#   - DEPLOY_ENV=staging → 首頁版本字串帶 +staging，一眼分辨
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "arcrun-rag-installer-staging"
+# P10（2026-08-07）：允許本 worker（在 workers.dev 上）直接 fetch 同帳號其他
+# workers.dev worker（landing-staging），不再被 CF 1042 當成 self-fetch 擋下。
+# 只加在 staging——prod 的呼叫方是 custom domain（install.arcrun.dev）不踩這條，
+# 維持現狀、不動 prod 的 compatibility_flags。
+compatibility_flags = ["global_fetch_strictly_public"]
+
+[[env.staging.kv_namespaces]]
+binding = "INSTALLER_KV"
+id = "750c23faf0794d3db317c32f596df9a9"  # staging-INSTALLER_KV（2026-07-31 建）
+
+# t157：對方通道（prod）的 KV，唯讀用——雙通道互蓋警告（見 prod 段註解）
+[[env.staging.kv_namespaces]]
+binding = "PEER_INSTALLER_KV"
+id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
+
+[env.staging.vars]
+DEPLOY_ENV = "staging"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/595a7c6"
+BUNDLE_BUILT = "2026-08-10"
+# P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
+# 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
+# SIGNUPS——prod 報名 19 筆裡 8 筆 @example.com 就是這樣污染進去的。
+# landing-staging 已部署（landing/wrangler.toml [env.staging]），獨立 KV
+# 8a19ffe38ae246929c563b530e5eb5f7，與 prod SIGNUPS(ab7b1520…) 完全分離。
+LANDING_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
+# arcrun-rag#29（2026-08-09）：導覽列「首頁」「說明文件」的人看網址，跟上面
+# LANDING_BASE 分開覆蓋——不然 staging 頁面的導覽列會把人導去 prod（含剛做好的
+# stage 文件站完全連不到，只能靠使用者自己記住裸網址）。
+SITE_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
+DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
+
+# 下面這行原本注解說「worker→同帳號 workers.dev 的 fetch 會被 CF 擋（1042 族）」，
+# 因此當初才把 LANDING_BASE 繞去 prod 的 custom domain——這正是污染的根因。
+# 真正的解法是這個 compatibility flag（Arcrun#33 同族坑，credential-primitives-wasm
+# Phase 7／cypher-executor 已用過同一招，見 system-dev/wiki/mistakes.md 與
+# docs/manual/uncle6-deploy-record.md §3）：開了之後同帳號 workers.dev↔workers.dev
+# 的 fetch 就不再被當成 self-fetch 擋下，不必再繞去 prod 網域。
+# 實測見本次交付回報（curl /auth/start?code=<真碼> 直接拿到 CF OAuth 302，
+# 而不是 error=code_unreachable）。
+
+[env.staging.observability]
+enabled = true
+
+[env.staging.triggers]
+crons = ["*/2 * * * *"]  # t156 自續保底（同 prod）

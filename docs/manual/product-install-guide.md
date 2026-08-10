@@ -27,7 +27,7 @@
 
 macOS（Apple Silicon 實測）／Node 22＋pnpm＋全域 wrangler 4.98+／git／Docker（OrbStack 實測）。
 選配：`pip install 'markitdown[docx,pptx,pdf]'`（沒裝＝docx/pptx/pdf 跳過、md 照常）。
-Arcrun 引擎 checkout：`git clone https://git.uncle6.me/Leo/Arcrun.git`。
+Arcrun 引擎 checkout：`git clone https://github.com/youlinhsieh/Arcrun.git`。
 **不需要** Cloudflare 帳號。
 
 ## 2. 安裝（一支腳本）
@@ -125,7 +125,7 @@ removed 分支把該頁的 block entries、精耕 wiki entry、triplet 全標 `s
 
 ## 7. 回報問題
 
-開 issue 到 `Leo/arcrun-rag`（git.uncle6.me），附：跑到哪一步、完整指令與錯誤、`node --version`/`wrangler --version`。
+開 issue 到 [github.com/youlinhsieh/arcrun-rag/issues](https://github.com/youlinhsieh/arcrun-rag/issues)（有 GitHub 帳號即可），附：跑到哪一步、完整指令與錯誤、`node --version`/`wrangler --version`。
 
 ## 8. 一鍵全拆
 
