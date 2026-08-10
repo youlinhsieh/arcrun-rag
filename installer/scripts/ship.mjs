@@ -346,6 +346,44 @@ const STEPS = [
   return { status: 'done', detail: lines };
 }},
 
+// ── 1.2 public-docs：對外說明文字也要掃——「這一版的東西還成不成立」，不是內容有沒有變 ──
+//
+// 🔴 D65（leo 2026-08-11）：「readme 也應該在出貨範圍內對吧，每次按下出貨，它就要掃所有的
+//   東西，因為這個出貨很複雜」「前一次和這一次的出貨你都沒有記錄」。執行票 arcrun-rag#73。
+//
+// 病：17 關驗得很兇，卻沒有任何一關讀過 README 在講什麼。README 每次出貨都被
+// `github-release` 步驟整棵公開樹 push 上 GitHub——但那一步**只有 prod 且要 --confirm**
+// 才會跑。`stage`／`selftest` 從沒被掃過，於是「README 教的路已經不是產品現在的入口」
+// 這件事一路綠燈：回溯查公開鏡像每一次快照，`install.arcrun.dev`（現在唯一的一鍵安裝
+// 入口）從 2026-07-18 到 1.4.33（68160cd）全部是 0——README 從沒提過它，教的一直是
+// 「git clone＋貼給 AI」那條已經退居 `<details>` 進階區的舊路。
+//
+// 解法不是另建一套平行判準（那會製造第二份會漂移的清單，同 bundle-components.mjs 檔頭
+// 記的那次病）：改成**提早呼叫**既有的公開樹守門機制——`scripts/publish-github.sh` 第 3.5
+// 步本來就會掃「整棵會被推上公開鏡像的樹」（github-publish-sanitize.py），只是這次也
+// 補上「README 必須提到 install.arcrun.dev」的**要求存在**檢查（相對於它原本只有的
+// 「禁止存在」檢查——同不變式 Ⅴ 的形狀：缺了要斷，不是印警告）。
+//
+// 🔴 D65 補述（leo 2026-08-11 二次拍板，同票留言）：一張清單兩個目標都要跑滿，
+//   這一步刻意**不看 T.promoteFrom**——不管重打還是提升，都是同一顆「公開樹乾不乾淨」
+//   要問，差異只准是打哪個帳號/網址，不准是這一項有沒有被問過。
+//
+// mutates:false：只建本機 `.github-public/`（.gitignore 排除，不影響外界），不 push、
+// 不動 bundlesDir、不需要任何 GitHub 憑證——預演（不加 --confirm）也會跑，讓漏洞在
+// **最早**的時刻被看見，不必等到真的走完整條出貨鏈。
+{ id: 'public-docs', title: '掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）', mutates: false, async run() {
+  try {
+    shLive('bash', [join(REPO_ROOT, 'scripts', 'publish-github.sh')], REPO_ROOT);
+  } catch (e) {
+    throw new Error(
+      `公開樹守門不過（scripts/publish-github.sh 的 sanitize 步驟，訊息見上面的即時輸出）：${e.message}\n` +
+      `     → 這關掃的是「對外解釋這個產品怎麼用的文字」還成不成立，不是這次改了什麼程式碼。\n` +
+      `       修**源頭正稿**（README／docs/manual／docs/demo…），不要在 sanitize.py 裡加豁免\n` +
+      `       （leo 2026-07-21：「正稿的網址從源頭就寫對，不靠發佈時改寫」）。`);
+  }
+  return { status: 'done', detail: ['scripts/publish-github.sh（含 sanitize 守門）全過 ⇒ 公開樹此刻乾淨、README 教的路是現在的入口'] };
+}},
+
 // ── 1.4 daemon-sync：**把 daemon 真的搬進 bundle**（下面那道 check 才有東西可過）──
 //
 // 🔴 leo 2026-08-09（arcrun-rag#27）：「你推 Stage 機制會複製到推 Prod 機制，
@@ -818,12 +856,18 @@ const STEPS = [
 // 沿用既有的 daemon changelog 機制（`headlinesFor`／`notesFromChangelog`，
 // daemon-notes.mjs）——那支本來就是「用版本號當 key 去 changelog.md 找一段」，
 // 換成拿 bundle 的 release 版本號去問一樣的問題，不必另建一套格式或另一個檔案。
-// 提升目標（prod）不重算版本、沿用 stage 的 release——這道閘已經在 stage 那次跑過，
-// 不必也不能重跑（prod 的來源就是 stage 已驗證的內容，見不變式 Ⅳ）。
+//
+// 🔴 D65 補述（leo 2026-08-11，arcrun-rag#73 二次拍板，訂正前一版註解）：
+//   這裡原本寫「提升目標（prod）不重算版本、沿用 stage 已過的版本，不必也不能重跑」，
+//   而 leo 直接點出這正是「兩個理貨員拿的不是同一張清單」——
+//   「Stage 先擠一次確定都是對的，再叫 prod 來再擠一次⋯⋯拿着都是 10 件的清單」
+//   「整條管線唯一一道『說明文件寫了沒』的閘，prod 由設計跳過」。
+//   即使版本號是繼承來的，**這一項本身也要被問一次**：changelog 這個檔在 stage
+//   蓋章之後、prod 提升之前仍可能被改動（例如那一段被誤刪），「stage 驗過」不等於
+//   「prod 出貨這一刻它還在」。所以拿掉 promoteFrom 的提早 return——兩個目標
+//   跑一模一樣的檢查，差異只在於 ctx.release 從哪來（重打自己算 vs 提升繼承），
+//   不在於「這一項有沒有被問」。
 { id: 'docs-changelog', title: '確認這版已經寫進說明文件（缺了就中止，不安靜跳過）', mutates: false, async run() {
-  if (T.promoteFrom) {
-    return { status: 'skip', detail: [`提升目標不重算版本，沿用 ${T.promoteFrom} 已經過這道閘的版本`] };
-  }
   const line = notesFromChangelog(REPO_ROOT, ctx.release);
   if (!line) {
     throw new Error(
