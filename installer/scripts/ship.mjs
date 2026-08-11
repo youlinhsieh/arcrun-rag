@@ -1327,7 +1327,18 @@ for (const [i, step] of RUN_STEPS.entries()) {
     const mark = r.status === 'skip' ? '⏭ 跳過' : '✅ 完成';
     console.log(`   ${mark}`);
     for (const d of [].concat(r.detail || [])) console.log(`     ${d}`);
-    results.push({ id: step.id, title: step.title, status: r.status });
+    // 🔴 跳過的**理由**要進帳本（2026-08-11，#77 複驗抓到）。
+    //   由來：1.4.37 那次 stage 有 9 站 skip，報告上全是 `⬜`；1.4.36 那次其中 5 站是 `done`。
+    //   **站數沒變（19→19，表頭還寫「無增減」），內容卻變空了。**
+    //   `⬜` 同時代表「這次沒事可做」與「這次沒做到」⇒ 等於把差別藏起來，
+    //   而 leo 的判準是「**不對稱會自己現形**」。
+    //   ⚠️ 修法**不動符號**：b998df4 當初就是刻意把 `⏭ 不需要做` 換成裸的 `⬜`
+    //   （ship-report.test.mjs 有一條測試寫死「不准用安撫用語代替空格」）——
+    //   把格子變好看正是被否決過的方向。改成**把理由記下來、印在表外**。
+    results.push({
+      id: step.id, title: step.title, status: r.status,
+      note: r.status === 'skip' ? String([].concat(r.detail || [])[0] || '').trim() || null : null,
+    });
   } catch (e) {
     console.log(`   ❌ 斷在這一步`);
     console.log(String(e.message).split('\n').map((l) => `     ${l}`).join('\n'));

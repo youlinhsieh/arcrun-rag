@@ -191,6 +191,44 @@ export function renderComparisonTable(repoRoot, release, { targets = ['stage', '
     lines.push(`🗑 上次有、這次清單已經沒有的站：${removed.join('、')}——如果不是刻意拿掉，這就是漏了`);
   }
 
+  // ── 真的做事的站數（2026-08-11，#77 複驗抓到的洞）─────────────────────────
+  // 病：站數只算「這一站在不在清單上」，**不算它有沒有真的做事**。
+  //   1.4.37 stage 有 9 站 skip、1.4.36 只有 4 站 ⇒ 這次比上次少做 5 站，
+  //   而表頭寫的是「共 19 站（上次 19 站　無增減）」——**完全看不出來**。
+  // ⇒ 站數之外再印一個「真的做事」的數字，並跟上一版比。少了就明講。
+  //   這不是把空白變不見，是讓**空白的數量**也現形。
+  const doneNow = doneCounts(entry, order, targets);
+  const donePrev = prevKey ? doneCounts(ledger[prevKey] || {}, prevOrder, targets) : null;
+  lines.push('');
+  lines.push(`真的做事的站：${targets.map((t) => {
+    if (doneNow[t] === null) return `${t} （未出）`;
+    const p = donePrev && donePrev[t];
+    const delta = (p === null || p === undefined) ? '' : (doneNow[t] === p ? '（與上次相同）' : `（上次 ${p} 站）`);
+    return `${t} ${doneNow[t]}／${order.length} 站${delta}`;
+  }).join('　｜　')}`);
+  for (const t of targets) {
+    const p = donePrev && donePrev[t];
+    if (doneNow[t] !== null && p !== null && p !== undefined && doneNow[t] < p) {
+      lines.push(`⚠️ ${t} 這次比上次**少做 ${p - doneNow[t]} 站**——站數一樣不代表做的事一樣。`
+        + `底下「跳過的站」逐條寫了原因；若某一條不是「沒事可做」，那就是漏了。`);
+    }
+  }
+
+  // ── 跳過的站，逐條附原因 ─────────────────────────────────────────────────
+  // 表格裡的格子維持裸 `⬜`（b998df4 刻意這樣定的，測試寫死「不准用安撫用語代替空格」），
+  // 原因印在表外——**看得見，但不會讓那一格看起來像做完了**。
+  const skips = [];
+  for (const t of targets) {
+    for (const r of (entry[t] && entry[t].results) || []) {
+      if (r.status === 'skip') skips.push(`${t}｜${r.id}：${r.note || '（這次沒記錄原因——舊帳本，之後的出貨會有）'}`);
+    }
+  }
+  if (skips.length) {
+    lines.push('');
+    lines.push(`⬜ 跳過的站（${skips.length} 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：`);
+    for (const s of skips) lines.push(`   · ${s}`);
+  }
+
   // ── 兩欄件數（leo 2026-08-11 對 #77 的驗收條件之一）─────────────────────
   // leo 的比喻：「左邊是 stage 10 站打勾，右邊是 prod 10 站打勾。」
   // ⇒ **件數本身要印出來**，不能讓人自己去數那張表——沒印出來的數字沒人會核。
@@ -207,6 +245,24 @@ export function renderComparisonTable(repoRoot, release, { targets = ['stage', '
  * 每一欄各自「真的跑過幾站」（`（未出）`不算）。整個目標沒出過 ⇒ 該欄是 `null`，
  * 與「出過但 0 站」區分開來——前者是還沒到比對的時候，後者是真的有問題。
  */
+/**
+ * 每一欄**真的做事**（status === 'done'）的站數。整個目標沒出過 ⇒ `null`。
+ *
+ * 跟 `columnCounts` 的差別就是這張報告 2026-08-11 被複驗抓到的那個洞：
+ * `columnCounts` 算的是「這一站在不在這次的清單裡」，跳過的也算進去；
+ * 這支算的是「這一站有沒有真的做事」。**兩個數字都要印**——
+ * 只印前者，就會出現「共 19 站、無增減」但其實比上次少做 5 站的情況。
+ */
+export function doneCounts(entry, order, targets = ['stage', 'prod']) {
+  const out = {};
+  for (const t of targets) {
+    if (!entry[t]) { out[t] = null; continue; }
+    const done = new Set((entry[t].results || []).filter((r) => r.status === 'done').map((r) => r.id));
+    out[t] = order.filter((id) => done.has(id)).length;
+  }
+  return out;
+}
+
 export function columnCounts(entry, order, targets = ['stage', 'prod']) {
   const out = {};
   for (const t of targets) {

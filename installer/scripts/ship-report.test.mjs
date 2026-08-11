@@ -208,3 +208,55 @@ test('✅ 同一個 target 重跑同一個 release（覆蓋自己）⇒ 不算�
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ── 「站數沒變但內容變空了」（2026-08-11 複驗抓到，arcrun-rag#77）───────────
+// 實錄：1.4.37 stage 有 9 站 skip、1.4.36 只有 4 站 ⇒ 這次少做 5 站，
+// 而表頭寫「共 19 站（上次 19 站　無增減）」——完全看不出來。
+// `⬜` 同時代表「沒事可做」與「沒做到」⇒ 差別被藏起來。
+test('🔴 站數一樣但做的事變少 ⇒ 表上要現形（不是把空白變不見）', () => {
+  const repo = tempRepo();
+  try {
+    const mk = (statuses) => Object.entries(statuses).map(([id, status]) =>
+      ({ id, title: id, status, note: status === 'skip' ? `${id} 沒事可做` : null }));
+    recordRun(repo, { release: '1.5.0', target: 'stage', sourceCommit: 'Arcrun@aaa',
+      results: mk({ build: 'done', commit: 'done', push: 'done', deploy: 'done' }) });
+    recordRun(repo, { release: '1.5.1', target: 'stage', sourceCommit: 'Arcrun@bbb',
+      results: mk({ build: 'done', commit: 'skip', push: 'skip', deploy: 'skip' }) });
+
+    const table = renderComparisonTable(repo, '1.5.1');
+    // 站數確實沒變——這正是原本看不出問題的原因
+    assert.match(table, /共 4 站/);
+    assert.match(table, /無增減/);
+    // 但「真的做事」要把差別講出來
+    assert.match(table, /真的做事的站：stage 1／4 站（上次 4 站）/);
+    assert.match(table, /少做 3 站/);
+    // 每一筆跳過都要附原因
+    assert.match(table, /commit：commit 沒事可做/);
+    assert.match(table, /deploy：deploy 沒事可做/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('✅ 做的事沒變少 ⇒ 不要亂叫（誤報會讓人學會忽略這行）', () => {
+  const repo = tempRepo();
+  try {
+    const r = [{ id: 'build', title: 'build', status: 'done' }, { id: 'push', title: 'push', status: 'done' }];
+    recordRun(repo, { release: '1.5.0', target: 'stage', results: r, sourceCommit: 'Arcrun@aaa' });
+    recordRun(repo, { release: '1.5.1', target: 'stage', results: r, sourceCommit: 'Arcrun@bbb' });
+    const table = renderComparisonTable(repo, '1.5.1');
+    assert.match(table, /真的做事的站：stage 2／2 站（與上次相同）/);
+    assert.ok(!table.includes('少做'), '沒變少就不該印警告');
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('🔴 表格那一格仍是裸 ⬜，原因印在表外（b998df4 定的：不准用安撫用語代替空格）', () => {
+  const repo = tempRepo();
+  try {
+    recordRun(repo, { release: '1.5.2', target: 'stage', sourceCommit: 'Arcrun@ccc',
+      results: [{ id: 'push', title: '推上 bundle repo', status: 'skip', note: '已與遠端同步，沒有要推的' }] });
+    const table = renderComparisonTable(repo, '1.5.2');
+    const row = table.split('\n').find((l) => l.startsWith('| 1 |'));
+    assert.match(row, /⬜/, '格子要維持裸 ⬜');
+    assert.ok(!row.includes('已與遠端同步'), '原因不准塞進格子裡（那會讓它看起來像做完了）');
+    assert.match(table, /push：已與遠端同步，沒有要推的/, '原因要印在表外');
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
