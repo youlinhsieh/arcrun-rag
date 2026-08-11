@@ -29,24 +29,27 @@
  * 另外：**版本號由內容算出來**（release.mjs 的指紋機制），而本管線對「重打」目標
  * **每次都重打 bundle** ⇒ 「改了東西版本沒動」在結構上不可能發生；反之版本一樣就保證內容一樣。
  *
- * ── 不變式 Ⅳ（2026-08-08 加）：發佈目標「提升」，不「重打」──────────────────
- * leo 原話：「arm 推的是 uncle6 把 stage 的 bundle 推到 prod 的 bundle」「⑥ 是提升不是重打」。
- * 送上 prod 的東西必須**就是** leo 在 stage 上驗過的那份，不是「拿同一份原始碼再打一次、
- * 假設會一樣」——重打有機會產生差異，而那個差異**沒有人驗過**。
+ * ── 不變式 Ⅳ（2026-08-11 三次改版）：**對稱**——每個目標都重打，不「提升」──────
+ * 這條在 2026-08-08 曾經是「發佈目標提升，不重打」（`promoteFrom` 機制），
+ * **已在 2026-08-11 拆掉**（D65 三次補述，arcrun-rag#73 缺③）。leo 訂正了原本的模型：
+ *   「10 次原始碼重建完全不是問題……你要改的只有內外不同的參數」
+ *   「我根本搞不清楚什麼是提升……就是這個設計造成了問題」
+ * 「提升」（複製 stage 已打包的檔案）是實作方發明的詞，不是 leo 要的——他要的是
+ * **對稱**：每個目標走同一條重打路徑，值不同（帳號、URL）但形狀完全一樣；
+ * README 沒改，兩邊都不動；README 改了，兩邊都換。「提升」反而把 prod 的檢查表剪短了
+ * （`docs-changelog` 步驟第一行曾經是 `if (T.promoteFrom) return skip`——整條管線
+ * 唯一一道「說明文件寫了沒」的閘，prod 由設計跳過）。
  *
- * 登錄簿裡目標若有 `promoteFrom: "<其他目標>"`，build 步驟就不重打，改成**複製**該目標已提交
- * 的 bundle 內容過來，並用 release.mjs 既有的內容指紋（`contentFingerprint`：core[] 每顆
- * name+sha256 串起來 hash）做機械核對——複製後從磁碟重算的指紋若與來源宣告的指紋不符，
- * **當場丟例外、非零退出**，不是印警告繼續。版本號直接繼承來源（同一份內容只有一個版本號，
- * 不是兩個目標各自累計 patch）。
- *
- * 「來源是不是真的驗證過」不是自稱的：來源目標成功 `--confirm` 且 verify 全過後，管線自己
- * 在檔尾蓋一張驗證章（`/tmp/.stage-verified`，內容含 sha/release/fingerprint，不只時間戳）；
- * 提升步驟核對磁碟 HEAD 與蓋章時的 HEAD 一致，來源往前移動而沒重新驗證就拒絕提升。
- * 這張章由管線自己寫，不是人手 touch、也不是 AI 自造——**AI 造不出「驗收真的跑過」這件事**。
- *
- * 提升只複製「build 步驟管的那幾顆」（見 `BUILD_MANAGED`），不是整包蓋掉：目標專屬的東西
- * （例如 prod 的 `daemon/`、`README.md`）原樣留著——08-07 就是整包蓋掉 prod 才把這些砍光。
+ * 現在「兩個理貨員拿同一張訂單」（leo 的比喻）改由三件事一起保證，取代「複製＋核對指紋」：
+ *   ① **來源 commit 釘子**（`source-pin.mjs`）——真的 git 分支，只在 Arcrun repo 本機移動
+ *      （不推遠端）。目標成功跑完 `--confirm`（含 verify 全過）就把分支移到那顆 commit；
+ *      下游宣告 `requireSourceBranch` 的目標出貨前核對「這次要打的 == 分支釘住的」，
+ *      不符當場拒絕。這是 leo 說的「先打 stage 分支，無誤，就打 main 分支」的字面實作。
+ *   ② **版本號共用狀態**（`release.mjs` 的 `sharedState`）——stage／prod 兩個獨立的 bundle
+ *      repo，各自重打卻讀同一份 `installer/release-state.json` 決定版本號：同一份內容
+ *      指紋，不管哪個目標先算到，都得到同一個號碼；不是各自累計 patch。
+ *   ③ **出貨報告硬斷言**（`ship-report.mjs` 的 `assertSourceParity`）——belt-and-suspenders，
+ *      就算①②哪裡有漏，記錄下來的來源 commit 不一致還是會被攔下來，不放行（arcrun-rag#73 缺②）。
  *
  * ── 不變式 Ⅴ（2026-08-09 加，arcrun-rag#27）：出貨包含**說明**，不只包含程式 ────
  * leo 推完 1.4.29 prod 後問：「你推完 prod 以後有去檢查上架的東西是否正確嗎？這是第一次用，
@@ -75,10 +78,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { syncManifest, verifyManifest, recomputeShas, contentFingerprint } from './release.mjs';
+import { syncManifest, verifyManifest } from './release.mjs';
 import { notesFromChangelog, checkNotes, CHANGELOG_REL } from './daemon-notes.mjs';
 import { checkArmed, logGithubContact } from './d20-guard.mjs';
 import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, diffAgainstCanonical } from './bundle-components.mjs';
+import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
@@ -214,27 +218,21 @@ const ctx = {
   headSha: null, pinUrl: null,
   liveBefore: null,
   pinChanged: false, pushed: false,
-  promote: null, // 提升路徑（見 build 步驟）用來把「來源是誰、期望的指紋/版本是什麼」帶到 version 步驟
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
   sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
+  arcrunHeadSha: null, // 來源 repo 的完整 40 碼 HEAD（見 preflight／source-pin）——釘子分支比對用全碼，不用前綴
 };
 
-// 🔴 leo 2026-08-08：「arm 推的是 uncle6 把 stage 的 bundle 推到 prod 的 bundle」
-//   「⑥ 是提升不是重打」——prod 拿到的東西必須**就是** leo 在 stage 上驗過的那份，
-//   不是「拿同一份原始碼再打一次、假設會一樣」。重打有機會產生差異，而那個差異
-//   **沒有人驗過**。這份清單＝「build 步驟管的那幾顆」，也是「提升時要複製的那幾顆」——
-//   同一份清單、兩種目標（target 沒 promoteFrom＝重打管這些；有 promoteFrom＝提升管這些），
-//   保證兩條路徑管的東西永遠是同一組，不會有一邊多改一邊漏改。
-//
-// 🔴 2026-08-09（arcrun-rag#27）：這份清單**不再寫在這裡**。
-//   原本這裡一份、`build-bundles.mjs` 的 `CORE` 一份——兩份人手維護的清單，
-//   而且只有本檔（提升路徑）這一份會被套用到 prod。
-//   結果：prod 5 顆、stage 24 顆，prod 卻宣告自己「複製自 stage@ab4ef01」
-//   ——而 stage 的 ab4ef01 當時就是 24 顆。**「提升＝複製」這句話是假的**：
-//   複製的路上被這份白名單濾掉了 19 顆，而 stage 從沒被同一把尺量過。
-//   leo：「如果是複製，為什麼不一致？」
-//   ⇒ 兩條路徑改讀同一份 `bundle-components.mjs`，並在 `parity` 步驟用它夾住兩邊。
-const BUILD_MANAGED = BUNDLE_COMPONENTS.map((c) => ({ name: c.name, relDir: c.relDir }));
+// 🔴 「提升」（promoteFrom）已拆掉，改成 git 分支模型（2026-08-11，D65 三次補述，
+//   arcrun-rag#73 缺③）——理由與細節見 `source-pin.mjs` 檔頭 ＋ `installer/ship.targets.json`
+//   的 `requireSourceBranch` 說明。leo 原話：「10 次原始碼重建完全不是問題……
+//   你要改的只有內外不同的參數」「我根本搞不清楚什麼是提升」「就是這個設計造成了問題」。
+//   ⇒ 現在**每個目標都重打**（build／daemon-sync／version 三步不再依 `T.promoteFrom` 分岔），
+//   「兩個理貨員拿同一張訂單」改由三件事一起保證：
+//     ① 來源 commit 釘子（source-pin.mjs）——prod 只准出貨 stage 已驗證過的那顆 commit
+//     ② 版本號共用狀態（release.mjs 的 `sharedState`）——同一份內容跨 bundle repo 得到同一個號碼
+//     ③ 出貨報告的硬斷言（ship-report.mjs 的 `assertSourceParity`）——belt-and-suspenders，
+//       就算①②哪裡有漏，記錄下來的來源 commit 不一致還是會被攔下來，不會安靜放行。
 
 // ══════════════════════════════════════════════════════════════════════════
 // 步驟表 —— 固定順序、無分支。每一步回傳 { status:'done'|'skip', detail }
@@ -286,47 +284,59 @@ const STEPS = [
   }
   if (T.githubRelease) lines.push('GITHUB_MIRROR_TOKEN 已就位（github-release 步驟需要它）');
 
-  // (b) 產物來源：**只有「重打」目標才碰 Arcrun 原始碼**。
-  //     提升目標（T.promoteFrom）不重打、不讀 Arcrun repo——它的「來源」是
-  //     另一個已出貨且已驗證過的目標，查核邏輯在 build 步驟本身（見下）。
-  if (T.promoteFrom) {
-    lines.push(`來源：提升自 ${T.promoteFrom}（不重打，不碰 Arcrun repo；見 build 步驟）`);
-  } else {
-    if (!existsSync(ctx.arcrunRepo)) throw new Error(`來源 repo 不存在：${ctx.arcrunRepo}`);
-    // ── ARCRUN_SOURCE_WORKTREE（2026-08-10 加）────────────────────────────────
-    // 病：`matrix/arcrun` 只有**一份工作區**，卻同時有好幾個 agent 在上面幹活。
-    //     只要有人手上有未提交的改動（那天是 `kbdb/src/actions/entry-crud.ts`，而 kbdb
-    //     **正是 bundle 裡的一顆**），下面那道 dirty 閘就會擋住所有出貨——
-    //     而看起來唯一的「解法」是去 commit 或丟棄別人的半成品，那是比擋住更糟的事。
-    //
-    // 這個逃生門**不放寬任何判準**，只是換一個乾淨的取景窗：
-    //   ① 必須是**同一個 repo 的 git worktree**（比對 `--git-common-dir`）
-    //      ⇒ 擋不掉「打錯 repo」這件事，不變式 Ⅱ 完好
-    //   ② 它自己**一樣要乾淨**，dirty 照樣擋
-    //      ⇒「這版來自哪個 commit」照樣是真的（這才是那道閘真正在保的東西）
-    // 用法：git worktree add /tmp/arcrun-ship HEAD && ARCRUN_SOURCE_WORKTREE=/tmp/arcrun-ship …
-    const wt = process.env.ARCRUN_SOURCE_WORKTREE;
-    if (wt) {
-      const wtPath = resolve(wt);
-      if (!existsSync(wtPath)) throw new Error(`ARCRUN_SOURCE_WORKTREE 不存在：${wtPath}`);
-      const commonOf = (p) => resolve(p, sh('git', ['rev-parse', '--git-common-dir'], p));
-      if (commonOf(wtPath) !== commonOf(ctx.arcrunRepo)) {
-        throw new Error(
-          `ARCRUN_SOURCE_WORKTREE 不是登錄簿宣告那個 repo 的 worktree（拒絕從別的 repo 出貨）：\n` +
-          `       宣告：${ctx.arcrunRepo}\n       給的：${wtPath}`);
-      }
-      ctx.arcrunRepo = wtPath;
-      lines.push(`來源改讀 worktree：${wtPath}（同一個 repo；乾淨度照驗，不放寬）`);
-    }
-    const srcDirty = sh('git', ['status', '--porcelain'], ctx.arcrunRepo);
-    const srcSha = sh('git', ['rev-parse', '--short', 'HEAD'], ctx.arcrunRepo);
-    if (srcDirty && !T.allowDirtySource) {
+  // (b) 產物來源：**每個目標都從 Arcrun 原始碼重打**（2026-08-11，D65 三次補述訂正，
+  //     arcrun-rag#73 缺③：leo「10 次原始碼重建完全不是問題……你要改的只有內外不同
+  //     的參數」——prod 不再是「提升」既有 bundle，是跟 stage 走**同一條重打路徑**，
+  //     同一套邏輯只換參數（帳號、URL），不是兩套邏輯各自維護。
+  if (!existsSync(ctx.arcrunRepo)) throw new Error(`來源 repo 不存在：${ctx.arcrunRepo}`);
+  // ── ARCRUN_SOURCE_WORKTREE（2026-08-10 加）────────────────────────────────
+  // 病：`matrix/arcrun` 只有**一份工作區**，卻同時有好幾個 agent 在上面幹活。
+  //     只要有人手上有未提交的改動（那天是 `kbdb/src/actions/entry-crud.ts`，而 kbdb
+  //     **正是 bundle 裡的一顆**），下面那道 dirty 閘就會擋住所有出貨——
+  //     而看起來唯一的「解法」是去 commit 或丟棄別人的半成品，那是比擋住更糟的事。
+  //
+  // 這個逃生門**不放寬任何判準**，只是換一個乾淨的取景窗：
+  //   ① 必須是**同一個 repo 的 git worktree**（比對 `--git-common-dir`）
+  //      ⇒ 擋不掉「打錯 repo」這件事，不變式 Ⅱ 完好
+  //   ② 它自己**一樣要乾淨**，dirty 照樣擋
+  //      ⇒「這版來自哪個 commit」照樣是真的（這才是那道閘真正在保的東西）
+  // 用法：git worktree add /tmp/arcrun-ship HEAD && ARCRUN_SOURCE_WORKTREE=/tmp/arcrun-ship …
+  const wt = process.env.ARCRUN_SOURCE_WORKTREE;
+  if (wt) {
+    const wtPath = resolve(wt);
+    if (!existsSync(wtPath)) throw new Error(`ARCRUN_SOURCE_WORKTREE 不存在：${wtPath}`);
+    const commonOf = (p) => resolve(p, sh('git', ['rev-parse', '--git-common-dir'], p));
+    if (commonOf(wtPath) !== commonOf(ctx.arcrunRepo)) {
       throw new Error(
-        `來源 repo 有未提交變更，發佈目標拒絕出貨（不然「這版來自哪個 commit」是假的）：\n` +
-        srcDirty.split('\n').slice(0, 8).map((l) => `       ${l}`).join('\n') +
-        `\n     → 先 commit，或用 --target selftest 做本機驗證`);
+        `ARCRUN_SOURCE_WORKTREE 不是登錄簿宣告那個 repo 的 worktree（拒絕從別的 repo 出貨）：\n` +
+        `       宣告：${ctx.arcrunRepo}\n       給的：${wtPath}`);
     }
-    lines.push(`來源：Arcrun@${srcSha}${srcDirty ? ' ⚠️(工作區不乾淨，本目標允許)' : ''}`);
+    ctx.arcrunRepo = wtPath;
+    lines.push(`來源改讀 worktree：${wtPath}（同一個 repo；乾淨度照驗，不放寬）`);
+  }
+  const srcDirty = sh('git', ['status', '--porcelain'], ctx.arcrunRepo);
+  const srcSha = sh('git', ['rev-parse', '--short', 'HEAD'], ctx.arcrunRepo);
+  const srcShaFull = sh('git', ['rev-parse', 'HEAD'], ctx.arcrunRepo);
+  if (srcDirty && !T.allowDirtySource) {
+    throw new Error(
+      `來源 repo 有未提交變更，發佈目標拒絕出貨（不然「這版來自哪個 commit」是假的）：\n` +
+      srcDirty.split('\n').slice(0, 8).map((l) => `       ${l}`).join('\n') +
+      `\n     → 先 commit，或用 --target selftest 做本機驗證`);
+  }
+  lines.push(`來源：Arcrun@${srcSha}${srcDirty ? ' ⚠️(工作區不乾淨，本目標允許)' : ''}`);
+  ctx.arcrunHeadSha = srcShaFull;
+
+  // (b2) 釘子分支：**取代 promoteFrom**（2026-08-11，D65 三次補述，arcrun-rag#73 缺③，
+  //   見 `source-pin.mjs` 檔頭）。leo：「我要的就是跟 github 一樣，先打到 stage 分支，
+  //   無誤，就打到 main 分支，上架」——這裡就是那個「先打 stage、驗過才准動 main」的
+  //   git 分支：分支只在 Arcrun repo 本機移動（不推遠端），由成功跑完 `--confirm`
+  //   （含 verify 全過）的目標自己在檔尾移動（見檔尾），不是人手 touch。
+  //   有宣告 `requireSourceBranch` 的目標（目前只有 prod）＝只准出貨這顆分支釘住的
+  //   commit；沒宣告的目標（stage／selftest）不受這道閘管，可以打任何乾淨的 HEAD。
+  if (T.requireSourceBranch) {
+    const pin = checkSourcePin({ repo: ctx.arcrunRepo, branch: T.requireSourceBranch, currentSha: srcShaFull, currentShaShort: srcSha });
+    if (!pin.ok) throw new Error(pin.message);
+    lines.push(pin.message);
   }
 
   // (c) bundle repo：不存在就照登錄簿長出來（selftest）；存在就驗 origin 與登錄簿相符。
@@ -425,52 +435,22 @@ const STEPS = [
 // （實錄：daemon v0.18.25 的 dmg/exe/msix 08-09 17:36 就打好躺在 dist/，
 //   stage bundle 裡卻還是 v0.18.24，因為**沒有任何一步負責搬它**。）
 //
-// ⇒ 這一步補上那個「沒有任何一步負責」的動作，而且**兩條路徑各照各的規矩**，
-//   與 BUILD_MANAGED 完全同構——這樣 stage 的機制複製到 prod 才是安全的：
-//     · 重打目標（stage）＝從 `collector/cmd/arcrun-app/dist/` 取 changelog 最上面
-//       那個**已發佈**版本的產物，複製進 bundle，sha256 由**磁碟實檔**算（不抄宣告值）。
-//     · 提升目標（prod）＝**照抄來源（stage）驗過的那一份**，不從 dist 另外取一次。
-//       理由與零件同一條：prod 拿到的必須就是 leo 在 stage 驗過的那個二進位，
-//       「拿同一份原始碼再打一次、假設會一樣」不算。
+// ⇒ 這一步補上那個「沒有任何一步負責」的動作。
+//
+// 🔴 2026-08-11（D65 三次補述，arcrun-rag#73 缺③）：拆掉「提升」之後，**兩個目標
+//   現在走同一條路徑**——都從 `collector/cmd/arcrun-app/dist/` 取 changelog 最上面
+//   那個**已發佈**版本的產物，sha256 由**磁碟實檔**算。這比舊的「prod 照抄 stage」
+//   更對稱：兩邊用同一套規則、同一份本機 dist/，天生就會拿到位元相同的檔案，
+//   不必再靠「複製」這個額外機制去保證一致——跟 build 步驟現在的形狀一樣
+//   （leo：「內外要一樣，不是內外要修改」，見 decisions-summary.md D65 三次補述）。
 //
 // 只加不刪：舊版本的安裝檔留在 bundle 裡（prod 就留著 20 個），要不要回收是人的決定。
-{ id: 'daemon-sync', title: T.promoteFrom
-  ? `把 ${T.promoteFrom} 驗過的 daemon 產物照抄過來`
-  : '把本機最新已發佈的 daemon 產物搬進 bundle', mutates: true, async run() {
+{ id: 'daemon-sync', title: '把本機最新已發佈的 daemon 產物搬進 bundle', mutates: true, async run() {
   const mPath = join(ctx.bundlesDir, 'manifest.json');
   if (!existsSync(mPath)) return { status: 'skip', detail: ['manifest.json 還不存在（首次播種前）'] };
   const m = JSON.parse(readFileSync(mPath, 'utf8'));
   const dstDir = join(ctx.bundlesDir, 'daemon');
 
-  // ── 提升路徑：照抄來源，不重取 ──────────────────────────────────────────
-  if (T.promoteFrom) {
-    const S = cfg.targets[T.promoteFrom];
-    const srcM = JSON.parse(readFileSync(join(S.bundles.dir, 'manifest.json'), 'utf8'));
-    if (!srcM.daemon || !srcM.daemon.version) {
-      return { status: 'skip', detail: [`來源（${T.promoteFrom}）沒有 daemon 區塊，不適用`] };
-    }
-    if (m.daemon && m.daemon.version === srcM.daemon.version) {
-      return { status: 'skip', detail: [`已與來源同版：${srcM.daemon.version}`] };
-    }
-    mkdirSync(dstDir, { recursive: true });
-    const copied = [];
-    for (const [k, v] of Object.entries(srcM.daemon)) {
-      if (!v || typeof v !== 'object' || !v.file) continue;
-      const from = join(S.bundles.dir, v.file);
-      if (!existsSync(from)) throw new Error(`來源宣告 daemon.${k}.file=${v.file}，但檔案不在 ${S.bundles.dir}`);
-      cpSync(from, join(ctx.bundlesDir, v.file));
-      copied.push(`${k}→${v.file}`);
-    }
-    const before = m.daemon && m.daemon.version;
-    m.daemon = { ...m.daemon, ...srcM.daemon };
-    writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
-    return { status: 'done', detail: [
-      `daemon ${before || '(無)'} → ${srcM.daemon.version}（照抄 ${T.promoteFrom}，不重取）`,
-      `複製 ${copied.length} 個安裝檔：${copied.join('、')}`,
-    ] };
-  }
-
-  // ── 重打路徑：從 dist/ 取 changelog 最上面那個已發佈版本 ─────────────────
   const clPath = join(REPO_ROOT, CHANGELOG_REL);
   if (!existsSync(clPath)) return { status: 'skip', detail: [`找不到 ${CHANGELOG_REL}`] };
   const top = readFileSync(clPath, 'utf8').match(/^## (v\d+\.\d+\.\d+)（/m);
@@ -532,7 +512,8 @@ const STEPS = [
 // 實錄：總管打好 daemon v0.18.25，跑 ship.mjs --target stage --confirm，
 // 腳本印「✅ 出貨完成｜daemon v0.18.24」——新 daemon 根本沒被搬上去，腳本卻說完成了。
 //
-// 根因（讀碼確認）：BUILD_MANAGED（見下）沒有 daemon 這一項——不管是「重打」（stage）
+// 根因（讀碼確認，歷史紀錄——當時的 BUILD_MANAGED 清單已於 2026-08-11 拆 promoteFrom 時
+// 移除，見 ship.mjs 檔頭「不變式 Ⅳ」）：那份清單沒有 daemon 這一項——不管是「重打」（stage）
 // 還是「提升」（prod）路徑，都不碰 bundlesDir/daemon/；manifest.daemon 只是**原樣留著**
 // （release.mjs `syncManifest` 的 `...m` 保留邏輯，本來是為了不要把 daemon 欄位吃掉，
 // 但副作用是它也絕不會自己變新）。verifyManifest（release.mjs）驗得很細——宣告版本
@@ -579,141 +560,14 @@ const STEPS = [
   return { status: 'done', detail: [`本機（changelog）／bundle 版本一致：${bundleVersion}`] };
 }},
 
-// ── 2. build：目標沒 promoteFrom＝**每次都重打**（讓版本號不可能落後內容）；
-//              目標有 promoteFrom＝**提升**（複製已驗證的內容，不重打——見上方 leo 引言）。
-{ id: 'build', title: T.promoteFrom
-  ? `提升：把 ${T.promoteFrom} 已驗證的內容複製過來（不重打）`
-  : '從來源重打 bundle（版本號由內容算，不由人宣告）', mutates: true, async run() {
-  if (!T.promoteFrom) {
-    shLive('node', [join(import.meta.dirname, 'build-bundles.mjs'), '--out', ctx.bundlesDir],
-      REPO_ROOT, { ARCRUN_REPO_ROOT: ctx.arcrunRepo });
-    shLive('node', [join(import.meta.dirname, 'build-ui-bundle.mjs'),
-      '--arcrun', ctx.arcrunRepo, '--out', ctx.bundlesDir, '--repo-root', REPO_ROOT], REPO_ROOT);
-    return { status: 'done', detail: ['4 顆核心 ＋ portal 前端已依來源重建'] };
-  }
-
-  // ── 提升路徑 ──────────────────────────────────────────────────────────
-  const srcName = T.promoteFrom;
-  const S = cfg.targets[srcName];
-  if (!S) throw new Error(`登錄簿設定錯誤：${TARGET_NAME}.promoteFrom 指到不存在的目標 "${srcName}"`);
-  const srcDir = S.bundles.dir;
-
-  // (a) 來源必須是登錄簿宣告的那個 repo，不能是隨便一個湊巧放在那個路徑的資料夾——
-  //     否則「提升」跟「打錯位置」只是換了個名字重犯同一種病。
-  if (!existsSync(join(srcDir, '.git'))) {
-    throw new Error(`來源（${srcName}）bundle repo 不存在：${srcDir}\n     → 先跑：node installer/scripts/ship.mjs --target ${srcName} --confirm`);
-  }
-  let srcOrigin = '';
-  try { srcOrigin = sh('git', ['remote', 'get-url', 'origin'], srcDir); } catch { /* 無 origin */ }
-  if (S.bundles.remote !== 'local-selftest' && normRemote(srcOrigin) !== normRemote(S.bundles.remote)) {
-    throw new Error(
-      `來源（${srcName}）bundle repo 指到別的地方，拒絕提升：\n` +
-      `       目錄   ${srcDir}\n       origin ${normRemote(srcOrigin) || '(沒有 origin)'}\n` +
-      `       應為   ${normRemote(S.bundles.remote)}   ← installer/ship.targets.json`);
-  }
-
-  // (b) 來源工作區必須乾淨——「這就是驗證過的那份」這句話只有在磁碟==HEAD 時才成立。
-  const srcDirty = sh('git', ['status', '--porcelain'], srcDir);
-  if (srcDirty) {
-    throw new Error(
-      `來源（${srcName}）bundle repo 工作區不乾淨，說不清「這就是驗證過的那份」，拒絕提升：\n` +
-      srcDirty.split('\n').slice(0, 8).map((l) => `       ${l}`).join('\n'));
-  }
-  const srcSha = sh('git', ['rev-parse', 'HEAD'], srcDir);
-
-  // (c) 機械證明：這個 sha **真的**跑完 ${srcName} 的完整驗收，不是隨便躺在磁碟上的檔案。
-  //     驗證章由 ship.mjs 自己在 --confirm 且 verify 全過後蓋（見檔尾），不是人手 touch、
-  //     也不是 AI 自造的閘——AI 造不出「驗收真的跑過」這件事，只有管線自己知道。
-  const receiptPath = '/tmp/.stage-verified';
-  if (!existsSync(receiptPath)) {
-    throw new Error(
-      `找不到驗證章 ${receiptPath}——${srcName} 從沒有 --confirm 通過完整驗收過，不能提升。\n` +
-      `     → 先跑：node installer/scripts/ship.mjs --target ${srcName} --confirm`);
-  }
-  let receipt;
-  try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
-  catch { throw new Error(`${receiptPath} 格式壞掉（不是本管線寫的 JSON）——重跑 ${srcName} --confirm 讓管線重新蓋章`); }
-  if (receipt.target !== srcName) {
-    throw new Error(`驗證章是給 "${receipt.target}" 蓋的，不是 "${srcName}"——重跑：node installer/scripts/ship.mjs --target ${srcName} --confirm`);
-  }
-  if (receipt.sha !== srcSha) {
-    throw new Error(
-      `來源（${srcName}）已經往前移動，驗證章對不上這個 HEAD，拒絕提升\n` +
-      `     （這正是要擋的事：不能把「還沒重新驗證過的內容」冒充成「驗證過的」）：\n` +
-      `       磁碟 HEAD  ${srcSha}\n       驗證章 sha ${receipt.sha}（驗於 ${new Date(receipt.ts * 1000).toISOString()}）\n` +
-      `     → 重跑：node installer/scripts/ship.mjs --target ${srcName} --confirm 重新驗收這個新 HEAD`);
-  }
-
-  const srcManifest = JSON.parse(readFileSync(join(srcDir, 'manifest.json'), 'utf8'));
-  if (!srcManifest.fingerprint || !srcManifest.release) {
-    throw new Error(`來源（${srcName}）manifest 沒有 fingerprint／release——${srcName} 的 version 步驟沒跑過？`);
-  }
-
-  // (d) 只複製「build 步驟管的那幾顆」（BUILD_MANAGED）——不是整包蓋掉。
-  //     08-07 就是整包蓋掉 prod bundle repo，把 prod 才有的 daemon/（20 個安裝檔）與
-  //     README 砍光。prod 有 stage 沒有的東西是正常的，這裡結構上就不會去動它們。
-  const promotedCore = [];
-  for (const { name, relDir } of BUILD_MANAGED) {
-    const entry = srcManifest.core.find((c) => c && c.name === name);
-    const srcPath = join(srcDir, relDir);
-    if (!entry || !existsSync(srcPath)) {
-      throw new Error(`來源（${srcName}）缺少 ${name}（${relDir}）——bundle 不完整，拒絕提升`);
-    }
-    const dstPath = join(ctx.bundlesDir, relDir);
-    rmSync(dstPath, { recursive: true, force: true });
-    mkdirSync(dstPath, { recursive: true });
-    cpSync(srcPath, dstPath, { recursive: true });
-    promotedCore.push(JSON.parse(JSON.stringify(entry))); // 深拷貝宣告值；下一步用磁碟實檔覆核，不信任這裡
-  }
-
-  const mPath = join(ctx.bundlesDir, 'manifest.json');
-  let prodManifest = { schema: 1, core: [] };
-  try { prodManifest = JSON.parse(readFileSync(mPath, 'utf8')); } catch { /* 首次提升，尚無 manifest */ }
-  const managedNames = new Set(BUILD_MANAGED.map((m) => m.name));
-  // 保留本目標既有、但不屬於「提升管理」的條目——只認「檔案還在磁碟上」的，不假裝有東西。
-  // 🔴 2026-08-09（#27）：這裡與 build-bundles.mjs 是**同一條棘輪**（只加不減），
-  //   所以同步收斂到唯一真相源：清單外的一律不留。BUILD_MANAGED 現在就是整份清單，
-  //   因此 `inherited` 正常情況下必為空；留著這條是為了「將來真的有目標專屬零件」時
-  //   仍走同一套檢查——但它再也不能無聲地把不該有的東西抬進 manifest。
-  const canonicalNames = new Set(BUNDLE_COMPONENT_NAMES);
-  const inherited = (prodManifest.core || []).filter(
-    (c) => c && c.name && !managedNames.has(c.name) && canonicalNames.has(c.name)
-      && c.main_file && existsSync(join(ctx.bundlesDir, c.main_file)));
-  const droppedHere = (prodManifest.core || []).filter((c) => c && c.name && !canonicalNames.has(c.name));
-  prodManifest.core = [...promotedCore, ...inherited];
-  prodManifest.source = srcManifest.source; // 誠實標示這版來自哪個 Arcrun commit（沿用 stage 算好的，不是自己再猜）
-  // 🔴 built 也是「複製過來的內容的一部分」（2026-08-09，arcrun-rag#27）
-  //   1.4.29 推 prod 後 `install.arcrun.dev/api/latest` 的 `built` 是 **2026-08-07**，
-  //   而那份內容就是 08-09 在 stage 打的（stage 的 manifest.built＝2026-08-09）。
-  //   真兇不是 pin 步驟忘了寫 BUNDLE_BUILT——它每次都寫，只是寫的是
-  //   `m.built = m.built || 今天` 留下的**上一次全量重建的日期**：有值就不動 ⇒ 永遠黏在原地。
-  //   同一份內容不可能有兩個建置日 ⇒ built 跟 release／fingerprint 一樣**繼承來源**，
-  //   下一步（version）會再核對一次，對不上當場失敗。
-  prodManifest.built = srcManifest.built;
-  prodManifest.promoted_from = { target: srcName, sha: srcSha, release: srcManifest.release, promoted_at: new Date().toISOString() };
-  writeFileSync(mPath, JSON.stringify(prodManifest, null, 1) + '\n');
-
-  ctx.promote = {
-    srcName, srcSha,
-    expectFingerprint: srcManifest.fingerprint,
-    expectRelease: srcManifest.release,
-    expectBuilt: srcManifest.built,   // 同一份內容＝同一個建置日，見上面 prodManifest.built
-    // 下一步（version）核對用：比對範圍＝本次實際複製的管理項，
-    // 以及來源那份的完整 core（讓它自己挑出同名的來比）。
-    // （2026-08-08 9a4de69 立這個範圍：不能比「兩邊各自的完整 core」，那次 stage 24 顆、
-    //   prod 5 顆，逐顆 sha256 明明相同卻被判不符。
-    //   2026-08-09 #27 補記：那個 24 vs 5 **本身就是病**，已由 bundle-components.mjs
-    //   ＋ parity 步驟根治；本範圍限定仍然保留——它讓「目標專屬、非提升管理」的條目
-    //   不會被誤入比對，是對的抽象，只是從此不會再有 19 顆的落差要它扛。）
-    copied: BUILD_MANAGED.map((m) => m.name),
-    srcCore: srcManifest.core,
-  };
-  return { status: 'done', detail: [
-    `來源：${srcName}@${srcSha.slice(0, 7)}（release ${srcManifest.release}，驗證於 ${new Date(receipt.ts * 1000).toISOString()}）`,
-    `複製 ${BUILD_MANAGED.length} 顆管理項：${BUILD_MANAGED.map((m) => m.name).join('、')}`,
-    inherited.length ? `沿用 ${inherited.length} 顆非提升管理項：${inherited.map((c) => c.name).join('、')}` : '（本目標無其餘沿用項）',
-    droppedHere.length ? `🧹 清單外的 ${droppedHere.length} 顆已從 manifest 移除：${droppedHere.map((c) => c.name).join('、')}` : null,
-  ].filter(Boolean) };
+// ── 2. build：**每個目標都重打**（2026-08-11，D65 三次補述訂正，arcrun-rag#73 缺③；
+//   拆掉「提升」——見 (b) 的 preflight 註解與 source-pin.mjs）。版本號由內容算，不由人宣告。
+{ id: 'build', title: '從來源重打 bundle（版本號由內容算，不由人宣告）', mutates: true, async run() {
+  shLive('node', [join(import.meta.dirname, 'build-bundles.mjs'), '--out', ctx.bundlesDir],
+    REPO_ROOT, { ARCRUN_REPO_ROOT: ctx.arcrunRepo });
+  shLive('node', [join(import.meta.dirname, 'build-ui-bundle.mjs'),
+    '--arcrun', ctx.arcrunRepo, '--out', ctx.bundlesDir, '--repo-root', REPO_ROOT], REPO_ROOT);
+  return { status: 'done', detail: ['4 顆核心 ＋ portal 前端已依來源重建'] };
 }},
 
 // ── 2.2 parity：**這個 bundle 有哪幾顆，必須恰好等於唯一真相源**───────────────
@@ -785,86 +639,19 @@ const STEPS = [
   ] };
 }},
 
-// ── 3. version：目標沒 promoteFrom＝算版本＋機械閘（內容變了版本一定變；沒變就一定不變）；
-//              目標有 promoteFrom＝**核對指紋**，不是算版本——同一份內容必須得到同一個版本號，
-//              不是兩個目標各自獨立累計 patch。有出入＝當場失敗，不印警告繼續。────────────
-{ id: 'version', title: T.promoteFrom ? '核對提升內容與來源指紋一致（不重算版本）' : '算版本並過機械閘', mutates: true, async run() {
-  if (T.promoteFrom) {
-    const mPath = join(ctx.bundlesDir, 'manifest.json');
-    const m = JSON.parse(readFileSync(mPath, 'utf8'));
-    // 指紋＝這個系統本來就有的「內容算出來的東西」（release.mjs contentFingerprint：
-    // core[] 每顆的 name+sha256 串起來 hash）。sha256 一律以**磁碟實檔**重算，不信任
-    // 上一步剛寫進去的宣告值——這是「機械跑出來的證明」，不是人肉比對或口頭宣稱。
-    const core = recomputeShas(ctx.bundlesDir, m.core);
-
-    // 🔴 2026-08-08 首次真實出貨當場撞到：**指紋要比同一組東西，不能比整份 core**。
-    //
-    //   stage bundle  core = 24 顆（棘輪殘留：19 顆舊世代 tier1／tier2）
-    //   prod  bundle  core =  5 顆（一直只出核心 4 顆 ＋ portal 前端）
-    //
-    // 兩邊規模本來就不同，拿「24 顆的指紋」比「5 顆的指紋」＝拿蘋果比橘子，
-    // **內容一模一樣也永遠不符**（實測那 5 顆的 sha256 逐一相同）。
-    // ⇒ 提升要保證的是「**我複製過來的那些，就是 stage 驗過的那些**」，
-    //   範圍＝本次實際複製的管理項，不是各自的完整 core。
-    //
-    // 🔴 2026-08-09（#27）補記——**當時我把病當成了地形**：
-    //   上面那句「兩邊規模本來就不同」被我當成事實接受，沒問一句「為什麼不同」。
-    //   leo 隔天就問了：「如果是複製，為什麼不一致？」——而且他是**裝了一次 stage**
-    //   才撞到的：他驗的東西根本不是封測者會拿到的東西。
-    //   那 19 顆不是設計，是 1.4.17 播種帶進來、再被「檔案還在就沿用」的棘輪
-    //   一路抬到今天的殘留。已由 `bundle-components.mjs` ＋ `parity` 步驟根治。
-    //   ⇒ 本範圍限定**保留**（它讓「目標專屬、非提升管理」的條目不被誤入比對，
-    //     是對的抽象），但它從此不該再扛任何 19 顆等級的落差；真有落差＝parity 先炸。
-    //
-    // ⚠️ 這道閘**沒有被放寬**：範圍內任一顆對不上仍然停，而且現在會印出是哪一顆差在哪，
-    //    不必再自己去 diff（原版只說「不符」，我當場得手動比對 24 顆才找得到真因）。
-    const managed = new Set(ctx.promote.copied || core.map((c) => c.name));
-    const pick = (list) => list.filter((c) => managed.has(c.name));
-    const fingerprint = contentFingerprint(pick(core));
-    const expect = contentFingerprint(pick(ctx.promote.srcCore || []));
-    if (fingerprint !== expect) {
-      const srcMap = new Map((ctx.promote.srcCore || []).map((c) => [c.name, c.sha256]));
-      const diff = pick(core)
-        .filter((c) => srcMap.get(c.name) !== c.sha256)
-        .map((c) => `       • ${c.name}\n         stage ${srcMap.get(c.name) || '(來源沒有這顆)'}\n         prod  ${c.sha256}`);
-      throw new Error(
-        `提升後內容與來源（${ctx.promote.srcName}@${ctx.promote.srcSha.slice(0, 7)}）不符，拒絕出貨：\n` +
-        `       比對範圍   本次複製的 ${managed.size} 個管理項\n` +
-        `       來源指紋   ${expect}\n       複製後指紋 ${fingerprint}\n` +
-        (diff.length ? `     逐顆差異：\n${diff.join('\n')}\n` : '') +
-        `     → 這不是版本問題，是複製沒有忠實再現 stage 驗過的內容——查上一步（build）的複製邏輯，不要放行`);
-    }
-    m.core = core;
-    m.fingerprint = fingerprint;
-    m.release = ctx.promote.expectRelease; // 同一份內容＝同一個版本號，直接繼承來源，不是重算
-    // 🔴 built 同理（2026-08-09 #27）。舊寫法是 `m.built = m.built || 今天`：
-    //   **有值就不動** ⇒ prod 的建置日永遠停在最後一次全量重建那天（實測黏在 2026-08-07，
-    //   而內容是 08-09 打的）。它會被 pin 步驟原封不動寫進 BUNDLE_BUILT、再送到
-    //   `/api/latest` 給每一個使用者看 ⇒ 使用者看到的建置日是假的。
-    //   ⇒ 繼承來源，並在這裡硬斷言——來源沒有 built 就是來源的 manifest 有問題，不許猜一個。
-    if (!ctx.promote.expectBuilt) {
-      throw new Error(
-        `來源（${ctx.promote.srcName}）的 manifest 沒有 built——不許在這裡填一個猜的日期。\n` +
-        `     先重跑 ${ctx.promote.srcName} 的出貨（syncManifest 會寫 built），再來提升。`);
-    }
-    m.built = ctx.promote.expectBuilt;
-    writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
-
-    const problems = verifyManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT });
-    if (problems.length) throw new Error('manifest 機械閘不過：\n' + problems.map((p) => `       • ${p}`).join('\n'));
-
-    ctx.release = m.release;
-    ctx.daemonVersion = m.daemon && m.daemon.version;
-    ctx.built = m.built;
-    ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
-    return { status: 'done', detail: [
-      `指紋核對通過：與 ${ctx.promote.srcName}@${ctx.promote.srcSha.slice(0, 7)} 完全相同（${fingerprint}）`,
-      `built ${m.built}（繼承 ${ctx.promote.srcName}；同一份內容不會有兩個建置日）`,
-      `版本 ${ctx.release}（直接繼承 ${ctx.promote.srcName}，不是重算；${core.length} 顆｜source ${m.source}｜daemon ${ctx.daemonVersion}）`,
-    ] };
-  }
-
-  const { release } = syncManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT, quiet: true });
+// ── 3. version：**每個目標都算版本＋過機械閘**（2026-08-11，D65 三次補述訂正，
+//   arcrun-rag#73 缺③；拆掉「核對指紋、繼承版本」的提升分支）。
+//   內容變了版本一定變；沒變就一定不變；有出入＝當場失敗，不印警告繼續——這點沒變。
+//
+// 🔴 唯一的關鍵差異：`sharedState: true`（見 release.mjs 檔頭「跨目標共用版本狀態」）。
+//   stage／prod 各自重打、各自是獨立的 bundle repo，若各自比自己的版本史算 patch，
+//   **同一份內容在兩邊會算出不同號碼**（leo：「如果是複製，為什麼不一致？」——
+//   現在不是複製了，但「同一份內容要有同一個號碼」這句話沒有變）。
+//   sharedState 把「前一版是什麼」的比較基準搬到主 repo 的 `release-state.json`，
+//   只認內容指紋，不認是哪個 bundle repo——這樣才會拿到跟 build 步驟一樣的對稱。
+{ id: 'version', title: '算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）', mutates: true, async run() {
+  const shared = T.bundles.remote !== 'local-selftest'; // selftest 本機臨時目標，不進共用版本狀態
+  const { release } = syncManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT, quiet: true, sharedState: shared });
   const problems = verifyManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT });
   if (problems.length) throw new Error('manifest 機械閘不過：\n' + problems.map((p) => `       • ${p}`).join('\n'));
   const m = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
@@ -874,7 +661,7 @@ const STEPS = [
   ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
   const bumped = ctx.releaseBefore && ctx.releaseBefore !== release;
   return { status: 'done', detail: [
-    bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1）`
+    bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1，${shared ? '跨目標共用狀態' : '本機獨立計數'}）`
            : `版本 ${release}（內容與上一版一致 ⇒ 不動）`,
     `${m.core.length} 顆｜built ${m.built}｜source ${m.source}｜daemon ${ctx.daemonVersion}`,
   ] };
@@ -1442,22 +1229,16 @@ if (T.verify) {
   console.log(`   🔴 最後一關是機器驗不了的：**用瀏覽器真的載一次** portal／安裝頁，`);
   console.log(`      看有沒有紅色錯誤橫幅、console 有沒有紅字（curl | grep 不算，08-08 就是這樣漏掉的）。`);
 }
-// 驗過的憑據由**管線自己蓋章**，不是人手 touch——手蓋的章證明不了任何事。
-// 任何被別的目標宣告為 promoteFrom 來源的目標，成功走完 --confirm（含 verify 全過）
-// 後都要蓋章——這是「提升」路徑唯一承認的輸入：沒蓋章＝沒人驗證過，不准提升。
-// 章裡帶 sha／release／fingerprint（不只時間戳）：提升時要核對「磁碟 HEAD == 蓋章時的
-// HEAD」，才擋得住「stage 蓋章後又往前移動、還沒重新驗證」這種事。
-const isPromotionSource = Object.values(cfg.targets).some((t) => t.promoteFrom === TARGET_NAME);
-if (isPromotionSource) {
-  const receiptPath = '/tmp/.stage-verified';
-  const finalManifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
-  const receipt = {
-    target: TARGET_NAME,
-    sha: ctx.headSha || sh('git', ['rev-parse', 'HEAD'], ctx.bundlesDir),
-    release: ctx.release,
-    fingerprint: finalManifest.fingerprint,
-    ts: Math.floor(Date.now() / 1000),
-  };
-  writeFileSync(receiptPath, JSON.stringify(receipt, null, 1) + '\n');
-  console.log(`   🎫 已蓋驗證章（${receiptPath}）——下游 promoteFrom="${TARGET_NAME}" 目標的前置條件`);
+// 驗過的憑據由**管線自己移動釘子分支**，不是人手 touch——手動移動的分支證明不了任何事
+// （2026-08-11，取代 `/tmp/.stage-verified` 那張 JSON 驗證章，見 `source-pin.mjs` 檔頭；
+// 拆 promoteFrom 的一部分，D65 三次補述，arcrun-rag#73 缺③）。
+// 分支名固定是 `ship/verified-<這個目標>`：任何成功走完 --confirm（含 verify 全過）的
+// 非 selftest 目標都移動自己的分支——不必事先知道會不會有別的目標拿它當 requireSourceBranch，
+// 移動這個分支本身零成本、零副作用（只在 Arcrun repo 本機動，不推遠端）。
+if (T.bundles.remote !== 'local-selftest') {
+  const pinBranch = `ship/verified-${TARGET_NAME}`;
+  const before = branchTip(ctx.arcrunRepo, pinBranch);
+  setBranchTip(ctx.arcrunRepo, pinBranch, ctx.arcrunHeadSha);
+  console.log(`   🎫 釘子分支 \`${pinBranch}\` → ${ctx.arcrunHeadSha.slice(0, 7)}` +
+    (before && before !== ctx.arcrunHeadSha ? `（原本 ${before.slice(0, 7)}）` : before ? '（沒動，已經是這顆）' : '（新建）'));
 }

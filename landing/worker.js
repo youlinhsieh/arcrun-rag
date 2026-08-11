@@ -11,10 +11,13 @@
  *      demo 字樣（第一次就是這樣被自己的驗證抓到）。要復原＝git revert 該 commit。
  *
  * 端點：
- *   GET  /                  → 單頁 landing（內嵌 HTML，v2：用戶的指南針）
- *   POST /api/request-code  → {email, subscribe} 登記並發辨識碼（冪等）
- *   POST /api/verify-code   → {email, code} 驗證辨識碼
- *   GET  /api/health        → {ok:true}
+ *   GET  /                        → 單頁 landing（內嵌 HTML，v2：用戶的指南針）
+ *   POST /api/request-code        → {email, subscribe} 登記並發辨識碼（冪等）
+ *   POST /api/verify-code         → {email, code} 驗證辨識碼
+ *   POST /api/send-password-reset → {email, api_origin, ticket} 代寄「修改密碼」連結（D62，
+ *                                    arcrun-rag#38/#69）——我們是郵差，回頭打 api_origin 的
+ *                                    /portal/password/relay-verify 確認票是真的才寄，見該函式註解
+ *   GET  /api/health              → {ok:true}
  *
  * 綁定：
  *   KV: SIGNUPS
@@ -255,6 +258,167 @@ async function sendCodeEmail(env, email, code) {
   await env.SEND_EMAIL.send(message);
 }
 
+// ═══════════ D62：代寄「修改密碼」連結（我們是郵差，不是認證系統）═══════════
+//
+// leo 2026-08-10：「其實這應該是 youlin 的實例告訴 arcrun.dev 說『我實例的重設密碼網址
+//   是 abc.recover，你幫我寄信給用戶讓他來修改密碼』，由 arcrun.dev 幫它寄出這封信。」
+//
+// 為什麼非得由我們寄：**用戶自己的實例沒有寄信能力**——安裝器部署 cypher 的 binding 只有
+// ai/d1/kv_namespace/plain_text/secret_text/service/vectorize，**沒有 send_email**。
+// 能寄的只有這裡（CF Email Service，寄件網域 arcrun.dev 在 uncle6 帳號 onboard）。
+// ⚠️ 「由中央代寄」是依 leo「寄給你」推導的**假設**，他尚未正式表態（D62 未裁前置）。
+//
+// 🔴 **本支絕不接受呼叫方給的完整 URL**（總管 2026-08-10 紅線）：
+//   寄件網域帶 DKIM。若肯收「任意 URL ＋ 任意 email」就寄，任何人裝一台實例就能用
+//   `arcrun.dev` 的名義、**通過 DKIM 驗證**把任意連結寄給任意人 ⇒ 一台開放的釣魚中繼。
+//   最壞情況是**燒掉整個網域的信譽、波及所有用戶、不可逆**——比「某台實例的某個帳號
+//   被改掉」（可逆）嚴重得多。
+//
+// 🔑 **主機屬於呼叫方這件事由郵差自己確認**，不是相信呼叫方的宣稱：
+//   呼叫方只給 `{email, api_origin, ticket}`。我們**回頭打 `api_origin`** 問
+//   `POST /portal/password/relay-verify {ticket}`：
+//     - 真的是那台發的 → 它答得出 `{ok:true, email_sha256, link}` → 我們寄
+//     - 有人冒用別人的網域 → 被冒用的那台**根本沒有這張票** → 答不出來 → 拒寄
+//   而且我們只寄**它自己回給我們的那條 link**，並再驗一次那條 link 的主機就是 `api_origin`
+//   ⇒ 「郵差確認過的主機」與「信裡的主機」永遠是同一個。
+//   收件人也核對：`sha256(email)` 要對得上，免得拿 A 的票去寄給 B。
+const RELAY_MAX_PER_INSTANCE_PER_HOUR = 20;
+const RELAY_MAX_PER_EMAIL_PER_HOUR = 5;
+
+/** 只收「https:// + 純主機名」的 origin：不准帶埠、路徑、query、使用者資訊。 */
+function validRelayOrigin(raw) {
+  const s = String(raw || "").trim();
+  if (!/^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(s)) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "https:" || u.port || u.username || u.password) return null;
+    if (u.pathname !== "/" || u.search || u.hash) return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function sha256Hex(input) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 每台實例／每個信箱的時段上限（KV 計數，非嚴格原子，夠用即可）。 */
+async function relayQuotaExceeded(env, bucket, limit) {
+  const hour = Math.floor(Date.now() / 3_600_000);
+  const key = `pwrl:${bucket}:${hour}`;
+  const current = parseInt((await env.SIGNUPS.get(key)) || "0", 10);
+  if (current >= limit) return true;
+  await env.SIGNUPS.put(key, String(current + 1), { expirationTtl: 7200 });
+  return false;
+}
+
+/** 「修改密碼」信的正體中文 HTML。**刻意把主機寫在信裡**——收信的人要看得出這封是哪台實例請求的。 */
+function resetEmailHtml(link, host) {
+  return `<!doctype html><html lang="zh-Hant"><body style="margin:0;padding:24px;background:#F7F5F1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#2B2B2B">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:32px">
+<h1 style="font-size:20px;margin:0 0 16px">修改你的 Arcrun 密碼</h1>
+<p style="font-size:15px;line-height:1.7;margin:0 0 20px">有人在 <strong>${host}</strong> 這台 Arcrun 實例上按了「忘記密碼」。點下面的按鈕就可以直接設定新密碼——<strong>不需要輸入現在的密碼</strong>。</p>
+<p style="margin:0 0 24px"><a href="${link}" style="display:inline-block;background:#2B2B2B;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:16px">設定新密碼</a></p>
+<p style="font-size:13px;line-height:1.7;color:#6B6B6B;margin:0 0 8px">這條連結<strong>只能用一次</strong>，而且<strong>30 分鐘後就會失效</strong>。</p>
+<p style="font-size:13px;line-height:1.7;color:#6B6B6B;margin:0">如果你沒有在 ${host} 上按過「忘記密碼」，請直接忽略這封信——你的密碼不會有任何變化。</p>
+</div></body></html>`;
+}
+
+async function sendResetEmail(env, email, link, host) {
+  const { EmailMessage } = await import("cloudflare:email");
+  const from = env.EMAIL_FROM || "noreply@arcrun.dev";
+  const subject = "修改你的 Arcrun 密碼";
+  const domain = from.split("@")[1] || "arcrun.dev";
+  // Message-ID / Date 是 send_email binding 的必要表頭（07-27 真兇，見 sendCodeEmail 註解）
+  const raw = [
+    `From: Arcrun <${from}>`,
+    `To: ${email}`,
+    `Subject: =?utf-8?B?${b64utf8(subject)}?=`,
+    `Message-ID: <${crypto.randomUUID()}@${domain}>`,
+    `Date: ${new Date().toUTCString()}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/html; charset=utf-8`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    wrap76(b64utf8(resetEmailHtml(link, host))),
+    ``,
+  ].join("\r\n");
+  await env.SEND_EMAIL.send(new EmailMessage(from, email, raw));
+}
+
+async function handleSendPasswordReset(env, request) {
+  if (await rateLimited(env, request)) {
+    return json({ ok: false, error: "請求太頻繁，請一分鐘後再試。" }, 429);
+  }
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "請用 JSON 格式送出。" }, 400);
+  }
+
+  const email = normalizeEmail(payload.email);
+  const ticket = String(payload.ticket || "").trim();
+  const apiOrigin = validRelayOrigin(payload.api_origin);
+  if (!EMAIL_RE.test(email)) return json({ ok: false, error: "email 格式不正確。" }, 400);
+  if (!/^[0-9a-f]{8,64}$/i.test(ticket)) return json({ ok: false, error: "ticket 格式不正確。" }, 400);
+  // 🔴 這裡**不接受 URL**，只接受一個純 origin；連結要由那台實例自己交出來（下面回呼）
+  if (!apiOrigin) return json({ ok: false, error: "api_origin 必須是 https:// 開頭的純主機名。" }, 400);
+
+  const host = new URL(apiOrigin).host;
+  if (await relayQuotaExceeded(env, `i:${host}`, RELAY_MAX_PER_INSTANCE_PER_HOUR)) {
+    return json({ ok: false, error: "這台實例的代寄次數已達上限，請稍後再試。" }, 429);
+  }
+  if (await relayQuotaExceeded(env, `e:${await sha256Hex(email)}`, RELAY_MAX_PER_EMAIL_PER_HOUR)) {
+    return json({ ok: false, error: "這個信箱的代寄次數已達上限，請稍後再試。" }, 429);
+  }
+
+  // ── 回呼確認：這張票真的是 apiOrigin 那台發的嗎？──
+  let verified;
+  try {
+    const res = await fetch(`${apiOrigin}/portal/password/relay-verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ticket }),
+    });
+    if (!res.ok) return json({ ok: false, error: "來源實例不認得這張票，拒絕代寄。" }, 403);
+    verified = await res.json();
+  } catch {
+    return json({ ok: false, error: "連不上來源實例，無法確認這封信該不該寄。" }, 502);
+  }
+  if (!verified || verified.ok !== true) {
+    return json({ ok: false, error: "來源實例不認得這張票，拒絕代寄。" }, 403);
+  }
+  // 收件人要對得上（不准拿 A 的票寄給 B）
+  if (verified.email_sha256 !== (await sha256Hex(email))) {
+    return json({ ok: false, error: "收件人與來源實例記錄的不一致，拒絕代寄。" }, 403);
+  }
+  // 信裡的連結**必須**落在剛剛確認過的那台主機上（紅線的最後一道）
+  const link = String(verified.link || "");
+  let linkOrigin = "";
+  try {
+    linkOrigin = new URL(link).origin;
+  } catch {
+    return json({ ok: false, error: "來源實例給的連結不是合法網址。" }, 403);
+  }
+  if (linkOrigin !== apiOrigin) {
+    return json({ ok: false, error: "連結的主機與確認過的實例不一致，拒絕代寄。" }, 403);
+  }
+
+  if (env.EMAIL_ENABLED !== "true") {
+    // 不假綠：沒開寄信就明講，不要回 ok:true 讓對方以為信在路上
+    return json({ ok: false, error: "這台 landing 沒有啟用寄信（EMAIL_ENABLED != true）。", code: "email_disabled" }, 503);
+  }
+  try {
+    await sendResetEmail(env, email, link, host);
+  } catch (e) {
+    return json({ ok: false, error: `寄信失敗：${e && e.message ? e.message : String(e)}` }, 502);
+  }
+  return json({ ok: true });
+}
+
 async function handleRequestCode(env, request) {
   if (await rateLimited(env, request)) {
     return json({ ok: false, error: "請求太頻繁，請一分鐘後再試。" }, 429);
@@ -410,6 +574,12 @@ export default {
     if (pathname === "/api/verify-code") {
       if (request.method !== "POST") return json({ ok: false, error: "method not allowed" }, 405);
       return handleVerifyCode(env, request);
+    }
+
+    // D62：幫用戶自己的實例代寄「修改密碼」連結（我們只是郵差，見 handleSendPasswordReset）
+    if (pathname === "/api/send-password-reset") {
+      if (request.method !== "POST") return json({ ok: false, error: "method not allowed" }, 405);
+      return handleSendPasswordReset(env, request);
     }
 
     // Microsoft Store 上架必備兩頁（政策 10.5.1：Win32 產品「一律」要有隱私政策網址，

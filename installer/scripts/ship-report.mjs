@@ -56,14 +56,50 @@ export function writeLedger(repoRoot, ledger) {
 }
 
 /**
+ * 硬斷言：同一個 release，兩個理貨員（目標）記錄的來源 commit 必須一致。
+ *
+ * ── 為什麼要有這個（2026-08-11，D65 二次補述，arcrun-rag#73 缺②）──────────────
+ * leo 的比喻：「兩個理貨員拿著都是 10 件的清單」——不只件數要一樣，**貨從哪來**也要
+ * 一樣。這張表原本已經把 `sourceCommit` 印在報告表頭（見 `renderComparisonTable`），
+ * 但那只是**看得到**：兩欄印出不同的 commit，人眼要自己盯著去發現。
+ * 「promoteFrom 拆掉、改成 git 分支模型」（見 `source-pin.mjs`）之後，prod 不再靠
+ * 複製 stage 的 manifest.source 天然保證一致——那個保證消失了，這裡要補一道
+ * **結構性擋下**，不是多印一行字讓人自己比對。
+ *
+ * 判準：只比對**同一個 release**、且雙方 sourceCommit 都不是 null/未知的情況——
+ * 只出過一邊（另一邊還沒出）不是不一致，是「還沒到比對的時候」，不能誤傷。
+ */
+export function assertSourceParity(ledger, { release, target, sourceCommit }) {
+  if (!sourceCommit) return; // 這次沒有來源可比（理論上不該發生，但不在本函式的職責內擋）
+  const entry = ledger[release];
+  if (!entry) return;
+  for (const [otherTarget, otherEntry] of Object.entries(entry)) {
+    if (otherTarget === target) continue;
+    if (!otherEntry || !otherEntry.sourceCommit) continue; // 對方還沒出過這一版，不算不一致
+    if (otherEntry.sourceCommit !== sourceCommit) {
+      throw new Error(
+        `出貨中止：release ${release} 的來源 commit 對不上——兩個理貨員拿的不是同一張訂單\n` +
+        `       ${target}　　　＝ ${sourceCommit}\n` +
+        `       ${otherTarget}　　＝ ${otherEntry.sourceCommit}\n` +
+        `     這代表同一個版本號被兩顆不同的 Arcrun commit 各自生產過一次——內容不保證一樣。\n` +
+        `     → 查是不是有人在兩次出貨之間動過來源、或版本號被錯誤沿用；不要放行，放行就是讓\n` +
+        `       「兩個理貨員拿不同訂單也沒人擋」這個破口重新打開（arcrun-rag#73 缺②）。`);
+    }
+  }
+}
+
+/**
  * 記一次出貨。`results` 是 `[{id, title, status}]`——跟 ship.mjs 步驟表的執行結果
  * 一一對應，`status` 是 `done|skip|failed|not-run|planned` 之一。
  * 同一個 release 重跑同一個 target 會**覆蓋**（不是累積列表）——ledger 記的是
  * 「這個目標這個版本最近一次跑到哪」，不是逐次歷史（逐次歷史交給 git log 這份檔案本身）。
+ *
+ * 寫入前先跑 `assertSourceParity`——**不一致就丟例外，不寫入、不放行**（arcrun-rag#73 缺②）。
  */
 export function recordRun(repoRoot, { release, target, results, sourceCommit = null, ts = Date.now() }) {
   if (!release || !target) throw new Error('recordRun 需要 release 與 target');
   const ledger = readLedger(repoRoot);
+  assertSourceParity(ledger, { release, target, sourceCommit });
   if (!ledger[release]) ledger[release] = {};
   ledger[release][target] = { results: results || [], sourceCommit, ts };
   writeLedger(repoRoot, ledger);

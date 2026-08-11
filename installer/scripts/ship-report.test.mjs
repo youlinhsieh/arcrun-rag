@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordRun, renderComparisonTable, readLedger } from './ship-report.mjs';
+import { recordRun, renderComparisonTable, readLedger, assertSourceParity } from './ship-report.mjs';
 
 function tempRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'ship-report-test-'));
@@ -141,6 +141,69 @@ test('recordRun 缺 release 或 target ⇒ 丟例外，不靜默寫出一筆壞�
   try {
     assert.throws(() => recordRun(repo, { target: 'stage', results: [] }));
     assert.throws(() => recordRun(repo, { release: '1.0.0', results: [] }));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ── 缺②（arcrun-rag#73 二次補述）：來源 commit 比對從「看得到」升級成「不一致就斷」──
+// promoteFrom 拆掉之後，prod 不再靠複製 stage 的 manifest.source 天然保證一致，
+// 這裡要證明：「製造一次不一致」真的會斷，不是印出兩個不同的值就算了。
+
+test('🔴 製造一次不一致：stage 與 prod 同一個 release，來源 commit 不一樣 ⇒ 丟例外，不寫入', () => {
+  const repo = tempRepo();
+  try {
+    const results = [{ id: 'preflight', title: '對齊目標', status: 'done' }];
+    recordRun(repo, { release: '1.4.40', target: 'stage', results, sourceCommit: 'Arcrun@aaa1111' });
+
+    assert.throws(
+      () => recordRun(repo, { release: '1.4.40', target: 'prod', results, sourceCommit: 'Arcrun@bbb2222' }),
+      /來源 commit 對不上|兩個理貨員拿的不是同一張訂單/,
+    );
+
+    // 沒寫入——ledger 裡 prod 這次的紀錄不該存在（斷了就是斷了，不留半筆壞資料）。
+    const ledger = readLedger(repo);
+    assert.equal(ledger['1.4.40'].prod, undefined, '拒絕寫入時不該留下任何 prod 的紀錄');
+    assert.equal(ledger['1.4.40'].stage.sourceCommit, 'Arcrun@aaa1111', 'stage 原本的紀錄不受影響');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('✅ stage 與 prod 同一個 release、來源 commit 一致 ⇒ 正常寫入，不誤傷', () => {
+  const repo = tempRepo();
+  try {
+    const results = [{ id: 'preflight', title: '對齊目標', status: 'done' }];
+    recordRun(repo, { release: '1.4.41', target: 'stage', results, sourceCommit: 'Arcrun@ccc3333' });
+    recordRun(repo, { release: '1.4.41', target: 'prod', results, sourceCommit: 'Arcrun@ccc3333' });
+    const ledger = readLedger(repo);
+    assert.equal(ledger['1.4.41'].prod.sourceCommit, 'Arcrun@ccc3333');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('✅ 只有一邊出過這一版（另一邊還沒出）⇒ 不算不一致，正常寫入', () => {
+  const repo = tempRepo();
+  try {
+    const results = [{ id: 'preflight', title: '對齊目標', status: 'done' }];
+    recordRun(repo, { release: '1.4.42', target: 'stage', results, sourceCommit: 'Arcrun@ddd4444' });
+    assert.doesNotThrow(() =>
+      assertSourceParity(readLedger(repo), { release: '1.4.42', target: 'prod', sourceCommit: null }));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('✅ 同一個 target 重跑同一個 release（覆蓋自己）⇒ 不算跟自己不一致', () => {
+  const repo = tempRepo();
+  try {
+    const results = [{ id: 'preflight', title: '對齊目標', status: 'done' }];
+    recordRun(repo, { release: '1.4.43', target: 'stage', results, sourceCommit: 'Arcrun@eee5555' });
+    // 同一個 target、同一個 release 重跑（例如失敗重試後成功）——即使來源 commit
+    // 沒變，也不該被自己的舊紀錄擋下來。
+    assert.doesNotThrow(() =>
+      recordRun(repo, { release: '1.4.43', target: 'stage', results, sourceCommit: 'Arcrun@eee5555' }));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

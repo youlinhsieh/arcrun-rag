@@ -17,9 +17,12 @@
     "     （2026-08-09，arcrun-rag#27）。null 不再是「這個目標沒有文件站」，而是登錄簿漏填，",
     "     ship.mjs 在任何步驟開跑前就 exit 2。由來：prod 的 docsSite 是 null ⇒ 文件站",
     "     從沒進過出貨鏈 ⇒ 使用者更新到 v0.18.25，說明文件卻停在 v0.18.24。",
-    "  ④ 有 promoteFrom 的目標＝**提升，不重打**（2026-08-08 leo：「⑥ 是提升不是重打」）。",
-    "     它複製 promoteFrom 指到的目標已驗證過的內容，用內容指紋核對「複製後==來源」，",
-    "     不符當場失敗；版本號直接繼承來源。詳見 ship.mjs 檔頭「不變式 Ⅳ」。",
+    "  ④ 【2026-08-11 拆掉，D65 三次補述，arcrun-rag#73 缺③】原本這裡是「有 promoteFrom",
+    "     的目標＝提升，不重打」——leo 訂正：「10 次原始碼重建完全不是問題……你要改的只有",
+    "     內外不同的參數」「我根本搞不清楚什麼是提升」。現在**每個目標都重打**，對稱；",
+    "     `requireSourceBranch`（見 prod）取代 promoteFrom，只釘「來源 commit」不釘「內容」，",
+    "     版本號改由 `installer/release-state.json` 跨目標共用。詳見 ship.mjs 檔頭「不變式 Ⅳ」",
+    "     ＋ `installer/scripts/source-pin.mjs`。",
     "",
     "改這個檔＝改出貨會打到哪裡，等同改鐵律：要在 commit 說明理由。"
   ],
@@ -88,13 +91,18 @@
       "publish": true,
       "requiresArm": true,
       "allowDirtySource": false,
-      "promoteFrom": "stage",
-      "_promoteFrom": [
-        "2026-08-08 leo：「arm 推的是 uncle6 把 stage 的 bundle 推到 prod 的 bundle」",
-        "                「⑥ 是提升不是重打」。",
-        "prod 不再從 Arcrun 原始碼重打——它複製 `promoteFrom` 指到的目標（stage）已提交、",
-        "已通過完整 --confirm 驗收的內容，並用內容指紋核對「複製後==來源宣告」，",
-        "不符當場失敗。版本號直接繼承來源，不是各自累計。詳見 ship.mjs 檔頭「不變式 Ⅳ」。"
+      "requireSourceBranch": "ship/verified-stage",
+      "_requireSourceBranch": [
+        "2026-08-11 拆掉 promoteFrom，改成 git 分支模型（D65 三次補述，arcrun-rag#73 缺③）。",
+        "leo：「10 次原始碼重建完全不是問題……你要改的只有內外不同的參數」",
+        "     「我根本搞不清楚什麼是提升……就是這個設計造成了問題」",
+        "     「我要的就是跟 github 一樣，先打到 stage 分支，無誤，就打到 main 分支，上架」。",
+        "prod 現在**跟 stage 一樣從 Arcrun 原始碼重打**——不再複製 stage 的 bundle 內容。",
+        "唯一的限制：只准出貨 `ship/verified-stage` 這個 git 分支釘住的那顆 Arcrun commit",
+        "（分支只在 Arcrun repo 本機移動，由 stage 成功 --confirm 完後自己移動；不符當場拒絕）。",
+        "版本號／建置日不再由這裡「繼承」，改由 installer/release-state.json 跨目標共用",
+        "（同一份內容指紋，不管哪個目標先算到，都得到同一個號碼）。",
+        "詳見 ship.mjs 檔頭「不變式 Ⅳ」＋ installer/scripts/source-pin.mjs。"
       ],
       "bundles": {
         "dir": "/private/tmp/arcrun-rag-bundles",

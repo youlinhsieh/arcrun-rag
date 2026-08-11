@@ -20,8 +20,8 @@
  *   syncManifest(bundlesDir);   // 重算全部 sha + built + release，回傳 { release, changed }
  * 任何產 bundle 的腳本結尾呼叫它即可；漏呼叫由 verify-manifest.mjs（機械閘）擋下。
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
+import { join, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { notesFromChangelog, checkNotes } from './daemon-notes.mjs';
 
@@ -91,24 +91,71 @@ export function nextRelease(line, prevRelease, prevFingerprint, nextFingerprint)
   return `${line}.${Number(pPatch) + 1}`;                                  // 內容變了 ⇒ patch +1
 }
 
+// ── 跨目標共用版本狀態（2026-08-11，取代 promoteFrom 的版本繼承）───────────────
+// 由來：D65 二次補述（arcrun-rag#73 缺③）leo 訂正「prod 應該跟 stage 一樣重打，
+//   不是提升」（「10 次原始碼重建完全不是問題……你要改的只有內外不同的參數」）。
+//   prod 不再從 stage **複製**已驗證內容來繼承版本號／建置日，而是自己重打
+//   ——但 stage／prod 兩個 bundle repo 各自有獨立的 manifest.json 版本史，
+//   若各自照自己的歷史算 patch，**同一份內容在兩邊會算出不同號碼**
+//   （例：stage 這期間重跑了 5 次、prod 只出過 1 次，各自的「上一版」不一樣）。
+//   而 D65 的出貨報告（ship-report.mjs）用**單一 release 字串**當 key 把兩欄
+//   放進同一列——號碼對不上，報告機制整個垮掉。
+// ⇒ 版本號與建置日的「前一次狀態」改讀**主 repo（不是任何一個 bundle repo）**
+//   的這份小檔案：內容指紋才是唯一鍵，跟哪個目標、哪個 bundle repo 無關。
+//   第一次呼叫（檔案還不存在）**从磁碟上那份 bundle 現有的 release/fingerprint
+//   接手**，不是歸零成 `${line}.0`——這兩個 bundle repo 是真的已出貨、已有真實
+//   版本史的東西，接手才不會讓版本號無故倒退。
+export const RELEASE_STATE_FILE = join('installer', 'release-state.json');
+
+/** 讀共用版本狀態；不存在或壞掉就當作「還沒有」（呼叫端負責用磁碟上的舊值接手）。 */
+export function readReleaseState(repoRoot) {
+  const p = join(repoRoot, RELEASE_STATE_FILE);
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8'));
+    return j && typeof j === 'object' ? j : null;
+  } catch { return null; }
+}
+
+export function writeReleaseState(repoRoot, state) {
+  const p = join(repoRoot, RELEASE_STATE_FILE);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(state, null, 1) + '\n');
+}
+
 /**
  * 主入口：重算 sha → 算指紋 → 決定 release → 寫回 manifest.json。
  * 冪等：同樣的磁碟內容重跑幾次，release 都不會變。
+ *
+ * `sharedState: true`（stage／prod 這類「會跟別的目標比對」的目標要打開）：
+ * 版本號／建置日的「前一版」改讀 `RELEASE_STATE_FILE`，不讀這個 bundle 自己的
+ * manifest.json——這樣不同 bundle repo、只要內容指紋相同，就會得到同一個號碼。
+ * `sharedState: false`（預設，selftest 等本機臨時目標用）＝舊行為，只跟自己比。
  */
-export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false } = {}) {
+export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false, sharedState = false } = {}) {
   const mPath = join(bundlesDir, 'manifest.json');
   if (!existsSync(mPath)) throw new Error(`找不到 ${mPath}`);
   const m = JSON.parse(readFileSync(mPath, 'utf8'));
   if (!Array.isArray(m.core)) throw new Error('manifest.core 不是陣列，schema 不對');
 
   const line = readLine(repoRoot);
-  const prevRelease = m.release;
-  const prevFingerprint = m.fingerprint;
+  const state = sharedState ? readReleaseState(repoRoot) : null;
+  // 有共用狀態就讀它；第一次呼叫（state 是 null）用這個 bundle 自己磁碟上的舊值接手，
+  // 不憑空歸零——這兩份 bundle repo 都是已經真的出過貨的東西。
+  const prevRelease = sharedState ? (state ? state.release : m.release) : m.release;
+  const prevFingerprint = sharedState ? (state ? state.fingerprint : m.fingerprint) : m.fingerprint;
 
   const core = recomputeShas(bundlesDir, m.core);
   const fingerprint = contentFingerprint(core);
   const release = nextRelease(line, prevRelease, prevFingerprint, fingerprint);
   const changed = release !== prevRelease;
+
+  // built：非共用狀態＝舊行為（每次重算成今天，2026-08-02 就是這樣，不動它）。
+  // 共用狀態＝跟 release 同一條規矩：內容沒變就沿用（不然「同一份內容兩個建置日」，
+  // 正是 08-09 #27 修過的那個病，這裡是同一個病在新機制下的翻版）。
+  const built = sharedState && state && state.fingerprint === fingerprint && state.built
+    ? state.built
+    : new Date().toISOString().slice(0, 10);
 
   // 🔴 2026-08-02 迴歸修復：原本這裡「列舉六個欄位重建 manifest」，
   // 於是**任何不在名單上的欄位每跑一次就被靜默丟掉**。
@@ -122,11 +169,12 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
     schema: m.schema || 'arcrun-rag-bundles/v1',
     release,                                        // ← 用戶看到的那個號碼（唯一真相源）
     fingerprint,                                    // ← 下次比對用，決定要不要 bump
-    built: new Date().toISOString().slice(0, 10),   // ← 真的每次重算（舊機制凍結在此）
+    built,
     source: m.source,
     core,
   };
   writeFileSync(mPath, JSON.stringify(out, null, 1) + '\n');
+  if (sharedState) writeReleaseState(repoRoot, { fingerprint, release, built });
 
   if (!quiet) {
     console.log(changed
