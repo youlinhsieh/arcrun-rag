@@ -96,3 +96,55 @@ export async function runWorkflow(name, input, { timeoutMs = 120000 } = {}) {
   const inner = body.data && typeof body.data === 'object' && 'data' in body.data ? body.data.data : body.data;
   return inner === undefined ? body : inner;
 }
+
+/**
+ * `ship_check_live` 的呼叫端包裝——「**去一個使用者會看的網址看一眼，回報它現在
+ * 宣告什麼、跟期望的合不合**」。出貨管線多個地方共用它（見站表的 `也調用`）。
+ *
+ * 🔴 `headers` 與 `body_json` **一定要給**，即使是空的。
+ *   實測（2026-08-11）：不給的話，工作流圖裡的 `{{input.headers}}` 不會被代換掉，
+ *   會原封當成字串送進零件，零件回
+ *   `cannot unmarshal string into Go struct field Input.headers of type map[string]string`
+ *   ⇒ 抓不到內容，而每一項比對都變成「不合」＝**假紅**。
+ *   假紅和假綠一樣糟（ship.mjs 的 verify 步驟為此寫過一整段）——所以這個預設值
+ *   放在呼叫端，不讓每個呼叫點各自記得。
+ *
+ * `checks` 每一項：
+ *   `{ label, path, expected }`             —— 從回應的 JSON 取 `path`，字串比對
+ *   `{ label, mode:'contains', expected }`   —— 回應內文有沒有這段字（HTML 頁面用）
+ *   `{ ..., negate:true }`                  —— 反過來：**不該**出現才算通過
+ *
+ * 回傳 `{ url, fetch_ok, fetch_error, results:[{label,expected,actual,ok}], all_ok }`。
+ * 呼叫端要看的是 `fetch_ok` 與 `all_ok`——**外層 HTTP 200 什麼都不證明**。
+ */
+export async function checkLive({ url, method = 'GET', headers = {}, bodyJson = {}, checks = [], timeoutMs = 60000 }) {
+  const out = await runWorkflow('ship_check_live', {
+    url, method,
+    headers: { Accept: 'application/json', ...headers },
+    body_json: bodyJson,
+    checks,
+  }, { timeoutMs });
+  if (!out || typeof out !== 'object') throw new Error(`ship_check_live 回的東西看不懂：${JSON.stringify(out).slice(0, 200)}`);
+  return out;
+}
+
+/**
+ * 把 `checkLive` 的結果攤成人看得懂的行（給 ship.mjs 的 detail 用）。
+ *
+ * 🔴 沒給 `expected` 的項目是**只問值、不比對**（例如「線上現在的釘子是什麼」）。
+ *   工作流那端一律做比對，所以這種項目的 `ok` 必然是 false ——若照 `ok` 印成 ✗，
+ *   報告上會出現一堆「失敗」而其實什麼都沒失敗。**看起來像壞的檢查，人很快就會學會
+ *   忽略它**（ship.mjs verify 步驟為假陰性寫過同一段道理）⇒ 這裡分開呈現。
+ *   同理，呼叫端要判成敗時**不要看 `all_ok`**，要看自己真正在乎的那幾項。
+ */
+export function describeChecks(out) {
+  const lines = [`Arcrun ship_check_live → ${out.url}｜抓得到：${out.fetch_ok ? '是' : `否（${out.fetch_error}）`}`];
+  for (const r of out.results || []) {
+    if (r.expected === undefined || r.expected === null) {
+      lines.push(`   · ${r.label}：讀到 ${r.actual === undefined ? '(沒有這個欄位)' : r.actual}`);
+    } else {
+      lines.push(`   ${r.ok ? '✓' : '✗'} ${r.label}：期望 ${r.expected}／實際 ${r.actual === undefined ? '(沒有這個欄位)' : r.actual}`);
+    }
+  }
+  return lines;
+}

@@ -90,7 +90,7 @@ import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
 import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
-import { assertWorkflowsExist } from './ship-arcrun.mjs';
+import { assertWorkflowsExist, checkLive, describeChecks } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
@@ -406,10 +406,23 @@ const STEPS = [
   } catch { ctx.releaseBefore = null; }
 
   // (d) 先記下線上現況——之後 deploy 要靠它判斷「是不是已經是這一版」（冪等的依據）。
+  //
+  // 🔴 D70（leo 2026-08-11，arcrun-rag#77）：**這一段的活派給 Arcrun 工作流做**。
+  //   「去一個使用者會看的網址看一眼、回報它現在宣告什麼」正是工作流天生的形狀，
+  //   而 leo 打開工作流頁就看得到出貨線在用它（`ship_check_live`）。
+  //   ⚠️ 值直接取工作流回的 `actual`——**不要再自己 fetch 一次**。
+  //     那樣 Arcrun 就只是裝飾（真正做事的還是本機），是腹語術的反面版本，一樣違反 D70。
+  //   讀不到不算斷——這一步只是留個底給 deploy 當冪等依據，真正的驗收在 verify 那站。
   if (T.verify) {
     try {
-      ctx.liveBefore = await getJson(`${T.verify.installerBase}/api/latest?${cb()}`);
-      lines.push(`線上現況：release ${ctx.liveBefore.release}｜pin ${ctx.liveBefore.pin}`);
+      const live = await checkLive({
+        url: `${T.verify.installerBase}/api/latest?${cb()}`,
+        checks: [{ label: 'release', path: 'release' }, { label: 'pin', path: 'pin' }],
+      });
+      if (!live.fetch_ok) throw new Error(live.fetch_error || '抓不到');
+      const val = (l) => (live.results.find((r) => r.label === l) || {}).actual;
+      ctx.liveBefore = { release: val('release'), pin: val('pin') };
+      lines.push(`線上現況（Arcrun ship_check_live 去看的）：release ${ctx.liveBefore.release}｜pin ${ctx.liveBefore.pin}`);
     } catch (e) { lines.push(`線上現況：讀不到（${e.message}）`); }
   }
   return { status: 'done', detail: lines };
@@ -952,11 +965,36 @@ const STEPS = [
 }},
 
 // ── 8. purge（只有 prod 需要：jsDelivr @main 邊緣快取）──────────────────────
-{ id: 'purge', title: 'purge jsDelivr @main 並驗到收斂', mutates: true, async run() {
+// ── 8. purge：讓 CDN 拿到新版並確認它真的收斂了 ─────────────────────────────
+//
+// 🔴 D70（leo 2026-08-11，arcrun-rag#77）：**整站交給 Arcrun 工作流 `ship_refresh_cdn`。**
+//   這一站是全站表裡最乾淨的一個「天生就是工作流形狀」的例子——打幾個網址、等一下、
+//   再讀一次比對，重試到收斂。沒有一個動作需要碰 leo 這台機器上的任何東西。
+//   ⇒ 本機那支 `purge-jsdelivr.mjs` 從此不再是出貨路徑上的東西（留著當對照，
+//     它檔頭記著 2026-08-02 那次「用戶按檢查更新像沒反應」的實撞，是這件事的來由）。
+{ id: 'purge', title: '讓 CDN 拿到新版並確認它真的收斂了', mutates: true, async run() {
   if (!T.verify || !T.verify.fullChain) return { status: 'skip', detail: ['本目標不走 jsDelivr（登錄簿宣告）'] };
-  const { purgeJsdelivrMain } = await import('./purge-jsdelivr.mjs');
-  await purgeJsdelivrMain({ expectRelease: ctx.release, expectDaemon: ctx.daemonVersion });
-  return { status: 'done', detail: ['CDN 已收斂'] };
+  const gh = 'youlinhsieh/arcrun-rag-bundles';
+  const assets = ['manifest.json', 'daemon/ArcrunRAG-mac-unsigned.zip', 'daemon/ArcrunRAG-win-unsigned.zip'];
+  const out = await runWorkflow('ship_refresh_cdn', {
+    tries: 4,
+    wait_ms: 20000,
+    purge_urls: assets.map((p) => `https://purge.jsdelivr.net/gh/${gh}@main/${p}`),
+    manifest_url: `https://cdn.jsdelivr.net/gh/${gh}@main/manifest.json?cb=${Date.now()}`,
+    expect_release: ctx.release,
+    expect_daemon: ctx.daemonVersion,
+  }, { timeoutMs: 180000 });
+  const detail = [`Arcrun ship_refresh_cdn：試了 ${out.tries} 次｜收斂＝${out.converged ? '是' : '否'}`];
+  if (out.first_match) detail.push(`   第 ${out.first_match} 次就收斂了`);
+  if (out.last_seen) detail.push(`   CDN 最後讀到：release ${out.last_seen.release}／daemon ${out.last_seen.daemon}`);
+  if (!out.converged) {
+    // 這一句在 purge-jsdelivr.mjs 就是這樣寫的，語氣刻意不軟化：
+    // CDN 沒收斂＝**用戶此刻拿不到新版**，那就不是「出貨完成」。
+    throw new Error(
+      `purge 後 jsDelivr 仍未收斂——**用戶此刻拿不到新版**，不准宣稱出貨完成\n` +
+      `     Arcrun 回報：${JSON.stringify(out).slice(0, 300)}`);
+  }
+  return { status: 'done', detail };
 }},
 
 // ── 9. verify：**走使用者真的會走的那條路**。沒送達就不算成功 ────────────────
@@ -990,18 +1028,50 @@ const STEPS = [
   //    但這道閘當時判了 ❌ ⇒ **假陰性**。假陰性和假綠一樣糟：
   //    一道會亂叫的閘，人很快就會學會忽略它——那它就等於不存在了。
   //    ⇒ 這一項要**輪詢到收斂**，不是讀一次就定生死；真的沒收斂才算斷。
+  // 🔴 D70（leo 2026-08-11，arcrun-rag#77）：**「去看一眼＋比對」這件事交給 Arcrun 工作流。**
+  //   leo 的判準是「打開工作流頁看得到這件事嗎」——這一站是整條線最貴的一站
+  //   （沒送達就不算成功），所以它更該看得到。
+  //   分工是刻意的，不是偷懶：
+  //     · **Arcrun 做**：去使用者會看的網址抓、逐項比對期望值、給每一項的判定
+  //     · **ship.mjs 做**：輪詢到收斂（下面這個迴圈）＋把不合的收進 fails
+  //   為什麼收斂輪詢留在這裡：它是**出貨流程的節奏**（部署傳播要等幾十秒），
+  //   不是「查證這件事」本身；而且 08-08 為了假陰性寫的那段血淚就在這個迴圈上，
+  //   把它搬走等於把那次教訓丟掉。
   const want = ctx.headSha ? ctx.headSha.slice(0, 7) : null;
-  let latest = null;
+  const liveChecks = [
+    { label: 'release', path: 'release', expected: ctx.release },
+    { label: 'daemon 版本', path: 'daemon.version' },
+    { label: '釘子', path: 'pin' },
+    { label: '建置日', path: 'built', expected: ctx.built },
+    { label: '更新畫面那一行', path: 'daemon.notes' },
+    // 🔴 下載網址一定要問到：verify 第 ④ 段拿它去走「使用者按下載鈕」那條路。
+    //   2026-08-11 實撞：這一段改由 Arcrun 去看時，我漏了問這兩個值，
+    //   下游就報「安裝器沒有對外宣告下載網址」——**東西好好的，是我沒問**。
+    //   「換誰去看」最容易掉的就是這種：下游要的欄位沒被列進 checks，看起來像線上壞了。
+    { label: 'mac 下載網址', path: 'daemon.downloads.mac' },
+    { label: 'win 下載網址', path: 'daemon.downloads.win' },
+  ];
+  if (want) liveChecks.push({ label: '釘子指向本次 bundle HEAD', mode: 'contains', expected: want });
+
+  let seen = null;
+  const chk = (l) => (seen && (seen.results || []).find((r) => r.label === l)) || {};
   for (let n = 1; n <= 12; n++) {
-    latest = await getJson(`${base}/api/latest?${cb()}`).catch(() => null);
-    const relOk = latest && latest.release === ctx.release;
-    const pinOk = !want || (latest && String(latest.pin || '').startsWith(want));
-    if (relOk && pinOk) break;
-    if (n === 1) lines.push(`/api/latest 還沒收斂（release ${latest && latest.release}｜pin ${latest && latest.pin}）→ 等佈署傳播…`);
+    seen = await checkLive({ url: `${base}/api/latest?${cb()}`, checks: liveChecks }).catch(() => null);
+    if (seen && seen.fetch_ok && chk('release').ok && (!want || chk('釘子指向本次 bundle HEAD').ok)) break;
+    if (n === 1) lines.push(`/api/latest 還沒收斂（release ${chk('release').actual}｜pin ${chk('釘子').actual}）→ 等佈署傳播…`);
     if (n < 12) await new Promise((r) => setTimeout(r, 5000));
   }
-  if (!latest) { fails.push('/api/latest 讀不到'); }
+  // 攤成 ship.mjs 後面各段仍在用的形狀（不改下游，只換「誰去看的」）
+  const latest = seen && seen.fetch_ok
+    ? { release: chk('release').actual, pin: chk('釘子').actual, built: chk('建置日').actual,
+        daemon: {
+          version: chk('daemon 版本').actual, notes: chk('更新畫面那一行').actual,
+          downloads: { mac: chk('mac 下載網址').actual, win: chk('win 下載網址').actual },
+        } }
+    : null;
+  if (!latest) { fails.push(`/api/latest 讀不到${seen && seen.fetch_error ? `（Arcrun 回報：${seen.fetch_error}）` : ''}`); }
   else {
+    lines.push(`↑ 這一段由 Arcrun 工作流 ship_check_live 去看並比對（不是本機 curl）`);
     lines.push(`/api/latest → release ${latest.release}｜pin ${latest.pin}｜daemon ${latest.daemon && latest.daemon.version}`);
     if (latest.release !== ctx.release) fails.push(`安裝器宣告 ${latest.release}，本次是 ${ctx.release}（等了 60 秒仍沒收斂）`);
     if (want && !String(latest.pin || '').startsWith(want)) {
