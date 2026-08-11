@@ -244,17 +244,17 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "skip"
+     "status": "done"
     },
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "skip"
+     "status": "done"
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "skip"
+     "status": "done"
     },
     {
      "id": "pin",
@@ -292,8 +292,8 @@
      "status": "skip"
     }
    ],
-   "sourceCommit": "Arcrun@797e7f7",
-   "ts": 1786425582601
+   "sourceCommit": "Arcrun@788295e",
+   "ts": 1786426011693
   }
  }
 }
