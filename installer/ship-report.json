@@ -482,7 +482,7 @@
     },
     {
      "id": "purge",
-     "title": "purge jsDelivr @main 並驗到收斂",
+     "title": "讓 CDN 拿到新版並確認它真的收斂了",
      "status": "skip"
     },
     {
@@ -497,7 +497,8 @@
     }
    ],
    "sourceCommit": "Arcrun@d8bbf2241bd6",
-   "ts": 1786427894695
+   "machine": "9f06f3113188",
+   "ts": 1786446931090
   }
  }
 }

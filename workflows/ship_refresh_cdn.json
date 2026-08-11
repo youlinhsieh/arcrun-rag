@@ -1,0 +1,91 @@
+{
+  "name": "ship_refresh_cdn",
+  "description": "讓 CDN（jsDelivr）拿到新版並確認它真的收斂了：對每個嘗試次數 purge 指定的幾個路徑、等待、再讀一次 manifest 比對 release／daemon 版本，回報每次嘗試的結果與最終是否收斂。出貨管線 ship.mjs 的 purge-jsdelivr 步驟走這個工作流。",
+  "graph": {
+    "id": "ship_refresh_cdn",
+    "name": "ship_refresh_cdn",
+    "nodes": [
+      { "id": "input", "type": "Input", "componentId": "input", "label": "input" },
+      {
+        "id": "gen_attempts",
+        "type": "Component",
+        "componentId": "code",
+        "label": "gen_attempts",
+        "data": {
+          "input": { "tries": "{{input.tries}}" },
+          "code": "var n = (typeof input.tries === 'number' && input.tries > 0 && input.tries) || 4;\nvar arr = [];\nArray(n).fill(0).forEach(function(_, i) { arr.push(i + 1); });\nreturn { attempts: arr };"
+        }
+      },
+      {
+        "id": "purge_manifest",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "purge_manifest",
+        "data": { "url": "{{input.purge_urls.0}}", "method": "GET", "headers": {}, "body_json": {} }
+      },
+      {
+        "id": "purge_asset_a",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "purge_asset_a",
+        "data": { "url": "{{input.purge_urls.1}}", "method": "GET", "headers": {}, "body_json": {} }
+      },
+      {
+        "id": "purge_asset_b",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "purge_asset_b",
+        "data": { "url": "{{input.purge_urls.2}}", "method": "GET", "headers": {}, "body_json": {} }
+      },
+      {
+        "id": "wait_node",
+        "type": "Component",
+        "componentId": "wait",
+        "label": "wait_node",
+        "data": { "ms": "{{input.wait_ms}}" }
+      },
+      {
+        "id": "fetch_manifest",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "fetch_manifest",
+        "data": { "url": "{{input.manifest_url}}", "method": "GET", "headers": { "Cache-Control": "no-cache", "Pragma": "no-cache" }, "body_json": {} }
+      },
+      {
+        "id": "check_convergence",
+        "type": "Component",
+        "componentId": "code",
+        "label": "check_convergence",
+        "data": {
+          "input": {
+            "attempt": "{{attempt}}",
+            "expect_release": "{{input.expect_release}}",
+            "expect_daemon": "{{input.expect_daemon}}",
+            "fetch": "{{fetch_manifest}}"
+          },
+          "code": "function isTemplateLeak(v) {\n  return typeof v === 'string' && /^\\{\\{.*\\}\\}$/.test(v);\n}\nvar fetchNode = (input && input.fetch) || {};\nvar body = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar parsed = null;\ntry { parsed = JSON.parse(body); } catch (e) {}\nvar actualRelease = (parsed && parsed.release) || null;\nvar actualDaemon = (parsed && parsed.daemon && parsed.daemon.version) || null;\nvar expectRelease = (!isTemplateLeak(input.expect_release) && input.expect_release) || null;\nvar expectDaemon = (!isTemplateLeak(input.expect_daemon) && input.expect_daemon) || null;\nvar releaseOk = (!expectRelease) || (actualRelease === expectRelease);\nvar daemonOk = (!expectDaemon) || (actualDaemon === expectDaemon);\nreturn {\n  attempt: input.attempt,\n  fetch_ok: fetchNode.success === true,\n  actual_release: actualRelease,\n  actual_daemon: actualDaemon,\n  expect_release: expectRelease,\n  expect_daemon: expectDaemon,\n  converged: releaseOk && daemonOk\n};"
+        }
+      },
+      {
+        "id": "summarize",
+        "type": "Component",
+        "componentId": "code",
+        "label": "summarize",
+        "data": {
+          "input": { "attempts": "{{gen_attempts.results}}" },
+          "code": "var attempts = (Array.isArray(input.attempts) && input.attempts) || [];\nvar matched = attempts.some(function(a) { return a && a.data && a.data.converged === true; });\nvar firstMatch = attempts.find(function(a) { return a && a.data && a.data.converged === true; });\nreturn {\n  tries: attempts.length,\n  converged: matched,\n  converged_at_attempt: (firstMatch && firstMatch.data && firstMatch.data.attempt) || null,\n  attempts: attempts\n};"
+        }
+      }
+    ],
+    "edges": [
+      { "from": "input", "to": "gen_attempts", "type": "PIPE" },
+      { "from": "gen_attempts", "to": "purge_manifest", "type": "FOREACH", "iterator": "attempt" },
+      { "from": "purge_manifest", "to": "purge_asset_a", "type": "PIPE" },
+      { "from": "purge_asset_a", "to": "purge_asset_b", "type": "PIPE" },
+      { "from": "purge_asset_b", "to": "wait_node", "type": "PIPE" },
+      { "from": "wait_node", "to": "fetch_manifest", "type": "PIPE" },
+      { "from": "fetch_manifest", "to": "check_convergence", "type": "PIPE" },
+      { "from": "gen_attempts", "to": "summarize", "type": "PIPE" }
+    ]
+  }
+}

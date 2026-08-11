@@ -1,0 +1,57 @@
+{
+  "name": "ship_check_live",
+  "description": "去一個用戶會看的網址看一眼，回報它現在宣告什麼、跟期望的合不合（逐項實際值 vs 期望值，不只回 HTTP 狀態碼）。出貨管線 ship.mjs 共用這個工作流做四個查證：出貨前讀線上現況、文件站部署後查版本說明頁、郵差部署後查它接不接得起來、最後驗收查安裝器宣告的版本。",
+  "graph": {
+    "id": "ship_check_live",
+    "name": "ship_check_live",
+    "nodes": [
+      { "id": "input", "type": "Input", "componentId": "input", "label": "input" },
+      {
+        "id": "prep",
+        "type": "Component",
+        "componentId": "code",
+        "label": "prep",
+        "data": {
+          "input": {
+            "url": "{{input.url}}",
+            "method": "{{input.method}}",
+            "headers": "{{input.headers}}",
+            "body_json": "{{input.body_json}}"
+          },
+          "code": "function clean(v, fallback) {\n  return (typeof v === 'string' && v && !/^\\{\\{.*\\}\\}$/.test(v) && v) || fallback;\n}\nfunction cleanObj(v, fallback) {\n  return (v && typeof v === 'object' && !Array.isArray(v) && v) || fallback;\n}\nreturn {\n  url: input.url,\n  method: clean(input.method, 'GET'),\n  headers: cleanObj(input.headers, {}),\n  body_json: cleanObj(input.body_json, {})\n};"
+        }
+      },
+      {
+        "id": "fetch",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "fetch",
+        "data": {
+          "url": "{{prep.data.url}}",
+          "method": "{{prep.data.method}}",
+          "headers": "{{prep.data.headers}}",
+          "body_json": "{{prep.data.body_json}}"
+        }
+      },
+      {
+        "id": "compare",
+        "type": "Component",
+        "componentId": "code",
+        "label": "compare",
+        "data": {
+          "input": {
+            "url": "{{input.url}}",
+            "checks": "{{input.checks}}",
+            "fetch": "{{fetch}}"
+          },
+          "code": "function getPath(obj, pathStr) {\n  var cur = obj;\n  String(pathStr).split('.').forEach(function(k) { cur = (cur || {})[k]; });\n  return cur;\n}\nvar fetchNode = (input && input.fetch) || {};\nvar fetchOk = fetchNode.success === true;\nvar rawBody = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar errText = (typeof fetchNode.error === 'string' && fetchNode.error) || '';\nvar parsedJson = null;\nvar jsonParseError = null;\ntry { parsedJson = JSON.parse(rawBody); } catch (e) { jsonParseError = String((e && e.message) || e); }\nvar checks = (Array.isArray(input.checks) && input.checks) || [];\nvar results = [];\nchecks.forEach(function(chk) {\n  chk = chk || {};\n  var mode = chk.mode || 'json_path';\n  var negate = chk.negate === true;\n  var haystack = (chk.source === 'error' && errText) || rawBody;\n  var actual = null;\n  var ok = false;\n  switch (mode) {\n    case 'contains': {\n      actual = haystack.indexOf(String(chk.expected)) !== -1;\n      ok = (negate && !actual) || (!negate && actual);\n      break;\n    }\n    default: {\n      actual = getPath(parsedJson, chk.path || '');\n      ok = String(actual) === String(chk.expected);\n      break;\n    }\n  }\n  results.push({ label: (chk.label || chk.path) || String(chk.expected), mode: mode, source: chk.source || 'body', expected: chk.expected, actual: actual, ok: ok });\n});\nreturn {\n  url: input.url,\n  fetch_ok: fetchOk,\n  fetch_error: errText || null,\n  json_parse_error: jsonParseError,\n  results: results,\n  all_ok: results.every(function(r) { return r.ok; })\n};"
+        }
+      }
+    ],
+    "edges": [
+      { "from": "input", "to": "prep", "type": "PIPE" },
+      { "from": "prep", "to": "fetch", "type": "PIPE" },
+      { "from": "fetch", "to": "compare", "type": "PIPE" }
+    ]
+  }
+}
