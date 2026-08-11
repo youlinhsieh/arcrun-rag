@@ -83,6 +83,19 @@
         "wranglerEnv": "staging",
         "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
         "verifyUrl": "https://arcrun-docs-staging.uncle6-me.workers.dev/docs/"
+      },
+      "mailRelay": {
+        "_": [
+          "郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）。",
+          "在此之前 landing 完全不在出貨管線裡（STEPS／登錄簿都沒有它），只能靠人手動",
+          "`wrangler deploy`——2026-08-11 實測就是這樣漏的：stage 手動部署過（有 D62 路由），",
+          "prod 從沒推過（/api/send-password-reset 404，還在跑 D62 之前的舊碼）。"
+        ],
+        "cwd": "landing",
+        "config": "wrangler.toml",
+        "wranglerEnv": "staging",
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "verifyUrl": "https://arcrun-landing-staging.uncle6-me.workers.dev"
       }
     },
 
@@ -140,6 +153,20 @@
         "repoSlug": "youlinhsieh/arcrun-rag",
         "mirrorDir": ".github-public",
         "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git"
+      },
+      "mailRelay": {
+        "_": [
+          "郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）。",
+          "prod 的 arcrun-landing worker 在這之前從沒被出貨管線推過——手動測試只碰過 stage，",
+          "prod 一直在跑 D62 之前的舊碼（health 200 但 /api/send-password-reset 404，",
+          "2026-08-11 實測證實）。這一欄補上後，prod 出貨會跟 stage 一樣把它帶上。"
+        ],
+        "cwd": "landing",
+        "config": "wrangler.toml",
+        "wranglerEnv": null,
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "accountNote": "uncle6；arcrun-landing.uncle6-me.workers.dev 就是這顆 worker（郵差）",
+        "verifyUrl": "https://arcrun-landing.uncle6-me.workers.dev"
       },
       "docsSite": {
         "_": [

@@ -83,8 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@a8f7e7f0211577ec61e6172eecd146ad7fa39458';
-const BUNDLE_BUILT = '2026-08-10'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@eeed3985ca2f50275224f52a7855c853b3369457';
+const BUNDLE_BUILT = '2026-08-11'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
 function bundleBase(env) {
@@ -1065,6 +1065,16 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, tim
       out.reason = `cypher bundle_version=${gotVer} ≠ ${wantVer}＝重推`;
       return out;
     }
+    // arcrun-rag#38/#69/#25（2026-08-11）：**版本號相同不代表 config 也是最新的**——
+    // PORTAL_MAIL_RELAY_BASE 是這次才第一次被安裝器寫入的 var，跟 bundle_version
+    // 完全無關（同一個 cypher 版本，先裝的實例沒有這個 var，之後裝的才有）。
+    // 只比版本號的話，leo 自己那台（已經是最新版）永遠不會因為「按更新」而重推
+    // ⇒ 這個 var 永遠補不進去、忘記密碼永遠是斷的。這裡額外問一句「這個 var 到底有沒有」，
+    // 沒有就跟版本不符一樣處理＝重推（fail-stale：讀不到／沒設一律當舊的，不假設已經最新）。
+    if (!(hj && hj.mail_relay_configured)) {
+      out.reason = 'cypher 沒有設定 PORTAL_MAIL_RELAY_BASE（忘記密碼寄不出信）＝重推';
+      return out;
+    }
   } catch (e) {
     out.reason = 'cypher 探測失敗＝重推（實例可能根本還沒建）';
     return out;
@@ -1212,6 +1222,17 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     ...(inject.tenant ? { CONSOLE_TENANT: String(inject.tenant) } : {}),
     // 用戶 GUI（arcrun-rag-ui，第 26 顆）的跨域放行——cypher 缺它＝登入靜默全斷（07-22 實撞同型）
     UI_ORIGINS: `https://arcrun-rag-ui.${inject.subdomain}.workers.dev`,
+    // arcrun-rag#38/#69/#25（2026-08-11）：D62「忘記密碼」代寄——**這行以前完全沒被寫過**，
+    // `grep -rn PORTAL_MAIL_RELAY installer/` 曾是零命中，即使 landing 那半（郵差）已經
+    // 出貨（c0ef64c／1.4.35）。cypher 端（matrix/arcrun portal.ts）早就會讀
+    // `env.PORTAL_MAIL_RELAY_BASE`，沒收到就誠實回 503 `mail_relay_not_configured`
+    // ——leo 按「忘記密碼」看到的正是這句話。
+    // 值＝這個環境（stage/prod）自己的郵差 workers.dev 網址，跟後端已經在用的
+    // `landingBase(env)` 是同一個函式、同一份真相（env.LANDING_BASE 覆蓋，
+    // prod/staging 各自的 wrangler.toml vars 早就設好，見 installer/oauth-prototype/wrangler.toml）
+    // ⇒ 不新增第二個要維護的座標。只在 cypher 這顆宣告（cypher-executor/src/types.ts 的
+    // Bindings 只有這一顆有這個欄位；UI 沒有）。
+    ...(entry.name && entry.name.includes('cypher') ? { PORTAL_MAIL_RELAY_BASE: landingBase(env) } : {}),
     // t151：MCP 的租戶對齊。**這兩個不給就是「連得上但什麼都查不到」的假通**——
     // partner-auth.ts:60 的預設是 `MCP_OWNER_NAMESPACE || "leo"` ⇒ 用戶實例發出的 access token
     // 會綁在 namespace `leo` 這個分區，而他的卡片是寫在自己的租戶分區底下

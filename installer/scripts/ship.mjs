@@ -85,6 +85,7 @@ import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, diffAgainstCanonical } from 
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
+import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
 import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
 
@@ -160,6 +161,24 @@ for (const [name, t] of Object.entries(cfg.targets)) {
     console.error(`❌ 登錄簿不完整：目標 \`${name}\` 會發佈給用戶（publish=true），卻沒宣告 githubRelease。`);
     console.error(`   說明文件對用戶承諾「完整發佈紀錄在 GitHub」，沒有這一步就是承諾沒有機械保證。`);
     console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 githubRelease（repoSlug／mirrorDir／mirrorRemote）`);
+    process.exit(2);
+  }
+}
+
+// 🔴 不變式 Ⅶ：**有安裝器的目標，一定要有郵差（mailRelay）**（2026-08-11，arcrun-rag#38／#69／#25）
+//   同一種病、同一種解法，這次咬在「忘記密碼」上：D62 代寄機制的兩半——用戶自己的
+//   cypher（寫連結）與 `landing/worker.js`（真的寄信）——只有前者被這支腳本盯著，
+//   landing 從沒出現在 STEPS 或登錄簿裡（`grep -niE "landing" installer/scripts/ship.mjs`
+//   曾是零命中）。結果：stage 手動部署過（有 D62 路由），**prod 從沒推過**——
+//   2026-08-11 實測 `arcrun-landing.uncle6-me.workers.dev/api/health`→200（活著）但
+//   `/api/send-password-reset`→404（那支路由不存在，還在跑 D62 之前的舊碼）。
+//   出貨報告全綠，因為它根本不在被檢查的清單上——leo（D65）：「不在清單上的東西會現形，
+//   因為它連一列都沒有」。跟 docsSite／githubRelease 同一治法：漏填在任何步驟開跑前就擋下。
+for (const [name, t] of Object.entries(cfg.targets)) {
+  if (t.installer && !t.mailRelay) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 有安裝器（會有人拿到東西），卻沒宣告 mailRelay。`);
+    console.error(`   使用者按「忘記密碼」要靠郵差 worker 代寄——沒接上這一步，郵差就只能靠人手動部署，會漏。`);
+    console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 mailRelay（cwd／config／wranglerEnv／accountId／verifyUrl）`);
     process.exit(2);
   }
 }
@@ -890,6 +909,35 @@ const STEPS = [
       + '\n' + r.lines.map((l) => `       ｜${l}`).join('\n'));
   }
   return { status: 'done', detail: [`帳號 ${D.accountId}｜env ${D.wranglerEnv || '(預設環境)'}`, ...r.lines] };
+}},
+
+// ── 7.6 mailRelay：郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）──
+// 為什麼收進來：跟 docsSite 同一種病——landing 之前完全不在這支腳本裡，只能靠人手動
+// `wrangler deploy`；2026-08-11 實測就是這樣漏的：stage 手動部署過，prod 從沒推過，
+// health 是綠的（worker 活著）掩護了「沒有 D62 那支路由」（跑舊碼）沒被任何人發現。
+// 這一步跟 landing worker 本身無關 bundle 版本（它不吃 pin），只吃它自己的原始碼——
+// 所以**每次出貨都重推**（不比對 sha／不跳過），一致對齊「同一份輸入永遠得到同一組動作」。
+{ id: 'mail-relay', title: '部署郵差（忘記密碼代寄），並驗證它真的接得起來', mutates: true, async run() {
+  if (!T.mailRelay) return { status: 'skip', detail: ['本目標沒有安裝器也沒有郵差（登錄簿宣告）'] };
+  const M = T.mailRelay;
+  const cwd = join(REPO_ROOT, M.cwd);
+  const args = ['wrangler', 'deploy', '--config', M.config];
+  if (M.wranglerEnv) args.push('--env', M.wranglerEnv);   // prod 走預設環境，沒有 env 名
+  shLive('npx', args, cwd, { CLOUDFLARE_ACCOUNT_ID: M.accountId });
+
+  // 部署指令沒報錯不算驗過（CRITICAL-PATH 使用規則 6）——實測踩過「health 綠但代寄路由
+  // 404」，只問 health 會誤判成通：見 verify-mail-relay.mjs 檔頭。
+  if (!M.verifyUrl) {
+    throw new Error(
+      `登錄簿的 ${TARGET_NAME}.mailRelay 沒給 verifyUrl ⇒ 沒辦法證明郵差真的接得起來。`);
+  }
+  const r = await checkMailRelayLive({ base: M.verifyUrl });
+  if (r.fails.length) {
+    throw new Error('郵差部署了，但代寄路由不認得（用戶按「忘記密碼」會繼續斷）：\n'
+      + r.fails.map((f) => `       • ${f}`).join('\n')
+      + '\n' + r.lines.map((l) => `       ｜${l}`).join('\n'));
+  }
+  return { status: 'done', detail: [`帳號 ${M.accountId}｜env ${M.wranglerEnv || '(預設環境)'}`, ...r.lines] };
 }},
 
 // ── 8. purge（只有 prod 需要：jsDelivr @main 邊緣快取）──────────────────────
