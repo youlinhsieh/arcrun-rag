@@ -14,7 +14,7 @@
     !define INFO_PRODUCTNAME "Arcrun"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "0.18.10"
+    !define INFO_PRODUCTVERSION "0.18.26"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "Copyright........."

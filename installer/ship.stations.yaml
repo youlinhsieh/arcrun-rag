@@ -23,9 +23,27 @@
 # 混合的站（本機做事、線上那段交給 Arcrun 查證）另外寫 `也調用:`。
 #
 # ── 這張表現在誠實的樣子（不要假裝）─────────────────────────────────────────
-# 19 站裡，**2 站整站由 Arcrun 工作流做事**（`purge`、`verify`——純網路查證那些），
-# 另有 2 站的**線上查證那一段**走 Arcrun（`preflight`、`deploy` 的線上現況）。
-# 其餘留在本機，每一站的理由都在底下。留在本機的絕大多數是同一個原因：
+# ── 🔴 D73 重新分類（leo 2026-08-11，本檔第一版的理由多數是錯的）─────────────
+# leo：「**Gitea 是我們的內部開發環境**，所以任何人在他本機進行開發，最後交貨都要送到 Gitea。
+#       所以 **Arcrun 可以去做中間的工作，完全不用碰到本地。**」
+# 判準：「這一站碰的東西，**只有某一台機器看得到嗎？** 是 → 那不是限制，是**還沒交貨**。」
+#
+# 用這個判準重掃一遍，結果跟第一版差很多——**第一版寫的多數是「東西現在放哪」，不是限制**：
+#
+#   已在 Arcrun　 2 站　purge／verify
+#   物理限制　　 2 站　preflight（leo 親手放的保險檔＝人的同意）／github-release（同）
+#   還沒交貨　　 4 站　public-docs／daemon-sync／daemon-check／docs-changelog
+#   缺零件　　　11 站　build／parity／notes／version／readme／commit／push／pin／
+#                     deploy／docs／mail-relay
+#
+# 🔴 **只有 2 站是真的搬不動**，其餘 15 站都是「還沒搬」。第一版我把它們全寫成
+#   「要碰本機檔案」——最誇張的是 `build`，理由寫「Worker 碰不到本機的 `.worker-builds/`」，
+#   而那個目錄**早就 commit 進 `Leo/Arcrun` 的 main**，匿名讀 200，Arcrun 實測也真的讀到了。
+#
+# ⇒ 所以 `為什麼不搬` 現在是**三選一**（機械閘會擋自由作文），
+#   且非物理限制的一律要寫 `要搬需要` ⇒ 每個沒搬的站都自帶一張待辦，賴不掉。
+#
+# 底下這段是第一版的說法，留著當對照——**它就是被 D73 推翻的那種理由**：
 #   **要碰 leo 這台機器上的東西**（git 工作區、esbuild、wrangler 憑證、leo 親手放的保險檔）。
 # 這不是藉口，是這張票（`Leo/arcrun-rag#77`）刻意選的形狀——leo 說「先做本地版」。
 # 還沒接上 Arcrun、但接得上的，底下標了 `未來:`（現在有兩站：文件站、郵差）。
@@ -96,7 +114,8 @@
   - id: preflight
     名字: 對齊目標（打錯目標打不進去）
     用什麼: 本機
-    本機理由: |
+    為什麼不搬: 物理限制
+    理由: |
       要讀的三樣東西全在 leo 這台機器上，Cloudflare Worker 拿不到：
       Arcrun 來源 repo 的 git 狀態（乾不乾淨、HEAD 是哪顆）、bundle repo 的 origin、
       以及 leo 親手放的 D20 保險檔 `.github-armed`。
@@ -109,25 +128,44 @@
   - id: public-docs
     名字: 掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）
     用什麼: 本機
-    本機理由: 掃的是本機工作樹裡尚未公開的檔案，還沒有任何網址指得到它們，Worker 抓不到。
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      Leo/arcrun-rag 是 private repo（匿名讀 404 實測）⇒ Arcrun 讀不到待掃的檔。
+            需要：① 待出貨的 commit 推上 Gitea（已做到）② 一把 Gitea 讀取憑證進 credential 中心（D36 路徑，值不經 AI）
+    理由: 掃的是本機工作樹裡尚未公開的檔案，還沒有任何網址指得到它們，Worker 抓不到。
     驗法: 公開樹守門機制（scripts/publish-github.sh 的 sanitize 閘）全過
 
   - id: daemon-sync
     名字: 把本機最新已發佈的 daemon 產物搬進 bundle
     用什麼: 本機
-    本機理由: 桌面小幫手是在 leo 這台編出來的（mac 要簽章、win 要打 exe），產物躺在本機硬碟上。
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      daemon 的 dmg/exe 只存在 leo 這台的 collector/cmd/arcrun-app/dist/。
+            需要：簽章打包完**立刻把產物交到 Gitea**（例如 daemon 產物 repo 或 release 附件），
+            Arcrun 才搬得動。🔴 這就是 chore/60 併不進來的同一個病——產物沒交貨就等於不存在。
+    理由: 桌面小幫手是在 leo 這台編出來的（mac 要簽章、win 要打 exe），產物躺在本機硬碟上。
     驗法: bundle/daemon/ 底下的檔＝本機 dist 最新已發佈那一版，逐位元相同
 
   - id: daemon-check
     名字: 核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）
     用什麼: 本機
-    本機理由: 比對的兩邊（本機 changelog、本機 bundle 目錄）都是本機檔案。
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      bundle manifest 那半 Arcrun **已經讀得到**（實測 200，見票上輸出）；
+            卡的是 changelog 在 private repo。給 Arcrun 一把 Gitea 讀取憑證，這站就能整個搬。
+    理由: 比對的兩邊（本機 changelog、本機 bundle 目錄）都是本機檔案。
     驗法: 兩邊版本字串一致
 
   - id: build
     名字: 向 Arcrun 取用編好的零件（不是自己編）
     用什麼: 本機
-    本機理由: |
+    為什麼不搬: 缺零件
+    要搬需要: |
+      材料**已經在 Gitea**：Leo/Arcrun 的 .worker-builds/ 匿名讀 200（實測），
+            Arcrun 也真的讀到了它的零件清單。所以這站不是「碰不到本機檔案」——我上一輪寫錯了。
+            缺的是：① 把檔案寫回 Gitea repo 的能力（Leo/Arcrun#89）② 算內容雜湊的零件（Leo/Arcrun#91）。
+      ⚠️ 訂正：原本這裡還寫「缺比對零件」——**那是錯的**，實測 if_control 在 leo 那台跑得動（Leo/Arcrun#88）。
+    理由: |
       🔴 訂正（2026-08-11，本張票動工時實查）：這一站**已經不編譯了**。
       `installer/scripts/build-bundles.mjs` 檔頭寫著「本檔不再自己跑 esbuild」，
       實際做的是讀 Arcrun repo 的 `.worker-builds/manifest.json`、把官方成品搬過來、核對指紋，
@@ -148,43 +186,67 @@
   - id: parity
     名字: 核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）
     用什麼: 本機
-    本機理由: 比對的是本機兩個 bundle 目錄的檔案內容。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      兩邊的 bundle manifest 都在 Gitea／GitHub 上，Arcrun 讀得到。
+            判斷零件一直都在（實測 if_control 可用）。缺的是把比對結果寫回去的能力（Leo/Arcrun#89）。
+    理由: 比對的是本機兩個 bundle 目錄的檔案內容。
     驗法: 兩邊零件清單逐項相符，數量相同
 
   - id: notes
     名字: 產生更新畫面那一行（來源＝changelog）
     用什麼: 本機
-    本機理由: 從本機 changelog 檔算出來，寫進本機 bundle。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      來源 changelog 在 private repo（等 Gitea 唯讀 token），寫回 manifest 等 Leo/Arcrun#89。
+    理由: 從本機 changelog 檔算出來，寫進本機 bundle。
     驗法: 那一行不是空的，且來源是 changelog 不是人手打
 
   - id: version
     名字: 算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）
     用什麼: 本機
-    本機理由: 指紋是對本機 bundle 檔案內容算的。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      bundle 內容 Arcrun 讀得到；缺雜湊零件（Leo/Arcrun#91）＋寫回能力（Leo/Arcrun#89）。
+    理由: 指紋是對本機 bundle 檔案內容算的。
     驗法: 內容指紋變了但版本沒變 → 失敗
 
   - id: docs-changelog
     名字: 確認這版已經寫進說明文件（缺了就中止，不安靜跳過）
     用什麼: 本機
-    本機理由: 讀的是本機 docs-site 原始檔（此刻還沒部署，線上還查不到）。
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      這站的判準就是「changelog 裡有沒有這一版的段落」＝純 contains 檢查，
+            **現有的 ship_check_live 就做得到**，一顆新零件都不用。唯一卡點是 arcrun-rag 是 private。
+            ⇒ 給 Arcrun 一把 Gitea 讀取憑證，**這是最快能整站搬走的一站**。
+    理由: 讀的是本機 docs-site 原始檔（此刻還沒部署，線上還查不到）。
     驗法: changelog 原始檔裡有這一版的段落
 
   - id: readme
     名字: bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）
     用什麼: 本機
-    本機理由: 產生並寫入本機 bundle repo 的檔案。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      零件清單 Arcrun 讀得到；缺寫回能力（Leo/Arcrun#89）。
+    理由: 產生並寫入本機 bundle repo 的檔案。
     驗法: README 的零件數＝實際零件數
 
   - id: commit
     名字: 把產物寫進 bundle repo 的版控
     用什麼: 本機
-    本機理由: git 操作在本機工作區上，Worker 沒有工作區。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      缺 Gitea 寫入 recipe（Leo/Arcrun#89）。Gitea 有這個 API，是我們還沒寫 recipe，不是做不到。
+    理由: git 操作在本機工作區上，Worker 沒有工作區。
     驗法: 工作區乾淨，且這次產物都在版控裡
 
   - id: push
     名字: 推上 bundle repo
     用什麼: 本機
-    本機理由: |
+    為什麼不搬: 缺零件
+    要搬需要: |
+      同 commit——走 Gitea API 就沒有「推」這個動作了（Leo/Arcrun#89）。
+    理由: |
       推送憑證在 leo 這台的環境變數／git remote 裡。D36 金鑰鐵律：值不落地、不外流。
       要讓 Worker 推，就得把寫入憑證交給雲端保管——那是把風險放大，不是自動化。
     驗法: 遠端該分支的 HEAD ＝本次 commit
@@ -192,13 +254,20 @@
   - id: pin
     名字: 換安裝器釘子（真身是 wrangler.toml 的 vars）
     用什麼: 本機
-    本機理由: 改的是本機 wrangler.toml。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      改的是 repo 裡的設定檔，Arcrun 讀得到；缺 Gitea 寫入 recipe（Leo/Arcrun#89）。
+    理由: 改的是本機 wrangler.toml。
     驗法: wrangler.toml 的釘子指向本次 commit
 
   - id: deploy
     名字: 部署安裝器（帳號由登錄簿釘死）
     用什麼: 本機
-    本機理由: |
+    為什麼不搬: 缺零件
+    要搬需要: |
+      Cloudflare 有 Workers 上傳 API，Arcrun 打得到；缺一個「部署 Worker」的 recipe，
+            以及部署憑證進 credential 中心。不是物理限制。
+    理由: |
       `wrangler deploy` 要 Cloudflare 部署憑證。同 push：把部署憑證交給雲端保管＝放大風險。
       而且部署的目標帳號要由本機登錄簿釘死，才擋得住「打錯帳號」——這正是這條線最貴的教訓。
     也調用: [ship_check_live]
@@ -210,7 +279,11 @@
   - id: docs
     名字: 建＋部署說明文件站，並驗「使用者查得到這一版」
     用什麼: 本機
-    本機理由: 同 deploy——建站與 `wrangler deploy` 需要本機工具鏈與部署憑證。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      這站要跑 astro build（真的編譯一個靜態站）。Arcrun 的 code 沙箱不是建置環境。
+            缺的是一個建置能力／建置服務——這是四項裡最接近物理限制的，但仍是能力缺口不是原理上不可能。
+    理由: 同 deploy——建站與 `wrangler deploy` 需要本機工具鏈與部署憑證。
     未來: |
       🔴 誠實標記（2026-08-11）：這一站部署完的線上查證**還是本機做的**
       （`verify-docs.mjs` 的 `checkDocsLive`），還沒接上 `ship_check_live`。
@@ -223,7 +296,10 @@
   - id: mail-relay
     名字: 部署郵差（忘記密碼代寄），並驗證它真的接得起來
     用什麼: 本機
-    本機理由: 同 deploy——`wrangler deploy` 需要本機部署憑證。
+    為什麼不搬: 缺零件
+    要搬需要: |
+      同 deploy——缺 Worker 部署 recipe（Leo/Arcrun#90）。
+    理由: 同 deploy——`wrangler deploy` 需要本機部署憑證。
     未來: |
       🔴 誠實標記（2026-08-11）：同 docs——部署完「它接不接得起來」還是本機查
       （`verify-mail-relay.mjs`），還沒接上 `ship_check_live`。理由同上：先接完 verify／purge。
@@ -249,7 +325,8 @@
   - id: github-release
     名字: 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄
     用什麼: 本機
-    本機理由: |
+    為什麼不搬: 物理限制
+    理由: |
       這一步要用 GitHub 寫入憑證，且**受 D20 儀式管制**——它是整條線唯一一個
       「leo 親手解保險才准開炮」的動作。保險檔是本機檔案，憑證是本機環境變數。
       把它搬上雲＝那道人閘從此可以被機器繞過。**這一站永遠留在本機，不是暫時的。**
