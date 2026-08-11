@@ -766,6 +766,83 @@ func TestLoadDirectConfigMigrationIdempotent(t *testing.T) {
 	}
 }
 
+// TestRunDirectOnceMultiAccount_TopLevelCloudCheckOK 釘住 arcrun-rag#59 相關實查
+// （2026-08-10，見頂層 wiki `system-dev/wiki/status.md`「畫面在說謊」段）：
+//
+//	leo 三個帳號 `/health` 全部 200，畫面卻顯示「沒連上雲端」。
+//	真兇＝ direct.go 寫 status.json 頂層 cloud_check_ok 時，
+//	以前只有 `len(accountDetails) == 1` 才填，2+ 帳號時停在 Go 零值 false，
+//	即使每個帳號自己的 AccountDetails.CloudCheckOK 都是 true。
+//
+// 這支測試刻意用**兩個帳號、兩台 fake /health 都成功**的設定——
+// 釘住「多帳號時頂層 cloud_check_ok 也要照實填 true」，不是恆為 false。
+func TestRunDirectOnceMultiAccount_TopLevelCloudCheckOK(t *testing.T) {
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"bundle_version":"1.4.30"}`))
+	}))
+	defer serverA.Close()
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"bundle_version":"1.4.30"}`))
+	}))
+	defer serverB.Close()
+
+	base := t.TempDir()
+	rootA := filepath.Join(base, "rootA")
+	rootB := filepath.Join(base, "rootB")
+	for _, d := range []string{rootA, rootB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// fetchCloudVersion 真的探每台 /health（模擬「三台全部 200」的現場，
+	// 不用固定 stub——要驗的正是「per-account CloudCheckOK=true 時，
+	// 頂層也要跟著 true」，不是探測機制本身）。
+	origFCV := fetchCloudVersion
+	fetchCloudVersion = fetchBundleVersion
+	defer func() { fetchCloudVersion = origFCV }()
+
+	manifestPath := filepath.Join(base, "manifest.json")
+	statusPath := filepath.Join(filepath.Dir(manifestPath), "status.json")
+	cfg := &DirectConfig{
+		Manifest: manifestPath,
+		Accounts: []AccountConfig{
+			{CypherURL: serverA.URL, Namespace: "nsA", WatchFolders: []string{rootA}},
+			{CypherURL: serverB.URL, Namespace: "nsB", WatchFolders: []string{rootB}},
+		},
+		MaxRemoved:        DefaultMaxRemovedRatio,
+		ExtractorExplicit: true, // 隔離變因：不要走 workers-ai 萃取路，只驗 cloud check
+	}
+	if _, exit, _ := RunDirectOnce(cfg, false); exit != 0 {
+		t.Fatalf("雙帳號同步應成功，exit=%d", exit)
+	}
+
+	raw, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("讀不到 status.json：%v（manifest=%s）", err, manifestPath)
+	}
+	var st SyncStatus
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatalf("status.json 格式錯：%v", err)
+	}
+
+	hostA := instanceHostOf(serverA.URL)
+	hostB := instanceHostOf(serverB.URL)
+	if !st.AccountDetails[hostA].CloudCheckOK || !st.AccountDetails[hostB].CloudCheckOK {
+		t.Fatalf("兩個帳號各自的 CloudCheckOK 應該都是 true（測試前提：兩台 fake /health 都回 200）：%+v",
+			st.AccountDetails)
+	}
+	if !st.CloudCheckOK {
+		t.Fatal("兩個帳號都連得上，頂層 cloud_check_ok 卻是 false——" +
+			"這正是 arcrun-rag#59「明明連上卻說沒連上」的那個病（多帳號時頂層被鎖死在零值）")
+	}
+	if st.CloudVersion == "" {
+		t.Error("頂層 cloud_version 應該取到至少一個帳號的版本代表，不該是空字串")
+	}
+}
+
 func TestExpandHomeEdgeCases(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

@@ -69,10 +69,17 @@ func TestDirect_QuotaExhausted_ShowsHumanMessageNoRawCode(t *testing.T) {
 				t.Errorf("結果不該出現裸露的錯誤碼 %q：%q", b, r.Error)
 			}
 		}
-		for _, want := range []string{"今天已經幫你整理了", "升級 Cloudflare", "自動恢復"} {
+		// arcrun-rag#59：這支測試裡兩份檔案全部失敗、dailyCount 全程是 0——
+		// 正是 leo 實查那個「一份都沒成功、額度卻用完」的情境，buildQuotaNotice
+		// 改口不再承諾「自動恢復」（那是做不到的承諾）、也不再建議換模型
+		// （結構上做不到：嵌入不管選哪個萃取模型都走 Workers AI），只留「升級」這個真出口。
+		for _, want := range []string{"今天已經幫你整理了", "升級 Cloudflare"} {
 			if !strings.Contains(r.Error, want) {
 				t.Errorf("缺三句話之一 %q：%q", want, r.Error)
 			}
+		}
+		if strings.Contains(r.Error, "可以換一個模型") {
+			t.Errorf("dailyCount==0（這輪一份都沒成功）不該再建議換模型：%q", r.Error)
 		}
 	}
 
@@ -148,7 +155,10 @@ func TestDirect_QuotaExhausted_NextRunSkipsWithoutNetworkCall(t *testing.T) {
 	if len(results2) != 1 || results2[0].Status != "skipped" {
 		t.Fatalf("results2=%+v", results2)
 	}
-	if !strings.Contains(results2[0].Error, "自動恢復") {
-		t.Errorf("跳過訊息也該是三句話：%q", results2[0].Error)
+	// arcrun-rag#59：這支測試同樣是 dailyCount==0（單一檔案、全程沒有成功過），
+	// 跳過訊息改口成「升級 Cloudflare」這個真出口，不再是「自動恢復」的舊三句話。
+	if !strings.Contains(results2[0].Error, "今天已經幫你整理了") ||
+		!strings.Contains(results2[0].Error, "升級 Cloudflare") {
+		t.Errorf("跳過訊息也該是三句話（新版）：%q", results2[0].Error)
 	}
 }

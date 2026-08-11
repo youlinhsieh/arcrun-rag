@@ -57,9 +57,13 @@ type SyncStatus struct {
 	LastActivityAt     string `json:"last_activity_at,omitempty"` // RFC3339，上次有產出那輪的完成時間
 	LastActivityOK     int    `json:"last_activity_ok"`           // 那一輪成功幾份
 	LastActivityFailed int    `json:"last_activity_failed"`       // 那一輪失敗幾份
-	// 頂層 cloud 欄位保留向後相容（單帳號時同時填頂層＋AccountDetails）
-	CloudVersion string `json:"cloud_version,omitempty"` // bundle_version（單帳號時填）
-	CloudCheckOK bool   `json:"cloud_check_ok"`          // /health 可達才為 true
+	// 頂層 cloud 欄位保留向後相容（同時填頂層＋AccountDetails；不論帳號數——
+	// arcrun-rag#59 相關實查修過，見 direct.go 寫入處註解：以前只有剛好一個帳號
+	// 才填，2+ 帳號時這裡恆為零值 false，讀這個頂層欄位的地方會看到「沒連上雲端」
+	// 即使每個帳號都連得上）。CloudCheckOK＝任一帳號連得上；CloudVersion＝第一個
+	// 非空版本代表，不代表所有帳號版本一致。
+	CloudVersion string `json:"cloud_version,omitempty"` // bundle_version（有連得上的帳號時填）
+	CloudCheckOK bool   `json:"cloud_check_ok"`          // 任一帳號 /health 可達即為 true
 	// t104：per-account 狀態（key = instanceHostOf(cypher_url)）
 	AccountDetails map[string]AccountSyncStatus `json:"account_details,omitempty"`
 

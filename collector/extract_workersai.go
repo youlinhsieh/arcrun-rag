@@ -121,12 +121,11 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 	if !strings.HasPrefix(card, "# ") {
 		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)
 	}
-	cardRel := filepath.ToSlash(filepath.Join(cardsRelDir, pageName+".md"))
+	// arcrun-rag#60：非 vault 落 system-dev/wiki/cards/、vault 改落隱藏目錄，避免污染筆記軟體的頁面清單；
+	// 落地前先查目標存不存在、不無條件覆蓋（safeWriteCard），兩條都是同一票的紅線。
+	cardRel := filepath.ToSlash(filepath.Join(cardsRelDirFor(absRoot), pageName+".md"))
 	dest := filepath.Join(absRoot, filepath.FromSlash(cardRel))
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(dest, []byte(card), 0o644); err != nil {
+	if err := safeWriteCard(dest, []byte(card)); err != nil {
 		return nil, err
 	}
 	return []string{cardRel}, nil

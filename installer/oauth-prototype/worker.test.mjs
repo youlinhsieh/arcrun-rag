@@ -462,6 +462,50 @@ test('P0-4 deployBundledWorker：注入安裝期才知道的值（account/subdom
   }
 });
 
+test('arcrun-rag#38/#69/#25 deployBundledWorker：cypher 拿到 PORTAL_MAIL_RELAY_BASE（＝landingBase(env)，忘記密碼代寄）', async () => {
+  // 這條就是這次修的洞：`grep -rn PORTAL_MAIL_RELAY installer/` 曾是零命中——
+  // 安裝器從沒把「郵差在哪」交代給它裝出來的 cypher，導致每一台裝出來的實例
+  // 按「忘記密碼」都停在 503「還沒有設定寄信服務」。
+  const env = { BUNDLE_BASE: BASE, LANDING_BASE: 'https://arcrun-landing-staging.uncle6-me.workers.dev' };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.PORTAL_MAIL_RELAY_BASE, 'https://arcrun-landing-staging.uncle6-me.workers.dev',
+      'cypher 的 PORTAL_MAIL_RELAY_BASE 應該＝這個環境的 landingBase(env)，不是空的');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('arcrun-rag#38/#69/#25 deployBundledWorker：env 沒給 LANDING_BASE 時，cypher 仍拿到預設值（不是空字串）', async () => {
+  // 對齊既有 landingBase() 的行為：未覆蓋時退回 DEFAULT_LANDING_BASE（prod 官方郵差）——
+  // 不新增第二個「值可能是 undefined」的路徑。
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.PORTAL_MAIL_RELAY_BASE, 'https://arcrun-landing.uncle6-me.workers.dev');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('arcrun-rag#38/#69/#25 deployBundledWorker：非 cypher 的顆（如 UI）不灌 PORTAL_MAIL_RELAY_BASE', async () => {
+  // cypher-executor/src/types.ts 的 Bindings 只有這一顆宣告這個欄位；灌給別顆是死變數。
+  const env = { BUNDLE_BASE: BASE, LANDING_BASE: 'https://arcrun-landing-staging.uncle6-me.workers.dev' };
+  const { captured } = installBundleFetch();
+  try {
+    const uiEntry = { ...baseEntry, name: 'arcrun-rag-ui' };
+    await deployBundledWorker(env, 'tok', 'acct-123', uiEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.PORTAL_MAIL_RELAY_BASE, undefined, 'UI 不需要、也不該拿到郵差網址');
+  } finally {
+    restoreFetch();
+  }
+});
+
 test('P0-4 deployBundledWorker：binding 需求對上已建資源（kv/d1 id 正確）', async () => {
   const env = { BUNDLE_BASE: BASE };
   const { captured } = installBundleFetch();
@@ -1460,11 +1504,14 @@ test('t154 CF API 掛掉 → fail-closed 回 false（導回要碼，不放行）
 const UIV = 'https://arcrun-rag-ui.x.workers.dev/__version';
 const HEALTH = 'https://arcrun-cypher-executor.x.workers.dev/health';
 
-/** 造一個假實例：cypher 回什麼版本、ui 那條路由回什麼。 */
-function instance({ cypherVer, ui }) {
+/** 造一個假實例：cypher 回什麼版本、ui 那條路由回什麼。
+ *  mailRelay 預設 true（已配置）——這批測試在守 UI／版本比對邏輯，跟 arcrun-rag#38/#69/#25
+ *  新加的 mail_relay_configured 檢查是正交關注點；個別測試需要驗那個檢查時才覆寫 false
+ *  （見下方「G-9.3」）。 */
+function instance({ cypherVer, ui, mailRelay = true }) {
   return installFetch((url) => {
     if (url === HEALTH) {
-      return cypherVer === null ? { status: 500 } : { json: { ok: true, bundle_version: cypherVer } };
+      return cypherVer === null ? { status: 500 } : { json: { ok: true, bundle_version: cypherVer, mail_relay_configured: mailRelay } };
     }
     if (url === UIV) {
       if (ui === 'old') {
@@ -1496,6 +1543,29 @@ test('G-9.2 cypher 與 ui 都等於最新 → 不重推（整批跳過的快路�
     assert.equal(r.stale, false, '已是最新就不該重推');
     assert.equal(r.uiFingerprint, 'abc123');
     assert.match(r.reason, /已是最新/);
+  } finally { restoreFetch(); }
+});
+
+test('G-9.3 arcrun-rag#38/#69/#25：版本號相同，但 cypher 沒設 PORTAL_MAIL_RELAY_BASE → 仍判要更新（版本號不是唯一真相）', async () => {
+  // 這是這次要修的洞本身：leo 那台已經是最新 bundle_version，但這個 var 是安裝器
+  // 這次才第一次注入——純比版本號會判「已是最新」，這個 var 就永遠補不進去，
+  // 忘記密碼永遠是斷的。ui 那半刻意給「已是最新」，證明是 mail relay 這一項單獨讓它變 stale，
+  // 不是被 UI 檢查連帶抓到的。
+  const { probeInstanceStale } = await import('./worker.js');
+  instance({ cypherVer: '1.4.15', ui: { ok: true, ui_fingerprint: 'abc123', bundle_version: '1.4.15' }, mailRelay: false });
+  try {
+    const r = await probeInstanceStale({ healthUrl: HEALTH, uiVersionUrl: UIV, wantVer: '1.4.15' });
+    assert.equal(r.stale, true, '沒設 mail relay 就不准判定已是最新');
+    assert.match(r.reason, /PORTAL_MAIL_RELAY_BASE/);
+  } finally { restoreFetch(); }
+});
+
+test('G-9.4 arcrun-rag#38/#69/#25：版本號相同且 mail relay 已配置 → 正常判定不重推（不誤傷既有快路徑）', async () => {
+  const { probeInstanceStale } = await import('./worker.js');
+  instance({ cypherVer: '1.4.15', ui: { ok: true, ui_fingerprint: 'abc123', bundle_version: '1.4.15' }, mailRelay: true });
+  try {
+    const r = await probeInstanceStale({ healthUrl: HEALTH, uiVersionUrl: UIV, wantVer: '1.4.15' });
+    assert.equal(r.stale, false);
   } finally { restoreFetch(); }
 });
 

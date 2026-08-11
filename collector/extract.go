@@ -61,8 +61,25 @@ func FindClaudeBin(hint string) (string, error) {
 		strings.Join(tried, "、"))
 }
 
-// cardsRelDir 是 template 規約的卡片產物區（相對監看根）。
+// cardsRelDir 是 template 規約的卡片產物區（相對監看根）——一般資料夾（非 vault）用這個，
+// 行為與改 Go 版之前完全一致。
 const cardsRelDir = "system-dev/wiki/cards"
+
+// vaultCardsRelDir 是監看根被判定成 Logseq/Obsidian vault 時，卡片改落的位置（arcrun-rag#60）。
+// 刻意用點開頭的隱藏目錄：Logseq/Obsidian 預設都不掃描點開頭的資料夾（跟 .git/.obsidian
+// 同待遇），daemon 自己的 Scan() 也一樣（見 scan.go「隱藏目錄整棵跳過」）——三邊一致，
+// 卡片仍然落在監看根底下（呼叫端「路徑相對監看根」的假設不用改），但不會被筆記軟體
+// 收編成新頁面，vault 的頁面數不會因為 daemon 跑過而增加。
+const vaultCardsRelDir = ".arcrun-rag/wiki/cards"
+
+// cardsRelDirFor 決定某次萃取的卡片該落在哪個相對路徑：非 vault 用 cardsRelDir（不變），
+// vault 用 vaultCardsRelDir（arcrun-rag#60）。vault 判準見 vault.go，與 install.sh 對齊。
+func cardsRelDirFor(absRoot string) string {
+	if IsVault(absRoot) {
+		return vaultCardsRelDir
+	}
+	return cardsRelDir
+}
 
 // snapshotCards 記 cards/ 目前每檔 mtime+size（偵測萃取後的新卡/變卡）。
 func snapshotCards(absRoot string) map[string]fileState {

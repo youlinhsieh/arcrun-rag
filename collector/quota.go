@@ -61,25 +61,57 @@ func (n QuotaNotice) Combined() string {
 
 // buildQuotaNotice 組出三句話。dailyCount＝今天（UTC 日界，與額度重置同一條線）已成功
 // 萃取的份數；resetAt＝nextQuotaResetTaiwan 算出的下一次重置時間。
+//
+// 🔴 arcrun-rag#59（2026-08-10 leo 實查）：`dailyCount==0` 時原本這三句話會自相矛盾——
+// 「今天已經幫你整理了 0 份」搭「可以換一個模型」，一份都沒成功，額度是誰用掉的？
+// leo 查出真兇：**嵌入（向量化）與萃取共用同一份 Workers AI 每日免費額度**
+// （`matrix/arcrun/kbdb/src/embed.ts` 的 `DEFAULT_EMBED_MODEL` 固定走 Workers AI，
+// 不受萃取模型選擇影響）。dailyCount==0 且已進冷卻，代表這一輪萃取連一份都沒吃到
+// 額度就先被別的事（最典型是帳號上同時在做的大量重新嵌入）用光了——
+// 這個情況下「換一個模型」是結構上做不到的假出口（換的是萃取模型，嵌入不會跟著換），
+// 「明天會自動接著跑」也是做不到的承諾（只要那件事還在燒同一份額度，明天還是會撞同一面牆）。
+// dailyCount>0（今天多少有做出東西，只是單純量大用完）維持原本三句話不動——
+// 那種情境三句話依然成立，換模型也確實能減少萃取那一半吃掉的份額。
+//
+// 🔴 Achievement 句的格式刻意不因分支而變：`ClassifyFailure`（progress.go）靠
+// 「幫你整理了」這個子字串把這段三句話歸進 FailQuotaExhausted 分類，兩個分支都要留著。
 func buildQuotaNotice(now time.Time, dailyCount int, resetAt time.Time) QuotaNotice {
+	achievement := fmt.Sprintf("今天已經幫你整理了 %d 份", dailyCount)
+	if dailyCount == 0 {
+		return QuotaNotice{
+			Achievement: achievement,
+			ExitOptions: "換一個模型救不了這個：你的雲端知識庫本身也在用同一份免費額度做別的事" +
+				"（例如重新整理索引），額度是在那邊被用光的，不是被這次的整理用掉的。" +
+				"真正能解除限制的只有升級 Cloudflare（每月 5 美元，移除每日免費上限）",
+			Guarantee: fmt.Sprintf(
+				"額度會在%s早上 8:00 重置，但如果同一件事還在佔用額度，你可能會再撞到同一面牆——"+
+					"不是保證接下來就會一路處理完",
+				quotaResetDayWord(now, resetAt)),
+			ResumeAt: resetAt.Format(time.RFC3339),
+		}
+	}
 	return QuotaNotice{
-		Achievement: fmt.Sprintf("今天已經幫你整理了 %d 份", dailyCount),
+		Achievement: achievement,
 		ExitOptions: "可以換一個模型，或升級 Cloudflare（每月 5 美元）",
 		Guarantee:   quotaGuaranteeText(now, resetAt),
 		ResumeAt:    resetAt.Format(time.RFC3339),
 	}
 }
 
-// quotaGuaranteeText 把重置時間換成人話：「今天」或「明天」早上 8:00
+// quotaResetDayWord 把重置時間換成「今天」或「明天」
 // （不能寫死「明天」——若這一刻台灣時間已經過了午夜、還沒到 8 點，重置其實是「今天」）。
-func quotaGuaranteeText(now, resetAt time.Time) string {
+func quotaResetDayWord(now, resetAt time.Time) string {
 	nowTW := now.In(taiwanTZ)
 	resetTW := resetAt.In(taiwanTZ)
-	dayWord := "明天"
 	if nowTW.Year() == resetTW.Year() && nowTW.YearDay() == resetTW.YearDay() {
-		dayWord = "今天"
+		return "今天"
 	}
-	return fmt.Sprintf("不花錢也沒關係，%s早上 8:00 會自動恢復、會接著跑", dayWord)
+	return "明天"
+}
+
+// quotaGuaranteeText 把重置時間換成人話：「今天」或「明天」早上 8:00。
+func quotaGuaranteeText(now, resetAt time.Time) string {
+	return fmt.Sprintf("不花錢也沒關係，%s早上 8:00 會自動恢復、會接著跑", quotaResetDayWord(now, resetAt))
 }
 
 // quotaState 是「這個帳號本輪的額度冷卻」共享狀態，跨同一帳號的多個監看根

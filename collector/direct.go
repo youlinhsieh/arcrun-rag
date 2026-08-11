@@ -792,12 +792,31 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		if len(st.Failures) > MaxSkippedListed {
 			st.Failures = st.Failures[:MaxSkippedListed]
 		}
-		// 單帳號時把 cloud version 也填頂層（向後相容）
-		if len(accountDetails) == 1 {
-			for _, v := range accountDetails {
-				st.CloudVersion = v.CloudVersion
-				st.CloudCheckOK = v.CloudCheckOK
-				break
+		// 頂層 cloud version／cloud_check_ok 給「只認得到一份版本號」的舊消費端
+		// （向後相容；t103 時代單帳號才有這兩個頂層欄位）。
+		//
+		// 🔴 arcrun-rag#59 相關實查（2026-08-10，總管／leo 對照 curl，三台 /health 全部 200；
+		// 詳見頂層 wiki `system-dev/wiki/status.md`「畫面在說謊」段）：以前這裡**只有剛好
+		// 一個帳號**才填，2+ 帳號（leo 自己的常態）時 `st.CloudCheckOK` 停在 Go 零值
+		// `false` 沒人填過 ⇒ 讀這個頂層欄位的地方會看到「沒連上雲端」，**即使每一個
+		// 帳號都連得上**。改成：不論帳號數，只要**任一**帳號連得上就算連得上；
+		// `CloudVersion` 取第一個非空版本代表（按 key 排序，同一份輸入永遠同一個輸出），
+		// 不是宣稱所有帳號版本一致——**多帳號時真正該看的是各帳號自己的
+		// AccountDetails，這裡只是不讓頂層欄位繼續說反話**。
+		if len(accountDetails) > 0 {
+			hosts := make([]string, 0, len(accountDetails))
+			for h := range accountDetails {
+				hosts = append(hosts, h)
+			}
+			sort.Strings(hosts)
+			for _, h := range hosts {
+				v := accountDetails[h]
+				if v.CloudCheckOK {
+					st.CloudCheckOK = true
+				}
+				if st.CloudVersion == "" && v.CloudVersion != "" {
+					st.CloudVersion = v.CloudVersion
+				}
 			}
 		}
 		// 🔴 2026-08-05（leo：「自始至終都顯示『等待中』…實際上已經做完了，這個 status 是壞的」）：
@@ -1194,10 +1213,12 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				delete(m.Entries, ev.Path)
 				saveManifest()
 				// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡
-				//（system-dev/wiki/cards/<頁名>.md），保持本地 wiki 與雲端一致。
+				//（system-dev/wiki/cards/<頁名>.md 或 vault 時的 .arcrun-rag/wiki/cards/<頁名>.md，
+				// arcrun-rag#60：清除路徑要跟落卡路徑用同一個 cardsRelDirFor，否則 vault 目標
+				// 清不到卡、留孤兒檔案），保持本地 wiki 與雲端一致。
 				// 存在才刪；刪失敗只記 warning 不擋（下架本體已成功）。
 				if cfg.Extractor != "" {
-					cardAbs := filepath.Join(absRoot, "system-dev", "wiki", "cards", pageNameOf(ev.Path)+".md")
+					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardsRelDirFor(absRoot)), pageNameOf(ev.Path)+".md")
 					if _, serr := os.Stat(cardAbs); serr == nil {
 						if rerr := os.Remove(cardAbs); rerr != nil {
 							results = append(results, DirectResult{
