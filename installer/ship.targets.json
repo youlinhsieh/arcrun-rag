@@ -24,6 +24,14 @@
     "     版本號改由 `installer/release-state.json` 跨目標共用。詳見 ship.mjs 檔頭「不變式 Ⅳ」",
     "     ＋ `installer/scripts/source-pin.mjs`。",
     "",
+    "",
+    "⑤ 【2026-08-11 加，arcrun-rag#77】bundle 工作區搬出 `/tmp` → `~/.arcrun-ship/`。",
+    "   由來：`#72` 記下的兩個結構性斷點之一是「**驗證章寫在 /tmp（綁機器）**」。",
+    "   macOS 會定期清 `/tmp` 裡久未存取的東西 ⇒ 出貨線的工作區可能在兩次出貨之間人間蒸發，",
+    "   而它消失時的症狀是「bundle repo 不存在」——看起來像設定錯，其實是被系統掃掉了。",
+    "   路徑用 `~/` 開頭（ship.mjs 的 `expandHome` 展開）：**不准寫死 `/Users/<誰>/`**，",
+    "   因為 `installer/` 會被推上 GitHub 公開鏡像，寫死等於公開使用者名稱、換機器也不成立。",
+    "",
     "改這個檔＝改出貨會打到哪裡，等同改鐵律：要在 commit 說明理由。"
   ],
 
@@ -40,10 +48,10 @@
       "requiresArm": false,
       "allowDirtySource": true,
       "bundles": {
-        "dir": "/private/tmp/arcrun-ship-selftest/bundles",
+        "dir": "~/.arcrun-ship/selftest/bundles",
         "remote": "local-selftest",
         "branch": "main",
-        "seedFrom": "/private/tmp/arcrun-rag-bundles-staging"
+        "seedFrom": "~/.arcrun-ship/bundles-stage"
       },
       "pin": null,
       "installer": null,
@@ -56,7 +64,7 @@
       "requiresArm": false,
       "allowDirtySource": false,
       "bundles": {
-        "dir": "/private/tmp/arcrun-rag-bundles-staging",
+        "dir": "~/.arcrun-ship/bundles-stage",
         "remote": "git.uncle6.me/Leo/arcrun-rag-bundles-staging",
         "branch": "main"
       },
@@ -118,7 +126,7 @@
         "詳見 ship.mjs 檔頭「不變式 Ⅳ」＋ installer/scripts/source-pin.mjs。"
       ],
       "bundles": {
-        "dir": "/private/tmp/arcrun-rag-bundles",
+        "dir": "~/.arcrun-ship/bundles-prod",
         "remote": "github.com/youlinhsieh/arcrun-rag-bundles",
         "branch": "main"
       },

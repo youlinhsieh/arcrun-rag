@@ -77,6 +77,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { syncManifest, verifyManifest } from './release.mjs';
 import { notesFromChangelog, checkNotes, CHANGELOG_REL } from './daemon-notes.mjs';
@@ -88,6 +89,9 @@ import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
 import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
+import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
+import { assertWorkflowsExist } from './ship-arcrun.mjs';
+import { machineId } from './ship-machine.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -228,9 +232,15 @@ async function getText(url) {
 }
 
 // ── 管線狀態（步驟之間唯一的共享處，方便追「這個值哪來的」）────────────────
+// 登錄簿裡的路徑允許用 `~/` 開頭（2026-08-11，arcrun-rag#77）。
+// 🔴 為什麼不寫死絕對路徑：`installer/` 會被推上 GitHub 公開鏡像
+//   （`scripts/github-publish-exclude.txt` 沒排除它）⇒ 寫死 `/Users/<誰>/…`
+//   等於把使用者名稱公開，而且換一台機器就不成立。
+const expandHome = (p) => (typeof p === 'string' && p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
+
 const ctx = {
   target: TARGET_NAME, T,
-  bundlesDir: T.bundles.dir,
+  bundlesDir: expandHome(T.bundles.dir),
   arcrunRepo: resolve(REPO_ROOT, cfg.source.arcrunRepo),
   release: null, releaseBefore: null, daemonVersion: null,
   built: null,   // manifest.built＝使用者在 /api/latest 看到的建置日（見 version／pin／verify）
@@ -360,15 +370,16 @@ const STEPS = [
 
   // (c) bundle repo：不存在就照登錄簿長出來（selftest）；存在就驗 origin 與登錄簿相符。
   //     🔴 這一條就是「打錯位置也會被它修正」的實體：本機那個資料夾指到別的 repo ⇒ 當場擋。
+  const seedFrom = expandHome(T.bundles.seedFrom);
   if (!existsSync(join(ctx.bundlesDir, '.git'))) {
-    if (T.bundles.seedFrom && existsSync(T.bundles.seedFrom)) {
+    if (seedFrom && existsSync(seedFrom)) {
       mkdirSync(ctx.bundlesDir, { recursive: true });
-      cpSync(T.bundles.seedFrom, ctx.bundlesDir, { recursive: true, filter: (s) => !s.includes('/.git') });
+      cpSync(seedFrom, ctx.bundlesDir, { recursive: true, filter: (s) => !s.includes('/.git') });
       rmSync(join(ctx.bundlesDir, '.git'), { recursive: true, force: true });
       sh('git', ['init', '-q', '-b', T.bundles.branch], ctx.bundlesDir);
       sh('git', ['add', '-A'], ctx.bundlesDir);
       sh('git', ['-c', 'user.email=ship@local', '-c', 'user.name=ship', 'commit', '-q', '-m', 'seed'], ctx.bundlesDir);
-      lines.push(`bundle repo 不存在 ⇒ 依登錄簿由 ${T.bundles.seedFrom} 播種`);
+      lines.push(`bundle repo 不存在 ⇒ 依登錄簿由 ${seedFrom} 播種`);
     } else {
       throw new Error(`bundle repo 不存在：${ctx.bundlesDir}\n     → clone ${T.bundles.remote} 到這個路徑（路徑由登錄簿決定，別自己挑）`);
     }
@@ -1185,8 +1196,41 @@ function setTomlVar(toml, section, key, value) {
 // 不動步驟表本身 ⇒ 出貨路徑的順序與內容完全沒被這個模式碰到。
 const RUN_STEPS = VERIFY_ONLY ? STEPS.filter((s) => s.id === 'verify') : STEPS;
 
+// ── 站表閘：在任何東西被改動之前跑（Leo/arcrun-rag#77，leo 2026-08-11）─────────
+// leo：「**站表是一份人看得懂的清單**；每一站實際做事的那段，要是 Arcrun 的零件／工作流。」
+// D65 補②（leo 08-11 下午）：「**『有幾站』本身也該在那份檔裡**，不是散在程式碼。」
+//
+// 這道閘讓那份清單**不只是文件**：站表與步驟表對不上、產出物沒人處理、
+// 或某一站宣告留在本機卻沒寫理由（D70 明文要求），一律 exit 2——**在 preflight 之前**，
+// 所以連「線上現況」都還沒去讀，什麼都還沒動。
+// 🔴 `--verify-only` 也要過這道閘：它濾掉的是要跑哪幾步，不是「站表可以不成立」。
+const STATIONS = (() => {
+  try {
+    return requireStations(REPO_ROOT, STEPS.map((s) => s.id));
+  } catch (e) {
+    console.error(`\n❌ ${e.message}\n`);
+    process.exit(2);
+  }
+})();
+
 console.log(VERIFY_ONLY ? '━━━ Arcrun RAG 出貨驗收（只驗，不出貨）━━━' : '━━━ Arcrun RAG 出貨管線 ━━━');
 console.log(`目標　${TARGET_NAME}｜${T.label}`);
+console.log(`站表　${STATIONS['站'].length} 站　✓ 與步驟表逐項相符（${STATIONS_REL}）｜機器 ${machineId()}`);
+console.log(`　　　這條線宣告**單機走完**（stage 與 prod 同一台）——換機器接力會在出貨前被擋下`);
+// 站表宣告的工作流**必須真的在 leo 那台實例上**——不然「用什麼: ship_check_live」
+// 只是一句話，工作流被刪掉了管線照跑照綠（D70 要擋的正是宣告與現實脫節）。
+const ARCRUN_WFS = arcrunWorkflows(STATIONS);
+let arcrunNote = '（無）';
+if (ARCRUN_WFS.length) {
+  try {
+    const { base, ns } = await assertWorkflowsExist(ARCRUN_WFS);
+    arcrunNote = `${ARCRUN_WFS.join('、')}　✓ 都在 ${base}（namespace ${ns}）`;
+  } catch (e) {
+    console.error(`\n❌ ${e.message}\n`);
+    process.exit(2);
+  }
+}
+console.log(`Arcrun　這次會派給工作流做的活：${arcrunNote}`);
 console.log(`模式　${VERIFY_ONLY
   ? '🔬 只驗收（--verify-only）：不建、不推、不部署、不蓋章；判定與 --confirm 同樣嚴格'
   : CONFIRM ? '⚡ 執行（--confirm）' : '🔎 預演（只做不改變外界的步驟；要真的走完加 --confirm）'}`);
@@ -1238,15 +1282,29 @@ for (const r of results) {
 // 不寫進 ledger（否則「上次幾站」會被預演污染，變得不可信）。
 // 即使斷在某一步也要記——斷在哪、記到哪，這正是報告要讓人一眼看到的東西。
 if (CONFIRM && !VERIFY_ONLY && ctx.release) {
-  const { recordRun, renderComparisonTable, reportPath } = await import('./ship-report.mjs');
+  const { recordRun, renderComparisonTable, reportPath, releaseCountsVerdict } = await import('./ship-report.mjs');
   recordRun(REPO_ROOT, {
     release: ctx.release, target: TARGET_NAME, results,
     sourceCommit: ctx.sourceCommit || null,
+    // 機器指紋：`#72` 揭露 build 不可跨機器重現、驗證章綁機器 ⇒ `#77` 宣告單機走完。
+    // recordRun 內部會拿它跟同一版另一個目標比對，不同就丟例外、不寫入、不放行。
+    machine: machineId(),
   });
   const table = renderComparisonTable(REPO_ROOT, ctx.release);
   console.log('\n' + table + '\n');
   writeFileSync(reportPath(REPO_ROOT), table + '\n');
   console.log(`📋 已寫入 installer/ship-report.md ＋ installer/ship-report.json（記得跟這次出貨一起 commit）`);
+
+  // ── 兩欄件數：不只印出來，對不齊就讓這次出貨是紅的（leo 2026-08-11 #77 驗收條件）──
+  // 「暫存站有的，上架也有」——只印一行字讓人自己看，跟沒有是一樣的
+  //   （同 arcrun-rag#73 缺②的教訓：「只做到看得到，沒做到不一致就斷」）。
+  // 只出過一邊不算對不齊（另一邊還沒跑），那是 countsVerdict 自己的判準。
+  const cv = releaseCountsVerdict(REPO_ROOT, ctx.release);
+  if (!cv.ok) {
+    console.log(`\n❌ 出貨報告的兩欄件數對不齊：${cv.note}`);
+    console.log(`   一次出貨是一個版本，兩個理貨員的清單長度不同 ⇒ 有一邊少走了一站，不放行。`);
+    process.exit(1);
+  }
 }
 
 if (failedAt) {

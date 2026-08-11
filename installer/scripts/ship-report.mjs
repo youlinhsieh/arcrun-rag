@@ -28,6 +28,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { assertSameMachine } from './ship-machine.mjs';
 
 export function ledgerPath(repoRoot) {
   return join(repoRoot, 'installer', 'ship-report.json');
@@ -94,14 +95,18 @@ export function assertSourceParity(ledger, { release, target, sourceCommit }) {
  * 同一個 release 重跑同一個 target 會**覆蓋**（不是累積列表）——ledger 記的是
  * 「這個目標這個版本最近一次跑到哪」，不是逐次歷史（逐次歷史交給 git log 這份檔案本身）。
  *
- * 寫入前先跑 `assertSourceParity`——**不一致就丟例外，不寫入、不放行**（arcrun-rag#73 缺②）。
+ * 寫入前先跑兩道硬斷言——**不一致就丟例外，不寫入、不放行**：
+ *   · `assertSourceParity`：兩個理貨員拿的是不是同一張訂單（arcrun-rag#73 缺②）
+ *   · `assertSameMachine`：兩個理貨員是不是**同一台機器**（arcrun-rag#77，見 ship-machine.mjs）
+ *     ——`#72` 揭露 build 不可跨機器重現、驗證章綁機器，這條線因此宣告單機走完。
  */
-export function recordRun(repoRoot, { release, target, results, sourceCommit = null, ts = Date.now() }) {
+export function recordRun(repoRoot, { release, target, results, sourceCommit = null, machine = null, ts = Date.now() }) {
   if (!release || !target) throw new Error('recordRun 需要 release 與 target');
   const ledger = readLedger(repoRoot);
   assertSourceParity(ledger, { release, target, sourceCommit });
+  assertSameMachine(ledger, { release, target, machine });
   if (!ledger[release]) ledger[release] = {};
-  ledger[release][target] = { results: results || [], sourceCommit, ts };
+  ledger[release][target] = { results: results || [], sourceCommit, machine, ts };
   writeLedger(repoRoot, ledger);
   return ledger;
 }
@@ -168,9 +173,12 @@ export function renderComparisonTable(repoRoot, release, { targets = ['stage', '
     return ICON[r.status] || r.status;
   };
 
+  const counts = columnCounts(entry, order, targets);
+
   const lines = [];
   lines.push(`出貨報告　release ${release}　共 ${order.length} 站（${deltaBits.filter(Boolean).join('　')}）`);
   lines.push(targets.map((t) => (entry[t] ? `來源（${t}）＝${entry[t].sourceCommit || '(未知)'}` : `來源（${t}）＝（未出）`)).join('　｜　'));
+  lines.push(targets.map((t) => (entry[t] ? `機器（${t}）＝${entry[t].machine || '(未記錄)'}` : `機器（${t}）＝（未出）`)).join('　｜　'));
   lines.push('');
   lines.push(`| 件次 | 項目 | ${targets.join(' | ')} |`);
   lines.push(`| --- | --- | ${targets.map(() => '---').join(' | ')} |`);
@@ -182,5 +190,55 @@ export function renderComparisonTable(repoRoot, release, { targets = ['stage', '
     lines.push('');
     lines.push(`🗑 上次有、這次清單已經沒有的站：${removed.join('、')}——如果不是刻意拿掉，這就是漏了`);
   }
+
+  // ── 兩欄件數（leo 2026-08-11 對 #77 的驗收條件之一）─────────────────────
+  // leo 的比喻：「左邊是 stage 10 站打勾，右邊是 prod 10 站打勾。」
+  // ⇒ **件數本身要印出來**，不能讓人自己去數那張表——沒印出來的數字沒人會核。
+  lines.push('');
+  lines.push(`件數：${targets.map((t) => `${t} ${counts[t] === null ? '（未出）' : `${counts[t]} 站`}`).join('　｜　')}`);
+  const v = countsVerdict(counts, targets);
+  lines.push(v.ok
+    ? (v.compared ? `✅ 兩欄件數相同（${v.n} 站）——暫存站有的，上架也有` : `⏳ ${v.note}`)
+    : `❌ 兩欄件數對不齊：${v.note}——有一邊少走了一站，這正是這張表存在的理由`);
   return lines.join('\n');
+}
+
+/**
+ * 每一欄各自「真的跑過幾站」（`（未出）`不算）。整個目標沒出過 ⇒ 該欄是 `null`，
+ * 與「出過但 0 站」區分開來——前者是還沒到比對的時候，後者是真的有問題。
+ */
+export function columnCounts(entry, order, targets = ['stage', 'prod']) {
+  const out = {};
+  for (const t of targets) {
+    if (!entry[t]) { out[t] = null; continue; }
+    const ids = new Set((entry[t].results || []).map((r) => r.id));
+    out[t] = order.filter((id) => ids.has(id)).length;
+  }
+  return out;
+}
+
+/**
+ * 兩欄件數的判定。
+ *
+ * 判準跟 `assertSourceParity`／`assertSameMachine` 一致——**只出過一邊不算對不齊**，
+ * 那是「還沒到比對的時候」。誤傷一次，這道閘就會被人想辦法繞過。
+ */
+export function countsVerdict(counts, targets = ['stage', 'prod']) {
+  const present = targets.filter((t) => counts[t] !== null && counts[t] !== undefined);
+  if (present.length < 2) {
+    return { ok: true, compared: false, note: `只有 ${present.join('、') || '（無）'} 出過這一版，另一邊還沒跑——還不到比對件數的時候` };
+  }
+  const ns = present.map((t) => counts[t]);
+  const same = ns.every((n) => n === ns[0]);
+  return same
+    ? { ok: true, compared: true, n: ns[0] }
+    : { ok: false, compared: true, note: present.map((t) => `${t} ${counts[t]} 站`).join('、') };
+}
+
+/** 讀帳本算這一版的兩欄件數判定（給 ship.mjs 出貨完當硬閘用，不必自己拆帳本）。 */
+export function releaseCountsVerdict(repoRoot, release, { targets = ['stage', 'prod'] } = {}) {
+  const ledger = readLedger(repoRoot);
+  const entry = ledger[release] || {};
+  const order = idsOf(entry, targets);
+  return countsVerdict(columnCounts(entry, order, targets), targets);
 }
