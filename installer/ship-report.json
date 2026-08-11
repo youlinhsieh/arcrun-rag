@@ -294,6 +294,107 @@
    ],
    "sourceCommit": "Arcrun@788295e",
    "ts": 1786426011693
+  },
+  "prod": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done"
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done"
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip"
+    },
+    {
+     "id": "daemon-check",
+     "title": "核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）",
+     "status": "done"
+    },
+    {
+     "id": "build",
+     "title": "從來源重打 bundle（版本號由內容算，不由人宣告）",
+     "status": "done"
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done"
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done"
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "skip"
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站，並驗「使用者查得到這一版」",
+     "status": "done"
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done"
+    },
+    {
+     "id": "purge",
+     "title": "purge jsDelivr @main 並驗到收斂",
+     "status": "done"
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done"
+    },
+    {
+     "id": "github-release",
+     "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
+     "status": "done"
+    }
+   ],
+   "sourceCommit": "Arcrun@788295e",
+   "ts": 1786426264899
   }
  }
 }
