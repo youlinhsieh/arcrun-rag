@@ -18,6 +18,8 @@
  *                                    arcrun-rag#38/#69）——我們是郵差，回頭打 api_origin 的
  *                                    /portal/password/relay-verify 確認票是真的才寄，見該函式註解
  *   GET  /api/health              → {ok:true}
+ *   *    未知路徑（catch-all）      → 瀏覽器導覽（Accept 帶 text/html）給人看的 404 頁；
+ *                                    其他呼叫方（API/curl）維持 {ok:false,error:"not found"}（arcrun-rag#74）
  *
  * 綁定：
  *   KV: SIGNUPS
@@ -63,6 +65,15 @@ function htmlPage(body) {
   return new Response(body, {
     headers: { "content-type": "text/html; charset=utf-8" },
   });
+}
+
+// arcrun-rag#74（2026-08-11 leo）：「點了信裡的連結，畫面吐一串機器語言——一般人到這裡就放棄了。」
+// 真兇：這台（郵差）的 catch-all 404 一律回 JSON，但**信裡的連結是給人點的**，不是給程式呼叫的。
+// 判準：瀏覽器「點連結」導覽一定會帶 `Accept: text/html,...`；API 呼叫（fetch/curl）不會刻意加這個
+// ⇒ 用這個信號分流，不改變任何既有 API 呼叫方的行為（它們原本就不會送這個 Accept）。
+function wantsHtml(request) {
+  const accept = request.headers.get("accept") || "";
+  return accept.includes("text/html");
 }
 
 function generateCode() {
@@ -638,6 +649,15 @@ export default {
       });
     }
 
+    // arcrun-rag#74：這裡是「打錯地方」的最後一站——JSON 是給程式看的，
+    // 但會走到這裡的多半是人（點了一條指錯主機的連結，例如密碼重設信寄丟了主機）。
+    // 瀏覽器導覽會帶 Accept: text/html；API 呼叫不會，行為不變。
+    if (wantsHtml(request)) {
+      return new Response(NOT_FOUND_HTML, {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
     return json({ ok: false, error: "not found" }, 404);
   },
 };
@@ -1136,6 +1156,33 @@ const SUPPORT_HTML = `<!doctype html>
   <p><b>我的檔案會被傳到你們那裡嗎？</b><br>不會。檔案留在你自己電腦，整理出的知識卡存進你自己的 Cloudflare 帳號。詳見<a href="/privacy">隱私政策</a>。</p>
   <p><b>要付費嗎？</b><br>目前封測中，免費使用。</p>
   <p><b>怎麼移除？</b><br>從 Windows「設定 → 應用程式」解除安裝即可；從 Microsoft Store 安裝的版本會一併清除乾淨。</p>
+
+  <a class="back" href="/">← 回首頁</a>
+</div></body>
+</html>`;
+
+// arcrun-rag#74：給「點連結進來卻打不開」的人看的頁面（不是給程式看的 JSON）。
+// 刻意提到「設定新密碼」情境——這正是本票撞到的那個真實案例：連結指到了不對的主機。
+const NOT_FOUND_HTML = `<!doctype html>
+<html lang="zh-Hant">
+<head>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>找不到這個頁面 — Arcrun RAG</title>
+<style>${DOC_CSS}</style>
+</head>
+<body><div class="wrap">
+  <h1>找不到這個頁面</h1>
+
+  <div class="lead">你點的這個網址在這裡打不開。<br>
+  如果你是從信裡「設定新密碼」的連結點進來的——<b>這封信寄錯了地方，不是你的問題</b>。</div>
+
+  <h2>下一步該怎麼做</h2>
+  <p>請回到你原本要登入的網站，重新登入頁面後再按一次<b>「忘記密碼」</b>，系統會重新寄一封連結給你。</p>
+  <p>如果重試後還是打不開，來信：<a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>
 
   <a class="back" href="/">← 回首頁</a>
 </div></body>

@@ -153,10 +153,27 @@ async function tableCounts(dbId) {
 async function importSql(dbId, buf) {
   const etag = createHash('md5').update(buf).digest('hex');
   const api = `/accounts/${ACCOUNT}/d1/database/${dbId}/import`;
-  const init = await cf(api, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'init', etag }),
-  });
+  // 🔴 2026-08-11：`init` 不保證給 `upload_url`。前一次匯入失敗會讓那顆 D1 的
+  //   Durable Object 進入重置狀態，此時它回 `{success:false, error:'{"D1_RESET_DO":true}'}`
+  //   ——**沒有 upload_url**。原本沒檢查就 fetch(undefined)，丟出
+  //   `TypeError: Failed to parse URL from undefined`，看不出到底怎麼了。
+  //   實測：等十幾二十秒重打就會恢復 ⇒ 退避重試，並在放棄時印人話。
+  let init;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    init = await cf(api, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'init', etag }),
+    });
+    if (init && init.upload_url) break;
+    const why = String(init && init.error || '');
+    if (!/D1_RESET_DO/.test(why) || attempt === 6) {
+      die('D1 不肯開始這次匯入', `${why || JSON.stringify(init).slice(0, 200)}\n`
+        + '   （D1_RESET_DO ＝ 這顆庫剛被上一次失敗的匯入重置，通常等一下就好）');
+    }
+    const wait = 15 * attempt;
+    console.log(`   ⏳ D1 剛被重置（上次匯入失敗的後遺症），等 ${wait}s 再試（第 ${attempt}/5 次）…`);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+  }
   const put = await fetch(init.upload_url, { method: 'PUT', body: buf });
   if (!put.ok) die(`上傳還原檔失敗 HTTP ${put.status}`);
   let cur = await cf(api, {
@@ -165,7 +182,16 @@ async function importSql(dbId, buf) {
   });
   const bm = cur.at_bookmark;
   for (let i = 0; i < 400 && cur.status !== 'complete'; i++) {
-    if (cur.status === 'error') die('Cloudflare 匯入回報失敗', JSON.stringify(cur.messages || cur).slice(0, 600));
+    // 🔴 2026-08-11：原本只印 `messages`，而 `messages` 裝的是**進度**
+    //   （"Starting import..."／"Processed N queries."），**真正的原因永遠在 `error` 裡**。
+    //   ⇒ 失敗時看起來毫無線索。實撞兩次（template 撞名的 FK、大批匯入中斷）都得靠
+    //     另外用 3 句直接打 API 才挖得出真因。
+    //   ⇒ 一律先印 `error`；`messages` 留著當輔助——它會告訴你**死在第幾句**，很有用。
+    if (cur.status === 'error') {
+      die('Cloudflare 匯入回報失敗',
+          `原因：${cur.error || '(API 沒給 error 欄位)'}\n`
+        + `   進度：${JSON.stringify(cur.messages || []).slice(0, 300)}`);
+    }
     await new Promise((r) => setTimeout(r, 3000));
     cur = await cf(api, {
       method: 'POST', headers: { 'content-type': 'application/json' },
