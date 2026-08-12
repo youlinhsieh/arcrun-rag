@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, rmSyn
 import { join, resolve, basename } from 'node:path';
 import { execSync } from 'node:child_process';
 import { CORE_COMPONENTS, BUNDLE_COMPONENT_NAMES } from './bundle-components.mjs';
+import { requireFreshArtifacts } from './artifact-freshness.mjs';
 
 const REPO = process.env.ARCRUN_REPO_ROOT || process.env.ARCRUN_REPO || '';
 if (!REPO || !existsSync(REPO)) {
@@ -153,6 +154,23 @@ async function main() {
   }
   const artifactByName = new Map((artifactManifest.workers || []).map((w) => [w.name, w]));
   console.log(`✔ 讀到 Arcrun 官方成品：Arcrun@${(artifactManifest.repo_head || '').slice(0, 8)}（${artifactByName.size} 顆可用）`);
+
+  // ── 🔴 新鮮度閘（Leo/Arcrun#93，2026-08-12）──────────────────────────────
+  //
+  // 上面那道 assertNotBehindMain() 問的是「我這個 clone 是不是拿到最新的成品」；
+  // 這道問的是**「這批成品是不是還算數」**——兩個問題不同，08-12 出事的是後者：
+  // 併完 Arcrun#85／#88 之後沒有人重編，`.worker-builds` 目錄因此**完全沒動過**
+  // ⇒ 落後閘無話可說地放行，而 cypher-executor（797e7f7 vs 525faaf）與
+  //    kbdb（a7e23ba vs 3eb8b31）送出去的都是舊執行檔。是人工逐顆比才發現的。
+  //
+  // 擺在這裡而不是更後面：**產物生成後才發現就太晚了**（同 t173 落後閘的理由）。
+  const fresh = requireFreshArtifacts({
+    repo: REPO,
+    manifest: artifactManifest,
+    components: CORE,
+    allowDirty: process.env.ARTIFACT_ALLOW_DIRTY_SOURCE === '1',
+  });
+  if (fresh.ok) console.log(`✔ 成品新鮮度：${fresh.results.length} 顆的 source_commit 都還等於它源碼目錄的現況`);
 
   // 🔴 2026-08-05：這裡把整個 --out 砍掉重建，**既有 manifest 一併陪葬**
   //    ⇒ `daemon` 欄（桌面 App 版本）被吃掉 ⇒ 使用者按「檢查更新」回

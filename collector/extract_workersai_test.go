@@ -26,10 +26,11 @@ func TestExtractWithWorkersAI_VaultRedirectsAndDoesNotClobber(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 隱藏卡片目錄裡先放一份既有內容，驗證不會被無聲蓋掉。
+	// 檔名帶 arcrun- 前綴＝第二輪之後卡片真正的名字（machinemark.go）。
 	cardDir := filepath.Join(root, ".arcrun-rag", "wiki", "cards")
 	mustMkdir(t, cardDir)
 	preexisting := "# note\n既有內容"
-	if err := os.WriteFile(filepath.Join(cardDir, "note.md"), []byte(preexisting), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cardDir, "arcrun-note.md"), []byte(preexisting), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,8 +49,8 @@ func TestExtractWithWorkersAI_VaultRedirectsAndDoesNotClobber(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != ".arcrun-rag/wiki/cards/note.md" {
-		t.Fatalf("vault 目標的卡片路徑不對：%v", cards)
+	if len(cards) != 1 || cards[0] != ".arcrun-rag/wiki/cards/arcrun-note.md" {
+		t.Fatalf("vault 目標的卡片路徑不對：%v，want [.arcrun-rag/wiki/cards/arcrun-note.md]", cards)
 	}
 
 	// pages/.obsidian 之外沒有新增任何非隱藏 .md（Obsidian 不掃描 .arcrun-rag/）。
@@ -65,7 +66,7 @@ func TestExtractWithWorkersAI_VaultRedirectsAndDoesNotClobber(t *testing.T) {
 	}
 	var foundBackup bool
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "note.md.bak-") {
+		if strings.HasPrefix(e.Name(), "arcrun-note.md.bak-") {
 			foundBackup = true
 		}
 	}
@@ -74,7 +75,11 @@ func TestExtractWithWorkersAI_VaultRedirectsAndDoesNotClobber(t *testing.T) {
 	}
 }
 
-// 非 vault：既有行為不變（回歸）——卡片仍落 system-dev/wiki/cards/。
+// 非 vault：卡片仍落 system-dev/wiki/cards/（目錄不變），但檔名同樣帶標記。
+//
+// 🔴 第二輪刻意讓「vault 與非 vault 用同一條命名規則」：紅線是「前綴只准一種、
+// 不要一部分加一部分不加」。若只在 vault 加前綴，一般資料夾的使用者照樣分不出
+// 哪些檔是機器寫的——而 system-dev/wiki/cards/ 在他的檔案總管裡是**看得見**的。
 func TestExtractWithWorkersAI_NonVaultUnchanged(t *testing.T) {
 	root := t.TempDir()
 	srcRel := "note.md"
@@ -93,7 +98,7 @@ func TestExtractWithWorkersAI_NonVaultUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/note.md" {
-		t.Fatalf("非 vault 行為變了：%v，want [system-dev/wiki/cards/note.md]", cards)
+	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/arcrun-note.md" {
+		t.Fatalf("非 vault 卡片路徑不對：%v，want [system-dev/wiki/cards/arcrun-note.md]", cards)
 	}
 }

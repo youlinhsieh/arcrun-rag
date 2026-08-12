@@ -48,10 +48,10 @@ func TestExtractWithGemmaThinkingModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/會議記錄.md" {
+	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/arcrun-會議記錄.md" {
 		t.Fatalf("cards=%v", cards)
 	}
-	data, _ := os.ReadFile(filepath.Join(root, "system-dev", "wiki", "cards", "會議記錄.md"))
+	data, _ := os.ReadFile(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-會議記錄.md"))
 	if !strings.HasPrefix(string(data), "# 會議記錄") {
 		t.Fatalf("卡片未淨化（應從最後的 # 頁名 起）：%.80s", string(data))
 	}
@@ -122,8 +122,8 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != ".arcrun-rag/wiki/cards/會議記錄.md" {
-		t.Fatalf("vault 目標的卡片路徑不對：%v，want [.arcrun-rag/wiki/cards/會議記錄.md]", cards)
+	if len(cards) != 1 || cards[0] != ".arcrun-rag/wiki/cards/arcrun-會議記錄.md" {
+		t.Fatalf("vault 目標的卡片路徑不對：%v，want [.arcrun-rag/wiki/cards/arcrun-會議記錄.md]", cards)
 	}
 
 	pagesAfter := countMD(t, filepath.Join(root, "pages")) + countMD(t, filepath.Join(root, "journals")) + countTopLevelMD(t, root)
@@ -141,7 +141,7 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 	}
 
 	// 卡片確實落在隱藏目錄，且是「監看根底下」（呼叫端 absRoot-relative 假設仍成立）。
-	cardAbs := filepath.Join(root, ".arcrun-rag", "wiki", "cards", "會議記錄.md")
+	cardAbs := filepath.Join(root, ".arcrun-rag", "wiki", "cards", "arcrun-會議記錄.md")
 	if _, err := os.Stat(cardAbs); err != nil {
 		t.Fatalf("卡片沒有落在預期的隱藏目錄：%v", err)
 	}
@@ -158,7 +158,7 @@ func TestExtractWithGemma_VaultExistingCardNotClobbered(t *testing.T) {
 	cardDir := filepath.Join(root, ".arcrun-rag", "wiki", "cards")
 	mustMkdir(t, cardDir)
 	preexisting := "# x\n這份是先前就存在的內容"
-	cardPath := filepath.Join(cardDir, "x.md")
+	cardPath := filepath.Join(cardDir, "arcrun-x.md")
 	if err := os.WriteFile(cardPath, []byte(preexisting), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestExtractWithGemma_VaultExistingCardNotClobbered(t *testing.T) {
 	}
 	var foundBackup bool
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "x.md.bak-") {
+		if strings.HasPrefix(e.Name(), "arcrun-x.md.bak-") {
 			foundBackup = true
 			data, _ := os.ReadFile(filepath.Join(cardDir, e.Name()))
 			if string(data) != preexisting {

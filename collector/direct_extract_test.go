@@ -88,7 +88,7 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 		t.Fatalf("results=%+v", results)
 	}
 	// 卡片落地本地（用戶看得到自己的 wiki）
-	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "報銷規則.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-報銷規則.md")); err != nil {
 		t.Fatalf("卡片未落地：%v", err)
 	}
 	// 上雲的是卡片、不是原文
@@ -105,6 +105,12 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 	// path 必須是「原檔路徑」（takedown 比對鍵＋B4 溯源）——不是卡片路徑（07-24 第五枚坑）
 	if p, _ := posted[0]["path"].(string); p != "報銷規則.md" {
 		t.Fatalf("path=%q（應為原檔路徑）", p)
+	}
+	// 🔴 arcrun-rag#60 第二輪：本機卡片檔名加了 arcrun- 前綴，但**上雲的 page_name 不准跟著變**。
+	// 下架分支用的是原稿頁名（見下一支測試斷言 takedown page_name=="報銷規則"），
+	// 這裡若跟著卡片檔名變成 "arcrun-報銷規則"，兩邊就永遠對不上、刪原檔再也下架不掉。
+	if pn, _ := posted[0]["page_name"].(string); pn != "報銷規則" {
+		t.Fatalf("page_name=%q（應為原稿頁名，不含 arcrun- 前綴，否則下架對不上）", pn)
 	}
 	// 第二輪：原稿沒變 → 不重萃不重送
 	results2, exit2, _ := RunDirectOnce(cfg, false)
@@ -151,7 +157,7 @@ func TestDirectExtractorRemovedClearsLocalCard(t *testing.T) {
 	if _, exit, _ := RunDirectOnce(cfg, false); exit != 0 {
 		t.Fatalf("第一輪 ingest 失敗 exit=%d", exit)
 	}
-	cardPath := filepath.Join(root, "system-dev", "wiki", "cards", "報銷規則.md")
+	cardPath := filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-報銷規則.md")
 	if _, err := os.Stat(cardPath); err != nil {
 		t.Fatalf("前置失敗：卡片未落地 %v", err)
 	}
@@ -201,7 +207,7 @@ func TestDirectExtractorRemovedNoLocalCardOK(t *testing.T) {
 		t.Fatal("第一輪失敗")
 	}
 	// 模擬用戶已手動清走本地卡 → removed 分支「存在才刪」不應報錯或多出 warning
-	if err := os.Remove(filepath.Join(root, "system-dev", "wiki", "cards", "a.md")); err != nil {
+	if err := os.Remove(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-a.md")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(root, "a.md")); err != nil {
@@ -265,9 +271,9 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 
 	// 機器層有 Extractor+GeminiAPIKey；帳號層 AccountConfig 無這些欄位（正是 t108 場景）
 	cfg := &DirectConfig{
-		Manifest:     filepath.Join(t.TempDir(), "m.json"),
-		Library:      "kb",
-		Extractor:    "gemma", ExtractorExplicit: true,
+		Manifest:  filepath.Join(t.TempDir(), "m.json"),
+		Library:   "kb",
+		Extractor: "gemma", ExtractorExplicit: true,
 		GeminiAPIKey: "k-test",
 		CardIngestWF: "rag_ingest_card",
 		IngestWF:     "rag_ingest_direct",
@@ -323,7 +329,7 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 		// t182：明示「使用者選過、但沒有可用引擎」＝真正的無萃取器狀態。
 		// （不能只寫 Extractor:""——那現在會被正規化成 workers-ai，測不到這條防禦閘。）
 		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "",
-		IngestWF: "rag_ingest_direct",
+		IngestWF:   "rag_ingest_direct",
 		RemovedWF:  "rag_takedown_direct",
 		MaxRemoved: DefaultMaxRemovedRatio,
 	}
@@ -347,9 +353,11 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 // ── t181：預設一律走 Workers AI（免金鑰）──────────────────────────────────────
 //
 // leo 2026-08-04 特別交代（這是本測存在的理由）：
-//   「default 用 Workers AI，你要用 Gemini 要**特別去選取**，**不管你現在是否有填金鑰**」
-//   「只要更新版本，就已經 default workers AI 了，除非去一個地方切換你指定的 AI 來源」
-//   「不然我會有很多質疑，**花在解釋為什麼 Gemini 不管用上**」
+//
+//	「default 用 Workers AI，你要用 Gemini 要**特別去選取**，**不管你現在是否有填金鑰**」
+//	「只要更新版本，就已經 default workers AI 了，除非去一個地方切換你指定的 AI 來源」
+//	「不然我會有很多質疑，**花在解釋為什麼 Gemini 不管用上**」
+//
 // ⇒ 判準是 ExtractorExplicit（使用者主動選過），**不是**「有沒有金鑰」。
 func TestT181DefaultsToWorkersAI(t *testing.T) {
 	cases := []struct {

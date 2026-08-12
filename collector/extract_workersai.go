@@ -121,9 +121,10 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 	if !strings.HasPrefix(card, "# ") {
 		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)
 	}
-	// arcrun-rag#60：非 vault 落 system-dev/wiki/cards/、vault 改落隱藏目錄，避免污染筆記軟體的頁面清單；
-	// 落地前先查目標存不存在、不無條件覆蓋（safeWriteCard），兩條都是同一票的紅線。
-	cardRel := filepath.ToSlash(filepath.Join(cardsRelDirFor(absRoot), pageName+".md"))
+	// arcrun-rag#60：路徑與檔名都由 cardRelFor 決定——非 vault 落 system-dev/wiki/cards/、
+	// vault 落隱藏目錄，且**檔名一律帶 arcrun- 前綴**（第二輪：光換目錄擋不住撞名，
+	// 因為 Logseq 的頁名是 basename）。落地前先查目標存不存在、不無條件覆蓋（safeWriteCard）。
+	cardRel := cardRelFor(absRoot, pageName)
 	dest := filepath.Join(absRoot, filepath.FromSlash(cardRel))
 	if err := safeWriteCard(dest, []byte(card)); err != nil {
 		return nil, err

@@ -99,7 +99,8 @@ import { createHash } from 'node:crypto';
 import { syncManifest, verifyManifest } from './release.mjs';
 import { notesFromChangelog, checkNotes, CHANGELOG_REL } from './daemon-notes.mjs';
 import { checkArmed, logGithubContact } from './d20-guard.mjs';
-import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, diffAgainstCanonical } from './bundle-components.mjs';
+import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, CORE_COMPONENTS, diffAgainstCanonical } from './bundle-components.mjs';
+import { requireFreshArtifacts } from './artifact-freshness.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
@@ -447,6 +448,40 @@ const STEPS = [
     lines.push(pin.message);
   }
 
+  // (b3) 成品新鮮度：**送出去的執行檔是不是還算數**（Leo/Arcrun#93，2026-08-12）─────
+  //
+  // 上面 (b) 問的是「來源乾不乾淨」、(b2) 問的是「這顆 commit 驗過了沒」——
+  // 兩道都會過，卻**都答不出「這批要被部署的位元組是不是這顆 commit 編的」**。
+  // 08-12 實況：併完 Arcrun#85／#88 沒重編，cypher-executor 的成品還記著 797e7f7
+  // 而源碼已經是 525faaf、kbdb 是 a7e23ba vs 3eb8b31 ⇒ **要送出去的是舊執行檔，
+  // 而測試全綠、出貨管線也全綠**，是人工逐顆比對才發現的。
+  //
+  // 擺在 preflight（mutates:false）而不是 build 站的理由有兩個：
+  //   ① **預演就看得到**——不必解保險、不必真的出貨，就知道自己少做了重編
+  //   ② build 站之前還有 `daemon-sync`（mutates:true）會先動 bundle repo，
+  //      擋在這裡才是「任何會把東西送出去的動作之前就停」
+  // build-bundles.mjs 那一側也有同一道閘（同一支模組）——它會被別的路徑單獨呼叫，
+  // 兩邊都要擋，不是重複而是各自守各自的入口。
+  const artifactManifestPath = join(ctx.arcrunRepo, '.worker-builds', 'manifest.json');
+  if (!existsSync(artifactManifestPath)) {
+    throw new Error(
+      `來源 repo 沒有官方成品 manifest：${artifactManifestPath}\n` +
+      `     出貨真正拿去部署的執行檔就是 .worker-builds/ 裡那批；沒有它就沒有「這一版從哪來」。\n` +
+      `     → 在 ${ctx.arcrunRepo} 跑 \`node scripts/build-worker-artifacts.mjs\` 並把成品 commit 進去`);
+  }
+  const freshness = requireFreshArtifacts({
+    repo: ctx.arcrunRepo,
+    manifest: JSON.parse(readFileSync(artifactManifestPath, 'utf8')),
+    components: CORE_COMPONENTS,
+    // selftest（不推、不部署、沒有任何人會拿到東西）才允許工作區髒；
+    // 「已經 commit 了卻沒重編」不受這個旗標影響，一律擋。
+    allowDirty: !!T.allowDirtySource,
+  });
+  lines.push(
+    freshness.ok
+      ? `成品新鮮度：${freshness.results.length} 顆的 source_commit 都還等於它源碼目錄的現況 ✓`
+      : `⚠️ 成品新鮮度：${freshness.blocking.length} 顆對不上（ARTIFACT_ALLOW_STALE=1 放行中）`);
+
   // (c) bundle repo：不存在就照登錄簿長出來（selftest）；存在就驗 origin 與登錄簿相符。
   //     🔴 這一條就是「打錯位置也會被它修正」的實體：本機那個資料夾指到別的 repo ⇒ 當場擋。
   const seedFrom = expandHome(T.bundles.seedFrom);
@@ -686,7 +721,10 @@ const STEPS = [
 //   拆掉「提升」——見 (b) 的 preflight 註解與 source-pin.mjs）。版本號由內容算，不由人宣告。
 { id: 'build', title: '從來源重打 bundle（版本號由內容算，不由人宣告）', mutates: true, async run() {
   shLive('node', [join(import.meta.dirname, 'build-bundles.mjs'), '--out', ctx.bundlesDir],
-    REPO_ROOT, { ARCRUN_REPO_ROOT: ctx.arcrunRepo });
+    // ARTIFACT_ALLOW_DIRTY_SOURCE：把登錄簿的 `allowDirtySource` 一路傳到 build-bundles 的
+    // 新鮮度閘（Arcrun#93）。不傳的話 selftest（唯一允許髒工作區的目標）會在 preflight
+    // 過關、卻在這裡被自己人擋下——同一份判準在兩支腳本各有一套，正是漂移的起點。
+    REPO_ROOT, { ARCRUN_REPO_ROOT: ctx.arcrunRepo, ARTIFACT_ALLOW_DIRTY_SOURCE: T.allowDirtySource ? '1' : '' });
   shLive('node', [join(import.meta.dirname, 'build-ui-bundle.mjs'),
     '--arcrun', ctx.arcrunRepo, '--out', ctx.bundlesDir, '--repo-root', REPO_ROOT], REPO_ROOT);
   return { status: 'done', detail: ['4 顆核心 ＋ portal 前端已依來源重建'] };

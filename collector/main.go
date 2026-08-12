@@ -87,6 +87,8 @@ func Run(args []string) int {
 		return runLint(args[1:])
 	case "template-install":
 		return runTemplateInstall(args[1:])
+	case "tidy":
+		return runTidy(args[1:])
 	default:
 		usage()
 		return 2
@@ -104,6 +106,8 @@ func usage() {
   collector upload --root <dir> --manifest <file> [--max-removed-ratio 0.4] [--dry-run]
   collector sync   --root <dir> --manifest <file> [--max-removed-ratio 0.4] [--dry-run]
   collector direct --config <config.json> [--once] [--dry-run]
+  collector tidy   --folder <dir> [--apply] [--json]
+tidy: 找出以前寫進資料夾、還沒帶 arcrun- 標記的舊產物並改名/搬走（預設只列出不動手，加 --apply 才執行；從不刪檔）
 upload 需環境變數: CF_ACCOUNT_ID / CF_API_TOKEN / R2_BUCKET
 sync   另需:      ARCRUN_TRIGGER_URL（named-webhook 觸發完整 URL）
 direct（無 R2）:  監看資料夾 → 讀檔內容直送實例 rag_ingest_direct workflow；設定走 --config JSON`)

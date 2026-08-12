@@ -946,6 +946,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
 	}
 	cfg.migrateManifestIfNeeded(absRoot, absManifest) // t86b：一次性遷移舊格式帳本
+	// arcrun-rag#60 第二輪：把上一版 daemon 落下、還沒帶 arcrun- 標記的舊卡就地改名。
+	// 自動跑而不是叫人下指令——leo 的紅線：「他不該為了保護自己的筆記去學新選項」。
+	// 只碰卡片產物區（那整個目錄只有我們會寫），目標已存在就跳過、永不刪檔，見 tidy.go。
+	// template 殘留不在這裡處理：那要人確認「這是不是你自己的 repo」，走 `collector tidy`。
+	if !dryRun {
+		if n := MigrateCardNames(absRoot); n > 0 {
+			results = append(results, DirectResult{
+				Type: "warning", Path: absRoot, Status: "skipped",
+				Error: fmt.Sprintf("已把 %d 張舊卡片改名加上 arcrun- 前綴（避免與你自己的筆記同名）", n),
+			})
+		}
+	}
 	m, err := LoadManifest(absManifest, absRoot)
 	if err != nil {
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
@@ -1125,8 +1137,14 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// path 帶「原檔路徑」不是卡片路徑（07-24 真機第五枚坑）：
 					// source_uri=kb://<path> 是 takedown 的比對鍵，也是 B4 溯源該指的原文——
 					// 帶卡片路徑會讓「刪原檔→下架」永遠 0 命中。
+					// 🔴 arcrun-rag#60 第二輪：page_name 必須跟著**原稿**走，不是跟著卡片檔名走。
+					//   卡片檔名這一輪加了 `arcrun-` 前綴（machinemark.go），若這裡繼續用
+					//   pageNameOf(cardRel)，雲端頁名會變成 `arcrun-<原頁名>`，而下架分支用的是
+					//   pageNameOf(ev.Path)（原稿頁名，不帶前綴）⇒ 兩邊從此對不上，
+					//   「刪原檔→下架」永遠 0 命中，跟 07-24 那枚 source_uri 的坑同一個形狀。
+					//   改成原稿頁名後，**雲端看到的頁名與改版前完全相同**（本次只動本機檔名）。
 					cardBody := map[string]any{
-						"page_name":    pageNameOf(cardRel),
+						"page_name":    pageNameOf(ev.Path),
 						"path":         ev.Path,
 						"card_content": string(cardData),
 						"library":      cfg.libraryFor(absRoot),
@@ -1212,13 +1230,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// （不是 Scan() rebuild 時就拿掉——那時只是「偵測到不見了」，不是「已下架」）。
 				delete(m.Entries, ev.Path)
 				saveManifest()
-				// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡
-				//（system-dev/wiki/cards/<頁名>.md 或 vault 時的 .arcrun-rag/wiki/cards/<頁名>.md，
-				// arcrun-rag#60：清除路徑要跟落卡路徑用同一個 cardsRelDirFor，否則 vault 目標
-				// 清不到卡、留孤兒檔案），保持本地 wiki 與雲端一致。
+				// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡，保持本地與雲端一致。
+				// arcrun-rag#60：清除路徑必須跟落卡路徑**同一個函式**算出來（cardRelFor）——
+				// 目錄或檔名任一邊不同步就清不到卡、留下孤兒檔。第一輪對齊了目錄，
+				// 第二輪加了檔名前綴，所以連「拼檔名」這件事也一起收進 cardRelFor。
 				// 存在才刪；刪失敗只記 warning 不擋（下架本體已成功）。
 				if cfg.Extractor != "" {
-					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardsRelDirFor(absRoot)), pageNameOf(ev.Path)+".md")
+					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageNameOf(ev.Path))))
 					if _, serr := os.Stat(cardAbs); serr == nil {
 						if rerr := os.Remove(cardAbs); rerr != nil {
 							results = append(results, DirectResult{

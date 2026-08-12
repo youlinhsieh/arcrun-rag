@@ -39,8 +39,44 @@ printf '# 我的筆記\n\n## 摘要\nstub 卡\n' > "system-dev/wiki/cards/我的
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/我的筆記.md" {
-		t.Fatalf("cards=%v", cards)
+	// stub（模擬 /rag-extract-file skill）寫的是**沒有前綴**的檔名——這正是實況：
+	// 那條路的檔名由 prompt 決定，不歸 Go 管。enforceCardMarks 必須把它補正，
+	// 讓 claude 路與 gemma/workers-ai 路交出同一種名字（arcrun-rag#60 紅線：只准一種）。
+	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/arcrun-我的筆記.md" {
+		t.Fatalf("cards=%v，want [system-dev/wiki/cards/arcrun-我的筆記.md]", cards)
+	}
+	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-我的筆記.md")); err != nil {
+		t.Fatalf("補正後的卡片檔不存在：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "我的筆記.md")); err == nil {
+		t.Fatal("沒帶前綴的原檔還在——補正應該是改名，不是複製一份")
+	}
+}
+
+// arcrun-rag#60 第二輪：vault 上，skill 仍會把卡寫進**可見的** system-dev/wiki/cards/
+// （那個位置寫死在 prompt 裡，Go 改不到它）⇒ Go 這一側必須把它歸位到隱藏目錄並補標記。
+// 這是「破口在 prompt 裡、只能在 Go 收口」的那一類，不補就等於 claude 路照樣污染筆記庫。
+func TestExtractWithClaude_VaultRelocatesAndMarks(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "logseq")) // 這是個 Logseq vault
+	stub := writeStubClaude(t, t.TempDir(), `
+mkdir -p system-dev/wiki/cards
+printf '# 我的筆記\n\n## 摘要\nstub 卡\n' > "system-dev/wiki/cards/我的筆記.md"
+`)
+	cards, err := ExtractWithClaude(stub, root, "我的筆記.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ".arcrun-rag/wiki/cards/arcrun-我的筆記.md"
+	if len(cards) != 1 || cards[0] != want {
+		t.Fatalf("cards=%v，want [%s]", cards, want)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(want))); err != nil {
+		t.Fatalf("歸位後的卡片不存在：%v", err)
+	}
+	// 可見目錄裡不准留下任何東西——vault 的頁面數不能因為 daemon 跑過而增加。
+	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "我的筆記.md")); err == nil {
+		t.Fatal("卡片還留在可見的 system-dev/wiki/cards/，vault 會多出一頁")
 	}
 }
 
