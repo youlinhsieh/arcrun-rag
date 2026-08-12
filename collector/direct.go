@@ -946,7 +946,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
 	}
 	cfg.migrateManifestIfNeeded(absRoot, absManifest) // t86b：一次性遷移舊格式帳本
-	// arcrun-rag#60 第二輪：把上一版 daemon 落下、還沒帶 arcrun- 標記的舊卡就地改名。
+	// arcrun-rag#60：把上一版 daemon 落下的舊卡歸位——沒帶 arcrun- 標記的改名，
+	// 位置不對的（第三輪：監看根在筆記庫裡，卡卻落在看得見的 system-dev/wiki/cards/）搬進隱藏目錄。
 	// 自動跑而不是叫人下指令——leo 的紅線：「他不該為了保護自己的筆記去學新選項」。
 	// 只碰卡片產物區（那整個目錄只有我們會寫），目標已存在就跳過、永不刪檔，見 tidy.go。
 	// template 殘留不在這裡處理：那要人確認「這是不是你自己的 repo」，走 `collector tidy`。
@@ -954,7 +955,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		if n := MigrateCardNames(absRoot); n > 0 {
 			results = append(results, DirectResult{
 				Type: "warning", Path: absRoot, Status: "skipped",
-				Error: fmt.Sprintf("已把 %d 張舊卡片改名加上 arcrun- 前綴（避免與你自己的筆記同名）", n),
+				Error: fmt.Sprintf("已把 %d 張舊卡片歸位（加上 arcrun- 前綴／搬離筆記軟體看得到的位置）", n),
 			})
 		}
 	}

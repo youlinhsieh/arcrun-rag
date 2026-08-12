@@ -65,17 +65,23 @@ func FindClaudeBin(hint string) (string, error) {
 // 行為與改 Go 版之前完全一致。
 const cardsRelDir = "system-dev/wiki/cards"
 
-// vaultCardsRelDir 是監看根被判定成 Logseq/Obsidian vault 時，卡片改落的位置（arcrun-rag#60）。
+// vaultCardsRelDir 是監看根**落在** Logseq/Obsidian vault 範圍內時，卡片改落的位置（arcrun-rag#60）。
 // 刻意用點開頭的隱藏目錄：Logseq/Obsidian 預設都不掃描點開頭的資料夾（跟 .git/.obsidian
 // 同待遇），daemon 自己的 Scan() 也一樣（見 scan.go「隱藏目錄整棵跳過」）——三邊一致，
 // 卡片仍然落在監看根底下（呼叫端「路徑相對監看根」的假設不用改），但不會被筆記軟體
 // 收編成新頁面，vault 的頁面數不會因為 daemon 跑過而增加。
 const vaultCardsRelDir = ".arcrun-rag/wiki/cards"
 
-// cardsRelDirFor 決定某次萃取的卡片該落在哪個相對路徑：非 vault 用 cardsRelDir（不變），
-// vault 用 vaultCardsRelDir（arcrun-rag#60）。vault 判準見 vault.go，與 install.sh 對齊。
+// cardsRelDirFor 決定某次萃取的卡片該落在哪個相對路徑：
+// 監看根不在任何筆記庫範圍內＝cardsRelDir（一般資料夾行為，零改變）；
+// 落在筆記庫範圍內＝vaultCardsRelDir（隱藏目錄）。
+//
+// 🔴 arcrun-rag#60 第三輪：判準從 IsVault（只看監看根**這一層**）換成 DetectVaultContext
+// （監看根**在不在**某個筆記庫裡）。前者在「監看根是 vault 底下的子資料夾」時回 false，
+// 於是卡片落回 `<監看根>/system-dev/wiki/cards/`——那個位置就在使用者的 vault 裡面，
+// 而且不是隱藏目錄，Logseq/Obsidian 會把每一張卡收編成一頁。全文見 vault.go 第三輪那段。
 func cardsRelDirFor(absRoot string) string {
-	if IsVault(absRoot) {
+	if DetectVaultContext(absRoot).InVault() {
 		return vaultCardsRelDir
 	}
 	return cardsRelDir

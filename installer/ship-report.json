@@ -939,32 +939,32 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "已與遠端同步，沒有要推的"
     },
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "釘子已是 f2bb711（built 2026-08-12），不需要動"
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "線上已是 1.4.40／pin f2bb711，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -996,7 +996,7 @@
    ],
    "sourceCommit": "Arcrun@1791ffa4972b",
    "machine": "9f06f3113188",
-   "ts": 1786520129428
+   "ts": 1786520477723
   }
  }
 }

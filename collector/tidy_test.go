@@ -68,11 +68,22 @@ func TestTidy_RenamesLegacyCardsOnly(t *testing.T) {
 			t.Fatalf("dry-run 竟然動了檔案：%s 不見了", rel)
 		}
 	}
+	// 🔴 第三輪（2026-08-12）改了這裡的期望，這是**刻意的行為變更**：
+	//
+	//	本 fixture 的 root 是 vault，卻有一張卡躺在 `system-dev/wiki/cards/`——那是
+	//	**看得見的**目錄，Logseq/Obsidian 會把它當成一頁。第二輪只把它就地改名
+	//	（加上 arcrun- 前綴）就算收拾完，於是「不撞名」達成了、「不要在使用者的
+	//	筆記庫裡多出機器頁面」沒達成。改名救不了位置。
+	//	⇒ 現在位置不對的卡一律**搬**進隱藏的 vaultCardsRelDir，動作是 would-move。
+	//	   已經在隱藏目錄、只是少個前綴的，仍然是就地 would-rename（行為不變）。
 	var previewed []string
 	for _, it := range rep.Items {
 		previewed = append(previewed, it.Rel+" → "+it.To+"（"+it.Action+"）")
-		if it.Action != TidyActionWillRename {
+		if it.Action != TidyActionWillRename && it.Action != TidyActionWillMove {
 			t.Fatalf("dry-run 出現非預期動作：%+v", it)
+		}
+		if strings.HasPrefix(it.To, cardsRelDir+"/") {
+			t.Fatalf("vault 裡的卡片被留在看得見的目錄：%+v", it)
 		}
 	}
 	sort.Strings(previewed)
@@ -88,7 +99,8 @@ func TestTidy_RenamesLegacyCardsOnly(t *testing.T) {
 	want := []string{
 		".arcrun-rag/wiki/cards/arcrun-2026_08_10.md",
 		".arcrun-rag/wiki/cards/arcrun-2026_08_10.md.bak-1723459200000000000",
-		"system-dev/wiki/cards/arcrun-會議記錄.md",
+		// 第三輪：這一張本來在 system-dev/wiki/cards/（看得見），現在搬進隱藏目錄。
+		".arcrun-rag/wiki/cards/arcrun-會議記錄.md",
 	}
 	for _, rel := range want {
 		if _, serr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); serr != nil {

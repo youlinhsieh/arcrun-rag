@@ -10,8 +10,9 @@ import (
 
 // 目標不存在＝正常首次落卡，行為不變。
 func TestSafeWriteCard_NewFile(t *testing.T) {
-	dest := filepath.Join(t.TempDir(), "sub", "foo.md")
-	if err := safeWriteCard(dest, []byte("# foo\n內容")); err != nil {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "sub", "foo.md")
+	if err := safeWriteCard(dir, dest, []byte("# foo\n內容")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(dest)
@@ -32,7 +33,7 @@ func TestSafeWriteCard_ExistingFile_BacksUpBeforeOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := safeWriteCard(dest, []byte("# foo\n機器新產出的卡")); err != nil {
+	if err := safeWriteCard(dir, dest, []byte("# foo\n機器新產出的卡")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,7 +77,7 @@ func TestSafeWriteCard_SameContent_NoOp(t *testing.T) {
 	if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := safeWriteCard(dest, []byte(content)); err != nil {
+	if err := safeWriteCard(dir, dest, []byte(content)); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(dir)

@@ -129,7 +129,7 @@ func ExtractWithGemma(apiKey, model, absRoot, relPath string) ([]string, error) 
 	// 因為 Logseq 的頁名是 basename）。落地前先查目標存不存在、不無條件覆蓋（safeWriteCard）。
 	cardRel := cardRelFor(absRoot, pageName)
 	dest := filepath.Join(absRoot, filepath.FromSlash(cardRel))
-	if err := safeWriteCard(dest, []byte(card)); err != nil {
+	if err := safeWriteCard(absRoot, dest, []byte(card)); err != nil {
 		return nil, err
 	}
 	return []string{cardRel}, nil

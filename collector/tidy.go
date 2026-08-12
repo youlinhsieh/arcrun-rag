@@ -70,8 +70,11 @@ type TidyItem struct {
 
 // TidyReport＝一次收拾的完整帳目。
 type TidyReport struct {
-	Root      string     `json:"root"`
-	VaultType VaultType  `json:"vault_type"`
+	Root      string    `json:"root"`
+	VaultType VaultType `json:"vault_type"`
+	// VaultRoot＝筆記庫的根。與 Root 不同時代表「監看的是筆記庫底下的一層子資料夾」
+	// ——第三輪修的正是這一種（arcrun-rag#60）。空字串＝不在任何筆記庫裡。
+	VaultRoot string     `json:"vault_root,omitempty"`
 	Applied   bool       `json:"applied"` // false＝只看不動（dry-run）
 	Items     []TidyItem `json:"items"`
 }
@@ -102,9 +105,16 @@ func isUnderCardDir(relSlash string) bool {
 	return false
 }
 
-// collectCardItems 掃出卡片產物區裡「還沒帶標記」的檔案，算出它們該改成什麼名字。
-// 已經帶標記的不列入（冪等：跑第二次是空的）。
+// collectCardItems 掃出卡片產物區裡「不在它現在該在的位置／還沒帶標記」的檔案，
+// 算出它們該搬去哪、該叫什麼名字。已經到位又帶標記的不列入（冪等：跑第二次是空的）。
+//
+// 🔴 arcrun-rag#60 第三輪：判準從「有沒有帶標記」擴充成「**位置對不對** ＋ 有沒有帶標記」。
+// 只看標記在第三輪不夠——監看根是 vault 子資料夾時，前兩輪的 daemon 已經把一批
+// **帶標記但落在可見目錄**（`system-dev/wiki/cards/arcrun-*.md`）的卡寫進使用者的
+// 筆記庫了。那些卡在 Logseq 眼裡照樣是一頁一頁的機器頁面，改名救不了，要搬進隱藏目錄。
+// 少了這一段，票上「已經寫進去的那一批要能收拾」對這一類就等於沒做。
 func collectCardItems(absRoot string) []TidyItem {
+	want := cardsRelDirFor(absRoot)
 	var items []TidyItem
 	for _, relDir := range cardDirsToScan() {
 		base := filepath.Join(absRoot, filepath.FromSlash(relDir))
@@ -113,20 +123,21 @@ func collectCardItems(absRoot string) []TidyItem {
 				return nil
 			}
 			name := d.Name()
-			if IsMarked(name) {
-				return nil // 已經是新的了
-			}
 			rel, rerr := filepath.Rel(absRoot, p)
 			if rerr != nil {
 				return nil
+			}
+			relSlash := filepath.ToSlash(rel)
+			if IsMarked(name) && filepath.ToSlash(filepath.Dir(relSlash)) == want {
+				return nil // 位置對、標記也有，已經是新的了
 			}
 			kind := TidyKindCard
 			if bakSuffix.MatchString(name) {
 				kind = TidyKindCardBak
 			}
 			items = append(items, TidyItem{
-				Rel:  filepath.ToSlash(rel),
-				To:   filepath.ToSlash(filepath.Join(filepath.Dir(rel), MarkName(name))),
+				Rel:  relSlash,
+				To:   filepath.ToSlash(filepath.Join(want, MarkName(name))),
 				Kind: kind,
 			})
 			return nil
@@ -181,11 +192,15 @@ func collectTemplateItems(absRoot string, isVault bool) []TidyItem {
 	return items
 }
 
-// MigrateCardNames 把卡片產物區裡沒帶標記的舊卡就地改名。daemon 每輪自動呼叫。
-// 回傳實際改名的筆數。**只碰卡片產物區**，其餘一概不動。
+// MigrateCardNames 把卡片產物區裡「位置不對或沒帶標記」的舊卡歸位。daemon 每輪自動呼叫。
+// 回傳實際動到的筆數。**只碰卡片產物區**，其餘一概不動。
 //
 // 為什麼可以自動：那兩個目錄從頭到尾只有 daemon 會寫（見 cardsRelDirFor 的註解），
 // 不存在「誤把使用者的檔案改名」的可能。目標已存在就跳過，不覆蓋。
+//
+// 🔴 第三輪起也負責**搬移**（不只改名）：監看根在 vault 裡時，舊版寫在可見目錄的卡
+// 會被搬進 `.arcrun-rag/wiki/cards/`。這是自動的，因為紅線寫著「不准要使用者去設定
+// 什麼開關才能保護自己的筆記」——他不該為了收拾機器留下的東西去學一個新指令。
 func MigrateCardNames(absRoot string) int {
 	n := 0
 	for _, it := range collectCardItems(absRoot) {
@@ -193,6 +208,9 @@ func MigrateCardNames(absRoot string) int {
 		to := filepath.Join(absRoot, filepath.FromSlash(it.To))
 		if _, err := os.Stat(to); err == nil {
 			continue // 新名字已經有東西了，不覆蓋
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			continue
 		}
 		if err := os.Rename(from, to); err == nil {
 			n++
@@ -215,11 +233,19 @@ func Tidy(root string, apply bool) (*TidyReport, error) {
 		return nil, fmt.Errorf("%s 不是資料夾", absRoot)
 	}
 
-	vt := DetectVaultType(absRoot)
-	rep := &TidyReport{Root: absRoot, VaultType: vt, Applied: apply}
+	// 🔴 兩個判準，回答兩個不同的問題，不要合併（arcrun-rag#60 第三輪）：
+	//
+	//	· ctx（含往上找）＝「我寫東西會不會落進誰的筆記庫」——決定卡片該在哪，也是報告顯示的身分。
+	//	· DetectVaultType(absRoot)（只看這一層）＝「這個資料夾**本身**是不是筆記庫」——
+	//	  只有它才夠格授權「把 template 殘留搬走」。理由：一個住在筆記庫底下的
+	//	  **使用者自己的開發 repo**（`KB/some-repo/system-dev/…`）在 ctx 眼中也「在 vault 裡」，
+	//	  但那些 template 檔是他的真檔案，不是 daemon 鋪的。搬了就是弄壞他的 repo。
+	//	  分不出來的時候只列不動——這條在第二輪就寫了，第三輪擴大偵測範圍時更要守住。
+	ctx := DetectVaultContext(absRoot)
+	rep := &TidyReport{Root: absRoot, VaultType: ctx.Type, VaultRoot: ctx.Root, Applied: apply}
 
 	items := collectCardItems(absRoot)
-	items = append(items, collectTemplateItems(absRoot, vt != VaultNone)...)
+	items = append(items, collectTemplateItems(absRoot, DetectVaultType(absRoot) != VaultNone)...)
 	sort.Slice(items, func(i, j int) bool { return items[i].Rel < items[j].Rel })
 
 	for _, it := range items {
@@ -227,7 +253,10 @@ func Tidy(root string, apply bool) (*TidyReport, error) {
 			rep.Items = append(rep.Items, it)
 			continue
 		}
-		willMove := it.Kind == TidyKindTemplate
+		// 換了目錄就是「搬走」，只換名字才是「改名」——報告要說實話，
+		// 使用者才知道去哪裡找他的東西（第三輪起卡片也會換目錄）。
+		willMove := it.Kind == TidyKindTemplate ||
+			filepath.ToSlash(filepath.Dir(it.Rel)) != filepath.ToSlash(filepath.Dir(it.To))
 		from := filepath.Join(absRoot, filepath.FromSlash(it.Rel))
 		to := filepath.Join(absRoot, filepath.FromSlash(it.To))
 
@@ -294,7 +323,11 @@ func runTidy(args []string) int {
 		return 0
 	}
 	kind := "一般資料夾"
-	if rep.VaultType != VaultNone {
+	switch {
+	case rep.VaultType != VaultNone && rep.VaultRoot != rep.Root:
+		// 第三輪的那一種擺法——講清楚是誰的庫，不然使用者看不懂為什麼要搬。
+		kind = fmt.Sprintf("%s 筆記庫「%s」底下的子資料夾", rep.VaultType, rep.VaultRoot)
+	case rep.VaultType != VaultNone:
 		kind = string(rep.VaultType) + " 筆記庫"
 	}
 	fmt.Printf("%s（%s）\n", rep.Root, kind)
@@ -306,7 +339,11 @@ func runTidy(args []string) int {
 		case TidyActionRenamed, TidyActionWillRename:
 			fmt.Printf("  改名  %s  →  %s\n", it.Rel, it.To)
 		case TidyActionMoved, TidyActionWillMove:
-			fmt.Printf("  搬走  %s  →  %s（舊版 daemon 鋪的開發用檔案，不是你的筆記）\n", it.Rel, it.To)
+			why := "舊版 daemon 鋪的開發用檔案，不是你的筆記"
+			if it.Kind != TidyKindTemplate {
+				why = "舊版寫在看得見的位置，你的筆記軟體會把它當成一頁——搬進隱藏目錄"
+			}
+			fmt.Printf("  搬走  %s  →  %s（%s）\n", it.Rel, it.To, why)
 		case TidyActionReport:
 			fmt.Printf("  略過  %s（%s）\n", it.Rel, it.Note)
 		case TidyActionSkipped:
