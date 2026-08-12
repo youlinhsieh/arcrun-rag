@@ -37,20 +37,46 @@ const prodLike = {
 };
 
 /** 假的 runWorkflow：照工作流 v2 的判準回話（比對期望值），並記下每次收到的 payload。 */
-function fakeWorkflow({ release, daemon, calls, contract = DELIVERY_CONTRACT, failFirst = 0 }) {
+function fakeWorkflow({ release, daemon, calls, failFirst = 0 }) {
   return async (name, input) => {
     calls.push({ name, input });
     const n = calls.length;
     const actualRelease = n <= failFirst ? '(舊版)' : release;
     const actualDaemon = n <= failFirst ? '(舊版)' : daemon;
     return {
-      contract,
+      contract: DELIVERY_CONTRACT,
       attempt: input.attempt,
       refresh_ok: true, fetch_ok: true,
       actual_release: actualRelease, actual_daemon: actualDaemon,
       expect_release: input.expect_release, expect_daemon: input.expect_daemon,
       converged: actualRelease === input.expect_release && actualDaemon === input.expect_daemon,
     };
+  };
+}
+
+/**
+ * 假的**舊版**工作流——這支的存在理由就是「製造出契約對不上的那個情境」。
+ *
+ * 🔴 不要把它併回 `fakeWorkflow` 用一個 `contract` 參數帶過：上一版就是那樣寫的，
+ *   而 `{ contract = DELIVERY_CONTRACT }` 這個解構預設值會把呼叫端傳的 `undefined`
+ *   吃掉、換成 `'v2'` ⇒ **假貨其實是新版**、契約閘從頭到尾沒被觸發、
+ *   `assert.rejects` 拿不到任何錯 ⇒ 那條測試測的是別的東西。
+ *   「想模擬欄位不存在，卻只是傳了 undefined」是 JS 裡最安靜的一種假測試。
+ *
+ * 這裡改成**照舊版真正的輸出形狀組出來**：v1 沒有 `contract`、欄位名是 `purged`／
+ * `fetched`，而且它**會自己說 converged: true**——契約閘的價值正在於不信這句話。
+ */
+function fakeOldWorkflow({ calls, contract }) {
+  return async (name, input) => {
+    calls.push({ name, input });
+    const out = {
+      attempt: input.attempt,
+      purged: true, fetched: true,                       // v1 的欄位名，跟 v2 對不起來
+      actual_release: '1.4.38', actual_daemon: 'v0.18.26',
+      converged: true,                                   // 舊版說收斂了也不算數
+    };
+    if (contract !== undefined) out.contract = contract; // 只有明說要帶版本號時才有這個欄位
+    return out;
   };
 }
 
@@ -176,13 +202,34 @@ test('🔴 反向演練：期望值不可能達成 ⇒ 就算 CDN 上真的是�
 });
 
 test('🔴 實例上還是舊版工作流（沒有 contract）⇒ 直接說去重新部署，不丟看起來像網路問題的錯', async () => {
+  // ── 先驗這條測試自己：假貨真的製造出「沒有 contract 這個欄位」了嗎 ──────────
+  // 上一版就是死在這裡——情境根本沒成立，於是什麼都沒被丟出來，而測試名字還掛著。
+  const probe = [];
+  const raw = await fakeOldWorkflow({ calls: probe })('ship_refresh_cdn', { attempt: 1 });
+  assert.equal('contract' in raw, false, '假的舊版工作流必須真的不帶 contract，否則下面測到的是別的東西');
+  assert.equal(raw.converged, true, '舊版甚至會自稱收斂——契約閘要擋的就是「信了這句話」');
+
+  // ── ① 真的舊版：連 contract 這個欄位都沒有 ─────────────────────────────────
   const calls = [];
   await assert.rejects(
     () => confirmDelivery({
       plan: deliveryPlan(stageLike, 'stage'), release: '1.4.38', daemonVersion: 'v0.18.26',
-      runWorkflow: fakeWorkflow({ release: '1.4.38', daemon: 'v0.18.26', calls, contract: undefined }), nonce: () => 'N',
+      runWorkflow: fakeOldWorkflow({ calls }), nonce: () => 'N',
     }),
-    (e) => /不是這支腳本要的版本/.test(e.message) && /workflows\/ship_refresh_cdn\.json/.test(e.message));
+    (e) => /不是這支腳本要的版本/.test(e.message)
+        && /拿到 \(沒有這個欄位\)/.test(e.message)          // 訊息要說出「欄位不見了」，不是含糊的失敗
+        && /workflows\/ship_refresh_cdn\.json/.test(e.message));
+  assert.equal(calls.length, 1, '契約對不上要第一次就停——再試三次只是把同一個錯誤拖長四倍');
+
+  // ── ② 帶了 contract 但版本不對 ⇒ 一樣擋，而且要把拿到的版本說出來 ──────────
+  const v1Calls = [];
+  await assert.rejects(
+    () => confirmDelivery({
+      plan: deliveryPlan(stageLike, 'stage'), release: '1.4.38', daemonVersion: 'v0.18.26',
+      runWorkflow: fakeOldWorkflow({ calls: v1Calls, contract: 'v1' }), nonce: () => 'N',
+    }),
+    (e) => new RegExp(`期望 contract=${DELIVERY_CONTRACT}，拿到 v1`).test(e.message));
+  assert.equal(v1Calls.length, 1);
 });
 
 test('送出去的 payload：有作廢端點的不亂加參數，沒有的才帶快取破壞；重讀網址一定帶', async () => {
