@@ -97,7 +97,7 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/94923e9"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/fed72eb"
 BUNDLE_BUILT = "2026-08-12"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
