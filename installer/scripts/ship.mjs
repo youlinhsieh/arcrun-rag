@@ -65,14 +65,31 @@
  *   · built 跟 release／fingerprint 一樣**繼承來源**，且 verify 斷言
  *     「線上宣告的建置日 == 這次 manifest 的建置日」（也就是 pin 有沒有真的送達）
  *
+ * ── 不變式 Ⅷ（2026-08-12 加，arcrun-rag#79）：**每一站都要兩邊都走** ──────────
+ * 前一條治的是「站根本不在清單上」；這一條治的是**站在清單上、但只有一邊會執行**。
+ *   `purge`（送達收斂）站的條件本來是 `verify.fullChain`，而 fullChain 只有 prod 宣告
+ *   ⇒ stage 每次印「本目標不走 jsDelivr（登錄簿宣告）」跳過
+ *   ⇒ 這一站的每個壞法都只能在 prod 現形。2026-08-11 它史上第一次真的被觸發，
+ *     一次現形兩個：`runWorkflow` 沒被 import、工作流內建 FOREACH 撞 subrequest 上限。
+ *   🔴 而它在 D65 的左右對照表上**看起來是合法的**——stage 那欄是「登錄簿宣告沒這東西」。
+ *     ⇒ **只在單邊執行的站，是測試與 stage 的共同盲區。**
+ * ⇒ 治法：有 `installer` 的目標**必須**宣告 `delivery`（它的「會移動的指標」是什麼、
+ *   怎麼踢它），漏填在任何步驟開跑前就 exit 2；「本目標沒這東西」不再是一句可以自己講的話。
+ *   ＋ `--delivery-only`：這一站終於可以被單獨演練（同 --verify-only 的理由）。
+ *
  * ── 用法 ────────────────────────────────────────────────────────────────
  *   node installer/scripts/ship.mjs --target stage              # 預演（建＋算版本，不推不部署）
  *   node installer/scripts/ship.mjs --target stage --confirm    # 真的走完
  *   node installer/scripts/ship.mjs --target prod  --confirm    # 需 leo 先開 D20 閘
  *   node installer/scripts/ship.mjs --list                      # 有哪些目標
  *   node installer/scripts/ship.mjs --target prod --verify-only # 只驗收線上現況，什麼都不改
+ *   node installer/scripts/ship.mjs --target stage --delivery-only          # 只查「新版送到了嗎」
+ *   SHIP_DELIVERY_DRILL=1 node installer/scripts/ship.mjs --target stage --delivery-only
+ *                                                             # 反向演練：期望值不可能達成，
+ *                                                             # 這一站**應該**判失敗（不失敗才是壞了）
  * 旗標：--quick（驗收略過真下載，只驗中繼資料）／--allow-deletions（bundle 有刪檔時放行）
  *       --verify-only（只跑最後那步驗收；不建/不推/不部署/不蓋章，判定與 --confirm 一樣嚴）
+ *       --delivery-only（只跑送達收斂那一站；禁用在 publish 目標）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync } from 'node:fs';
@@ -92,6 +109,7 @@ import { releaseSectionFor, releaseExists, createRelease } from './github-releas
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
+import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedError, DRILL_ENV } from './ship-delivery.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -187,6 +205,23 @@ for (const [name, t] of Object.entries(cfg.targets)) {
   }
 }
 
+// 🔴 不變式 Ⅷ：**有安裝器的目標，一定要宣告 delivery（送達收斂）**（2026-08-12，arcrun-rag#79）
+//   同 docsSite／githubRelease／mailRelay 的第四次——但這次咬的是**已經存在的那一站**：
+//   `purge` 站的條件本來是 `verify.fullChain`，而 fullChain 只有 prod 有
+//   ⇒ stage 每次印「本目標不走 jsDelivr（登錄簿宣告）」跳過
+//   ⇒ **這一站壞掉永遠只能在 prod 第一次發現**。2026-08-11 它史上第一次真的被執行，
+//     一次就炸兩個（runWorkflow 沒 import／工作流 FOREACH 撞 subrequest 上限）。
+//   leo：「演習視同作戰」⇒ 每個會有人拿到東西的目標，都要自己宣告「新版怎麼算送到了」。
+//   （判斷邏輯在 ship-delivery.mjs：那支測得動，這裡這道閘測不動。）
+{
+  const problems = deliveryInvariantProblems(cfg.targets);
+  if (problems.length) {
+    console.error(`❌ 登錄簿不完整（不變式 Ⅷ：送達收斂）：`);
+    for (const p of problems) console.error(`   ${p}`);
+    process.exit(2);
+  }
+}
+
 const CONFIRM = flag('--confirm');
 const QUICK = flag('--quick');
 const ALLOW_DELETIONS = flag('--allow-deletions');
@@ -201,6 +236,27 @@ const ALLOW_DELETIONS = flag('--allow-deletions');
 const VERIFY_ONLY = flag('--verify-only');
 if (VERIFY_ONLY && CONFIRM) {
   console.error('❌ --verify-only 與 --confirm 不能一起用：前者只驗不出貨，後者是真的出貨。');
+  process.exit(2);
+}
+
+// 🔴 --delivery-only（2026-08-12，arcrun-rag#79）：**只跑送達收斂那一站**。
+//   理由跟 `--verify-only` 一字不差（見上一段）：「一道無法單獨演練的閘，修了也不知道
+//   修好沒有」。而這一站比 verify 更嚴重——它連**跑都沒跑過**：從搬去 Arcrun 到
+//   2026-08-11 第一次被觸發之間，沒有任何人執行過它一次。要它不再是盲區，就得有一個
+//   便宜到可以隨時跑的演練方式，否則「讓 stage 也跑」會退化成「每次出貨才順便跑」。
+//
+//   期望值取自**磁碟上那份 bundle manifest**（同 --verify-only 的作法）——那正是上次
+//   出貨送出去的內容，不是另一個手抄的數字。
+//   安全性：不 build、不 push、不 deploy、不蓋章；且**不准用在會發佈給用戶的目標**
+//   （prod 的送貨管道是真的 CDN 作廢端點，演練不在正式環境上做）。
+const DELIVERY_ONLY = flag('--delivery-only');
+if (DELIVERY_ONLY && (CONFIRM || VERIFY_ONLY)) {
+  console.error('❌ --delivery-only 不能跟 --confirm／--verify-only 一起用：它只跑送達收斂那一站。');
+  process.exit(2);
+}
+if (DELIVERY_ONLY && T.publish) {
+  console.error(`❌ --delivery-only 不准用在會發佈給用戶的目標（${TARGET_NAME}）。`);
+  console.error(`   它會真的去打那個目標的作廢端點——演習視同作戰，但演習不在正式環境上做。`);
   process.exit(2);
 }
 
@@ -262,6 +318,29 @@ const ctx = {
 //     ② 版本號共用狀態（release.mjs 的 `sharedState`）——同一份內容跨 bundle repo 得到同一個號碼
 //     ③ 出貨報告的硬斷言（ship-report.mjs 的 `assertSourceParity`）——belt-and-suspenders，
 //       就算①②哪裡有漏，記錄下來的來源 commit 不一致還是會被攔下來，不會安靜放行。
+
+/**
+ * 期望值（這次該送出去的 release／daemon）從**磁碟上那份 bundle manifest** 補齊。
+ *
+ * 只驗收的模式（`--verify-only`／`--delivery-only`）沒跑 build／version 兩步，
+ * ctx 裡是 null。磁碟上那份 manifest **就是上次出貨送出去的內容**——用它當期望值，
+ * 問的正是「那一次到底有沒有送達」，而不是拿一個手抄的數字去對。
+ * 回傳一行說明（沒補就回 null），讓呼叫端決定要不要印。
+ */
+function ensureExpectationsFromDisk() {
+  if (ctx.release !== null && ctx.daemonVersion !== null) return null;
+  const mPath = join(ctx.bundlesDir, 'manifest.json');
+  if (!existsSync(mPath)) {
+    throw new Error(
+      `這個模式的期望值取自磁碟上那份 bundle，但找不到它：${mPath}\n` +
+      `     ⇒ 這台機器還沒為 ${TARGET_NAME} 建過 bundle（或工作區被清掉了）。\n` +
+      `     → 先跑一次完整的 \`--target ${TARGET_NAME}\`（預演就會建），再回來只驗那一站。`);
+  }
+  const m = JSON.parse(readFileSync(mPath, 'utf8'));
+  ctx.release = ctx.release || m.release;
+  ctx.daemonVersion = ctx.daemonVersion || (m.daemon && m.daemon.version);
+  return `期望值取自磁碟 bundle：release ${ctx.release}｜daemon ${ctx.daemonVersion}`;
+}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 步驟表 —— 固定順序、無分支。每一步回傳 { status:'done'|'skip', detail }
@@ -964,8 +1043,13 @@ const STEPS = [
   return { status: 'done', detail: [`帳號 ${M.accountId}｜env ${M.wranglerEnv || '(預設環境)'}`, ...r.lines] };
 }},
 
-// ── 8. purge（只有 prod 需要：jsDelivr @main 邊緣快取）──────────────────────
-// ── 8. purge：讓 CDN 拿到新版並確認它真的收斂了 ─────────────────────────────
+// ── 8. purge：讓送貨管道拿到新版並確認它真的收斂了（stage 與 prod 都走）──────
+//
+// 🔴 站表 id 還是 `purge`（它得跟站表逐項對齊），但這一站問的其實是**送達收斂**：
+//   「使用者／桌面小幫手真的會去讀的那個**會移動的指標**，現在指到這一版了嗎？」
+//   prod 的指標是 jsDelivr `@main`（有作廢端點可以打），stage 是 Gitea `raw/branch/main`
+//   （沒有作廢端點 ⇒ 帶 no-cache 強制重讀）。原本的標題「只有 prod 需要」是錯的——
+//   那句話正是這一站只在單邊執行、因此壞了兩次都沒被發現的由來。
 //
 // 🔴 D70（leo 2026-08-11，arcrun-rag#77）：**整站交給 Arcrun 工作流 `ship_refresh_cdn`。**
 //   這一站是全站表裡最乾淨的一個「天生就是工作流形狀」的例子——打幾個網址、等一下、
@@ -988,40 +1072,28 @@ const STEPS = [
 //   都不會再撞上限；「已收斂就別再打」這個判斷，本來就沒辦法留在工作流裡
 //   （Arcrun 沒有 loop-until 原語），只能是呼叫端的事。實際打 jsDelivr／
 //   等待／讀 manifest／比對三步仍 100% 在 Arcrun 做，沒有違反 D70。
-{ id: 'purge', title: '讓 CDN 拿到新版並確認它真的收斂了', mutates: true, async run() {
-  if (!T.verify || !T.verify.fullChain) return { status: 'skip', detail: ['本目標不走 jsDelivr（登錄簿宣告）'] };
-  const gh = 'youlinhsieh/arcrun-rag-bundles';
-  const assets = ['manifest.json', 'daemon/ArcrunRAG-mac-unsigned.zip', 'daemon/ArcrunRAG-win-unsigned.zip'];
-  const purgeUrls = assets.map((p) => `https://purge.jsdelivr.net/gh/${gh}@main/${p}`);
-  const maxTries = 4;
-  const seen = [];
-  let out = null;
-  let convergedAt = null;
-  for (let attempt = 1; attempt <= maxTries; attempt++) {
-    out = await runWorkflow('ship_refresh_cdn', {
-      attempt,
-      wait_ms: 20000,
-      purge_urls: purgeUrls,
-      manifest_url: `https://cdn.jsdelivr.net/gh/${gh}@main/manifest.json?cb=${attempt}_${Date.now()}`,
-      expect_release: ctx.release,
-      expect_daemon: ctx.daemonVersion,
-    }, { timeoutMs: 60000 });
-    seen.push(`第 ${attempt} 次：release=${out && out.actual_release}／daemon=${out && out.actual_daemon}`);
-    if (out && out.converged) { convergedAt = attempt; break; }
-  }
-  const converged = !!convergedAt;
-  const detail = [`Arcrun ship_refresh_cdn：試了 ${seen.length} 次｜收斂＝${converged ? '是' : '否'}`];
-  if (convergedAt) detail.push(`   第 ${convergedAt} 次就收斂了`);
-  if (out) detail.push(`   CDN 最後讀到：release ${out.actual_release}／daemon ${out.actual_daemon}`);
-  detail.push(...seen.map((l) => `   ${l}`));
-  if (!converged) {
-    // 這一句在 purge-jsdelivr.mjs 就是這樣寫的，語氣刻意不軟化：
-    // CDN 沒收斂＝**用戶此刻拿不到新版**，那就不是「出貨完成」。
-    throw new Error(
-      `purge 後 jsDelivr 仍未收斂——**用戶此刻拿不到新版**，不准宣稱出貨完成\n` +
-      `     Arcrun 回報：${JSON.stringify(out).slice(0, 300)}`);
-  }
-  return { status: 'done', detail };
+// 🔴 arcrun-rag#79 第一個驗收條件（2026-08-12）：**stage 也要走這一站**。
+//   舊條件 `if (!T.verify.fullChain) return skip` 就是「只有 prod 會執行」的開關本身：
+//   fullChain 只有 prod 宣告 ⇒ stage 每次印「本目標不走 jsDelivr」跳過
+//   ⇒ 這一站的每一個壞法都只能在 prod 現形（2026-08-11 一次現形兩個）。
+//   現在條件改成「登錄簿有沒有宣告 delivery」，而不變式 Ⅷ 又規定**有安裝器就必須宣告**
+//   ⇒ 「這個目標沒這東西」不再是一句可以自己講的話，它得先通過登錄簿那道閘。
+//   判斷邏輯全在 `ship-delivery.mjs`（純函式，測得動所有分支）；這裡只負責接線。
+{ id: 'purge', title: '讓送貨管道拿到新版並確認它真的收斂了', mutates: true, async run() {
+  const plan = deliveryPlan(T, TARGET_NAME, { drill: !!process.env[DRILL_ENV] });
+  // 走到這裡還沒有 delivery 的，只剩沒有安裝器的目標（selftest）——它不推任何地方，
+  // 沒有「會移動的指標」指向它，也不面對任何人。
+  if (!plan) return { status: 'skip', detail: ['本目標不推任何送貨管道（selftest：只建、只算版本，不推不部署）'] };
+
+  // `--delivery-only`（與 `--verify-only` 同理）沒跑前面的 build/version 步驟
+  // ⇒ 期望值改由**磁碟上那份 bundle** 提供：那正是上次出貨送出去的內容。
+  ensureExpectationsFromDisk();
+
+  const result = await confirmDelivery({
+    plan, release: ctx.release, daemonVersion: ctx.daemonVersion, runWorkflow,
+  });
+  if (!result.converged) throw notConvergedError(plan, result);
+  return { status: 'done', detail: [`Arcrun ship_refresh_cdn（contract v2）｜試了 ${result.attempts.length} 次`, ...result.lines] };
 }},
 
 // ── 9. verify：**走使用者真的會走的那條路**。沒送達就不算成功 ────────────────
@@ -1032,12 +1104,8 @@ const STEPS = [
   const fails = [];
   // `--verify-only` 沒跑前面的 build/version 步驟 ⇒ 期望值改由**磁碟上那份 bundle** 提供。
   // 那正是上次出貨送出去的內容，不是另一個手抄的數字。
-  if (ctx.release === null || ctx.daemonVersion === null) {
-    const m = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
-    ctx.release = ctx.release || m.release;
-    ctx.daemonVersion = ctx.daemonVersion || (m.daemon && m.daemon.version);
-    lines.push(`期望值取自磁碟 bundle：release ${ctx.release}｜daemon ${ctx.daemonVersion}`);
-  }
+  const fromDisk = ensureExpectationsFromDisk();
+  if (fromDisk) lines.push(fromDisk);
   // built 同理：期望值一律取磁碟上那份 manifest——**pin 步驟寫進 BUNDLE_BUILT 的就是它**，
   // 所以「線上宣告的建置日 == 磁碟 manifest 的建置日」問的正是「這次的 pin 有沒有真的送達」。
   if (ctx.built === null) {
@@ -1291,7 +1359,10 @@ function setTomlVar(toml, section, key, value) {
 // ══════════════════════════════════════════════════════════════════════════
 // --verify-only：把步驟表濾成**只剩驗收那一步**（它本來就是 mutates:false）。
 // 不動步驟表本身 ⇒ 出貨路徑的順序與內容完全沒被這個模式碰到。
-const RUN_STEPS = VERIFY_ONLY ? STEPS.filter((s) => s.id === 'verify') : STEPS;
+// --delivery-only 同理，濾成只剩送達收斂那一站（arcrun-rag#79）。
+const RUN_STEPS = VERIFY_ONLY ? STEPS.filter((s) => s.id === 'verify')
+  : DELIVERY_ONLY ? STEPS.filter((s) => s.id === 'purge')
+  : STEPS;
 
 // ── 站表閘：在任何東西被改動之前跑（Leo/arcrun-rag#77，leo 2026-08-11）─────────
 // leo：「**站表是一份人看得懂的清單**；每一站實際做事的那段，要是 Arcrun 的零件／工作流。」
@@ -1330,7 +1401,9 @@ if (ARCRUN_WFS.length) {
 console.log(`Arcrun　這次會派給工作流做的活：${arcrunNote}`);
 console.log(`模式　${VERIFY_ONLY
   ? '🔬 只驗收（--verify-only）：不建、不推、不部署、不蓋章；判定與 --confirm 同樣嚴格'
-  : CONFIRM ? '⚡ 執行（--confirm）' : '🔎 預演（只做不改變外界的步驟；要真的走完加 --confirm）'}`);
+  : DELIVERY_ONLY
+    ? `📦 只查送達（--delivery-only）：只跑送達收斂那一站，不建、不推、不部署${process.env[DRILL_ENV] ? `｜🔬 ${DRILL_ENV} 反向演練：期望值不可能達成，這一站**應該**判失敗` : ''}`
+    : CONFIRM ? '⚡ 執行（--confirm）' : '🔎 預演（只做不改變外界的步驟；要真的走完加 --confirm）'}`);
 console.log(`步驟　${RUN_STEPS.map((s) => s.id).join(' → ')}\n`);
 
 let failedAt = null;
@@ -1340,7 +1413,9 @@ for (const [i, step] of RUN_STEPS.entries()) {
   if (failedAt) { results.push({ id: step.id, title: step.title, status: 'not-run' }); continue; }
   if (step.mutates && !CONFIRM) {
     // 預演：build/version 會寫本機工作目錄，但不推不部署 ⇒ 允許；其餘改變外界的一律不做。
-    const localOnly = step.id === 'build' || step.id === 'version';
+    // `--delivery-only` 的整個存在理由就是**單獨跑那一站**，所以那一站在這個模式下要真的跑
+    //   （它不 push 不 deploy；會碰到的只有送貨管道的作廢／重讀，而這個模式禁用在 publish 目標）。
+    const localOnly = step.id === 'build' || step.id === 'version' || (DELIVERY_ONLY && step.id === 'purge');
     if (!localOnly) {
       console.log(`⏸  ${n} ${step.id}｜${step.title}`);
       console.log(`     預演不執行（加 --confirm 才會做）`);
@@ -1416,6 +1491,14 @@ if (CONFIRM && !VERIFY_ONLY && ctx.release) {
 }
 
 if (failedAt) {
+  if (DELIVERY_ONLY) {
+    console.log(`\n❌ 送達收斂未過：**${TARGET_NAME} 的送貨管道此刻不是這一版**（沒有出貨、沒有改任何東西）。`);
+    if (process.env[DRILL_ENV]) {
+      console.log(`   🔬 這次是反向演練（${DRILL_ENV}）——**失敗就是預期結果**：`);
+      console.log(`      期望值刻意設成不可能達成，看得到它判失敗＝這道閘真的會叫，不是裝飾。`);
+    }
+    process.exit(1);
+  }
   if (VERIFY_ONLY) {
     console.log(`\n❌ 驗收未過：**${TARGET_NAME} 線上此刻不成立**（沒有出貨、沒有改任何東西）。`);
     process.exit(1);
@@ -1423,6 +1506,17 @@ if (failedAt) {
   console.log(`\n❌ 出貨中止：卡在 **${failedAt}**，後面的步驟一步都沒跑。`);
   console.log(`   修好上面那條，重跑同一個指令即可（管線是冪等的，已做完的會自動跳過）。`);
   process.exit(1);
+}
+
+if (DELIVERY_ONLY) {
+  if (process.env[DRILL_ENV]) {
+    console.log(`\n❌ 反向演練沒有失敗——這比失敗更糟：期望值是不可能達成的字串，它卻說收斂了。`);
+    console.log(`   ⇒ 這道閘現在會放行任何東西，等於不存在。先修它，再談出貨。`);
+    process.exit(1);
+  }
+  console.log(`\n✅ 送達收斂通過｜${TARGET_NAME} 的送貨管道此刻就是 release ${ctx.release}｜daemon ${ctx.daemonVersion}`);
+  console.log(`   （只查證送達，沒有出貨、沒有改任何東西）`);
+  process.exit(0);
 }
 
 if (VERIFY_ONLY) {

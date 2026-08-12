@@ -55,7 +55,13 @@
       },
       "pin": null,
       "installer": null,
-      "verify": null
+      "verify": null,
+      "_delivery": [
+        "selftest 沒有 delivery，而且這是**唯一合法沒有**的情況：它不 push、不部署，",
+        "沒有任何『會移動的指標』指向它，也沒有任何人會去讀它。",
+        "不變式 Ⅷ 只要求「有 installer 的目標必須宣告 delivery」——這裡 installer 是 null。"
+      ],
+      "delivery": null
     },
 
     "stage": {
@@ -83,6 +89,34 @@
       },
       "verify": {
         "installerBase": "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
+      },
+      "delivery": {
+        "_": [
+          "送達收斂（站表 `purge` 站）——2026-08-12 加，Leo/arcrun-rag#79 第一個驗收條件。",
+          "",
+          "為什麼今天才有：這一站以前的條件是 `verify.fullChain`，而 fullChain 只有 prod 有",
+          "⇒ stage 每次都印「本目標不走 jsDelivr（登錄簿宣告）」跳過 ⇒ **這一站壞掉永遠",
+          "只能在 prod 第一次發現**。2026-08-11 leo 解保險出 1.4.37 時它史上第一次真的被",
+          "執行，當場炸兩次（runWorkflow 沒 import／工作流 FOREACH 撞 subrequest 上限）。",
+          "leo 的判準：演習視同作戰 ⇒ stage 要成為這一站的第一個試驗場。",
+          "",
+          "stage 的送貨管道是 Gitea raw 的 `raw/branch/main`（會移動的指標），",
+          "**沒有 purge 端點** ⇒ refreshKind 是「強制重讀」：帶 no-cache＋快取破壞參數",
+          "走一次那條路。那不是假動作——它同時證明『那個路徑此刻真的抓得到』，",
+          "而後面重讀 manifest 比對版本才是判成敗的那一步。",
+          "",
+          "⚠️ 這條路徑假設 staging bundle repo **匿名讀得到**（staging 安裝器 worker 的",
+          "fetchBundleAsset 就是不帶任何憑證去抓它的，見 oauth-prototype/worker.js）。",
+          "若哪天它變成要憑證才讀得到，這一站會 404 失敗——那是 D36 憑證議題，",
+          "處理方式見站表 public-docs 站的『要搬需要』，不是把這一站關掉。",
+          "",
+          "waitMs 只有 3 秒：Gitea raw 沒有邊緣快取要散，不必陪 prod 等 20 秒。"
+        ],
+        "movingPointer": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
+        "refreshUrl": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
+        "refreshKind": "強制重讀",
+        "waitMs": 3000,
+        "maxTries": 4
       },
       "docsSite": {
         "_": "s2（stage-environment SDD）：文件站 stage 版，2026-08-09 加。同帳號不同 worker 名，不掛網域。",
@@ -144,8 +178,36 @@
         "accountNote": "uncle6；install.arcrun.dev 就是這顆 worker"
       },
       "verify": {
-        "installerBase": "https://install.arcrun.dev",
-        "fullChain": true
+        "installerBase": "https://install.arcrun.dev"
+      },
+      "_verify_fullChain_removed": [
+        "2026-08-12 拿掉 `fullChain`（Leo/arcrun-rag#79）。它唯一的用途是 ship.mjs 的",
+        "`purge` 站那句 `if (!T.verify.fullChain) return skip` ⇒ 它就是「這一站只有 prod",
+        "會執行」的開關本身。送達收斂改由 `delivery` 宣告（兩個目標都有）之後，",
+        "留著這個欄位＝留一個已經沒人讀、看起來卻還在管事的旗標（死記錄＝錯誤方向信號）。"
+      ],
+      "delivery": {
+        "_": [
+          "送達收斂（站表 `purge` 站）——2026-08-12 改寫，Leo/arcrun-rag#79。",
+          "",
+          "movingPointer ＝**桌面小幫手檢查更新真的會讀的那條**：jsDelivr 的 `@main`",
+          "（釘死 commit 的 `@<sha>` 是 verify 站在驗的東西，它不會移動、證明不了送達）。",
+          "refreshUrl ＝ jsDelivr 的作廢端點，打它才會讓邊緣快取重新回源。",
+          "",
+          "🔴 2026-08-12 同時修掉兩條死路徑：舊版還 purge 了",
+          "`daemon/ArcrunRAG-mac-unsigned.zip` 與 `daemon/ArcrunRAG-win-unsigned.zip`，",
+          "但 ① bundle repo 裡的檔名是 `daemon/Arcrun-<版本>.dmg`／`Arcrun-win-<版本>.exe`",
+          "（見 ship.mjs daemon-sync 站）⇒ 那兩條打的是不存在的路徑；",
+          "② prod 的二進位**本來就不從 jsDelivr 送**（jsDelivr 擋 .exe 403，安裝器的",
+          "daemonOf() 對 prod 會換宿主到 raw.githubusercontent，見 verify-download.mjs 檔頭）",
+          "⇒ 就算路徑對了也沒有意義。真正要緊的只有 `@main` 那份 manifest。",
+          "那兩個安裝檔是不是這一版，由 verify 站逐位元比對（它抓的是真的下載網址）。"
+        ],
+        "movingPointer": "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@main/manifest.json",
+        "refreshUrl": "https://purge.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@main/manifest.json",
+        "refreshKind": "作廢端點",
+        "waitMs": 20000,
+        "maxTries": 4
       },
       "githubRelease": {
         "_": [

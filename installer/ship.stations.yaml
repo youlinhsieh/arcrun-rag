@@ -306,9 +306,25 @@
     驗法: 代寄端點存在且回應正常（不是 404）
 
   - id: purge
-    名字: 讓 CDN 拿到新版並確認它真的收斂了
+    名字: 讓送貨管道拿到新版並確認它真的收斂了
     用什麼: ship_refresh_cdn
-    驗法: 從使用者端的 CDN 網址抓到的內容＝這一版
+    兩邊都走: |
+      🔴 2026-08-12（Leo/arcrun-rag#79 第一個驗收條件）：**stage 也走這一站了。**
+      在此之前條件是 `verify.fullChain`，而 fullChain 只有 prod 宣告 ⇒ stage 每次印
+      「本目標不走 jsDelivr（登錄簿宣告）」跳過 ⇒ **這一站壞掉永遠只能在 prod 第一次發現**。
+      2026-08-11 leo 解保險出 1.4.37 時它史上第一次真的被觸發，一次現形兩個
+      （runWorkflow 沒被 import／工作流內建 FOREACH 撞 Cloudflare subrequest 上限）。
+      ⚠️ 它在這張表的左右對照上**看起來是合法的**——stage 那欄是「登錄簿宣告沒這東西」
+      ⇒ **只在單邊執行的站，是測試與 stage 的共同盲區**，件數對齊也看不出來。
+      現在改由登錄簿的 `delivery` 宣告「這個目標的會移動的指標是什麼、怎麼踢它」，
+      而 ship.mjs 的不變式 Ⅷ 規定**有安裝器就必須宣告** ⇒ 「本目標沒這東西」不再說得出口。
+        · prod　＝ jsDelivr `@main`（作廢端點：purge.jsdelivr.net）
+        · stage ＝ Gitea `raw/branch/main`（沒有作廢端點 ⇒ 帶 no-cache 強制重讀一次）
+      演練：`node installer/scripts/ship.mjs --target stage --delivery-only`
+           反向演練（應該要失敗）：前面加 `SHIP_DELIVERY_DRILL=1`
+    驗法: |
+      踢過之後重讀那個「會移動的指標」，讀到的 release 與 daemon 版本＝這一版；
+      沒收斂就是使用者此刻拿不到新版，當場斷、後面不跑
 
   - id: verify
     名字: 驗收（用戶端視角，不是部署訊息）

@@ -1,32 +1,22 @@
 {
   "name": "ship_refresh_cdn",
-  "description": "讓 CDN（jsDelivr）拿到新版並確認它真的收斂了：purge 指定的幾個路徑、等待、再讀一次 manifest 比對 release／daemon 版本，回報這一次嘗試的結果。出貨管線 ship.mjs 的 purge 步驟走這個工作流。\n\n🔴 2026-08-11（Leo/arcrun-rag#79）：這支原本自己內部用 FOREACH 跑 4 次重試（gen_attempts → 4 圈 purge+wait+fetch+check → summarize），結果第一次真的被執行（#79 同批修的 runWorkflow 匯入漏洞）就撞上 Cloudflare Worker 的 subrequest 上限死在最後一個節點。查證：FOREACH 沒有「已經收斂就提早停」的能力（Arcrun 引擎的 FOREACH 是無條件跑完整個陣列，不是 loop-until），所以無論收不收斂都固定燒 4 圈份的請求——每圈 6 個 Component 節點、每個節點是一次零件呼叫＋一次 telemetry 落地（cypher-executor 的通用 observability，不是這支 workflow 自己加的），4 圈下來逼近 Worker 單次 invocation 的 subrequest 上限。\n\n修法：這支工作流現在只做「一次」purge+wait+fetch+check，不再自帶重試迴圈。重試改由呼叫端（ship.mjs 的 purge 站）用一般迴圈重複觸發這支工作流、收斂了就提早停——因為 Arcrun 目前沒有 loop-until 這種邊，跨嘗試的「已經成功就別再打」只有呼叫端（每次呼叫都是全新的 Worker invocation，subrequest 預算重新歸零）才做得到。這樣單次 invocation 的成本固定在 ~11 個 subrequest（6 個節點 × 1~2），不管呼叫端重試幾次都不會再撞上限。實際打 jsDelivr／等待／讀 manifest／比對 三步全部仍在 Arcrun 做，符合 D70——搬到呼叫端的只是「要不要再打一次」這個決定，不是任何一個網路動作本身。"
-  ,
+  "description": "送達收斂查證：去踢一下「會移動的指標」（有 purge 端點就打它，沒有就帶 no-cache 強制重讀）、等一下、再讀一次那份 manifest，比對 release／daemon 版本，回報這一次嘗試的結果。出貨管線 ship.mjs 的 `purge` 站走這個工作流（stage 與 prod 都走）。\n\n🔴 2026-08-11（Leo/arcrun-rag#79 第一波）：這支原本自己內部用 FOREACH 跑 4 次重試，第一次真的被執行就撞上 Cloudflare Worker 的 subrequest 上限。FOREACH 沒有「已經收斂就提早停」的能力（不是 loop-until），所以無論收不收斂都固定燒 4 圈份的請求。修法：這支只做「一次」踢+等+讀+比對，重試改由呼叫端重複觸發——每次呼叫都是全新的 Worker invocation，subrequest 預算重新歸零。\n\n🔴 2026-08-12（Leo/arcrun-rag#79 第二波，contract v2）：輸入從 `purge_urls` 三個固定槽改成單一 `refresh_url`。兩個理由，都是實查出來的：\n① **stage 也要走這一站**。原本 stage 直接跳過（`fullChain` 只有 prod 有）⇒ 這一站壞掉永遠只能在 prod 第一次發現，#79 就是這樣被撞出來的。而 stage 的送貨管道是 Gitea raw，**沒有 purge 端點** ⇒ 三個固定槽根本填不滿，硬填就是假動作。\n② **那三個槽裡有兩個是死的**。舊版寫死 `daemon/ArcrunRAG-mac-unsigned.zip`／`ArcrunRAG-win-unsigned.zip`，但 bundle repo 裡的檔名是 `daemon/Arcrun-<版本>.dmg`／`Arcrun-win-<版本>.exe`（見 ship.mjs 的 daemon-sync 站）⇒ 那兩條 purge 打的是不存在的路徑。而且 prod 的桌面小幫手**本來就不從 jsDelivr 送二進位**（jsDelivr 擋 .exe 403，安裝器的 daemonOf() 對 prod 會換宿主到 raw.githubusercontent）⇒ 就算路徑對了也沒有意義。真正要緊、也是桌面小幫手檢查更新真的會讀的，只有 `@main` 的那份 manifest。\n\n輸出必帶 `contract: \"v2\"`：呼叫端據此認出「實例上還是舊版工作流」，直接告訴人去重新部署，而不是丟一個看起來像網路問題的錯。\n\n節點數 6→4，離 #79 那個上限又遠了一點。",
   "graph": {
     "id": "ship_refresh_cdn",
     "name": "ship_refresh_cdn",
     "nodes": [
       { "id": "input", "type": "Input", "componentId": "input", "label": "input" },
       {
-        "id": "purge_manifest",
+        "id": "refresh_pointer",
         "type": "Component",
         "componentId": "http_request",
-        "label": "purge_manifest",
-        "data": { "url": "{{input.purge_urls.0}}", "method": "GET", "headers": {}, "body_json": {} }
-      },
-      {
-        "id": "purge_asset_a",
-        "type": "Component",
-        "componentId": "http_request",
-        "label": "purge_asset_a",
-        "data": { "url": "{{input.purge_urls.1}}", "method": "GET", "headers": {}, "body_json": {} }
-      },
-      {
-        "id": "purge_asset_b",
-        "type": "Component",
-        "componentId": "http_request",
-        "label": "purge_asset_b",
-        "data": { "url": "{{input.purge_urls.2}}", "method": "GET", "headers": {}, "body_json": {} }
+        "label": "refresh_pointer",
+        "data": {
+          "url": "{{input.refresh_url}}",
+          "method": "GET",
+          "headers": { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+          "body_json": {}
+        }
       },
       {
         "id": "wait_node",
@@ -40,7 +30,12 @@
         "type": "Component",
         "componentId": "http_request",
         "label": "fetch_manifest",
-        "data": { "url": "{{input.manifest_url}}", "method": "GET", "headers": { "Cache-Control": "no-cache", "Pragma": "no-cache" }, "body_json": {} }
+        "data": {
+          "url": "{{input.manifest_url}}",
+          "method": "GET",
+          "headers": { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+          "body_json": {}
+        }
       },
       {
         "id": "check_convergence",
@@ -50,19 +45,19 @@
         "data": {
           "input": {
             "attempt": "{{input.attempt}}",
+            "refresh_kind": "{{input.refresh_kind}}",
             "expect_release": "{{input.expect_release}}",
             "expect_daemon": "{{input.expect_daemon}}",
+            "refresh": "{{refresh_pointer}}",
             "fetch": "{{fetch_manifest}}"
           },
-          "code": "function isTemplateLeak(v) {\n  return typeof v === 'string' && /^\\{\\{.*\\}\\}$/.test(v);\n}\nvar fetchNode = (input && input.fetch) || {};\nvar body = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar parsed = null;\ntry { parsed = JSON.parse(body); } catch (e) {}\nvar actualRelease = (parsed && parsed.release) || null;\nvar actualDaemon = (parsed && parsed.daemon && parsed.daemon.version) || null;\nvar expectRelease = (!isTemplateLeak(input.expect_release) && input.expect_release) || null;\nvar expectDaemon = (!isTemplateLeak(input.expect_daemon) && input.expect_daemon) || null;\nvar attemptVal = (!isTemplateLeak(input.attempt) && input.attempt) || null;\nvar releaseOk = (!expectRelease) || (actualRelease === expectRelease);\nvar daemonOk = (!expectDaemon) || (actualDaemon === expectDaemon);\nreturn {\n  attempt: attemptVal,\n  fetch_ok: fetchNode.success === true,\n  actual_release: actualRelease,\n  actual_daemon: actualDaemon,\n  expect_release: expectRelease,\n  expect_daemon: expectDaemon,\n  converged: releaseOk && daemonOk\n};"
+          "code": "function isTemplateLeak(v) {\n  return typeof v === 'string' && /^\\{\\{.*\\}\\}$/.test(v);\n}\nfunction clean(v) {\n  return (!isTemplateLeak(v) && v) || null;\n}\nvar fetchNode = (input && input.fetch) || {};\nvar refreshNode = (input && input.refresh) || {};\nvar body = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar parsed = null;\ntry { parsed = JSON.parse(body); } catch (e) {}\nvar actualRelease = (parsed && parsed.release) || null;\nvar actualDaemon = (parsed && parsed.daemon && parsed.daemon.version) || null;\nvar expectRelease = clean(input.expect_release);\nvar expectDaemon = clean(input.expect_daemon);\nvar releaseOk = (!expectRelease) || (actualRelease === expectRelease);\nvar daemonOk = (!expectDaemon) || (actualDaemon === expectDaemon);\nreturn {\n  contract: 'v2',\n  attempt: clean(input.attempt),\n  refresh_kind: clean(input.refresh_kind),\n  refresh_ok: refreshNode.success === true,\n  fetch_ok: fetchNode.success === true,\n  actual_release: actualRelease,\n  actual_daemon: actualDaemon,\n  expect_release: expectRelease,\n  expect_daemon: expectDaemon,\n  converged: fetchNode.success === true && releaseOk && daemonOk\n};"
         }
       }
     ],
     "edges": [
-      { "from": "input", "to": "purge_manifest", "type": "PIPE" },
-      { "from": "purge_manifest", "to": "purge_asset_a", "type": "PIPE" },
-      { "from": "purge_asset_a", "to": "purge_asset_b", "type": "PIPE" },
-      { "from": "purge_asset_b", "to": "wait_node", "type": "PIPE" },
+      { "from": "input", "to": "refresh_pointer", "type": "PIPE" },
+      { "from": "refresh_pointer", "to": "wait_node", "type": "PIPE" },
       { "from": "wait_node", "to": "fetch_manifest", "type": "PIPE" },
       { "from": "fetch_manifest", "to": "check_convergence", "type": "PIPE" }
     ]
