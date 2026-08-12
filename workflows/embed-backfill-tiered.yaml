@@ -1,0 +1,295 @@
+# embed_backfill_tiered — 語意向量的「分層補算」工作流（Gitea Leo/Arcrun#85 第 ③ 件，D70）
+#
+# ── 為什麼這件事非得是一支 workflow 不可（leo 2026-08-11 指定）──
+#   leo：「在改以前要先把向量化策略及執行改好。**這是個 arcrun workflow。**」
+#   在這支存在之前，補算的形態是「一支端點（POST /embed/backfill），要有人反覆呼叫直到
+#   remaining=0」——而「那個反覆呼叫的人」從來沒有被做出來，於是兩種結局二選一：
+#     ① 沒人跑（實際發生的：2026-08-11 灌回 47 萬筆，當天全帳號只用掉 1 個 neuron
+#        ⇒ 幾乎沒有任何向量化發生，語意搜尋永遠是空的）
+#     ② 有人寫腳本狂打（風險：當天燒穿額度，08-09 已經真的發生過一次）
+#   ⇒ **補算的節奏、續跑、進度、停損要「看得見」**，判準是 D70：
+#     「leo 打開工作流頁，看得到這件事嗎？」看不到 ⇒ 它就不在 Arcrun 上，等於沒做。
+#
+# ── leo 的四層優先序（2026-08-11 裁決，本檔即是它的可執行形體）──
+#   ① 今天寫的        → **立刻**，不受背景額度節制（「我今天寫一篇筆記⋯⋯立刻能查到，有感」）
+#   ② 本週還在跑的     → 先跑（背景額度的大頭）
+#   ③ 有被查詢紀錄的庫 → **本實例做不到，誠實標明**（見 plan_tiers 的 blocked 輸出）
+#   ④ 半年前的        → 慢慢跑，**只吃 ② 之後剩下的**，不與 ①② 搶
+#   🔑 leo 要的不是「總有一天全部補完」，是「他今天做的事今天就查得到」
+#      ⇒ 優先序本身就是驗收標準，不是效能優化。
+#
+# ── 紅線 ──
+#   🔴 **不准掛 cron／輪詢**（D20）。本檔沒有任何 cron 節點，觸發只能是人或本機發起。
+#      「每天只做 N 筆」靠**被觸發時檢查今天還剩多少**（kbdb 的每日計數器），不是排程醒來。
+#   🔴 **額度基數只能由人宣告**：Cloudflare 查得到「今天用了多少」（GraphQL Analytics
+#      aiInferenceAdaptiveGroups），但**查不到「你還剩多少」**——免費層 10,000 neurons/日
+#      是文件常數不是 API 數字，帳務端點對這把 token 回 Authentication error。
+#      ⇒ `ai_daily_quota` 沒宣告時，背景層（②④）**一律不跑**。查不到就不猜，猜錯會燒穿。
+#   🔴 本工作流**只呼叫 backfill（把還沒嵌的補嵌）**，不呼叫 `POST /embed/reconcile`。
+#      reconcile 會把「舊世代 is_embedded=1」重置成 0 ＝ 把 47 萬筆丟回補算佇列，
+#      那是 leo 明令「在策略與執行做好之前不准動」的那根拉桿，要另外的人閘。
+#
+# ── 佔位參數（推送前代入；同 rag_* 系列慣例）──
+#   __NAMESPACE__   租戶 namespace（同時當 owner_id）
+#   __KBDB_BASE__   KBDB 對外 base URL（如 https://arcrun-kbdb.<subdomain>.workers.dev）
+#
+# ── 觸發 ──
+#   POST {cypher}/webhooks/named/embed_backfill_tiered/trigger
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"ai_daily_quota":10000,"background_share":0.2,"batch":25,"dry_run":true}'
+#
+#   參數（全部選填，預設值寫在 plan_tiers 裡，看得見也改得動）：
+#     ai_daily_quota    每日 Workers AI 額度基數（neurons）。**人宣告**，0／不給 ⇒ 背景層不跑
+#     background_share  背景作業可用的比例（leo：「我同意用 50%／90% 去跑」）。預設 0.2
+#     batch             單層單次最多補幾筆（kbdb 端硬上限 100）。預設 25
+#     dry_run           true ⇒ 只規劃不補算，預設 false
+#
+# ── 圖形（為什麼長這樣）──
+#   plan_tiers 只**規劃**（產出「這次每層各補幾筆、時間窗是哪一段」的資料），
+#   「這次到底要不要花額度」是**分支**，交給 `if_control` ＋ ON_TRUE／ON_FALSE 決定，
+#   不寫在 code 裡（D38 意圖規則 R3／R4：需要判斷用分支邊，code 只做局部整形）。
+#   ON_FALSE 直接進 report ⇒ **不花額度的那次也看得到為什麼**，不是靜默什麼都沒發生。
+
+name: embed_backfill_tiered
+description: >
+  語意向量分層補算（Arcrun#85 D70）：照 leo 的優先序「①今天寫的立刻／②本週先跑／
+  ④半年前只吃剩下的」分層呼叫 KBDB 補嵌端點，每次被觸發時看當日額度、誠實停損。
+  無 cron、無輪詢（D20）；額度基數由人宣告，查不到不猜。
+  ③「有查詢紀錄的庫優先」本實例做不到（沒有查詢紀錄機制），report 會明說。
+
+flow:
+  - "input >> ON_SUCCESS >> read_backfill_status"
+  - "read_backfill_status >> ON_SUCCESS >> plan_tiers"
+  - "plan_tiers >> ON_SUCCESS >> spend_gate"
+  - "spend_gate >> ON_TRUE >> take_plan"
+  - "spend_gate >> ON_FALSE >> report"
+  - "take_plan >> 對每個 tier >> backfill_tier"
+  - "take_plan >> ON_SUCCESS >> report"
+
+config:
+  # 1) 先問庫：待補多少、已補多少、模組開了沒。
+  #    刻意排在任何補算之前——模組沒開（沒有 Vectorize+AI binding）時 kbdb 誠實回
+  #    enabled:false，spend_gate 會走 FALSE，不會白打一輪 AI。
+  read_backfill_status:
+    component: http_request
+    method: GET
+    url: "__KBDB_BASE__/embed/backfill/status?owner_id=__NAMESPACE__"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 2) 把 leo 的四層翻成「這次每層各補幾筆、各自的時間窗是哪一段」。
+  #    ⚠️ 這裡是**局部整形**：算日界線、切預算、組清單。真正的工作（挑哪些列、打 AI、
+  #    寫 D1、記額度）全在 kbdb 那一側，本節點一行都不做；要不要花額度也不在這裡決定
+  #    （那是下游 spend_gate 的事）。
+  #    策略住在這裡而不是焊進資料層，正是 #85 的要求——leo 的優先序下週會變，
+  #    住在工作流才看得見、才改得動（D70）。
+  plan_tiers:
+    component: code
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function num(v, d) { var n = Number(v); return isFinite(n) ? n : d; }
+
+      var st = parse(input.status_body) || {};
+      var enabled = st.enabled === true;
+
+      var DAY = 86400;
+      var now = Math.floor(Date.now() / 1000);
+      // UTC 日切：刻意與 kbdb 每日額度計數器（entries 一列/日，id 帶 UTC 日期）同一條線，
+      // 否則工作流以為換日了、庫還在算昨天的額度，兩邊的「今天」對不起來。
+      var todayStart = Math.floor(now / DAY) * DAY;
+      var weekStart = todayStart - 6 * DAY;
+      var FUTURE = 9999999999;   // until 的開放上界（半開區間 [since, until)，不能傳 0）
+
+      var batch = Math.min(Math.max(Math.round(num(input.batch, 25)), 1), 100);
+      var quotaBase = Math.max(0, Math.round(num(input.ai_daily_quota, 0)));
+      var share = Math.min(Math.max(num(input.background_share, 0.2), 0), 1);
+      var dryRun = String(input.dry_run) === 'true';
+      var bgBudget = quotaBase > 0 ? Math.floor(quotaBase * share) : 0;
+
+      var notes = [];
+      var blocked = [{
+        tier: 3,
+        name: '有被查詢紀錄的庫優先',
+        reason: '本實例沒有任何查詢紀錄機制（沒有 query log／search log），無從判斷「哪個庫有人在查」。在查詢留下紀錄之前，本層降級為不排程。',
+        unblock_by: '先讓查詢留下可統計的紀錄，再把庫名餵進 backfill 的 library 參數（資料層介面已備）'
+      }];
+
+      // ① 今天寫的：立刻，不受背景比例節制（leo：「今天寫一篇筆記，立刻能查到，有感」）
+      var planned = [{
+        tier: 1, name: '今天寫的', since: todayStart, until: FUTURE, limit: batch,
+        governed_by: '不受背景比例節制——這一層就是 leo 說的「有感」'
+      }];
+
+      // ②④ 背景層：吃「人宣告的基數 × 比例」。②拿大頭，④只吃剩下的。
+      var l2 = Math.min(batch, Math.max(1, Math.floor(bgBudget * 0.7)));
+      var l4 = Math.min(batch, Math.max(0, bgBudget - l2));
+      var bgTiers = [
+        { tier: 2, name: '本週還在跑的', since: weekStart, until: todayStart, limit: l2,
+          governed_by: '背景預算的大頭（宣告基數 × ' + Math.round(share * 100) + '% × 70%）' },
+        { tier: 4, name: '半年前的（其餘存量）', since: 0, until: weekStart, limit: l4,
+          governed_by: '只吃 ② 之後剩下的，不與 ①② 搶' }
+      ].filter(function (t) { return bgBudget > 0 && t.limit >= 1; });
+
+      planned = planned.concat(bgTiers);
+
+      if (!enabled) notes.push('KBDB 回報 embed 模組未開（沒有 Vectorize + AI binding）⇒ 這次一層都不跑。要開：叫 CC「幫我開語義查詢」。');
+      if (dryRun) notes.push('dry_run=true ⇒ 只規劃不補算（planned 就是「真的跑會做什麼」）。');
+      if (bgBudget <= 0) notes.push('沒有宣告 ai_daily_quota（每日額度基數）⇒ 背景層 ②④ 這次不排。Cloudflare 查得到「今天用了多少」卻查不到「還剩多少」，基數只有人知道——查不到就不猜。');
+      if (bgBudget > 0 && l4 < 1) notes.push('④ 這次沒有配額——背景預算被 ② 用完了。這是設計如此（④ 只吃剩下的），不是漏排。');
+
+      // runnable：交給下游 spend_gate 判斷「這次要不要花額度」。
+      // 本節點只算出數字，不自己決定走哪條路（判斷是分支的事，不是 code 的事）。
+      var runnable = (enabled && !dryRun) ? planned.length : 0;
+
+      return {
+        success: true,
+        runnable: runnable,
+        tiers: planned,
+        blocked: blocked,
+        notes: notes,
+        enabled: enabled,
+        dry_run: dryRun,
+        pending_before: num(st.pending, -1),
+        embedded_before: num(st.embedded, -1),
+        quota_base_declared: quotaBase,
+        background_share: share,
+        background_budget: bgBudget,
+        batch: batch,
+        window: { now: now, today_start: todayStart, week_start: weekStart }
+      };
+    input:
+      status_body: "{{read_backfill_status.data.body}}"
+      ai_daily_quota: "{{input.ai_daily_quota}}"
+      background_share: "{{input.background_share}}"
+      batch: "{{input.batch}}"
+      dry_run: "{{input.dry_run}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144
+
+  # 3) 這次到底要不要花額度？——分支，不是 code。
+  #    runnable=0 的三種來源（模組沒開／dry_run／沒東西可排）都走 ON_FALSE 直接進 report，
+  #    所以「這次什麼都沒做」也一定看得到原因。
+  spend_gate:
+    component: if_control
+    condition: "runnable > 0"
+    input:
+      runnable: "{{plan_tiers.data.runnable}}"
+
+  # 4) 把要跑的層帶過分支（分支邊只傳遞控制，這裡把 tiers 顯式接住給 FOREACH 用）。
+  take_plan:
+    component: set
+    values:
+      tiers: "{{plan_tiers.data.tiers}}"
+
+  # 5) 逐層呼叫補算端點。一層一次呼叫（一次一批），**不迴圈狂打**——
+  #    要補完得再被觸發一次，這正是「不掛 cron 也能有節奏」的做法：
+  #    每次被觸發時看今天還剩多少，剩多少做多少，做完就停。
+  #    kbdb 端自己還有一道每日 AI 額度閘（EMBED_BACKFILL_DAILY_LIMIT），
+  #    工作流這層的預算是自我節制，那層才是真正的停損。
+  backfill_tier:
+    component: http_request
+    method: POST
+    url: "__KBDB_BASE__/embed/backfill"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      owner_id: "__NAMESPACE__"
+      limit: "{{tier.limit}}"
+      since: "{{tier.since}}"
+      until: "{{tier.until}}"
+
+  # 6) 收工回報（整形）：各層補了幾筆、今天用掉多少額度、為什麼停、還剩多少。
+  #    這個節點的輸出就是同步觸發直接拿回來的回應，也是 leo 在工作流頁看到的東西。
+  report:
+    component: code
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function n0(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+
+      var plan = Array.isArray(input.tiers) ? input.tiers : [];
+      var raw = Array.isArray(input.results) ? input.results : [];
+      var ran = raw.length > 0 ? plan.slice(0, raw.length) : [];
+
+      var quotaLimit = null, quotaUsed = null, quotaExceeded = false;
+      var totalProcessed = 0, remainingTotal = 0;
+      var sawQuotaField = false;   // 資料層世代偵測，見下方 layering_effective
+
+      var lines = ran.map(function (t, i) {
+        var r = raw[i] || {};
+        var b = parse(r.data && r.data.body) || {};
+        var ok = r.success === true && b.success !== false;
+        totalProcessed += n0(b.processed);
+        remainingTotal += n0(b.remaining);
+        if (b.quota_limit !== undefined) { sawQuotaField = true; quotaLimit = n0(b.quota_limit); }
+        if (b.quota_used_today !== undefined) quotaUsed = n0(b.quota_used_today);
+        if (b.quota_exceeded === true) quotaExceeded = true;
+        return {
+          tier: t.tier, name: t.name, asked_limit: t.limit,
+          ok: ok, http_status: r.status === undefined ? null : r.status,
+          scanned: n0(b.scanned), processed: n0(b.processed),
+          skipped: n0(b.skipped), remaining_in_this_slice: n0(b.remaining),
+          error: ok ? null : (b.error || (r.data && r.data.body) || r.error || 'unknown')
+        };
+      });
+
+      // 🔴 資料層世代偵測（不假綠）：分層（since/until）與每日額度上限是同一批改動
+      //    （Arcrun#85 分支 fix/embed-backfill-d68）帶進來的。舊版 backfill 的回應**不含**
+      //    quota_limit 欄位，也**不認得** since/until ⇒ 這時三層其實是打同一條佇列、
+      //    而且舊版排序是 created_at ASC（由舊到新，正好與 leo 要的相反）。
+      //    ⇒ 沒看到 quota 欄位就直說「分層目前沒有生效」，不讓畫面看起來像已經分層了。
+      var layering = sawQuotaField
+        ? { effective: true, note: '資料層認得 since/until 與每日額度，分層與停損都真的生效。' }
+        : { effective: false, note: '⚠️ 這個實例的 KBDB 還是舊版：回應沒有 quota_limit 欄位 ⇒ 它不認得 since/until，三層實際上打的是同一條佇列，而且舊版排序是 created_at ASC（由舊到新，與 leo 要的相反）。工作流的形體已經對了，但要真的分層，必須先把 Arcrun#85 的資料層改動部署上去。' };
+
+      // 「為什麼停」——一律給得出具體理由，沒有「跑完了」這種含糊答案。
+      var reasons = [
+        { when: input.enabled !== true, say: 'embed 模組沒開（KBDB 回 enabled:false）⇒ 這次什麼都沒做。' },
+        { when: input.dry_run === true, say: 'dry_run=true ⇒ 只規劃沒補算。planned 就是真的跑會做的事。' },
+        { when: quotaExceeded, say: '撞到 KBDB 的每日 AI 補算額度上限，誠實停手（今天到此為止；明天再被觸發會接著做）。' },
+        { when: ran.length === 0, say: '這次沒有排到任何一層（見 notes）——不是壞掉，是規劃階段就決定不花額度。' },
+        { when: remainingTotal === 0 && totalProcessed === 0, say: '排到的每一層都沒有待補的資料（remaining=0）——這些時間窗裡沒有 is_embedded=0 的列。' },
+        { when: remainingTotal > 0, say: '本批做完（一次觸發只做一批，不迴圈狂打）。remaining>0 ⇒ 再觸發一次會接著做。' },
+        { when: true, say: '本批做完，且排到的層都補乾淨了。' }
+      ].filter(function (x) { return x.when; });
+
+      return {
+        success: true,
+        workflow: 'embed_backfill_tiered',
+        stopped_because: reasons[0].say,
+        layering_effective: layering,
+        ran_tiers: lines,
+        total_processed: totalProcessed,
+        remaining_after: remainingTotal,
+        pending_before: input.pending_before,
+        embedded_before: input.embedded_before,
+        quota: {
+          ai_daily_quota_declared: input.quota_base_declared,
+          background_share: input.background_share,
+          background_budget: input.background_budget,
+          kbdb_daily_limit: quotaLimit,
+          kbdb_used_today: quotaUsed,
+          kbdb_quota_exceeded: quotaExceeded
+        },
+        planned: plan,
+        blocked_tiers: input.blocked,
+        notes: input.notes
+      };
+    input:
+      tiers: "{{plan_tiers.data.tiers}}"
+      results: "{{take_plan.results}}"
+      blocked: "{{plan_tiers.data.blocked}}"
+      notes: "{{plan_tiers.data.notes}}"
+      enabled: "{{plan_tiers.data.enabled}}"
+      dry_run: "{{plan_tiers.data.dry_run}}"
+      pending_before: "{{plan_tiers.data.pending_before}}"
+      embedded_before: "{{plan_tiers.data.embedded_before}}"
+      quota_base_declared: "{{plan_tiers.data.quota_base_declared}}"
+      background_share: "{{plan_tiers.data.background_share}}"
+      background_budget: "{{plan_tiers.data.background_budget}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144

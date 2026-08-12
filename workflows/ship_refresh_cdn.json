@@ -1,21 +1,12 @@
 {
   "name": "ship_refresh_cdn",
-  "description": "讓 CDN（jsDelivr）拿到新版並確認它真的收斂了：對每個嘗試次數 purge 指定的幾個路徑、等待、再讀一次 manifest 比對 release／daemon 版本，回報每次嘗試的結果與最終是否收斂。出貨管線 ship.mjs 的 purge-jsdelivr 步驟走這個工作流。",
+  "description": "讓 CDN（jsDelivr）拿到新版並確認它真的收斂了：purge 指定的幾個路徑、等待、再讀一次 manifest 比對 release／daemon 版本，回報這一次嘗試的結果。出貨管線 ship.mjs 的 purge 步驟走這個工作流。\n\n🔴 2026-08-11（Leo/arcrun-rag#79）：這支原本自己內部用 FOREACH 跑 4 次重試（gen_attempts → 4 圈 purge+wait+fetch+check → summarize），結果第一次真的被執行（#79 同批修的 runWorkflow 匯入漏洞）就撞上 Cloudflare Worker 的 subrequest 上限死在最後一個節點。查證：FOREACH 沒有「已經收斂就提早停」的能力（Arcrun 引擎的 FOREACH 是無條件跑完整個陣列，不是 loop-until），所以無論收不收斂都固定燒 4 圈份的請求——每圈 6 個 Component 節點、每個節點是一次零件呼叫＋一次 telemetry 落地（cypher-executor 的通用 observability，不是這支 workflow 自己加的），4 圈下來逼近 Worker 單次 invocation 的 subrequest 上限。\n\n修法：這支工作流現在只做「一次」purge+wait+fetch+check，不再自帶重試迴圈。重試改由呼叫端（ship.mjs 的 purge 站）用一般迴圈重複觸發這支工作流、收斂了就提早停——因為 Arcrun 目前沒有 loop-until 這種邊，跨嘗試的「已經成功就別再打」只有呼叫端（每次呼叫都是全新的 Worker invocation，subrequest 預算重新歸零）才做得到。這樣單次 invocation 的成本固定在 ~11 個 subrequest（6 個節點 × 1~2），不管呼叫端重試幾次都不會再撞上限。實際打 jsDelivr／等待／讀 manifest／比對 三步全部仍在 Arcrun 做，符合 D70——搬到呼叫端的只是「要不要再打一次」這個決定，不是任何一個網路動作本身。"
+  ,
   "graph": {
     "id": "ship_refresh_cdn",
     "name": "ship_refresh_cdn",
     "nodes": [
       { "id": "input", "type": "Input", "componentId": "input", "label": "input" },
-      {
-        "id": "gen_attempts",
-        "type": "Component",
-        "componentId": "code",
-        "label": "gen_attempts",
-        "data": {
-          "input": { "tries": "{{input.tries}}" },
-          "code": "var n = (typeof input.tries === 'number' && input.tries > 0 && input.tries) || 4;\nvar arr = [];\nArray(n).fill(0).forEach(function(_, i) { arr.push(i + 1); });\nreturn { attempts: arr };"
-        }
-      },
       {
         "id": "purge_manifest",
         "type": "Component",
@@ -58,34 +49,22 @@
         "label": "check_convergence",
         "data": {
           "input": {
-            "attempt": "{{attempt}}",
+            "attempt": "{{input.attempt}}",
             "expect_release": "{{input.expect_release}}",
             "expect_daemon": "{{input.expect_daemon}}",
             "fetch": "{{fetch_manifest}}"
           },
-          "code": "function isTemplateLeak(v) {\n  return typeof v === 'string' && /^\\{\\{.*\\}\\}$/.test(v);\n}\nvar fetchNode = (input && input.fetch) || {};\nvar body = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar parsed = null;\ntry { parsed = JSON.parse(body); } catch (e) {}\nvar actualRelease = (parsed && parsed.release) || null;\nvar actualDaemon = (parsed && parsed.daemon && parsed.daemon.version) || null;\nvar expectRelease = (!isTemplateLeak(input.expect_release) && input.expect_release) || null;\nvar expectDaemon = (!isTemplateLeak(input.expect_daemon) && input.expect_daemon) || null;\nvar releaseOk = (!expectRelease) || (actualRelease === expectRelease);\nvar daemonOk = (!expectDaemon) || (actualDaemon === expectDaemon);\nreturn {\n  attempt: input.attempt,\n  fetch_ok: fetchNode.success === true,\n  actual_release: actualRelease,\n  actual_daemon: actualDaemon,\n  expect_release: expectRelease,\n  expect_daemon: expectDaemon,\n  converged: releaseOk && daemonOk\n};"
-        }
-      },
-      {
-        "id": "summarize",
-        "type": "Component",
-        "componentId": "code",
-        "label": "summarize",
-        "data": {
-          "input": { "attempts": "{{gen_attempts.results}}" },
-          "code": "var attempts = (Array.isArray(input.attempts) && input.attempts) || [];\nvar matched = attempts.some(function(a) { return a && a.data && a.data.converged === true; });\nvar firstMatch = attempts.find(function(a) { return a && a.data && a.data.converged === true; });\nreturn {\n  tries: attempts.length,\n  converged: matched,\n  converged_at_attempt: (firstMatch && firstMatch.data && firstMatch.data.attempt) || null,\n  attempts: attempts\n};"
+          "code": "function isTemplateLeak(v) {\n  return typeof v === 'string' && /^\\{\\{.*\\}\\}$/.test(v);\n}\nvar fetchNode = (input && input.fetch) || {};\nvar body = (fetchNode.data && typeof fetchNode.data.body === 'string' && fetchNode.data.body) || '';\nvar parsed = null;\ntry { parsed = JSON.parse(body); } catch (e) {}\nvar actualRelease = (parsed && parsed.release) || null;\nvar actualDaemon = (parsed && parsed.daemon && parsed.daemon.version) || null;\nvar expectRelease = (!isTemplateLeak(input.expect_release) && input.expect_release) || null;\nvar expectDaemon = (!isTemplateLeak(input.expect_daemon) && input.expect_daemon) || null;\nvar attemptVal = (!isTemplateLeak(input.attempt) && input.attempt) || null;\nvar releaseOk = (!expectRelease) || (actualRelease === expectRelease);\nvar daemonOk = (!expectDaemon) || (actualDaemon === expectDaemon);\nreturn {\n  attempt: attemptVal,\n  fetch_ok: fetchNode.success === true,\n  actual_release: actualRelease,\n  actual_daemon: actualDaemon,\n  expect_release: expectRelease,\n  expect_daemon: expectDaemon,\n  converged: releaseOk && daemonOk\n};"
         }
       }
     ],
     "edges": [
-      { "from": "input", "to": "gen_attempts", "type": "PIPE" },
-      { "from": "gen_attempts", "to": "purge_manifest", "type": "FOREACH", "iterator": "attempt" },
+      { "from": "input", "to": "purge_manifest", "type": "PIPE" },
       { "from": "purge_manifest", "to": "purge_asset_a", "type": "PIPE" },
       { "from": "purge_asset_a", "to": "purge_asset_b", "type": "PIPE" },
       { "from": "purge_asset_b", "to": "wait_node", "type": "PIPE" },
       { "from": "wait_node", "to": "fetch_manifest", "type": "PIPE" },
-      { "from": "fetch_manifest", "to": "check_convergence", "type": "PIPE" },
-      { "from": "gen_attempts", "to": "summarize", "type": "PIPE" }
+      { "from": "fetch_manifest", "to": "check_convergence", "type": "PIPE" }
     ]
   }
 }

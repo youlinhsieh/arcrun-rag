@@ -90,7 +90,7 @@ import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
 import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
-import { assertWorkflowsExist, checkLive, describeChecks } from './ship-arcrun.mjs';
+import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
@@ -972,22 +972,49 @@ const STEPS = [
 //   再讀一次比對，重試到收斂。沒有一個動作需要碰 leo 這台機器上的任何東西。
 //   ⇒ 本機那支 `purge-jsdelivr.mjs` 從此不再是出貨路徑上的東西（留著當對照，
 //     它檔頭記著 2026-08-02 那次「用戶按檢查更新像沒反應」的實撞，是這件事的來由）。
+//
+// 🔴 arcrun-rag#79（2026-08-11）：重試迴圈**不再放進工作流本體**。
+//   查證：這一站自從搬去 Arcrun 之後，今天是它第一次真的被觸發（同批修的是
+//   `runWorkflow` 沒被 import——見 commit 4ce1420），一跑就在最後一個節點撞
+//   Cloudflare Worker 的「單次 invocation 子請求數上限」（HTTP 500）。
+//   根因不是額度給太小（付費帳號不太可能撞這個），是舊版 `ship_refresh_cdn`
+//   自己內部用 FOREACH 跑滿 4 圈 purge+wait+fetch+check——而 Arcrun 的 FOREACH
+//   沒有「已收斂就提早停」這個能力（沒有 loop-until 邊），所以不管第一次
+//   就收斂與否，四圈份的子請求（每圈 6 個節點×1~2 個子請求）都會被無條件燒完，
+//   逼近上限。
+//   修法：`ship_refresh_cdn` 工作流本體改成只做「一次」purge+wait+fetch+check
+//   （見 workflows/ship_refresh_cdn.json 的檔頭說明），重試迴圈搬到這裡——
+//   每次呼叫都是全新的 Worker invocation，子請求預算重新歸零，所以呼叫幾次
+//   都不會再撞上限；「已收斂就別再打」這個判斷，本來就沒辦法留在工作流裡
+//   （Arcrun 沒有 loop-until 原語），只能是呼叫端的事。實際打 jsDelivr／
+//   等待／讀 manifest／比對三步仍 100% 在 Arcrun 做，沒有違反 D70。
 { id: 'purge', title: '讓 CDN 拿到新版並確認它真的收斂了', mutates: true, async run() {
   if (!T.verify || !T.verify.fullChain) return { status: 'skip', detail: ['本目標不走 jsDelivr（登錄簿宣告）'] };
   const gh = 'youlinhsieh/arcrun-rag-bundles';
   const assets = ['manifest.json', 'daemon/ArcrunRAG-mac-unsigned.zip', 'daemon/ArcrunRAG-win-unsigned.zip'];
-  const out = await runWorkflow('ship_refresh_cdn', {
-    tries: 4,
-    wait_ms: 20000,
-    purge_urls: assets.map((p) => `https://purge.jsdelivr.net/gh/${gh}@main/${p}`),
-    manifest_url: `https://cdn.jsdelivr.net/gh/${gh}@main/manifest.json?cb=${Date.now()}`,
-    expect_release: ctx.release,
-    expect_daemon: ctx.daemonVersion,
-  }, { timeoutMs: 180000 });
-  const detail = [`Arcrun ship_refresh_cdn：試了 ${out.tries} 次｜收斂＝${out.converged ? '是' : '否'}`];
-  if (out.first_match) detail.push(`   第 ${out.first_match} 次就收斂了`);
-  if (out.last_seen) detail.push(`   CDN 最後讀到：release ${out.last_seen.release}／daemon ${out.last_seen.daemon}`);
-  if (!out.converged) {
+  const purgeUrls = assets.map((p) => `https://purge.jsdelivr.net/gh/${gh}@main/${p}`);
+  const maxTries = 4;
+  const seen = [];
+  let out = null;
+  let convergedAt = null;
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    out = await runWorkflow('ship_refresh_cdn', {
+      attempt,
+      wait_ms: 20000,
+      purge_urls: purgeUrls,
+      manifest_url: `https://cdn.jsdelivr.net/gh/${gh}@main/manifest.json?cb=${attempt}_${Date.now()}`,
+      expect_release: ctx.release,
+      expect_daemon: ctx.daemonVersion,
+    }, { timeoutMs: 60000 });
+    seen.push(`第 ${attempt} 次：release=${out && out.actual_release}／daemon=${out && out.actual_daemon}`);
+    if (out && out.converged) { convergedAt = attempt; break; }
+  }
+  const converged = !!convergedAt;
+  const detail = [`Arcrun ship_refresh_cdn：試了 ${seen.length} 次｜收斂＝${converged ? '是' : '否'}`];
+  if (convergedAt) detail.push(`   第 ${convergedAt} 次就收斂了`);
+  if (out) detail.push(`   CDN 最後讀到：release ${out.actual_release}／daemon ${out.actual_daemon}`);
+  detail.push(...seen.map((l) => `   ${l}`));
+  if (!converged) {
     // 這一句在 purge-jsdelivr.mjs 就是這樣寫的，語氣刻意不軟化：
     // CDN 沒收斂＝**用戶此刻拿不到新版**，那就不是「出貨完成」。
     throw new Error(
