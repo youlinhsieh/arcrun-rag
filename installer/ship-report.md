@@ -1,5 +1,5 @@
-出貨報告　release 1.4.43　共 19 站（上次（1.4.42）19 站　無增減）
-來源（stage）＝Arcrun@2fcae722e7d7　｜　來源（prod）＝Arcrun@2fcae722e7d7
+出貨報告　release 1.4.44　共 19 站（上次（1.4.43）19 站　無增減）
+來源（stage）＝Arcrun@1ccee0055ebd　｜　來源（prod）＝Arcrun@1ccee0055ebd
 機器（stage）＝9f06f3113188　｜　機器（prod）＝9f06f3113188
 
 | 件次 | 項目 | stage | prod |
@@ -13,37 +13,30 @@
 | 7 | 產生更新畫面那一行（來源＝changelog） | ⬜ | ⬜ |
 | 8 | 算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼） | ✅ | ✅ |
 | 9 | 確認這版已經寫進說明文件（缺了就中止，不安靜跳過） | ✅ | ✅ |
-| 10 | bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字） | ⬜ | ⬜ |
-| 11 | 把產物寫進 bundle repo 的版控 | ⬜ | ⬜ |
-| 12 | 推上 bundle repo | ⬜ | ⬜ |
-| 13 | 換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋） | ⬜ | ⬜ |
-| 14 | 部署安裝器（帳號由登錄簿釘死） | ⬜ | ⬜ |
+| 10 | bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字） | ⬜ | ✅ |
+| 11 | 把產物寫進 bundle repo 的版控 | ⬜ | ✅ |
+| 12 | 推上 bundle repo | ⬜ | ✅ |
+| 13 | 換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋） | ⬜ | ✅ |
+| 14 | 部署安裝器（帳號由登錄簿釘死） | ⬜ | ✅ |
 | 15 | 建＋部署說明文件站，並驗「使用者查得到這一版」 | ✅ | ✅ |
 | 16 | 部署郵差（忘記密碼代寄），並驗證它真的接得起來 | ✅ | ✅ |
 | 17 | 讓送貨管道拿到新版並確認它真的收斂了 | ✅ | ✅ |
 | 18 | 驗收（用戶端視角，不是部署訊息） | ✅ | ✅ |
-| 19 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | ⬜ | ⬜ |
+| 19 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | ⬜ | ✅ |
 
-真的做事的站：stage 11／19 站（與上次相同）　｜　prod 11／19 站（上次 17 站）
-⚠️ prod 這次比上次**少做 6 站**——站數一樣不代表做的事一樣。底下「跳過的站」逐條寫了原因；若某一條不是「沒事可做」，那就是漏了。
+真的做事的站：stage 11／19 站（與上次相同）　｜　prod 17／19 站（上次 11 站）
 
-⬜ 跳過的站（16 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
-   · stage｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.26
-   · stage｜notes：已是最新：不會再把整理結果寫進你的 Logseq／Obsidian 筆記庫・不會再無聲蓋掉你原本就有的檔案
+⬜ 跳過的站（10 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
+   · stage｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.27
+   · stage｜notes：已是最新：監看的是筆記庫「裡面的某個資料夾」時，保護不會再失效・機器寫的檔案，一眼就看得出不是你自己的
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜push：已與遠端同步，沒有要推的
-   · stage｜pin：釘子與安裝器原始碼都沒動（built 2026-08-12，src ace25cb03bc7）
-   · stage｜deploy：線上已是 1.4.43／pin fed72eb／安裝器原始碼 ace25cb03bc7 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜pin：釘子與安裝器原始碼都沒動（built 2026-08-13，src ace25cb03bc7）
+   · stage｜deploy：線上已是 1.4.44／pin 9b106bf／安裝器原始碼 ace25cb03bc7 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜github-release：本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）
    · prod｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.26
    · prod｜notes：已是最新：不會再把整理結果寫進你的 Logseq／Obsidian 筆記庫・不會再無聲蓋掉你原本就有的檔案
-   · prod｜readme：README 已是最新（零件清單與版本都沒變）
-   · prod｜commit：工作區乾淨——這一版的產物已經在版控裡了
-   · prod｜push：已與遠端同步，沒有要推的
-   · prod｜pin：釘子已是 1571ea8（built 2026-08-12），不需要動
-   · prod｜deploy：線上已是 1.4.43／pin 1571ea8，且釘子沒動 ⇒ 不重複部署
-   · prod｜github-release：GitHub 已有 v1.4.43：https://github.com/youlinhsieh/arcrun-rag/releases/tag/v1.4.43
 
 件數：stage 19 站　｜　prod 19 站
 ✅ 兩欄件數相同（19 站）——暫存站有的，上架也有

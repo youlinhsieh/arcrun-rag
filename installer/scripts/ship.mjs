@@ -103,6 +103,7 @@ import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, CORE_COMPONENTS, diffAgainst
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
+import { resolveDaemonDist } from './daemon-dist.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
@@ -651,22 +652,28 @@ const STEPS = [
     return { status: 'skip', detail: [`bundle 已是 changelog 最新已發佈版：${want}`] };
   }
 
-  const distDir = join(REPO_ROOT, DAEMON_DIST_REL);
-  if (!existsSync(distDir)) throw new Error(`找不到 daemon 產物目錄 ${DAEMON_DIST_REL}`);
   // 檔名規則與 collector 的打包腳本一致；缺 mac／win 就是還沒打完，不准含糊出貨。
   const wanted = [
     { key: 'mac', file: `Arcrun-${want}.dmg`, required: true },
     { key: 'win', file: `Arcrun-win-${want}.exe`, required: true },
     { key: 'msix', file: `Arcrun-${want}.msix`, required: false },
   ];
-  const missing = wanted.filter((w) => w.required && !existsSync(join(distDir, w.file)));
-  if (missing.length) {
+  // dist/ 是 gitignored 的本機建置產物，每個 git worktree 各自一份——打包與出貨若
+  // 發生在不同 worktree（本 repo 常規做法：每個修法開一個獨立 worktree），只看
+  // `REPO_ROOT`（自己所在那個 worktree）會找不到別的 worktree 打好的檔案，誤判成
+  // 「沒有新版可搬」而安靜跳過（2026-08-13 實撞，daemon-dist.mjs 檔頭有完整背景）。
+  // ⇒ 用 git 的 worktree 中繼資料掃過本 repo 所有 worktree，不是新開一個共用目錄。
+  const requiredFiles = wanted.filter((w) => w.required).map((w) => w.file);
+  const resolved = resolveDaemonDist({ repoRoot: REPO_ROOT, distRel: DAEMON_DIST_REL, requiredFiles });
+  if (!resolved.dir) {
     throw new Error(
-      `changelog 說 ${want} 已發佈，但 ${DAEMON_DIST_REL} 裡找不到它的產物：\n` +
-      missing.map((w) => `       • ${w.file}`).join('\n') + '\n' +
-      `     → 先把 ${want} 的桌面 App 打包出來（Mac 與 Windows 都要），再出貨；\n` +
+      `changelog 說 ${want} 已發佈，但下列位置（本 repo 目前所有 worktree 的 ${DAEMON_DIST_REL}）都找不到完整產物：\n` +
+      resolved.tried.map((d) => `       • ${d}`).join('\n') + '\n' +
+      `     → 先把 ${want} 的桌面 App 打包出來（Mac 與 Windows 都要，在本 repo 任一個 worktree 皆可），再出貨；\n` +
       `     → 若這版本來就不該出，把 changelog 最上面那段改回「下一版（未發佈）」草稿。`);
   }
+  const distDir = resolved.dir;
+  const fromOtherWorktree = resolved.worktree !== REPO_ROOT;
 
   mkdirSync(dstDir, { recursive: true });
   const before = m.daemon && m.daemon.version;
@@ -688,7 +695,7 @@ const STEPS = [
   m.daemon = daemon;
   writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
   return { status: 'done', detail: [
-    `daemon ${before || '(無)'} → ${want}（來源 ${DAEMON_DIST_REL}）`,
+    `daemon ${before || '(無)'} → ${want}（來源 ${distDir}${fromOtherWorktree ? '　⚠️ 取自另一個 worktree，不是這次執行 ship.mjs 的這個' : ''}）`,
     `複製 ${copied.length} 個安裝檔並重算 sha256：${copied.join('、')}`,
     `built=${daemon.built}（由產物 mtime 推導）`,
   ] };

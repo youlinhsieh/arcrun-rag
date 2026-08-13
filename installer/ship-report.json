@@ -1730,5 +1730,249 @@
    "machine": "9f06f3113188",
    "ts": 1786613356953
   }
+ },
+ "1.4.44": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已是 changelog 最新已發佈版：v0.18.27"
+    },
+    {
+     "id": "daemon-check",
+     "title": "核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "build",
+     "title": "從來源重打 bundle（版本號由內容算，不由人宣告）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：監看的是筆記庫「裡面的某個資料夾」時，保護不會再失效・機器寫的檔案，一眼就看得出不是你自己的"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "skip",
+     "note": "已與遠端同步，沒有要推的"
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
+     "status": "skip",
+     "note": "釘子與安裝器原始碼都沒動（built 2026-08-13，src ace25cb03bc7）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.44／pin 9b106bf／安裝器原始碼 ace25cb03bc7 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站，並驗「使用者查得到這一版」",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "github-release",
+     "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
+     "status": "skip",
+     "note": "本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）"
+    }
+   ],
+   "sourceCommit": "Arcrun@1ccee0055ebd",
+   "machine": "9f06f3113188",
+   "ts": 1786618458731
+  },
+  "prod": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已是 changelog 最新已發佈版：v0.18.26"
+    },
+    {
+     "id": "daemon-check",
+     "title": "核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "build",
+     "title": "從來源重打 bundle（版本號由內容算，不由人宣告）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：不會再把整理結果寫進你的 Logseq／Obsidian 筆記庫・不會再無聲蓋掉你原本就有的檔案"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站，並驗「使用者查得到這一版」",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "github-release",
+     "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
+     "status": "done",
+     "note": null
+    }
+   ],
+   "sourceCommit": "Arcrun@1ccee0055ebd",
+   "machine": "9f06f3113188",
+   "ts": 1786617224371
+  }
  }
 }
