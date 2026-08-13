@@ -303,6 +303,7 @@ const ctx = {
   release: null, releaseBefore: null, daemonVersion: null,
   built: null,   // manifest.built＝使用者在 /api/latest 看到的建置日（見 version／pin／verify）
   headSha: null, pinUrl: null,
+  installerSrcHash: null, // 安裝器原始碼指紋（arcrun-rag#95）——見 pin／deploy／verify 三站
   liveBefore: null,
   pinChanged: false, pushed: false,
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
@@ -562,12 +563,14 @@ const STEPS = [
     try {
       const live = await checkLive({
         url: `${T.verify.installerBase}/api/latest?${cb()}`,
-        checks: [{ label: 'release', path: 'release' }, { label: 'pin', path: 'pin' }],
+        // installer_sha：見 arcrun-rag#95——deploy 站要靠它發現「安裝器原始碼變了
+        // 但 release／pin 沒動」這種以前完全隱形的情況，不能只問 release／pin。
+        checks: [{ label: 'release', path: 'release' }, { label: 'pin', path: 'pin' }, { label: 'installer_sha', path: 'installer_sha' }],
       });
       if (!live.fetch_ok) throw new Error(live.fetch_error || '抓不到');
       const val = (l) => (live.results.find((r) => r.label === l) || {}).actual;
-      ctx.liveBefore = { release: val('release'), pin: val('pin') };
-      lines.push(`線上現況（Arcrun ship_check_live 去看的）：release ${ctx.liveBefore.release}｜pin ${ctx.liveBefore.pin}`);
+      ctx.liveBefore = { release: val('release'), pin: val('pin'), installerSrcHash: val('installer_sha') };
+      lines.push(`線上現況（Arcrun ship_check_live 去看的）：release ${ctx.liveBefore.release}｜pin ${ctx.liveBefore.pin}｜installer_sha ${String(ctx.liveBefore.installerSrcHash || '(無)').slice(0, 12)}`);
     } catch (e) { lines.push(`線上現況：讀不到（${e.message}）`); }
   }
   return { status: 'done', detail: lines };
@@ -974,22 +977,31 @@ const STEPS = [
 }},
 
 // ── 6. pin：換釘子。**寫進所有真身**，不靠人記得改哪幾處 ────────────────────
-{ id: 'pin', title: '換安裝器釘子（真身是 wrangler.toml 的 vars）', mutates: true, async run() {
+// 🔴 08-13（arcrun-rag#95）：這裡順便寫一根「安裝器原始碼指紋」的釘子——
+//   deploy 站的跳過判準原本只認這裡寫的 BUNDLE_BASE／BUNDLE_BUILT 有沒有動，
+//   對「安裝器自己的邏輯改了，但沒動 bundle 釘子」完全瞎眼（連兩次跨 stage／prod
+//   實撞：改了 worker.js → 併 main → 出貨 → deploy 站印「跳過」→ 線上原封不動）。
+//   INSTALLER_SRC_SHA 一變，下面 `toml !== before` 就成立 ⇒ 沿用既有的
+//   「toml 變了＝pinChanged＝deploy 站不准跳過」機制，不必另開一條比對路。
+{ id: 'pin', title: '換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）', mutates: true, async run() {
   if (!T.pin || !T.installer) return { status: 'skip', detail: ['本目標沒有安裝器（登錄簿宣告）'] };
   ctx.headSha = ctx.headSha || sh('git', ['rev-parse', 'HEAD'], ctx.bundlesDir);
   const sha = T.pin.shaLen === 40 ? ctx.headSha : ctx.headSha.slice(0, T.pin.shaLen);
   ctx.pinUrl = T.pin.template.replace('{sha7}', ctx.headSha.slice(0, 7)).replace('{sha40}', ctx.headSha);
   const built = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8')).built;
 
+  const jsPath = join(REPO_ROOT, T.installer.cwd, 'worker.js');
+  ctx.installerSrcHash = installerSourceHash(jsPath);
+
   const tomlPath = join(REPO_ROOT, T.installer.cwd, T.installer.config);
   let toml = readFileSync(tomlPath, 'utf8');
   const before = toml;
   toml = setTomlVar(toml, T.installer.varsSection, 'BUNDLE_BASE', ctx.pinUrl);
   toml = setTomlVar(toml, T.installer.varsSection, 'BUNDLE_BUILT', built);
+  toml = setTomlVar(toml, T.installer.varsSection, 'INSTALLER_SRC_SHA', ctx.installerSrcHash);
 
   // 🔴 08-07 白部署一次的病：釘子有**兩份手抄本**（wrangler.toml [vars] 與 worker.js 常數），
   //    只改一份就是「改了但沒生效」。這裡兩份一起寫 ⇒ 結構上不可能只改一半。
-  const jsPath = join(REPO_ROOT, T.installer.cwd, 'worker.js');
   let js = readFileSync(jsPath, 'utf8');
   const jsBefore = js;
   if (T.installer.mirrorConstants) {
@@ -998,7 +1010,7 @@ const STEPS = [
   }
 
   if (toml === before && js === jsBefore) {
-    return { status: 'skip', detail: [`釘子已是 ${sha.slice(0, 7)}（built ${built}），不需要動`] };
+    return { status: 'skip', detail: [`釘子與安裝器原始碼都沒動（built ${built}，src ${ctx.installerSrcHash.slice(0, 12)}）`] };
   }
   writeFileSync(tomlPath, toml);
   if (js !== jsBefore) writeFileSync(jsPath, js);
@@ -1006,19 +1018,32 @@ const STEPS = [
   return { status: 'done', detail: [
     `[${T.installer.varsSection}] BUNDLE_BASE = ${ctx.pinUrl}`,
     `[${T.installer.varsSection}] BUNDLE_BUILT = ${built}`,
+    `[${T.installer.varsSection}] INSTALLER_SRC_SHA = ${ctx.installerSrcHash.slice(0, 12)}…`,
     T.installer.mirrorConstants ? 'worker.js 的兩個常數同步寫入（不留第二份手抄本）' : 'worker.js 常數不鏡射（本目標靠 vars 覆蓋）',
   ] };
 }},
 
 // ── 7. deploy：帳號來自登錄簿，不吃環境裡飄來的 CLOUDFLARE_ACCOUNT_ID ────────
+// 🔴 08-13（arcrun-rag#95）：跳過判準以前只認 release／pin，對安裝器自己的原始碼瞎眼
+//   ——連兩次跨 stage／prod 實撞：只改 worker.js、bundle 沒動，這裡照樣印「跳過」，
+//   線上頁面原封不動。`ctx.pinChanged` 現在已經因為 pin 站寫入 INSTALLER_SRC_SHA
+//   而涵蓋這種情況（belt）；這裡再多比一次線上實際回報的 installer_sha 當第二道
+//   （suspenders）——就算哪天 pin 站的邏輯被改壞，這裡仍然攔得住。
 { id: 'deploy', title: '部署安裝器（帳號由登錄簿釘死）', mutates: true, async run() {
   if (!T.installer) return { status: 'skip', detail: ['本目標沒有安裝器（登錄簿宣告）'] };
+  ctx.installerSrcHash = ctx.installerSrcHash
+    || installerSourceHash(join(REPO_ROOT, T.installer.cwd, 'worker.js')); // --verify-only 等模式沒跑過 pin 站
+  const srcOk = ctx.liveBefore && ctx.liveBefore.installerSrcHash === ctx.installerSrcHash;
   const liveOk = ctx.liveBefore
     && ctx.liveBefore.release === ctx.release
-    && ctx.headSha && String(ctx.liveBefore.pin || '').startsWith(ctx.headSha.slice(0, 7));
+    && ctx.headSha && String(ctx.liveBefore.pin || '').startsWith(ctx.headSha.slice(0, 7))
+    && srcOk;
   if (!ctx.pinChanged && liveOk) {
-    return { status: 'skip', detail: [`線上已是 ${ctx.release}／pin ${ctx.liveBefore.pin}，且釘子沒動 ⇒ 不重複部署`] };
+    return { status: 'skip', detail: [`線上已是 ${ctx.release}／pin ${ctx.liveBefore.pin}／安裝器原始碼 ${ctx.installerSrcHash.slice(0, 12)} 未變，且釘子沒動 ⇒ 不重複部署`] };
   }
+  // 走到這裡＝要部署。兩種情況都會落到這裡：pin 站已經宣告釘子動了（ctx.pinChanged），
+  // 或者 pin 站沒動但這裡比對出線上安裝器原始碼其實對不上（srcOk 為 false）
+  // ——寧可多部署一次，也不要讓「該做的事沒做」悄悄過關。
   const args = ['wrangler', 'deploy', '--config', T.installer.config];
   if (T.installer.wranglerEnv) args.push('--env', T.installer.wranglerEnv);
   // 🔴 「打錯實例」的第二個入口：ambient CLOUDFLARE_ACCOUNT_ID。這裡一律用登錄簿的值覆蓋。
@@ -1184,6 +1209,9 @@ const STEPS = [
   ctx.headSha = ctx.headSha || sh('git', ['rev-parse', 'HEAD'], ctx.bundlesDir);
   ctx.pinUrl = ctx.pinUrl
     || T.pin.template.replace('{sha7}', ctx.headSha.slice(0, 7)).replace('{sha40}', ctx.headSha);
+  // 同理：安裝器原始碼指紋（arcrun-rag#95）——`--verify-only` 沒跑過 pin 站也要能算。
+  ctx.installerSrcHash = ctx.installerSrcHash
+    || (T.installer && installerSourceHash(join(REPO_ROOT, T.installer.cwd, 'worker.js')));
 
   // ① 安裝器對外宣告的版本＝新用戶會裝到的版本
   //
@@ -1214,6 +1242,8 @@ const STEPS = [
     //   「換誰去看」最容易掉的就是這種：下游要的欄位沒被列進 checks，看起來像線上壞了。
     { label: 'mac 下載網址', path: 'daemon.downloads.mac' },
     { label: 'win 下載網址', path: 'daemon.downloads.win' },
+    // arcrun-rag#95：驗收也要看得到「安裝器自己這次真的換過內容」，不是只看 bundle 那條線。
+    { label: '安裝器原始碼指紋', path: 'installer_sha', expected: ctx.installerSrcHash },
   ];
   if (want) liveChecks.push({ label: '釘子指向本次 bundle HEAD', mode: 'contains', expected: want });
 
@@ -1254,6 +1284,15 @@ const STEPS = [
     // 使用者在「版本與更新」看到的那一行，也要真的送到了（不是只在本機 manifest 裡對）
     const shipped = latest.daemon && latest.daemon.notes;
     if (shipped) lines.push(`使用者會看到的那一行（${String(shipped).length} 字）：${shipped}`);
+
+    // arcrun-rag#95：安裝器原始碼指紋要送達——這條專門攔「deploy 站判斷跳過，但
+    // 其實安裝器邏輯已經改了」這種以前全綠放行的情況。
+    const liveSrc = chk('安裝器原始碼指紋').actual;
+    lines.push(`/api/latest → installer_sha ${String(liveSrc || '(無)').slice(0, 12)}（本次 ${String(ctx.installerSrcHash || '').slice(0, 12)}）`);
+    if (ctx.installerSrcHash && liveSrc !== ctx.installerSrcHash) {
+      fails.push(`安裝器宣告的原始碼指紋是 ${String(liveSrc).slice(0, 12)}，本次應該是 ${String(ctx.installerSrcHash).slice(0, 12)}`
+        + `——安裝器的程式碼沒有真的部署到線上（deploy 站可能誤判成跳過）`);
+    }
   }
 
   // ② 釘點上的產物真的是這一版（釘子對，不代表釘到的東西對）
@@ -1404,6 +1443,18 @@ const STEPS = [
   return { status: 'done', detail: [`release：${rel.html_url}`, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
 }},
 ];
+
+// ── 安裝器原始碼的內容指紋（arcrun-rag#95）────────────────────────────────
+// 排除 DEFAULT_BUNDLE_BASE／BUNDLE_BUILT 這兩個「本站自己會改寫」的常數——
+// 不排除的話指紋會被自己這次要寫入的值影響，變成每次出貨都在追自己的尾巴
+// （跟 release.mjs 排除 built/release/source 自己是同一個理由：見該檔檔頭）。
+// 其餘所有邏輯／文案／流程改動都會反映在這裡，這正是**跳過判準少看的那一塊**。
+function installerSourceHash(jsPath) {
+  const src = readFileSync(jsPath, 'utf8')
+    .replace(/const DEFAULT_BUNDLE_BASE = '[^']*'/, "const DEFAULT_BUNDLE_BASE = ''")
+    .replace(/const BUNDLE_BUILT = '[^']*'/, "const BUNDLE_BUILT = ''");
+  return createHash('sha256').update(src).digest('hex');
+}
 
 // ── wrangler.toml 的分段變數寫入（只在指定的 section 內動，不誤傷別段）──────
 function setTomlVar(toml, section, key, value) {

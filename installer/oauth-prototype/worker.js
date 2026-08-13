@@ -3066,6 +3066,12 @@ async function handleLatest(request, env) {
     //    以前只吐前者 ⇒ 用戶手上那支同步器新不新，全站沒有任何地方看得出來。
     daemon,                               // { version, notes, downloads: { mac, win } }
     install_url: 'https://install.arcrun.dev/',
+    // 🔴 2026-08-13（arcrun-rag#95）：出貨線的「線上已是這版就不重推」判準，以前只比
+    //   release／pin（bundle 內容），對**這個 worker 自己的原始碼**是隱形的——改了安裝
+    //   器邏輯、bundle 沒動，管線就判「沒變」跳過部署，改動永遠送不出去。
+    //   這裡把安裝器原始碼的內容指紋也吐出來，讓 ship.mjs 能拿它跟這次要出的那份比對，
+    //   不吻合就強制重部署。值由部署腳本注入（env.INSTALLER_SRC_SHA），不落地也不影響行為。
+    installer_sha: (env && env.INSTALLER_SRC_SHA) ? String(env.INSTALLER_SRC_SHA) : null,
   }), {
     headers: {
       ...cors,
