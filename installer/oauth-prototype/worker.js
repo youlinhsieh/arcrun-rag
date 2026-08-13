@@ -146,6 +146,71 @@ async function releaseOf(env) {
   return version;
 }
 
+/**
+ * 🆕 授權頁「技術細節」要顯示的安裝內容數量——從 manifest 動態算，不再寫死。
+ *
+ * ── 為什麼不能手抄一個數字（arcrun-rag PR #89 教訓）───────────────────
+ * 舊寫法把「Workers script ×N」直接寫死在 HTML 字串裡。PR #89 把 ×1 改成 ×6，
+ * 但那只是把一個會過期的數字換成另一個會過期的數字——`bundle-components.mjs`
+ * 本來就會隨產品演進增減零件（08-10 才剛從 5 顆變 6 顆，見該檔案開頭病史），
+ * 下次再加一顆，這裡又得有人記得手動再改一次字面值。
+ *
+ * KV 數更不能亂猜：runInstall（cache 步驟一帶）是「manifest.core 裡每個不重複的
+ * requires.kv binding 名，各建一個 CF KV namespace」——不是固定 1 個。當前 prod
+ * manifest 實測有 8 個不重複 KV binding（EXEC_CONTEXT／WEBHOOKS／CREDENTIALS_KV／
+ * ANALYTICS_KV／RECIPES／USERS_KV／SESSIONS_KV／OAUTH_KV），舊文案寫「×1」本來就是錯的。
+ * D1 目前恆為 1（ensureD1Database 只呼叫一次，所有 requires.d1 條目共用同一顆
+ * resources.d1Id），這裡仍然用「不重複 database_name 數」算出來、不寫死 1——
+ * 未來若真的變成多顆，這裡不需要人記得回來改。
+ *
+ * 算法必須跟 runInstall 讀同一份 manifest、用同一條規則，manifest 換了這裡自動跟著換，
+ * 不會再出現「授權頁說的數字」與「實際會建立的資源」兜不起來的狀況。
+ */
+async function manifestCountsOf(env) {
+  const base = bundleBase(env);
+  const cacheKey = new Request(`https://internal.arcrun/manifest-counts?base=${encodeURIComponent(base)}`);
+  // typeof 判斷放最前面：Node 離線測試環境沒有全域 `caches`（存取 `caches.default` 本身
+  // 就會先丟 ReferenceError），要在進 try 之前就擋掉，不能只包 `.match()` 那一步。
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  try {
+    const hit = cache && (await cache.match(cacheKey));
+    if (hit) return await hit.json();
+  } catch { /* caches 不可用（本機測試）就直接抓 */ }
+
+  let counts = null;
+  try {
+    const r = await fetch(base + '/manifest.json', { cf: { cacheTtl: 86400 } });
+    if (r.ok) {
+      const m = await r.json();
+      if (m && Array.isArray(m.core)) {
+        const workerCount = m.core.length;
+        // 與 runInstall 建 KV 那段同一條算法：不重複 kv binding 名數
+        const kvNames = new Set(m.core.flatMap((c) => (c.requires && c.requires.kv) || []));
+        // 與 runInstall 建 D1 那段（ensureD1Database）同一件事：不重複 database_name 數
+        const d1Names = new Set(
+          m.core
+            .flatMap((c) => (c.requires && c.requires.d1) || [])
+            .map((d) => (d && d.database_name) || null)
+            .filter(Boolean),
+        );
+        counts = { workerCount, kvCount: kvNames.size, d1Count: d1Names.size || 1 };
+      }
+    }
+  } catch { /* 網路失敗 → 退路 */ }
+
+  // 退路：manifest 抓不到時老實說「讀不到」，不要硬填一個可能早就錯的數字充版面
+  if (!counts) counts = { workerCount: null, kvCount: null, d1Count: null };
+
+  try {
+    if (cache) {
+      await cache.put(cacheKey, new Response(JSON.stringify(counts), {
+        headers: { 'cache-control': 'max-age=86400', 'content-type': 'application/json; charset=utf-8' },
+      }));
+    }
+  } catch { /* 寫快取失敗不影響回傳 */ }
+  return counts;
+}
+
 import MIGRATIONS from './migrations.json' with { type: 'json' };
 import WORKFLOWS from './workflows.json' with { type: 'json' };
 import SKILLS from './skills.json' with { type: 'json' };
@@ -1466,11 +1531,18 @@ export {
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
   seedSkillsTo, // skills 種入（本班）
+  manifestCountsOf, homePage, // 授權頁「技術細節」數量與建置識別——供離線測試證明「換 manifest 數字會跟著變」
 };
 
 /**
  * 執行整個安裝。每一步都會即時把進度寫回 KV。
- * 資源命名走 email 推導的可重現短碼，配合 ensure* 冪等建立＝斷點續傳（P0-2）。
+ *
+ * 🔴 資源判斷已不是「配合 ensure* 冪等建立」（那三支 PR #87 已整段刪掉，見上方
+ * 767 行區塊）。現在委外給 `shared/resource-rule/`：已部署的 worker 綁著什麼就
+ * 沿用什麼，不看名字；只有確定沒人綁過才新建。email 推導的可重現短碼
+ * （`slugFromEmail`，見下方 `baseName`）現在只在「真的要新建」時拿來當新資源
+ * 的名字，不再是「找不找得到既有資源」的判斷依據——這件事本身就是斷點續傳
+ * 續得下去的原因：接力續跑靠的是 `progress.result`，不是靠猜資源名字。
  */
 async function runInstall(env, sid, progress, force) {
   // 可重現命名：用已驗證的 email 推導。P0-1 保證 email 必在；缺席＝閘被繞過的異常，
@@ -2326,12 +2398,17 @@ body{margin-top:0 !important}
 </html>`;
 }
 
-function homePage(notice, env, release) {
+async function homePage(notice, env, release) {
   const stagingTag = env && env.DEPLOY_ENV === 'staging' ? '（測試站）' : '';
   // 2026-08-02：改用 manifest.release 這個單一真相源（例 `1.4.2`）。
   // leo：「不要這麼難懂的版本號，傳統數字顯示就好了」——舊的 `2026-07-31+8e83589`
   // 既難懂又會說謊（日期凍結、sha 用戶看不懂）。釘點短碼移到 title 供除錯，不佔版面。
   const bundleVer = String(release || '') + stagingTag;
+  // 「技術細節」裡的安裝數量：從 manifest 動態算，見 manifestCountsOf() 檔頭病史
+  // （arcrun-rag PR #89 教訓：手抄的數字會過期，這裡不准再手寫死一個。
+  //  同日另一分支 fix/oauth-installer-worker-count 把 ×1 手改成 ×6——同一種錯，不採用）。
+  const counts = await manifestCountsOf(env);
+  const fmtCount = (n) => (n == null ? '讀不到（manifest 暫時抓不到）' : `×${n}`);
   const noticeHtml = notice
     ? `<div class="card" style="border-color:var(--err)"><h3 style="color:var(--err)">${escapeHtml(notice.title)}</h3><p style="margin:0;color:var(--muted)">${escapeHtml(notice.body)}</p></div>`
     : '';
@@ -2392,10 +2469,19 @@ ${noticeHtml}
   <pre>授權方式：OAuth 2.0 authorization_code + PKCE (S256)，public client 無 secret
 授權範圍：workers-scripts.write / workers-kv-storage.write / d1.write /
           vectorize.write / account-settings.read / offline_access
-安裝內容：KV namespace ×1、D1 database ×1（含 migration）、Workers script ×1
-          bindings: RAG_CACHE (kv_namespace) / RAG_DB (d1)
+安裝內容：Workers script ${fmtCount(counts.workerCount)}、KV namespace ${fmtCount(counts.kvCount)}、
+          D1 database ${fmtCount(counts.d1Count)}（含 migration）
+          ↑ 這三個數字現在讀當前 bundle manifest 現算，manifest 加減零件會自動跟著變，
+            不是寫死的（此頁曾把它寫死成固定數字，那個做法已經不用了）
 辨識碼閘：/auth/start 先向 landing /api/verify-code 驗 {email, code}，通過才進 OAuth
-資源命名：arcrun-rag-&lt;email 推導 8 碼&gt;（可重現），重裝取用同一組＝斷點續傳
+資源沿用：你已經裝過的東西（快取空間／資料庫）一律直接沿用、不會被砍掉重建——
+          判準是「這顆服務現在實際綁的是哪一個」，不是看名字對不對得上；
+          只有確定你完全還沒裝過任何東西時才會新建，新建才用
+          arcrun-rag-&lt;email 推導 8 碼&gt; 這個名字（見 shared/resource-rule/，PR #87）
+安裝器版本：${escapeHtml(INSTALLER_PATCH)}（這頁本身的邏輯版本，只有改本安裝器程式碼才會動；
+          與上面「版本：${escapeHtml(bundleVer)}」是兩件事——那個是零件包版本，
+          零件沒動、只改安裝器邏輯時，只有這個數字會變）
+bundle 依據：建置日 ${escapeHtml(bundleBuiltOf(env))}／釘點 ${escapeHtml(bundleCommitOf(env))}
 token 保存：access_token 存在本安裝器的 KV，隨 session 過期自動清除；
           refresh_token 為 rotation 制，每次更新都會寫回新的一把</pre>
 </details>
@@ -3116,7 +3202,7 @@ async function handleHome(request, env, url) {
       body: '這個 Cloudflare 帳號還沒裝過。請填上辨識碼再試一次；還沒有的話到 rag.arcrun.dev 申請。',
     };
   }
-  return html(homePage(notice, env, await releaseOf(env)));
+  return html(await homePage(notice, env, await releaseOf(env)));
 }
 
 async function handleAuthStart(request, env, url) {
