@@ -35,6 +35,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 建 Cloudflare 資源這件事只准有一份實作（Leo/Arcrun#97 家族）——共用層在
+// `installer/oauth-prototype/shared/resource-rule/`，是上游 Arcrun 那個目錄的逐位元組鏡射。
+import { createCloudflareResourceApi } from '../oauth-prototype/shared/resource-rule/cf-resource-api.mjs';
 
 // ── 常數（逐字對齊 Arcrun/cli/src/lib/deploy.ts）────────────────────────────────
 
@@ -272,46 +275,49 @@ export async function ensureVectorizeIndex(ctx) {
     return false;
   }
 
-  const cfBase = `https://api.cloudflare.com/client/v4/accounts/${ctx.accountId}/vectorize/v2/indexes`;
+  // ⚠️ 這裡刻意只組「**那一顆 index** 的網址」，不留一個指向資源集合的變數：
+  //    集合端點＝建資源的入口，而建資源只准走共用層（resource-rule-gate.mjs 會擋）。
+  const indexBase = `https://api.cloudflare.com/client/v4/accounts/${ctx.accountId}/vectorize/v2/indexes/${VECTORIZE_INDEX_NAME}`;
   const headers = { 'Authorization': `Bearer ${ctx.apiToken}`, 'Content-Type': 'application/json' };
   const manualHint = `手動指令：\n  npx wrangler vectorize create ${VECTORIZE_INDEX_NAME} --dimensions=${VECTORIZE_DIMENSIONS} --metric=${VECTORIZE_METRIC}\n  npx wrangler vectorize create-metadata-index ${VECTORIZE_INDEX_NAME} --property-name owner_id --type string\n  （同理 entry_type / source / library）`;
 
   // 1. 建 index
+  //
+  // 🔴 2026-08-12（`Leo/Arcrun#97` 家族）：這裡以前自己組 POST。**建資源這件事只准有一份實作**，
+  //    所以改成呼叫共用層（`shared/resource-rule/cf-resource-api.mjs`，`acr` 與安裝器同一份）。
+  //    順帶把「維度／metric 四處同步」少掉一處：那組值現在只活在共用層。
+  //    `installer/scripts/resource-rule-gate.mjs` 會擋住任何人再寫一份。
   process.stdout.write(`[deploy-all] 建立 Vectorize index "${VECTORIZE_INDEX_NAME}"...`);
   let indexOk = false;
   try {
-    const res = await fetch(cfBase, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ name: VECTORIZE_INDEX_NAME, config: { dimensions: VECTORIZE_DIMENSIONS, metric: VECTORIZE_METRIC } }),
-    });
-    const data = await res.json().catch(() => ({}));
-    const alreadyExists = res.status === 409 || data?.errors?.[0]?.code === 10006;
-    if (res.ok || alreadyExists) {
-      console.log(alreadyExists ? ' 已存在，跳過。' : ' ✓');
+    const api = createCloudflareResourceApi({ accountId: ctx.accountId, apiToken: ctx.apiToken });
+    const existing = await api.listVectorizeIndexes().catch(() => null);
+    if (existing && existing.includes(VECTORIZE_INDEX_NAME)) {
+      console.log(' 已存在，跳過。');
       indexOk = true;
     } else {
-      const errMsg = data?.errors?.[0]?.message || `HTTP ${res.status}`;
-      // 建立失敗 ≠ 一定不存在：GET 複核（更新既有實例時 index 早建好，token 換過少了
-      // create 權限的情況不該被判死）。
-      const probe = await fetch(`${cfBase}/${VECTORIZE_INDEX_NAME}`, { headers }).catch(() => null);
-      if (probe && probe.ok) {
-        console.log(` 建立呼叫失敗（${errMsg}），但 GET 複核 index 已存在 → 續行。`);
-        indexOk = true;
-      } else {
-        console.log(` ✗ 失敗：${errMsg}（多半是 token 缺 Vectorize:Edit scope）\n${manualHint}`);
-        return false;
-      }
+      await api.createVectorizeIndex(VECTORIZE_INDEX_NAME); // 已存在（409）視為成功，見共用層
+      console.log(' ✓');
+      indexOk = true;
     }
-  } catch (e) {
-    console.log(` ✗ 呼叫失敗：${e instanceof Error ? e.message : e}\n${manualHint}`);
-    return false;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // 建立失敗 ≠ 一定不存在：GET 複核（更新既有實例時 index 早建好，token 換過少了
+    // create 權限的情況不該被判死）。
+    const probe = await fetch(indexBase, { headers }).catch(() => null);
+    if (probe && probe.ok) {
+      console.log(` 建立呼叫失敗（${errMsg}），但 GET 複核 index 已存在 → 續行。`);
+      indexOk = true;
+    } else {
+      console.log(` ✗ 失敗：${errMsg}（多半是 token 缺 Vectorize:Edit scope）\n${manualHint}`);
+      return false;
+    }
   }
 
   if (!indexOk) return false;
 
   // 2. 建 metadata indices（冪等）
-  const metaBase = `${cfBase}/${VECTORIZE_INDEX_NAME}/metadata-index/create`;
+  const metaBase = `${indexBase}/metadata-index/create`;
   for (const prop of VECTORIZE_METADATA_PROPS) {
     try {
       const res = await fetch(metaBase, {

@@ -111,6 +111,7 @@ import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
 import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedError, DRILL_ENV } from './ship-delivery.mjs';
+import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -481,6 +482,36 @@ const STEPS = [
     freshness.ok
       ? `成品新鮮度：${freshness.results.length} 顆的 source_commit 都還等於它源碼目錄的現況 ✓`
       : `⚠️ 成品新鮮度：${freshness.blocking.length} 顆對不上（ARTIFACT_ALLOW_STALE=1 放行中）`);
+
+  // (b4) 資源規則閘（`Leo/Arcrun#97`，2026-08-12）────────────────────────────
+  //
+  // 擋的是「**同一個能力被做成兩份實作**」——安裝器自己照名字 ensure 資源，
+  // 而 `acr` 那條走共用規則 ⇒ 使用者按更新，工作流和登入 session 全不見。
+  // 接上共用規則只解掉這一次；這道閘是為了讓**下次有人再抄一份會被擋住**。
+  //
+  // 為什麼在 preflight 而不是 deploy 站：deploy 站有「線上已是這版就跳過」的快路徑，
+  // 擺在那裡會出現「跳過部署＝也跳過檢查」的洞（而且預演就該看得到，不必解保險）。
+  // 檢查內容與怎麼被演練，見 installer/scripts/resource-rule-gate.mjs 檔頭。
+  const gate = runResourceRuleGate(REPO_ROOT);
+  if (!gate.ok) {
+    throw new Error(
+      '資源規則閘不過（Leo/Arcrun#97：同一個能力有兩份實作）：\n' +
+      gate.sections.filter((s) => !s.ok).map((s) => `     ✗ ${s.name}\n${s.problems.map((p) => `       - ${p}`).join('\n')}`).join('\n'));
+  }
+  lines.push(`資源規則閘：${gate.sections.length} 項全過（鏡射指紋／沒人自己建 CF 資源／真的接上／三種情境測試）`);
+
+  // (b5) 文案契約閘（順手接上，2026-08-12）──────────────────────────────────
+  // `installer/oauth-prototype/copy-contract.test.mjs` 自己的檔頭寫著
+  // 「deploy-web.sh 在部署前跑本檔，任一違反＝拒絕部署」——而 `deploy-web.sh` 早就不存在，
+  // 全 repo grep 只剩它自己那一行 ⇒ **它從來沒擋過任何東西**（同 arcrun-rag#27 那種
+  // 「規約寫在註解裡，沒有一步在執行它」）。這裡把它接上，順便讓它跟資源規則閘同一個位置停。
+  // 現況實測是綠的（禁句 10 項全 0、必句 3 項全在），接上不會改變本次出貨的結果。
+  const copyContract = spawnSync(process.execPath, [join('installer', 'oauth-prototype', 'copy-contract.test.mjs')],
+    { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (copyContract.status !== 0) {
+    throw new Error(`文案契約閘不過：\n${(copyContract.stdout || '') + (copyContract.stderr || '')}`);
+  }
+  lines.push('文案契約閘：通過（leo 拍板拿掉的句子沒有回來）');
 
   // (c) bundle repo：不存在就照登錄簿長出來（selftest）；存在就驗 origin 與登錄簿相符。
   //     🔴 這一條就是「打錯位置也會被它修正」的實體：本機那個資料夾指到別的 repo ⇒ 當場擋。

@@ -123,7 +123,12 @@
       放到機器碰得到的地方＝AI 造得出來，這道閘就沒了。
     也調用: [ship_check_live]
     也調用說明: 這一站裡「線上現在是哪一版」那一段，交給 Arcrun 去看。
-    驗法: 帳號／repo 座標與登錄簿相符；prod 且 --confirm 時保險已解且未過期；來源 repo 乾淨
+    驗法: |
+      帳號／repo 座標與登錄簿相符；prod 且 --confirm 時保險已解且未過期；來源 repo 乾淨；
+      成品新鮮度（送出去的執行檔＝這顆 commit 編的）；
+      **資源規則閘**（Leo/Arcrun#97：安裝器不准自己照名字建資源——鏡射指紋／沒人自己建 CF 資源／
+      真的接上共用規則／三種情境測試，見 installer/scripts/resource-rule-gate.mjs）；
+      文案契約閘（leo 拍板拿掉的句子沒有回來）
 
   - id: public-docs
     名字: 掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）

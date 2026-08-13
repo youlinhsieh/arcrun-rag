@@ -83,7 +83,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@3b3e3dae8e8bcda6874991261f0e7cd0cd897f09';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@1571ea813e249d06f2f75d60eebdb79ed003e036';
 const BUNDLE_BUILT = '2026-08-12'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
@@ -149,6 +149,23 @@ async function releaseOf(env) {
 import MIGRATIONS from './migrations.json' with { type: 'json' };
 import WORKFLOWS from './workflows.json' with { type: 'json' };
 import SKILLS from './skills.json' with { type: 'json' };
+
+// ── 「這台實例該用哪幾顆資源」＝上游 Arcrun 的共用規則，本檔一行都不重寫 ──────
+//
+// leo 2026-08-12：「如果你沒有裝，就是新的；**如果你已經有，原來叫什麼名字就繼續用下去**。」
+//                「**根本就不應該在 CLI，我要的是一個大家都可以用到的規則。**」
+//
+// 規則住在 `Leo/Arcrun` 的 `shared/resource-rule/`（PR #111，已併 main 13155a1），
+// `acr` 與本安裝器吃**同一份**。`./shared/resource-rule/` 是它的逐位元組鏡射，
+// 由 `installer/scripts/resource-rule-sync.mjs` 產生、`resource-rule-gate.mjs` 在出貨
+// preflight 上核對指紋——**不准手改**（為什麼要鏡射而不是直接 import 上游路徑，
+// 見 resource-rule-sync.mjs 檔頭：這顆是裸 Worker，import 必須在部署當下解析得到）。
+//
+// 🔴 判準從此是「**這顆 worker 現在綁著誰**」，不是「有沒有叫這個名字的資源」。
+//    舊寫法（ensureKvNamespace/ensureD1Database/ensureVectorizeIndex：照名字找、找不到就建）
+//    已整段刪除——那正是 `Leo/Arcrun#97`「我按了更新，工作流和登入全不見了」的病根。
+import { planResources, applyResourcePlan, ResourcePlanBlocked, bindingKey } from './shared/resource-rule/rule.mjs';
+import { createCloudflareResourceApi } from './shared/resource-rule/cf-resource-api.mjs';
 
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
@@ -682,49 +699,25 @@ async function slugFromEmail(email) {
   return out;
 }
 
-/** 建 KV namespace（冪等）：先找既有同名取用，沒有才建。回 { id, reused }。 */
-async function ensureKvNamespace(token, accountId, title) {
-  for (let page = 1; page <= 20; page++) {
-    const list = await cfFetch(
-      token,
-      `/accounts/${accountId}/storage/kv/namespaces?per_page=100&page=${page}`
-    );
-    if (!Array.isArray(list) || list.length === 0) break;
-    const hit = list.find((n) => n.title === title);
-    if (hit) return { id: hit.id, reused: true };
-    if (list.length < 100) break;
-  }
-  const kv = await cfFetch(token, `/accounts/${accountId}/storage/kv/namespaces`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ title }),
-  });
-  return { id: kv.id, reused: false };
-}
-
-/** 建 D1 database（冪等）：先用 name filter 找既有取用，沒有才建。回 { id, reused }。 */
-async function ensureD1Database(token, accountId, name) {
-  const list = await cfFetch(
-    token,
-    `/accounts/${accountId}/d1/database?per_page=100&name=${encodeURIComponent(name)}`
-  );
-  if (Array.isArray(list)) {
-    const hit = list.find((d) => d.name === name);
-    if (hit) {
-      const id = hit.uuid || hit.id;
-      if (id) return { id, reused: true };
-    }
-  }
-  const db = await cfFetch(token, `/accounts/${accountId}/d1/database`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  return { id: db.uuid || db.id, reused: false };
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// 資源解析：判斷全部委外給上游共用規則，本檔只做「輸入整形」與「產品層取捨」
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 🔴 這裡以前有三支 `ensureKvNamespace` / `ensureD1Database` / `ensureVectorizeIndex`
+//    （照名字找既有、找不到就建）。**整段刪掉，不留註解版**——
+//    死代碼＝錯誤環境信號，留著下一個人就會照它走。要看它們長什麼樣去翻 git 歷史。
+//
+//    為什麼刪：名字是安裝器自己算的（`arcrun-rag-<email 短碼>-kv-<binding>`），
+//    使用者那顆資源實際叫什麼名字**不歸我們管**——他改過名、或當初是別的版本／別條
+//    通道裝的，名字就對不上 ⇒ 舊寫法會安靜地建一顆空的頂上去 ⇒ `Leo/Arcrun#97`
+//    「我按了更新，工作流和登入全不見了」。
+//
+//    現在的判準是「**這顆 worker 現在綁著誰**」，由 `shared/resource-rule/` 決定。
 
 /**
- * Vectorize index 冪等建立（arcrun-kbdb-embed-m3，1024 cosine）。
+ * Vectorize index 名（bge-m3＝1024 維／cosine）。**只在真的要新建時**才會被拿來當名字用——
+ * 已經綁著別的 index 的實例，共用規則會照原樣沿用，不會被這個名字覆蓋。
+ *
  * 🔴 2026-08-03 換代（leo 拍板；08-05：「換 embed model 當然要合併，當然要換 vectorize，
  *   原本的根本不能用」）：bge-base-en-v1.5(768) → bge-m3(1024)。
  *   5 組中文測資：舊 2/5、margin -0.0413（中文分數全擠 0.65-0.81＝沒區辨力）；新 5/5、+0.1410。
@@ -732,34 +725,105 @@ async function ensureD1Database(token, accountId, name) {
  *   且 #58（Vectorize delete 未接）舊向量刪不掉 ⇒ 開新名字順手繞開、可回滾。
  *   ⚠️ 必須與 Arcrun:kbdb/src/embed.ts、Arcrun:cli/src/lib/deploy.ts、
  *      installer/scripts/deploy-all.mjs 四處同步（漏一處＝不報錯但分數全垃圾）。
- * 失敗只回 warning，不炸安裝——kbdb 語意搜尋自然降級為關鍵字搜尋。
+ *   ⚠️ 維度／metric 的真相源現在是共用層的 `cf-resource-api.mjs#createVectorizeIndex`
+ *      （1024／cosine，同一份），本檔不再自己送建立請求。
  * kbdb runtime 契約：VECTORIZE + AI binding 存在即啟用語意，無需 env var。
  */
-async function ensureVectorizeIndex(token, accountId, indexName) {
-  // GET 先行：已存在直接返回，省去建立嘗試
-  try {
-    await cfFetch(token, `/accounts/${accountId}/vectorize/v2/indexes/${indexName}`);
-    return { ok: true, existed: true };
-  } catch (getErr) {
-    if (!(getErr instanceof InstallError) || getErr.status !== 404) {
-      return { ok: false, warning: String((getErr && getErr.message) || getErr) };
+const VECTORIZE_INDEX = 'arcrun-kbdb-embed-m3';
+
+/**
+ * bundle manifest → 共用規則要的 `BindingRequirement[]`。
+ *
+ * 這支**只做輸入整形**：誰（哪顆 worker）需要哪個 binding、以及「萬一真的要新建」時
+ * 該取什麼名字。要不要建、該用哪一顆，一律由 `planResources` 判斷。
+ *
+ * ⚠️ 為什麼不直接用上游的 `installer-entry.mjs#resolveInstanceResources()`：
+ *    它的輸入是各 worker 的 `wrangler.toml` **文字**，而安裝器手上只有
+ *    `arcrun-rag-bundles` 的 manifest（`requires`＝Arcrun 建置期就從那些 toml 抽好的），
+ *    bundle 裡沒有 toml。而且 toml 表達不出「KV 該叫什麼名字」（只有 `binding`），
+ *    照 toml 走會讓新裝的人在自己帳號看到 9 個叫 `WEBHOOKS`／`RECIPES` 的裸名 namespace。
+ *    ⇒ 這裡改呼叫共用層的 `planResources`／`applyResourcePlan`（同一份規則、同一雙眼睛），
+ *      動作與 `installer-entry.mjs` 逐步對應。上游若加一個「直接吃 requirements」的入口，
+ *      這幾行就能再收掉——已在 PR 內文標給總管。
+ *
+ * @param {{core?: Array<{name?: string, requires?: {kv?: string[], d1?: Array<{binding: string}>}}>}} manifest
+ * @param {string} baseName  `arcrun-rag-<email 短碼>`
+ * @param {boolean} withVectorize  是否把 VECTORIZE 也納入（語意搜尋，見 runInstall 的取捨）
+ */
+function manifestRequirements(manifest, baseName, withVectorize) {
+  const reqs = [];
+  for (const entry of manifest.core || []) {
+    const worker = entry && entry.name;
+    if (!worker) continue;
+    for (const binding of (entry.requires && entry.requires.kv) || []) {
+      reqs.push({
+        kind: 'kv_namespace',
+        binding,
+        worker,
+        createName: `${baseName}-kv-${binding.toLowerCase()}`,
+      });
+    }
+    for (const d of (entry.requires && entry.requires.d1) || []) {
+      // 所有 d1 binding 都宣告同一個 createName ⇒ 共用層的 shareSameResource 會收斂成
+      // 「建一顆、大家共用」，維持本安裝器一直以來「整台實例一顆 D1」的形狀。
+      reqs.push({ kind: 'd1', binding: d.binding, worker, createName: `${baseName}-db` });
+    }
+    // kbdb 語意搜尋：VECTORIZE 不在 manifest.requires 裡（那個 toml 區塊預設是註解狀態），
+    // 「哪顆 worker 要吃它」一直是安裝器這邊的決定（見 deployBundledWorker）。
+    if (withVectorize && worker.includes('kbdb')) {
+      reqs.push({ kind: 'vectorize', binding: 'VECTORIZE', worker, createName: VECTORIZE_INDEX });
     }
   }
-  // 建立 index（1024 維 cosine，對齊 bge-m3）
+  return reqs;
+}
+
+/**
+ * 跑一次共用規則：**不確定就整趟停手，一顆資源都不建**（結構保證在 plan／apply 兩段之間）。
+ *
+ * 回傳形狀與上游 `installer-entry.mjs#resolveInstanceResources()` 相同：
+ *   `{ blocked, blockers[], bindings: {'kv_namespace:WEBHOOKS': 'kvid-…'}, origin, liveVars }`
+ *
+ * @param {string} token   使用者授權的 CF token（Bearer）
+ * @param {string} accountId
+ * @param {Array} requirements  manifestRequirements() 的輸出
+ * @param {'update'|'init'} mode  這台照我們的紀錄裝過了沒
+ */
+async function resolveResourcesByRule(token, accountId, requirements, mode) {
+  const stop = (blockers) => ({ blocked: true, blockers, bindings: {}, origin: {}, liveVars: {} });
+  if (!requirements.length) return stop(['這包 bundle 讀不到任何資源綁定需求——不確定要裝什麼，停手。']);
+
+  const api = createCloudflareResourceApi({ accountId, apiToken: token });
+  let plan;
   try {
-    await cfFetch(token, `/accounts/${accountId}/vectorize/v2/indexes`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: indexName, config: { dimensions: 1024, metric: 'cosine' } }),
-    });
-  } catch (createErr) {
-    const alreadyExists = createErr instanceof InstallError &&
-      (createErr.status === 409 || (createErr.detail && /already.exist/i.test(createErr.detail)));
-    if (!alreadyExists) {
-      return { ok: false, warning: String((createErr && createErr.message) || createErr) };
-    }
+    plan = await planResources(api, requirements, mode);
+  } catch (e) {
+    return stop([`資源解析失敗（${e instanceof Error ? e.message : String(e)}）。沒有建立任何資源。`]);
   }
-  // metadata index（best-effort：失敗不影響主安裝，語意搜尋不過濾 metadata 仍可用）
+  if (plan.blockers.length > 0) return stop(plan.blockers);
+
+  let resolved;
+  try {
+    resolved = await applyResourcePlan(api, plan);
+  } catch (e) {
+    return stop(e instanceof ResourcePlanBlocked ? e.blockers : [e instanceof Error ? e.message : String(e)]);
+  }
+
+  const bindings = {};
+  const origin = {};
+  for (const [key, r] of resolved) {
+    bindings[key] = r.value;
+    origin[key] = r.origin;
+  }
+  return { blocked: false, blockers: [], bindings, origin, liveVars: Object.fromEntries(plan.liveVars) };
+}
+
+/**
+ * Vectorize 的 metadata index（best-effort）。
+ *
+ * ⚠️ 這支**不建 index 本身**（那是共用規則的事），只在既有 index 上補 metadata 欄位；
+ * 失敗不阻塞——語意搜尋不過濾 metadata 仍然可用。
+ */
+async function ensureVectorizeMetadataIndexes(token, accountId, indexName) {
   const metaProps = ['owner_id', 'entry_type', 'source', 'library'];
   for (const prop of metaProps) {
     try {
@@ -770,7 +834,6 @@ async function ensureVectorizeIndex(token, accountId, indexName) {
       });
     } catch { /* metadata index 失敗不阻塞 */ }
   }
-  return { ok: true, existed: false };
 }
 
 /** 向 landing 中央服務驗證辨識碼（P0-1）。fail-closed：驗不過或連不上都回 ok:false。 */
@@ -1125,16 +1188,23 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     wasmBlobs.push({ name: m.name, type: m.type || 'application/wasm', buf: await wres.arrayBuffer() });
   }
 
-  // 2. binding：把「需求名」對上「已建資源 id」，缺一即 fail-closed（不假綠）
+  // 2. binding：把「需求名」對上「共用規則解出來的那顆資源」，缺一即 fail-closed（不假綠）
+  //
+  // 🔴 真相源是 `resources.bindings`（`shared/resource-rule/` 解出來的 `kind:binding → id`）。
+  //    `resources.kv` / `resources.d1Id` 是它攤平出來的舊欄位，留給只推單顆的路徑與離線測試；
+  //    兩者衝突時**以 bindings 為準**——那是「這顆 worker 現在綁著誰」的答案。
+  const resolvedFor = (kind, binding) =>
+    (resources.bindings && resources.bindings[bindingKey(kind, binding)]) || null;
   const bindings = [];
   for (const name of entry.requires?.kv || []) {
-    const id = resources.kv?.[name];
-    if (!id) throw new InstallError(`缺少快取空間 ${name}`, { detail: `resources.kv missing ${name}` });
+    const id = resolvedFor('kv_namespace', name) || resources.kv?.[name];
+    if (!id) throw new InstallError(`缺少快取空間 ${name}`, { detail: `no resolved kv for ${name}` });
     bindings.push({ type: 'kv_namespace', name, namespace_id: id });
   }
   for (const d of entry.requires?.d1 || []) {
-    if (!resources.d1Id) throw new InstallError(`缺少資料庫給 ${d.binding}`, { detail: 'resources.d1Id missing' });
-    bindings.push({ type: 'd1', name: d.binding, id: resources.d1Id });
+    const id = resolvedFor('d1', d.binding) || resources.d1Id;
+    if (!id) throw new InstallError(`缺少資料庫給 ${d.binding}`, { detail: `no resolved d1 for ${d.binding}` });
+    bindings.push({ type: 'd1', name: d.binding, id });
   }
   if (entry.requires?.ai) bindings.push({ type: 'ai', name: 'AI' });
   // t151：還原被 strip 掉的 service binding（見 SERVICE_BINDINGS 那張表的說明）。
@@ -1166,8 +1236,9 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   }
   // kbdb 語意搜尋：binding 存在即開關（kbdb runtime 契約，無需 env var）
   // index 有建才注入 VECTORIZE；AI binding 若 manifest 未聲明則補上
-  if (resources.vectorizeIndexName && entry.name && entry.name.includes('kbdb')) {
-    bindings.push({ type: 'vectorize', name: 'VECTORIZE', index_name: resources.vectorizeIndexName });
+  const vectorizeIndex = resolvedFor('vectorize', 'VECTORIZE') || resources.vectorizeIndexName;
+  if (vectorizeIndex && entry.name && entry.name.includes('kbdb')) {
+    bindings.push({ type: 'vectorize', name: 'VECTORIZE', index_name: vectorizeIndex });
     if (!bindings.some((b) => b.type === 'ai')) {
       bindings.push({ type: 'ai', name: 'AI' });
     }
@@ -1388,7 +1459,9 @@ async function seedSkillsTo(cypherBase, ns) {
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
   fetchBundleManifest, deployBundledWorker, bundleBase, landingBase,
-  slugFromEmail, verifyInviteCode, ensureKvNamespace, ensureD1Database, ensureVectorizeIndex, MIGRATION_SQL,
+  slugFromEmail, verifyInviteCode, MIGRATION_SQL,
+  // 資源解析（判斷本身在 shared/resource-rule/，這兩支只做輸入整形與呼叫）
+  manifestRequirements, resolveResourcesByRule, ensureVectorizeMetadataIndexes, VECTORIZE_INDEX,
   applySubs, pushWorkflowTo,
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
@@ -1575,81 +1648,114 @@ async function runInstall(env, sid, progress, force) {
     return;
   }
 
-  // --- b. KV（快取空間）——冪等：斷點續傳時取用上次那顆 ---------------------
-  let kvId, kvIds = {};
-  if (stepDone('cache')) {
-    kvIds = progress.result.kvIds || {};
-    kvId = progress.result.cacheId;
-    // t28b（真機續裝 KV 驗屍抓到）：cache 步驟標 done，但游標裡的 kvIds 是空的——
-    // kvCount>0 代表「當初真的建過」，只是那張 BINDING→namespace_id 對照表沒能傳到
-    // 這一輪（不管成因是舊版部署還是資料流失，這裡都不該讓 deploy 迴圈拿著空 map
-    // 硬撞 fail-closed）。防禦性重建：ensureKvNamespace 本身冪等（先查同名再取用），
-    // 重建＝拿回同一批既有 id，不會真的重新建立資源；這批 fetch 算進本輪額度，
-    // 時間護欄（DEPLOY_TIME_BUDGET_MS）本來就會攔住失控。
-    const expectedCount = progress.result.kvCount || 0;
-    if (expectedCount > 0 && Object.keys(kvIds).length === 0) {
-      try {
-        const kvNames = [...new Set(manifest.core.flatMap((c) => (c.requires && c.requires.kv) || []))];
-        for (const bindingName of kvNames) {
-          const kv = await ensureKvNamespace(token, accountId, `${baseName}-kv-${bindingName.toLowerCase()}`);
-          kvIds[bindingName] = kv.id;
-        }
-        kvId = kvIds[kvNames[0]] || progress.result.cacheId || null;
-        progress.result.kvIds = kvIds;
-        progress.result.cacheId = kvId;
-        await writeProgress(env, sid, progress);
-      } catch (e) {
-        await fail('cache', e);
-        return;
-      }
-    }
-  } else {
+  // --- b+c. 資源解析：KV／D1／Vectorize 一次決定 -----------------------------
+  //
+  // 🔴 `Leo/Arcrun#97` 的根治點。這裡以前是「照安裝器自己算出來的名字找，找不到就建」
+  //    ——名字對不上（使用者改過名／當初是別的版本裝的／另一條通道裝的）就會建一套
+  //    空的頂上去，於是「我按了更新，工作流和登入全不見了」。
+  //
+  //    現在整段的判斷都在共用規則（`shared/resource-rule/`，`acr` 吃同一份）：
+  //      ① 已部署的 worker 上綁著什麼＝事實 → 原封沿用，名字長什麼樣完全不看
+  //      ② 只有「確定沒有任何人綁過它」才准新建
+  //      ③ 有一點說不準就整趟停手，什麼都不建、什麼都不部署
+  //
+  //    ⚠️ 本輪解出來的對照表存進 `progress.result.resourceBindings`＝接力續跑的游標。
+  //    第一次安裝時資源已建、worker 還沒部署 ⇒ 那個當下帳號上沒有任何 binding，
+  //    游標若掉了就只能重新建一批（會留下沒人綁的孤兒，但**不會弄丟任何資料**）。
+  //    這是刻意的取捨：寧可多一批孤兒，也不要退回「照名字猜使用者的資源」。
+  let resourceBindings = progress.result.resourceBindings || null;
+  let kvIds = {};
+  let dbId = null;
+  let vectorizeIndexName = null;
+
+  if (!resourceBindings) {
     try {
       await setStep('cache', 'running');
-      const kvNames = [...new Set(manifest.core.flatMap((c) => (c.requires && c.requires.kv) || []))];
-      // t136 三修：每建一個就回寫（心跳＋可見進度）。原本 9 個全建完才回寫一次，
-      // 慢網路下會超過 stall 門檻被判死（leo 第一次就是卡在這一步）。
-      for (let ki = 0; ki < kvNames.length; ki++) {
-        const bindingName = kvNames[ki];
-        const sc = progress.steps.find((x) => x.id === 'cache');
-        if (sc) sc.note = `${ki + 1}/${kvNames.length}`;
-        progress.updatedAt = Date.now();
-        await writeProgress(env, sid, progress);
-        const kv = await ensureKvNamespace(token, accountId, `${baseName}-kv-${bindingName.toLowerCase()}`);
-        kvIds[bindingName] = kv.id;
+      // mode：這台照**我們的紀錄**裝過了沒。'update' 時共用規則會多一道保險——
+      // 「說是更新，卻一顆要更新的 worker 都找不到」就停手（那是 #97 的另一道門）。
+      // 兩條通道的 KV 都看（t157：同帳號被 staging／prod 各裝一半是真實發生過的事）。
+      let installedBefore = false;
+      for (const kvBinding of [env.INSTALLER_KV, env.PEER_INSTALLER_KV]) {
+        if (!kvBinding || typeof kvBinding.list !== 'function' || installedBefore) continue;
+        const list = await kvBinding.list({ prefix: `deployed:${accountId}:`, limit: 1 }).catch(() => null);
+        if (list && list.keys && list.keys.length > 0) installedBefore = true;
       }
-      kvId = kvIds[kvNames[0]] || null;
-      progress.result.cacheId = kvId;
-      progress.result.kvIds = kvIds; // 完整 map（不只第一顆）——deploy 迴圈接力續跑要用
-      progress.result.kvCount = kvNames.length;
-      await setStep('cache', 'done', `${kvNames.length} 個快取空間已就緒`);
+      const mode = installedBefore ? 'update' : 'init';
+      progress.result.resourceMode = mode;
+      await writeProgress(env, sid, progress); // 心跳：解析期間頁面不該看起來像卡死
+
+      // 先連 Vectorize 一起解。語意搜尋是**選配**（kbdb 沒有 VECTORIZE binding 就自動
+      // 降級成關鍵字搜尋），所以它擋不住整趟安裝——但「該不該建、該用哪一顆」仍然只由
+      // 共用規則決定，這裡沒有第二套判斷。
+      let r = await resolveResourcesByRule(token, accountId, manifestRequirements(manifest, baseName, true), mode);
+      if (r.blocked) {
+        // 拿掉 Vectorize 再解一次。**成功＝剛才被擋下的原因就是 Vectorize**
+        // （不必去讀 blocker 的字串猜它在講什麼）；還是擋＝真的有事，照原始理由停手。
+        const retry = await resolveResourcesByRule(token, accountId, manifestRequirements(manifest, baseName, false), mode);
+        if (!retry.blocked) {
+          progress.result.vectorizeWarning = r.blockers.join('\n');
+          r = retry;
+        }
+      }
+      if (r.blocked) {
+        // 🔴 停手時**一顆資源都沒被建**（共用規則的 plan／apply 兩段保證）。
+        //    原因原文照轉給使用者——這條路會動他的資料綁定，不確定就不要替他決定。
+        throw new InstallError('為了保護你既有的資料，這次更新已經停下來了', {
+          hint: r.blockers.join('\n\n') + '\n\n（沒有建立或改動任何資源。）',
+          detail: 'resource-rule blocked: ' + r.blockers.join(' | '),
+        });
+      }
+
+      resourceBindings = r.bindings;
+      progress.result.resourceBindings = r.bindings;
+      progress.result.resourceOrigin = r.origin;
+      // #106：已部署 worker 上現有的 plain_text var（含 ARCRUN_BUNDLE_VERSION）。
+      // 這一版先留紀錄供診斷；沿用它們是另一張票的事（見 PR 內文）。
+      progress.result.liveVars = r.liveVars;
+
+      const adopted = Object.values(r.origin).filter((o) => o === 'adopted').length;
+      const created = Object.values(r.origin).filter((o) => o === 'created').length;
+      await setStep('cache', 'done', adopted > 0
+        ? `沿用你原本的 ${adopted} 項資源${created ? `，新增 ${created} 項` : ''}`
+        : `${created} 個快取空間已就緒`);
     } catch (e) {
       await fail('cache', e);
       return;
     }
+  } else {
+    kvIds = {}; // 下面統一從 resourceBindings 攤平
   }
 
-  // --- c. D1（知識庫資料庫）——冪等：斷點續傳時取用上次那顆 -----------------
-  let dbId;
-  if (stepDone('database')) {
-    dbId = progress.result.databaseId;
-  } else {
-    try {
-      await setStep('database', 'running');
-      const db = await ensureD1Database(token, accountId, `${baseName}-db`);
-      dbId = db.id;
-      if (!dbId) {
-        throw new InstallError('資料庫建立成功但沒有拿到識別碼', {
-          hint: '請按「重新安裝」再試一次。',
-          detail: 'ensureD1Database returned no id',
-        });
-      }
-      progress.result.databaseId = dbId;
-      progress.result.databaseName = `${baseName}-db`;
-      await setStep('database', 'done', db.reused ? '沿用你上次建立的資料庫' : '知識庫資料庫已建立');
-    } catch (e) {
-      await fail('database', e);
-      return;
+  // 攤平成既有欄位（deploy 迴圈與進度頁沿用同一組名字，不新增第二種真相）
+  for (const [key, value] of Object.entries(resourceBindings)) {
+    const sep = key.indexOf(':');
+    const kind = key.slice(0, sep);
+    const binding = key.slice(sep + 1);
+    if (kind === 'kv_namespace') kvIds[binding] = value;
+    else if (kind === 'd1' && !dbId) dbId = value;
+    else if (kind === 'vectorize') vectorizeIndexName = value;
+  }
+  const kvId = kvIds[Object.keys(kvIds)[0]] || null;
+  progress.result.kvIds = kvIds;
+  progress.result.cacheId = kvId;
+  progress.result.kvCount = Object.keys(kvIds).length;
+
+  if (!dbId) {
+    await fail('database', new InstallError('沒有解析到知識庫資料庫', {
+      hint: '請按「重新安裝」再試一次；若持續失敗請把技術細節回報給我們。',
+      detail: 'resourceBindings has no d1:* entry — bundle manifest requires.d1 may be empty',
+    }));
+    return;
+  }
+  progress.result.databaseId = dbId;
+  {
+    const d1Origin = Object.entries(progress.result.resourceOrigin || {}).find(([k]) => k.startsWith('d1:'));
+    const adoptedD1 = !!(d1Origin && d1Origin[1] === 'adopted');
+    // 「技術細節」那格：沿用時**不准報 `${baseName}-db`**——那是我們會取的名字，
+    // 不是他帳號上那顆實際叫什麼（照名字報＝又把名字當識別，#97 的思路）。
+    progress.result.databaseName = adoptedD1 ? `（沿用你原本那顆，id ${dbId}）` : `${baseName}-db`;
+    if (!stepDone('database')) {
+      await setStep('database', 'done', adoptedD1 ? '沿用你原本的知識庫資料庫' : '知識庫資料庫已建立');
     }
   }
 
@@ -1690,24 +1796,16 @@ async function runInstall(env, sid, progress, force) {
         }
         progress.result.subdomain = subdomain;
       }
-      // 語意搜尋：冪等建 Vectorize index（失敗只記 warning，不炸安裝）
-      // 🔴 2026-08-05：這個名字原本在下面硬寫三次＝漂移溫床，抽成常數；
-      //   值隨 bge-m3 換代（見 ensureVectorizeIndex 註解）。
-      const VECTORIZE_INDEX = 'arcrun-kbdb-embed-m3';
-      let vectorizeIndexName = null;
-      if (progress.result.vectorizeReady) {
-        vectorizeIndexName = VECTORIZE_INDEX;
-      } else {
-        const vr = await ensureVectorizeIndex(token, accountId, VECTORIZE_INDEX);
-        if (vr.ok) {
-          vectorizeIndexName = VECTORIZE_INDEX;
-          progress.result.vectorizeReady = true;
-        } else {
-          progress.result.vectorizeWarning = vr.warning;
-        }
+      // 語意搜尋：index 該用哪一顆（沿用或新建）已經在上面由共用規則決定完了。
+      // 這裡只補「新建出來的那顆要加 metadata 欄位」——沿用既有的不動它
+      // （跟舊寫法一致：以前 GET 得到就直接 return，不會去補 metadata）。
+      if (vectorizeIndexName && !progress.result.vectorizeReady) {
+        const created = (progress.result.resourceOrigin || {})['vectorize:VECTORIZE'] === 'created';
+        if (created) await ensureVectorizeMetadataIndexes(token, accountId, vectorizeIndexName);
+        progress.result.vectorizeReady = true;
         await writeProgress(env, sid, progress);
       }
-      const resources = { kv: kvIds, d1Id: dbId, vectorizeIndexName, kbdbToken };
+      const resources = { kv: kvIds, d1Id: dbId, vectorizeIndexName, bindings: resourceBindings, kbdbToken };
       if (!Array.isArray(progress.result.deployedNames)) progress.result.deployedNames = [];
       let budget = DEPLOY_BUDGET_PER_RUN;
       // t132: 差異更新——讀上次部署 sha256 紀錄（force=true 時忽略，強制全裝）

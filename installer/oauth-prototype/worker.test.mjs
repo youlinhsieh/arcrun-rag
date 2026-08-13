@@ -15,8 +15,9 @@ import { readFile } from 'node:fs/promises';
 import worker, {
   slugFromEmail,
   verifyInviteCode,
-  ensureKvNamespace,
-  ensureD1Database,
+  manifestRequirements,
+  resolveResourcesByRule,
+  VECTORIZE_INDEX,
   MIGRATION_SQL,
   deployBundledWorker,
   SERVICE_BINDINGS,
@@ -70,10 +71,75 @@ function makeKV() {
     async delete(key) {
       store.delete(key);
     },
+    // 真 KV 有 list()；資源解析用它判斷「這台照我們的紀錄裝過了沒」（mode init/update）。
+    async list({ prefix, limit } = {}) {
+      const keys = [];
+      for (const name of store.keys()) {
+        if (!prefix || name.startsWith(prefix)) {
+          keys.push({ name });
+          if (limit && keys.length >= limit) break;
+        }
+      }
+      return { keys };
+    },
   };
 }
 
 const cfOk = (result) => ({ json: { success: true, result } });
+
+/**
+ * 共用規則（shared/resource-rule/）會打的那幾條 CF 端點，統一在這裡假。
+ *
+ * 為什麼抽出來：這幾條是**規則的眼睛**（「這顆 worker 現在綁著誰」從 /settings 讀），
+ * 每個 mock 各寫一份就會漂——而眼睛不一樣正是 Arcrun#97 重演的充分條件。
+ *
+ * `deployed`：script 名 → CF `/settings` 回應裡的 bindings[]（原始形狀）。
+ *   沒登記的 script 一律回 404＝「還沒部署」（不是錯誤）。
+ * 回 null＝這條路徑不歸我管，交回呼叫端的 mock 繼續判。
+ */
+function resourceRuleRoute(url, method, init, state = {}) {
+  const deployed = state.deployed || {};
+  const kvByTitle = state.kvByTitle || {};
+  const d1ByName = state.d1ByName || {};
+  const vectorize = state.vectorize || [];
+
+  const settings = url.match(/\/workers\/scripts\/([^/]+)\/settings$/);
+  if (settings && method === 'GET') {
+    const script = decodeURIComponent(settings[1]);
+    if (!deployed[script]) {
+      return { status: 404, json: { success: false, result: null, errors: [{ message: 'script_not_found' }] } };
+    }
+    return cfOk({ bindings: deployed[script] });
+  }
+  if (url.includes('/storage/kv/namespaces') && !url.includes('/values/')) {
+    if (method === 'GET') return cfOk(Object.entries(kvByTitle).map(([title, id]) => ({ id, title })));
+    if (method === 'POST') {
+      const body = JSON.parse(init.body || '{}');
+      const id = kvByTitle[body.title] || `kv-${body.title}`;
+      kvByTitle[body.title] = id;
+      return cfOk({ id, title: body.title });
+    }
+  }
+  if (url.includes('/d1/database') && !url.includes('/query')) {
+    if (method === 'GET') return cfOk(Object.entries(d1ByName).map(([name, uuid]) => ({ uuid, name })));
+    if (method === 'POST') {
+      const body = JSON.parse(init.body || '{}');
+      const uuid = d1ByName[body.name] || `db-${body.name}`;
+      d1ByName[body.name] = uuid;
+      return cfOk({ uuid, name: body.name });
+    }
+  }
+  if (url.includes('/vectorize/v2/indexes')) {
+    if (url.includes('/metadata-index/create')) return cfOk({});
+    if (method === 'GET') return cfOk(vectorize.map((name) => ({ name })));
+    if (method === 'POST') {
+      const body = JSON.parse(init.body || '{}');
+      if (!vectorize.includes(body.name)) vectorize.push(body.name);
+      return cfOk({ name: body.name });
+    }
+  }
+  return null;
+}
 
 // ===========================================================================
 // P0-1：辨識碼閘（fail-closed）
@@ -232,56 +298,60 @@ test('P0-2 slugFromEmail：不同 email 不同碼、字元限定安全字母表'
   assert.match(a, /^[abcdefghjkmnpqrstuvwxyz23456789]{8}$/);
 });
 
-test('P0-2 ensureKvNamespace：同名已存在 → reused:true，不再 POST 建立', async () => {
-  const calls = installFetch((url, init) => {
-    if (init.method === 'POST' || (init.method || 'GET') === 'POST') throw new Error('不該建立');
-    return cfOk([{ id: 'kv-existing', title: 'arcrun-rag-abc-cache' }]);
-  });
-  try {
-    const r = await ensureKvNamespace('tok', 'acct', 'arcrun-rag-abc-cache');
-    assert.deepEqual(r, { id: 'kv-existing', reused: true });
-    assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
-  } finally {
-    restoreFetch();
-  }
+// 🔴 這裡原本有四個 `ensureKvNamespace` / `ensureD1Database` 的測試（「同名已存在就沿用、
+//    沒有就建」）。那三支函式已隨 `Leo/Arcrun#97` 的根治整段刪除——**照名字找**正是病根，
+//    所以連帶測試也不能留（留著＝把錯的行為釘成契約）。
+//    取代它們的是 `resource-plan.test.mjs`：三種情境（沒裝過／裝過了／名字完全不同）
+//    直接餵上游那份 fixture 假帳號，驗「選出來的 resource id」與「有沒有多建東西」。
+
+test('#97 輸入整形：manifest.requires → BindingRequirement[]（誰要什麼、要新建時叫什麼）', () => {
+  const manifest = {
+    core: [
+      { name: 'arcrun-cypher-executor', requires: { kv: ['WEBHOOKS', 'USERS_KV'], d1: [{ binding: 'CREDENTIALS_DB' }] } },
+      { name: 'arcrun-kbdb', requires: { kv: [], d1: [{ binding: 'DB' }] } },
+      { name: 'arcrun-rag-ui', requires: {} },
+    ],
+  };
+  const reqs = manifestRequirements(manifest, 'arcrun-rag-abc12345', true);
+  // KV：createName 帶實例短碼（使用者帳號裡看得懂那是哪一台），binding 名原樣
+  assert.deepEqual(
+    reqs.filter((r) => r.kind === 'kv_namespace'),
+    [
+      { kind: 'kv_namespace', binding: 'WEBHOOKS', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-webhooks' },
+      { kind: 'kv_namespace', binding: 'USERS_KV', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-users_kv' },
+    ],
+  );
+  // D1：兩個 binding 宣告同一個 createName ⇒ 共用規則會收斂成「建一顆、大家共用」
+  const d1 = reqs.filter((r) => r.kind === 'd1');
+  assert.equal(d1.length, 2);
+  assert.equal(new Set(d1.map((r) => r.createName)).size, 1);
+  assert.equal(d1[0].createName, 'arcrun-rag-abc12345-db');
+  // Vectorize：只掛在 kbdb 那顆上（安裝器的決定，manifest 裡沒有這一項）
+  assert.deepEqual(
+    reqs.filter((r) => r.kind === 'vectorize'),
+    [{ kind: 'vectorize', binding: 'VECTORIZE', worker: 'arcrun-kbdb', createName: VECTORIZE_INDEX }],
+  );
+  // withVectorize=false（語意搜尋降級那條路）就完全不出現
+  assert.equal(manifestRequirements(manifest, 'arcrun-rag-abc12345', false).filter((r) => r.kind === 'vectorize').length, 0);
 });
 
-test('P0-2 ensureKvNamespace：不存在 → 建立，reused:false（有 POST）', async () => {
+test('#97 讀不到既有綁定 → 整趟停手，一顆資源都不建（不是「查不到就當它沒有」）', async () => {
   const calls = installFetch((url, init) => {
-    if ((init.method || 'GET').toUpperCase() === 'POST') return cfOk({ id: 'kv-new' });
-    return cfOk([{ id: 'other', title: '別的' }]); // 清單不含目標
-  });
-  try {
-    const r = await ensureKvNamespace('tok', 'acct', 'arcrun-rag-abc-cache');
-    assert.deepEqual(r, { id: 'kv-new', reused: false });
-    assert.equal(calls.filter((c) => c.method === 'POST').length, 1);
-  } finally {
-    restoreFetch();
-  }
-});
-
-test('P0-2 ensureD1Database：同名已存在 → reused:true，不再建立', async () => {
-  const calls = installFetch((url, init) => {
-    if ((init.method || 'GET').toUpperCase() === 'POST') throw new Error('不該建立');
-    return cfOk([{ uuid: 'db-existing', name: 'arcrun-rag-abc-db' }]);
-  });
-  try {
-    const r = await ensureD1Database('tok', 'acct', 'arcrun-rag-abc-db');
-    assert.deepEqual(r, { id: 'db-existing', reused: true });
-    assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
-  } finally {
-    restoreFetch();
-  }
-});
-
-test('P0-2 ensureD1Database：不存在 → 建立，reused:false', async () => {
-  installFetch((url, init) => {
-    if ((init.method || 'GET').toUpperCase() === 'POST') return cfOk({ uuid: 'db-new' });
+    const method = (init && init.method ? init.method : 'GET').toUpperCase();
+    // worker 的 /settings 回 500＝「我不知道」，不是「它不存在」
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({ success: false, errors: [{ message: 'boom' }] }), { status: 500 });
+    }
+    if (method === 'POST') throw new Error('被擋下的時候不准建立任何資源');
     return cfOk([]);
   });
   try {
-    const r = await ensureD1Database('tok', 'acct', 'arcrun-rag-abc-db');
-    assert.deepEqual(r, { id: 'db-new', reused: false });
+    const manifest = { core: [{ name: 'arcrun-kbdb', requires: { kv: ['EXEC_CONTEXT'], d1: [{ binding: 'DB' }] } }] };
+    const r = await resolveResourcesByRule('tok', 'acct', manifestRequirements(manifest, 'arcrun-rag-abc12345', false), 'update');
+    assert.equal(r.blocked, true);
+    assert.ok(r.blockers.length > 0, '停手一定要講得出理由');
+    assert.match(r.blockers.join('\n'), /讀不到已部署的 worker/);
+    assert.equal(calls.filter((c) => c.method === 'POST').length, 0, '停手時不該有任何 POST');
   } finally {
     restoreFetch();
   }
@@ -822,10 +892,13 @@ function installStallFixFetch({ coreCount = 5 } = {}) {
       modules: [],
       compat_date: '2026-01-01',
       compat_flags: [],
-      requires: {},
+      // 第一顆帶真實的資源需求。**不能全部 requires:{}**——那樣整包 manifest 一項資源
+      // 需求都沒有，共用規則會照規約停手（「不確定要裝什麼」），而真實 bundle 不長那樣。
+      requires: i === 1 ? { kv: ['EXEC_CONTEXT'], d1: [{ binding: 'DB' }] } : {},
     });
   }
   const manifest = { core };
+  const state = { deployed: {}, kvByTitle: {}, d1ByName: {}, vectorize: [] };
   const calls = installFetch((url, init) => {
     const method = (init.method || 'GET').toUpperCase();
     if (url.endsWith('/manifest.json')) return { json: manifest };
@@ -833,17 +906,15 @@ function installStallFixFetch({ coreCount = 5 } = {}) {
       return { text: 'export default { fetch(){ return new Response("ok") } }' };
     }
     if (url.endsWith('/accounts')) return cfOk([{ id: 'acct-1', name: 'Test Acct' }]);
-    if (url.includes('/storage/kv/namespaces') && method === 'GET') return cfOk([]);
-    if (url.includes('/storage/kv/namespaces') && method === 'POST') return cfOk({ id: 'kv-1' });
-    if (url.includes('/d1/database') && url.includes('name=') && method === 'GET') return cfOk([]);
-    if (url.includes('/d1/database') && method === 'POST' && !url.includes('/query')) return cfOk({ uuid: 'db-1' });
+    const rr = resourceRuleRoute(url, method, init, state);
+    if (rr) return rr;
     if (url.includes('/d1/database/') && url.includes('/query')) return cfOk({});
     if (url.endsWith('/workers/subdomain')) return cfOk({ subdomain: 'acme' });
     if (url.includes('/workers/scripts/') && url.endsWith('/subdomain') && method === 'POST') return cfOk({});
     if (url.includes('/workers/scripts/') && method === 'PUT') return cfOk({});
     return { status: 404, json: { error: `unhandled ${method} ${url}` } };
   });
-  return { calls, manifest };
+  return { calls, manifest, state };
 }
 
 test('t26 分批接力：deploy 預算耗盡（3 顆/輪）→ paused_continue（不是失敗），deployedNames 記正確游標', async () => {
@@ -852,9 +923,7 @@ test('t26 分批接力：deploy 預算耗盡（3 顆/輪）→ paused_continue�
   await seedInstallSession(env, sid, 'budget@test.example');
   const { calls } = installStallFixFetch({ coreCount: 5 });
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, {}), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, {});
   } finally {
     restoreFetch();
   }
@@ -874,9 +943,7 @@ test('t26 分批接力：接力續跑跳過已部署清單、從第 4 顆接著�
 
   installStallFixFetch({ coreCount: 5 });
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, {}), env, ctx); // 第一輪：裝 3 顆後 paused_continue
-    await flush();
+    await startInstallAndDrain(env, sid, {}); // 第一輪：裝 3 顆後 paused_continue
   } finally {
     restoreFetch();
   }
@@ -886,10 +953,8 @@ test('t26 分批接力：接力續跑跳過已部署清單、從第 4 顆接著�
 
   const { calls: calls2 } = installStallFixFetch({ coreCount: 5 });
   try {
-    const { ctx, flush } = makeCtx();
     // 前端偵測到 paused_continue 會自動再 POST 一次（restart 不帶／false），對齊 install.js 的 continueInstall()
-    await worker.fetch(reqStart(sid, { restart: false }), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, { restart: false });
   } finally {
     restoreFetch();
   }
@@ -927,9 +992,7 @@ test('t26 分批接力：牆鐘護欄（DEPLOY_TIME_BUDGET_MS）先觸發也產�
   // 不必猜測 runStart 捕捉點與迴圈檢查點之間精確隔了幾次呼叫（call-count 無關的設計）。
   Date.now = () => realNow() + (++n) * 25000;
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, {}), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, {});
   } finally {
     Date.now = realNow;
     restoreFetch();
@@ -953,9 +1016,7 @@ test('t26 handleInstallStart：既有 progress 是 paused_continue → 沿用同
   await env.INSTALLER_KV.put(`prog:${sid}`, JSON.stringify(marker));
   installStallFixFetch({ coreCount: 1 });
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, { restart: false }), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, { restart: false });
   } finally {
     restoreFetch();
   }
@@ -970,9 +1031,7 @@ test('t26 runInstall：progress.result.email 存 session 已驗證過的 email�
   await seedInstallSession(env, sid, 'Real.User@example.com');
   installStallFixFetch({ coreCount: 1 });
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, {}), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, {});
   } finally {
     restoreFetch();
   }
@@ -1025,7 +1084,10 @@ function installKvBugFetch({ coreCount = 2 } = {}) {
     },
     {
       name: 'arcrun-auth-oauth2', main_file: 'core/auth-oauth2.js', main_module: 'index.js',
-      modules: [], compat_date: '2026-01-01', compat_flags: [], requires: { kv: ['CREDENTIALS_KV'] },
+      modules: [], compat_date: '2026-01-01', compat_flags: [],
+      // d1 一併宣告：真實 bundle 一定有知識庫資料庫，而安裝器現在**不再無條件建一顆**
+      // ——要不要有 D1 由 manifest 說了算（沒人要就沒有，schema 步也就沒東西可跑）。
+      requires: { kv: ['CREDENTIALS_KV'], d1: [{ binding: 'DB' }] },
     },
   ];
   for (let i = core.length + 1; i <= coreCount; i++) {
@@ -1035,7 +1097,9 @@ function installKvBugFetch({ coreCount = 2 } = {}) {
     });
   }
   const manifest = { core };
-  const kvByTitle = {}; // title → id，讓「查既有」與「建立」回同一顆（冪等模擬）
+  // state：假帳號上「現在有什麼」。deployed 空＝一顆 worker 都沒部署（全新安裝），
+  // 共用規則因此會走「沒有任何人綁過它 → 新建」那條路。
+  const state = { deployed: {}, kvByTitle: {}, d1ByName: {}, vectorize: [] };
   const calls = installFetch((url, init) => {
     const method = (init.method || 'GET').toUpperCase();
     if (url.endsWith('/manifest.json')) return { json: manifest };
@@ -1043,23 +1107,15 @@ function installKvBugFetch({ coreCount = 2 } = {}) {
       return { text: 'export default { fetch(){ return new Response("ok") } }' };
     }
     if (url.endsWith('/accounts')) return cfOk([{ id: 'acct-1', name: 'Test Acct' }]);
-    if (url.includes('/storage/kv/namespaces') && method === 'GET') return cfOk([]); // 一律查無既有，逼建立
-    if (url.includes('/storage/kv/namespaces') && method === 'POST') {
-      let body = {};
-      try { body = JSON.parse(init.body); } catch { /* ignore */ }
-      const id = kvByTitle[body.title] || `kv-${body.title}`;
-      kvByTitle[body.title] = id;
-      return cfOk({ id });
-    }
-    if (url.includes('/d1/database') && url.includes('name=') && method === 'GET') return cfOk([]);
-    if (url.includes('/d1/database') && method === 'POST' && !url.includes('/query')) return cfOk({ uuid: 'db-1' });
+    const rr = resourceRuleRoute(url, method, init, state);
+    if (rr) return rr;
     if (url.includes('/d1/database/') && url.includes('/query')) return cfOk({});
     if (url.endsWith('/workers/subdomain')) return cfOk({ subdomain: 'acme' });
     if (url.includes('/workers/scripts/') && url.endsWith('/subdomain') && method === 'POST') return cfOk({});
     if (url.includes('/workers/scripts/') && method === 'PUT') return cfOk({});
     return { status: 404, json: { error: `unhandled ${method} ${url}` } };
   });
-  return { calls, manifest };
+  return { calls, manifest, state };
 }
 
 test('t28b KV 驗屍修復①：cache 步完成時 kvIds（完整 BINDING→id 對照表）持久化進 progress.result', async () => {
@@ -1068,9 +1124,7 @@ test('t28b KV 驗屍修復①：cache 步完成時 kvIds（完整 BINDING→id �
   await seedInstallSession(env, sid, 'kvpersist@test.example');
   installKvBugFetch({ coreCount: 2 }); // 2 顆、預算 3，一輪內裝完（不必接力就能驗持久化本身）
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, {}), env, ctx);
-    await flush();
+    await startInstallAndDrain(env, sid, {});
   } finally {
     restoreFetch();
   }
@@ -1081,13 +1135,17 @@ test('t28b KV 驗屍修復①：cache 步完成時 kvIds（完整 BINDING→id �
   assert.deepEqual(progress.result.deployedNames, ['arcrun-array-ops', 'arcrun-auth-oauth2']);
 });
 
-test('t28b KV 驗屍修復②：resume 時 result.kvIds 缺失（模擬真機驗屍情境）→ 用 manifest 重建，#2 拿到 CREDENTIALS_KV 接著裝完', async () => {
+test('t28b×#97 resume 時游標缺失 → 重新走一次共用規則，**沿用已經綁著的那幾顆**（不是照名字重建）', async () => {
   const env = { INSTALLER_KV: makeKV() };
   const sid = 'sid-kv-rebuild';
   await seedInstallSession(env, sid, 'kvrebuild@test.example');
   // 手工佈一份「account/cache/database/schema 都已 done、deploy 裝了 #1」的游標，
-  // 但刻意讓 result.kvIds 缺失（=真機驗屍抓到的資料流失現場，不管成因為何，
-  // rebuild fallback 都該接住這個狀態，讓 #2 不再因缺 CREDENTIALS_KV fail-closed）。
+  // 但刻意讓資源對照表缺失（＝t28b 真機驗屍抓到的資料流失現場）。
+  //
+  // 🔴 這條測試在 #97 之後**換了判準**：舊版靠「照安裝器算的名字再 ensure 一次」把 id 撈回來，
+  //    而那正是要消滅的東西（名字對不上就會建一套空的）。新版靠共用規則重讀「這顆 worker
+  //    現在綁著誰」——帳號上那幾顆的名字刻意取成跟安裝器的命名慣例完全無關，
+  //    只要規則有一絲照名字對號就會在這裡露餡。
   const marker = {
     state: 'paused_continue',
     startedAt: Date.now() - 5000,
@@ -1105,9 +1163,8 @@ test('t28b KV 驗屍修復②：resume 時 result.kvIds 缺失（模擬真機驗
       accountName: 'Test Acct',
       cacheId: null,
       kvCount: 1, // 當初真的建過 1 個 KV——這個數字證明「不是本來就沒有」
-      // kvIds 缺失：就是這次真機驗屍抓到的洞
+      // kvIds / resourceBindings 都缺失：就是這次真機驗屍抓到的洞
       databaseId: 'db-1',
-      databaseName: 'arcrun-rag-abcd1234-db',
       subdomain: 'acme',
       deployedNames: ['arcrun-array-ops'],
     },
@@ -1115,30 +1172,39 @@ test('t28b KV 驗屍修復②：resume 時 result.kvIds 缺失（模擬真機驗
   };
   await env.INSTALLER_KV.put(`prog:${sid}`, JSON.stringify(marker));
 
-  const { calls } = installKvBugFetch({ coreCount: 2 });
+  const { calls, state } = installKvBugFetch({ coreCount: 2 });
+  // 帳號現況：兩顆 worker 都已部署，資源名字與安裝器的慣例毫無關聯（使用者自己改過／別版裝的）
+  state.kvByTitle['我自己改的名字-xyz'] = 'kv-REAL';
+  state.d1ByName['completely-unrelated-db'] = 'db-REAL';
+  state.deployed['arcrun-array-ops'] = [];
+  state.deployed['arcrun-auth-oauth2'] = [
+    { type: 'kv_namespace', name: 'CREDENTIALS_KV', namespace_id: 'kv-REAL' },
+    { type: 'd1', name: 'DB', id: 'db-REAL' },
+  ];
   try {
-    const { ctx, flush } = makeCtx();
-    await worker.fetch(reqStart(sid, { restart: false }), env, ctx); // 前端接力：不帶 restart 或 false
-    await flush();
+    await startInstallAndDrain(env, sid, { restart: false }); // 前端接力：不帶 restart 或 false
   } finally {
     restoreFetch();
   }
 
   const progress = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
-  assert.ok(progress.result.kvIds && progress.result.kvIds.CREDENTIALS_KV, '重建後應拿回 CREDENTIALS_KV 的 namespace id');
+  assert.equal(progress.result.kvIds && progress.result.kvIds.CREDENTIALS_KV, 'kv-REAL',
+    '要沿用帳號上原本那顆（名字完全對不上安裝器的慣例，照名字找一定拿不到）');
+  assert.equal(progress.result.databaseId, 'db-REAL', 'D1 同理：沿用原本那顆');
   assert.deepEqual(
     progress.result.deployedNames,
     ['arcrun-array-ops', 'arcrun-auth-oauth2'],
     '#2 應該不再因缺 KV fail-closed，接著裝完，且不重複部署 #1'
   );
   assert.equal(progress.steps.find((s) => s.id === 'deploy').state, 'done');
-  // account/database 已 done，不該被這次重建連帶重打
-  assert.equal(calls.filter((c) => c.url.endsWith('/accounts')).length, 0, '不該重打 /accounts');
+  // 🔴 #97 的核心斷言：一顆新的都不准建
   assert.equal(
-    calls.filter((c) => c.url.includes('/d1/database') && !c.url.includes('/query')).length,
-    0,
-    '不該重建/重查 D1'
-  );
+    calls.filter((c) => c.method === 'POST' && c.url.includes('/storage/kv/namespaces')).length, 0,
+    '既有的還綁著就不准新建 KV');
+  assert.equal(
+    calls.filter((c) => c.method === 'POST' && c.url.includes('/d1/database') && !c.url.includes('/query')).length, 0,
+    '既有的還綁著就不准新建 D1');
+  assert.equal(calls.filter((c) => c.url.endsWith('/accounts')).length, 0, '不該重打 /accounts');
 });
 
 test('t28b 門面順修：install.js 含 STEP_LABELS 保底表與 fmtDetail 佔位文字（stepLabel／detail 缺席都不留白）', async () => {
@@ -1752,24 +1818,24 @@ function installStallFixFetchMulti({ accounts } = {}) {
   const ACCTS = accounts || [{ id: 'acc-a', name: 'A 公司' }, { id: 'acc-b', name: 'B 個人' }];
   const core = [{
     name: 'arcrun-t45-worker-1', main_file: 'core/worker-1.js', main_module: 'index.js',
-    modules: [], compat_date: '2026-01-01', compat_flags: [], requires: {},
+    modules: [], compat_date: '2026-01-01', compat_flags: [],
+    // 真實 bundle 一定有資源需求；全空的 manifest 會被共用規則照規約擋下（見 t26 harness 註解）
+    requires: { kv: ['EXEC_CONTEXT'], d1: [{ binding: 'DB' }] },
   }];
   const manifest = { core };
+  const state = { deployed: {}, kvByTitle: {}, d1ByName: {}, vectorize: [] };
   const calls = installFetch((url, init) => {
     const method = (init.method || 'GET').toUpperCase();
     if (url.endsWith('/manifest.json')) return { json: manifest };
     if (url.endsWith('/core/worker-1.js')) return { text: 'export default { fetch(){ return new Response("ok") } }' };
     if (url.endsWith('/accounts')) return cfOk(ACCTS);
-    if (url.includes('/storage/kv/namespaces') && method === 'GET') return cfOk([]);
-    if (url.includes('/storage/kv/namespaces') && method === 'POST') return cfOk({ id: 'kv-1' });
-    if (url.includes('/d1/database') && url.includes('name=') && method === 'GET') return cfOk([]);
-    if (url.includes('/d1/database') && method === 'POST' && !url.includes('/query')) return cfOk({ uuid: 'db-1' });
+    const rr = resourceRuleRoute(url, method, init, state);
+    if (rr) return rr;
     if (url.includes('/d1/database/') && url.includes('/query')) return cfOk({});
     if (url.endsWith('/workers/subdomain')) return cfOk({ subdomain: 'acme' });
-    if (url.includes('/vectorize/')) return cfOk({});
     if (url.includes('/workers/scripts/') && url.endsWith('/subdomain') && method === 'POST') return cfOk({});
     if (url.includes('/workers/scripts/') && method === 'PUT') return cfOk({});
     return { status: 404, json: { error: `unhandled ${method} ${url}` } };
   });
-  return { calls, manifest };
+  return { calls, manifest, state };
 }

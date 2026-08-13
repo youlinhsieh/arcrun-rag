@@ -7,21 +7,50 @@
 
 使用者按下「連結我的 Cloudflare 帳號」後，安裝器會依序：
 
-1. 取得使用者的 Cloudflare 帳號清單（多帳號時原型先取第一個）
-2. 建立一個 KV namespace（文案上叫「快取空間」）
-3. 建立一個 D1 database（文案上叫「知識庫資料庫」）
-4. 對 D1 送一批 migration SQL（`entries` + `meta` 兩張表 + 一筆範例資料）
-5. 部署一顆示範 Worker，綁上剛建立的 KV 與 D1
-6. 打新 Worker 的 `/health` 做端到端自檢，確認 binding 真的通了
+1. 取得使用者的 Cloudflare 帳號清單（收到多個就停下來請他回上游只勾一個，見 #45）
+2. **決定這台該用哪幾顆資源**（KV／D1／Vectorize）——見下一節，這是最危險的一步
+3. 對 D1 送一批 migration SQL（真 kbdb schema，冪等）
+4. 逐顆部署 bundle 裡的 worker，綁上第 2 步決定的那些資源
+5. 打實例的 `/health` 做端到端自檢，確認 binding 真的通了
 
-全部資源都用 `arcrun-rag-<email 推導 8 碼>` 命名（可重現）：同一用戶重裝取用同一組，
-不重建、不撞名——這是斷點續傳（P0-2）的基礎。
+### 🔴 第 2 步的判準：「這顆 worker 現在綁著誰」
+
+> leo 2026-08-12：「如果你沒有裝，就是新的；**如果你已經有，原來叫什麼名字就繼續用下去**。」
+
+判斷**不在本目錄**，在上游 `Leo/Arcrun` 的 `shared/resource-rule/`（PR #111），
+`acr` CLI 與本安裝器吃**同一份**。`shared/resource-rule/` 是它的逐位元組鏡射：
+
+```bash
+# 規則要改 → 改上游 Arcrun，然後重跑同步
+ARCRUN_REPO_ROOT=/path/to/Arcrun node installer/scripts/resource-rule-sync.mjs
+node installer/scripts/resource-rule-sync.mjs --check   # 只核對（出貨閘會跑）
+```
+
+三條規則：① 已部署 worker 上綁著什麼就是事實，原封沿用、**不看名字**
+② 只有「確定沒有任何人綁過它」才准新建 ③ 有一點說不準就整趟停手，什麼都不建。
+
+以前這裡是「照 `arcrun-rag-<email 短碼>-kv-<binding>` 這個名字找，找不到就建」——
+名字對不上（使用者改過名／別的版本裝的／另一條通道裝的）就會建一套空的頂上去，
+那就是 `Leo/Arcrun#97`「我按了更新，工作流和登入全不見了」。
+那組名字現在**只在真的要新建時**才用得到。
+
+**按下去之前先看**（唯讀，不會建任何東西）：
+
+```bash
+node installer/scripts/resource-plan-dryrun.mjs                                  # 三種模擬情境
+node installer/scripts/resource-plan-dryrun.mjs --account <ID> --token <TOKEN>   # 真帳號現況
+```
+
+**擋住「下次又抄一份」**：`node installer/scripts/resource-rule-gate.mjs`
+（已接進 `ship.mjs` 的 preflight，不過就拒絕出貨）。
 
 ## 檔案
 
 | 檔案 | 說明 |
 |------|------|
 | `worker.js` | 全部程式（路由 / OAuth / 安裝流程 / 內嵌 HTML） |
+| `shared/resource-rule/` | 🔴 上游 `Leo/Arcrun` `shared/resource-rule/` 的**逐位元組鏡射**，由 `installer/scripts/resource-rule-sync.mjs` 產生。**不准手改**（改了出貨 preflight 會擋）。為什麼要鏡射而不是直接 import 上游路徑：這顆是裸 Worker，`wrangler deploy` 時 esbuild 必須在**本 repo 內**解析得到那些 import，而 bundle 下載的是已編譯產物、不含 `shared/`。 |
+| `resource-plan.test.mjs` | 三種情境（沒裝過／裝過了／名字改過）餵**上游那份 fixture 假帳號** |
 | `wrangler.toml` | 部署設定，KV id 是佔位符**必須先填** |
 | `README.md` | 本檔 |
 

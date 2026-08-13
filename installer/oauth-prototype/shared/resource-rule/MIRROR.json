@@ -1,0 +1,19 @@
+{
+  "_": [
+    "這個目錄是 Leo/Arcrun 的 shared/resource-rule/ 的逐位元組鏡射，由",
+    "installer/scripts/resource-rule-sync.mjs 產生。**不准手改**。",
+    "規則要改就改上游（Arcrun repo），然後重跑同步腳本；",
+    "installer/scripts/resource-rule-gate.mjs 會在每次出貨的 preflight 核對這些指紋，對不上就拒絕出貨。"
+  ],
+  "upstream": "Leo/Arcrun",
+  "upstream_dir": "shared/resource-rule",
+  "upstream_commit": "13155a1d7b42bcb46597871a202f9aea635eb87e",
+  "files": {
+    "README.md": "3ea0e084f02ad876726898093d28ff8fc2cf0772473af9f59630c5663f59f5fb",
+    "cf-resource-api.mjs": "70d278d7c55b9557e8b748f42d821a88714d1ef5498c36130279db70aa03e393",
+    "installer-entry.mjs": "5a397a23e7b014462aacbb7eaae0a18d084688670df78383b773e7dc2d8b510a",
+    "rule.mjs": "38f8c722f54c62ece0e2ff199d93c44b0cd33836624f1edfee58ab37bdd19430",
+    "tests/demo.mjs": "0a0c1fe6cd62b535876842b8599cedfc7fdd73287c830e304691a5e9560b31e0",
+    "tests/fixture-account.mjs": "1f646e94af05df5f967e4eb884f60ab6b335854325e53c24eec66fa33199f986"
+  }
+}
