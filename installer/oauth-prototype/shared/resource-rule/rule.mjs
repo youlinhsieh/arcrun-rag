@@ -106,6 +106,19 @@
  * @property {string} binding
  * @property {string} worker  需要它的 worker script 名（= wrangler.toml 的 `name`）。
  * @property {string} createName
+ * @property {boolean} [createNameIsOurs]
+ *   呼叫端在此**聲明**：`createName` 是我們自己用可重現的方式替**這一台實例**算出來的名字
+ *   ⇒ 帳號上若已經有一顆**恰好同名**的資源，它只可能是我們上一次沒裝完留下的（Arcrun#123）。
+ *
+ *   🔴 這個聲明是「接管同名資源」的**唯一**依據，預設 false（fail-closed）。
+ *   只有在名字**推導得出、而且推導的輸入是使用者自己的身分**時才准聲明 true——
+ *   安裝器的 `arcrun-rag-<slugFromEmail(email)>-kv-<binding>` 就是這種
+ *   （slug ＝ `SHA-256('arcrun-rag:' + email)` 取前 8 碼，同一個 email 每次算出同一組名字，
+ *   別人算不到、也不會不小心撞上）。
+ *
+ *   ⚠️ **不准**因為「名字看起來像我們的」就聲明 true。`acr` 那條從 wrangler.toml 讀到的
+ *   createName 是裸 binding 名（`WEBHOOKS`）或 toml 宣告的庫名（`arcrun-kbdb`）——
+ *   那種名字使用者自己也可能拿去用，**證明不了是我們的**，所以那條路一律不聲明。
  */
 
 /**
@@ -113,7 +126,12 @@
  * @property {ResourceKind} kind
  * @property {string} binding
  * @property {string} value
- * @property {string} from  從哪顆已部署的 worker 上讀到的
+ * @property {string} from  從哪顆已部署的 worker 上讀到的。`reclaimed` 時為空字串——
+ *   **沒有任何 worker 綁著它正是接收它的前提**（Arcrun#123），不是漏填。
+ * @property {boolean} [reclaimed]
+ *   true = 這顆不是從某顆 worker 的綁定讀出來的，而是「帳號上已經有一顆我們自己命名的同名資源、
+ *   卻沒有人綁著」⇒ 上一次沒裝完留下的，這次把它接回來用（Arcrun#123）。
+ *   給呼叫端做診斷／統計用；**使用者不必知道「殘骸」這個詞**，對外一律講「沿用你原本的資源」。
  */
 
 /**
@@ -144,7 +162,11 @@
  * @property {string} binding
  * @property {string} value
  * @property {'adopted' | 'created'} origin
+ *   🔴 接回上次沒裝完留下的那顆（`reclaimed`）**仍然算 `adopted`**，不另開第三種值——
+ *   它本來就是「沿用既有資源」，而且呼叫端現有的 `origin === 'adopted' / 'created'` 統計
+ *   （安裝器那句「沿用你原本的 N 項資源」）不會因為多一種值就悄悄漏數。
  * @property {string} [from]
+ * @property {boolean} [reclaimed]  見 PlannedAdopt.reclaimed（Arcrun#123）。
  */
 
 /**
@@ -251,19 +273,25 @@ export async function planResources(api, requirements, mode) {
     else byKey.set(key, [req]);
   }
 
-  /** @type {Map<ResourceKind, Set<string>>} */
+  // 帳號上現有的資源，一種只查一次。**名字 → 身分**（KV/D1 是 id，Vectorize 的身分就是名字）。
+  //
+  // 為什麼連名字都收下來（本來只留 `.values()`）：
+  //   · 2b 要問的是「這顆綁著的資源還在不在」→ 只需要 values（身分）。
+  //   · 2c 要問的是「這個**名字**是不是已經被佔走了」→ 需要 key。
+  // 同一份 API 回應裡兩個問題都答得出來，不必多打一次。
+  /** @type {Map<ResourceKind, Map<string, string>>} */
   const existingCache = new Map();
-  /** @param {ResourceKind} kind @returns {Promise<Set<string>>} */
-  const listExisting = async (kind) => {
+  /** @param {ResourceKind} kind @returns {Promise<Map<string, string>>} */
+  const listExistingByName = async (kind) => {
     const hit = existingCache.get(kind);
     if (hit) return hit;
-    /** @type {Set<string>} */
-    let set;
-    if (kind === 'kv_namespace') set = new Set((await api.listKvNamespaces()).values());
-    else if (kind === 'd1') set = new Set((await api.listD1Databases()).values());
-    else set = new Set(await api.listVectorizeIndexes());
-    existingCache.set(kind, set);
-    return set;
+    /** @type {Map<string, string>} */
+    let map;
+    if (kind === 'kv_namespace') map = await api.listKvNamespaces();
+    else if (kind === 'd1') map = await api.listD1Databases();
+    else map = new Map((await api.listVectorizeIndexes()).map((n) => [n, n]));
+    existingCache.set(kind, map);
+    return map;
   };
 
   for (const [, reqs] of byKey) {
@@ -291,10 +319,10 @@ export async function planResources(api, requirements, mode) {
     // 2b. 有人綁著它 → 這就是事實，沿用。名字長什麼樣完全不看。
     if (distinct.length === 1) {
       const value = distinct[0];
-      /** @type {Set<string>} */
+      /** @type {Map<string, string>} */
       let existing;
       try {
-        existing = await listExisting(kind);
+        existing = await listExistingByName(kind);
       } catch (e) {
         blockers.push(
           `查不到帳號上的 ${KIND_LABEL[kind]} 清單，無法確認「${binding}」綁著的 ${value} 還在不在` +
@@ -302,7 +330,7 @@ export async function planResources(api, requirements, mode) {
         );
         continue;
       }
-      if (!existing.has(value)) {
+      if (![...existing.values()].includes(value)) {
         // 這正是 #97 的入口：舊版在這裡會安靜地新建一顆空的頂上去。
         blockers.push(
           `worker「${found[0].script}」的「${binding}」綁著 ${KIND_LABEL[kind]} ${value}，` +
@@ -316,12 +344,62 @@ export async function planResources(api, requirements, mode) {
       continue;
     }
 
-    // 2c. 沒有任何已部署的 worker 綁過它 → 新版本新增的 binding，或全新帳號。
-    //     這種情況下新建不會弄丟任何東西（本來就沒有東西可丟）。
+    // 2c. 沒有任何已部署的 worker 綁過它 → 新版本新增的 binding、全新帳號，
+    //     **或者上一次安裝建到一半死掉**（Arcrun#123）。
+    //
+    // 🔴 原本這裡直接 `create.push()`，理由寫「本來就沒有東西可丟」。**那句話漏了一種狀態**：
+    //    資源已經建在帳號上、worker 還沒部署就中斷（逾時／關掉分頁／斷網）。那個當下：
+    //      名字已存在 ✅ ／ 有 worker 綁著 ❌ ⇒ 舊邏輯判「可以新建」⇒ CF 回
+    //      `a namespace with this account ID and title already exists` ⇒ **這個帳號從此裝不起來**。
+    //    封測者 1.4.45 實撞；youlin 拆除時也親眼看到 8 顆「一個 worker 都沒裝出來就被砍」的空殼。
+    //
+    // ⚠️ **這不是把 Arcrun#97 刪掉的 `ensureKvNamespace` 搬回來**，兩者差在三個地方：
+    //    ① #97 是「照名字找 → **找不到就新建一顆頂上去**」；這裡是「照名字找 →
+    //       **找到才沿用那一顆，找不到就照舊新建**」。**永遠不會拿新的空資源去頂替既有的**
+    //       ——會弄丟資料的是那個動作，不是這個。
+    //    ② #97 的比對凌駕於「worker 綁著誰」之上；這裡在 2b 之後，**已部署的綁定仍然絕對優先**，
+    //       只有在「確定沒有任何 worker 綁過它」時才輪得到名字說話。
+    //    ③ #97 無條件相信名字；這裡要呼叫端**先聲明這個名字推導自使用者自己的身分**
+    //       （`createNameIsOurs`），沒聲明就停手。
+    /** @type {Map<string, string>} */
+    let existingByName;
+    try {
+      existingByName = await listExistingByName(kind);
+    } catch (e) {
+      blockers.push(
+        `查不到帳號上的 ${KIND_LABEL[kind]} 清單，無法確認「${reqs[0].createName}」這個名字是不是已經被用掉了` +
+          `（${msg(e)}）。不確定就不建——停手。`,
+      );
+      continue;
+    }
+
+    const createName = reqs[0].createName;
+    const sameName = existingByName.get(createName);
+    if (sameName !== undefined) {
+      if (!reqs[0].createNameIsOurs) {
+        // 名字被佔走，而呼叫端證明不了那顆是我們的 ⇒ 接管它可能蓋掉使用者自己的東西。
+        // #97 的反向災情（安靜地接管一顆別人的）跟正向一樣糟 ⇒ fail-closed。
+        // 訊息不准叫使用者自己去 Cloudflare 後台動手（#121／D88：機器做得到的事不要丟回給人）。
+        blockers.push(
+          `你的 Cloudflare 帳號上已經有一個叫「${createName}」的 ${KIND_LABEL[kind]}，` +
+            `但沒有任何 worker 綁著它，我也無法證明那顆是這次安裝建的。` +
+            `直接拿來用有可能蓋掉你自己的東西，所以停手了——沒有建立或改動任何資源。` +
+            `請把這則訊息回報給我們（錯誤碼 RES-NAME-TAKEN/${kind}/${binding}），這需要我們處理。`,
+        );
+        continue;
+      }
+      // 名字是我們替這台實例算出來的（見 createNameIsOurs 的推導條件）⇒ 這顆只可能是
+      // 我們上一次沒裝完留下的。沿用它＝把上次做到一半的進度接回來，**不會有任何損失**：
+      //   · 它若是空的（最常見）→ 等同於新建一顆，只是省下 CF 那個「名字已存在」的拒絕。
+      //   · 它若有資料（更早裝過、後來 worker 被拆掉）→ 沿用正是把使用者的東西接回來。
+      adopt.push({ kind, binding, value: sameName, from: '', reclaimed: true });
+      continue;
+    }
+
     create.push({
       kind,
       binding,
-      createName: reqs[0].createName,
+      createName,
       wantedBy: [...new Set(reqs.map((r) => r.worker))],
       alsoBind: [],
     });
@@ -401,6 +479,7 @@ export async function applyResourcePlan(api, plan) {
       value: a.value,
       origin: 'adopted',
       from: a.from,
+      ...(a.reclaimed ? { reclaimed: true } : {}),
     });
   }
   /** @type {string[]} */

@@ -314,11 +314,13 @@ test('#97 輸入整形：manifest.requires → BindingRequirement[]（誰要什�
   };
   const reqs = manifestRequirements(manifest, 'arcrun-rag-abc12345', true);
   // KV：createName 帶實例短碼（使用者帳號裡看得懂那是哪一台），binding 名原樣
+  // #123：createNameIsOurs＝向共用規則聲明「這名字是我用使用者的 email 算出來的」，
+  //       同名資源才准被接回來（否則半途中斷過的帳號永遠裝不起來）。
   assert.deepEqual(
     reqs.filter((r) => r.kind === 'kv_namespace'),
     [
-      { kind: 'kv_namespace', binding: 'WEBHOOKS', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-webhooks' },
-      { kind: 'kv_namespace', binding: 'USERS_KV', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-users_kv' },
+      { kind: 'kv_namespace', binding: 'WEBHOOKS', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-webhooks', createNameIsOurs: true },
+      { kind: 'kv_namespace', binding: 'USERS_KV', worker: 'arcrun-cypher-executor', createName: 'arcrun-rag-abc12345-kv-users_kv', createNameIsOurs: true },
     ],
   );
   // D1：兩個 binding 宣告同一個 createName ⇒ 共用規則會收斂成「建一顆、大家共用」
@@ -326,10 +328,11 @@ test('#97 輸入整形：manifest.requires → BindingRequirement[]（誰要什�
   assert.equal(d1.length, 2);
   assert.equal(new Set(d1.map((r) => r.createName)).size, 1);
   assert.equal(d1[0].createName, 'arcrun-rag-abc12345-db');
+  assert.ok(reqs.every((r) => r.createNameIsOurs === true), '每一筆都要聲明來歷（#123）');
   // Vectorize：只掛在 kbdb 那顆上（安裝器的決定，manifest 裡沒有這一項）
   assert.deepEqual(
     reqs.filter((r) => r.kind === 'vectorize'),
-    [{ kind: 'vectorize', binding: 'VECTORIZE', worker: 'arcrun-kbdb', createName: VECTORIZE_INDEX }],
+    [{ kind: 'vectorize', binding: 'VECTORIZE', worker: 'arcrun-kbdb', createName: VECTORIZE_INDEX, createNameIsOurs: true }],
   );
   // withVectorize=false（語意搜尋降級那條路）就完全不出現
   assert.equal(manifestRequirements(manifest, 'arcrun-rag-abc12345', false).filter((r) => r.kind === 'vectorize').length, 0);

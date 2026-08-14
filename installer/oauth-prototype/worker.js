@@ -83,8 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@20d4ad6900f51e02242815402a70890fc5b12712';
-const BUNDLE_BUILT = '2026-08-13'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@bd409f61494fe8d845f72dfd9735b0825200304b';
+const BUNDLE_BUILT = '2026-08-14'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
 function bundleBase(env) {
@@ -817,6 +817,23 @@ const VECTORIZE_INDEX = 'arcrun-kbdb-embed-m3';
  */
 function manifestRequirements(manifest, baseName, withVectorize) {
   const reqs = [];
+  // 🔴 Arcrun#123：`createNameIsOurs` ＝ 向共用規則聲明「這些名字是我算出來的」。
+  //
+  // 有資格聲明的理由（規則那邊要求名字必須推導自**使用者自己的身分**）：
+  //   `baseName` ＝ `arcrun-rag-${slugFromEmail(email)}`，而 `slugFromEmail` 是
+  //   `SHA-256('arcrun-rag:' + 正規化 email)` 取前 8 碼 ⇒ **同一個 email 每次算出同一組名字**，
+  //   別人算不到、也不會不小心撞上。email 本身在 P0-1 的邀請閘已驗證過（runInstall 開頭
+  //   沒有 email 就直接失敗）。
+  //
+  // 聲明之後規則會做什麼：帳號上若已經有一顆**恰好同名**、卻**沒有任何 worker 綁著**的資源，
+  // 那只可能是**這位使用者上一次沒裝完留下的** ⇒ 接回來用，而不是送出一個必定被 CF 用
+  // 「title already exists」打回來的建立請求（＝封測者 1.4.45 撞到的死路）。
+  //
+  // ⚠️ 本檔**沒有**因此多出任何「照名字找資源」的實作（PR #87 刪掉的那三支 ensure* 不准回來，
+  //    出貨閘的 offender 掃描也會擋）。這裡只是**聲明來歷**，判斷仍然全在共用規則裡。
+  // ⚠️ 也不影響「已部署的 worker 綁著誰」那條主判準——名字只有在「確定沒有任何綁定可看」
+  //    時才輪得到說話，#97 的保護沒有被放寬。
+  const ours = { createNameIsOurs: true };
   for (const entry of manifest.core || []) {
     const worker = entry && entry.name;
     if (!worker) continue;
@@ -826,17 +843,24 @@ function manifestRequirements(manifest, baseName, withVectorize) {
         binding,
         worker,
         createName: `${baseName}-kv-${binding.toLowerCase()}`,
+        ...ours,
       });
     }
     for (const d of (entry.requires && entry.requires.d1) || []) {
       // 所有 d1 binding 都宣告同一個 createName ⇒ 共用層的 shareSameResource 會收斂成
       // 「建一顆、大家共用」，維持本安裝器一直以來「整台實例一顆 D1」的形狀。
-      reqs.push({ kind: 'd1', binding: d.binding, worker, createName: `${baseName}-db` });
+      reqs.push({ kind: 'd1', binding: d.binding, worker, createName: `${baseName}-db`, ...ours });
     }
     // kbdb 語意搜尋：VECTORIZE 不在 manifest.requires 裡（那個 toml 區塊預設是註解狀態），
     // 「哪顆 worker 要吃它」一直是安裝器這邊的決定（見 deployBundledWorker）。
+    //
+    // ⚠️ VECTORIZE_INDEX 是**全產品共用的固定名**（不帶 baseName），跟上面兩種不同——
+    //    但它在同一個帳號裡本來就只可能是 arcrun 自己的，而且 `createVectorizeIndex`
+    //    一直以來就把「已存在」當成功（cf-resource-api.mjs 的 409 分支）。
+    //    這裡照樣聲明，是為了讓「已存在就沿用」發生在**規則**裡而不是靠建立 API 吞錯誤，
+    //    兩條路的行為才一致；不聲明反而會讓「index 在、沒人綁」變成新的停手點（＝退化）。
     if (withVectorize && worker.includes('kbdb')) {
-      reqs.push({ kind: 'vectorize', binding: 'VECTORIZE', worker, createName: VECTORIZE_INDEX });
+      reqs.push({ kind: 'vectorize', binding: 'VECTORIZE', worker, createName: VECTORIZE_INDEX, ...ours });
     }
   }
   return reqs;

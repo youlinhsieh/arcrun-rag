@@ -20,6 +20,54 @@
 `planResources()`（不寫入，只出計畫）與 `applyResourcePlan()`（有 blocker 就拒絕執行）分兩段，
 所以「被擋下的時候一顆資源都不會被建出來」是**結構上的保證**，不是靠誰記得寫 early return。
 
+### 1.1 第 2 條的例外：上一次裝到一半死掉（Arcrun#123）
+
+「沒有人綁過它」有**兩種**成因，第 2 條原本只想到第一種：
+
+| | 名字在帳號上 | 有 worker 綁著 | 該怎麼做 |
+|---|---|---|---|
+| 新版本新增的 binding／全新帳號 | ❌ | ❌ | 新建（照舊） |
+| **上次安裝建到一半就中斷** | ✅ | ❌ | **接回那一顆**（否則 CF 回「title already exists」，這個帳號**永遠裝不起來**） |
+
+接管同名資源的**唯一**依據是呼叫端在 `BindingRequirement` 上聲明 `createNameIsOurs: true`，
+意思是「這個名字是我用**使用者自己的身分**可重現地算出來的」——安裝器的
+`arcrun-rag-<slugFromEmail(email)>-kv-<binding>` 合格；`acr` 從 wrangler.toml 讀到的裸 binding 名
+（`WEBHOOKS`）**不合格**，因為使用者自己也可能拿那個名字去建東西。
+
+沒聲明就撞名 ⇒ **停手**（訊息帶 `RES-NAME-TAKEN` 錯誤碼讓使用者回報，
+**不叫他自己去 Cloudflare 後台動手**）。
+
+🔴 這**不是**把 #97 刪掉的「照名字 ensure」搬回來。差別：#97 是**找不到就新建一顆頂上去**
+（會把活著的實例洗成空的）；這裡是**找到才沿用、找不到才照舊新建**，而且排在
+「已部署的綁定＝事實」之後——名字永遠只在「確定沒有任何綁定可看」時才有發言權。
+
+### 1.2 上面那條的前提：**清單必須是完整的**（Arcrun#123 的續集）
+
+1.1 整條規則建立在一個沒被說出口的假設上：「我列出來的，就是帳號上全部的資源」。
+`cf-resource-api.mjs` 原本三支清單方法只打 `?per_page=100`——**只看第一頁**。
+CF 的 KV 上限是每帳號 1,000 顆，所以「超過一頁」不是理論狀況。
+
+同一個截斷，在 1.1 修好前後**後果不一樣**，這才是它非修不可的理由：
+
+| 被截掉的那顆 | 規則走到哪 | 結果 |
+|---|---|---|
+| 1.1 修好**前**：worker 綁著它，但它落在第二頁 | 「綁著的資源不見了」 | blocker，**停手**（誣告使用者，但安全） |
+| 1.1 修好**後**：同名殘骸落在第二頁 | 「這個名字沒被佔走」 | **去建 → CF 回 title already exists ⇒ #123 的死路原樣回來** |
+
+⇒ 1.1 把這個洞從「叫得太大聲」變成「**安靜地復發**」。
+
+所以規約是：**看不完整就不准當作看完了**。`cfListAll` 會翻到底；翻不完、
+或翻出來的數量對不上 CF 自己回報的 `total_count`，一律 throw ⇒ 變成 blocker ⇒
+整趟停手（第 3 條）。**「我不知道」永遠不准被當成「它沒有」。**
+
+三支端點的分頁行為**不一樣**（2026-08-14 在 `geek6688` 帳號實測，別假設它們同款）：
+
+| 端點 | `result_info` | 備註 |
+|---|---|---|
+| `/storage/kv/namespaces` | `{page, per_page, count, total_count, total_pages}` | 真分頁 |
+| `/d1/database` | `{page, per_page, count, total_count}` | 真分頁，但**沒有 `total_pages`** ⇒ 不准拿它當終止條件 |
+| `/vectorize/v2/indexes` | `null` | **不分頁**，`page`／`per_page` 被忽略，一次回全部 |
+
 ---
 
 ## 2. 為什麼在這裡，不在 cypher-executor 的 API
@@ -47,8 +95,10 @@
 | `rule.mjs` | 規則本體：`planResources` / `applyResourcePlan` / `parseWranglerRequirements` ＋ 把 CF 回應讀成事實的 `normalizeLiveBindings` / `normalizeLiveVars` |
 | `cf-resource-api.mjs` | `ResourceApi` 的 CF REST 實作（只用 global `fetch`）。**眼睛也要共用**——見下 §5 |
 | `installer-entry.mjs` | 安裝器唯一該碰的入口：`resolveInstanceResources()` |
-| `tests/fixture-account.mjs` | 假 Cloudflare 帳號（`fetch` 替身）＋三種情境 |
+| `tests/fixture-account.mjs` | 假 Cloudflare 帳號（`fetch` 替身）＋四種情境。**清單端點照真 CF 分頁**（KV 有 `total_pages`／D1 沒有／Vectorize 不分頁），形狀是 2026-08-14 在真帳號實打抄回來的 |
 | `tests/demo.mjs` | `node shared/resource-rule/tests/demo.mjs`——零依賴、零建置就能跑的示範 |
+| `tests/half-finished-install.mjs` | #123 的迴歸守衛：上次裝到一半死掉的帳號，回來再按一次要裝得起來（§1.1） |
+| `tests/list-pagination.mjs` | #123 的**續集**：帳號上資源多到一頁裝不下時，規則看到的仍是全部（§1.2） |
 
 🔴 **零依賴是硬規則**：只准 import 同目錄的兄弟檔，不准碰 `node:*`。
 有外部依賴就會有某條路吃不到它。`cli/tests/single-implementation.test.ts` ③ 會擋。
@@ -112,8 +162,10 @@ if (r.blocked) {
 ## 6. 驗收
 
 ```bash
-cd cli && npm test          # 58 項，含下列三組
-node shared/resource-rule/tests/demo.mjs   # 安裝器那條路，零依賴獨立跑
+cd cli && npm test          # 73 項，含下列三組
+node shared/resource-rule/tests/demo.mjs                # 安裝器那條路，零依賴獨立跑
+node shared/resource-rule/tests/half-finished-install.mjs   # #123
+node shared/resource-rule/tests/list-pagination.mjs         # #123 續集（清單分頁）
 ```
 
 | 測試 | 證的事 |
@@ -122,11 +174,15 @@ node shared/resource-rule/tests/demo.mjs   # 安裝器那條路，零依賴獨�
 | `cli/tests/single-implementation.test.ts` | ①規則的 7 支函式全 repo 只有這裡有實作 ②鏡射逐位元組相同 ③共用層零依賴 |
 | `cli/tests/resource-adoption.test.ts` | #97 本身的迴歸（沿用／不多建／四種停手情境），改共用層後照樣全過 |
 
-三種情境（`tests/fixture-account.mjs` 的 `SCENARIOS`）：
+四種情境（`tests/fixture-account.mjs` 的 `SCENARIOS`）：
 
 - `fresh` — 沒裝過 → **正常建新的**（不能為了沿用而變成永遠不建）
 - `installed` — 裝過了 → 沿用原本那幾顆，工作流與登入 session 都還在
 - `renamed` — **資源在但名字與預期完全不同** → 仍然沿用（#97 的病根，專門驗）
+- `half-finished` — **資源已建、worker 一顆都沒部署** → 接回殘骸（#123 的病根）
+
+另有一個與情境正交的旋鈕：`makeAccount(情境, { decoyKv, decoyD1 })` 會在帳號上多塞
+N 顆「別人的」資源，把我們自己那幾顆擠到第二頁以後——§1.2 的分頁測試靠它。
 
 ---
 

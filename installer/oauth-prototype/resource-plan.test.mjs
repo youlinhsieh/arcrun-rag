@@ -130,3 +130,77 @@ test('#97 兩條路一致：安裝器選出來的 id ＝ fixture 宣告的「使
     assert.equal(r.bindings['kv_namespace:SESSIONS_KV'], account.kvIdFor('SESSIONS_KV'), `${scenario}：登入 session 那顆`);
   }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Arcrun#123 —— 上一次裝到一半死掉的帳號，回安裝器再按一次就要裝得起來
+//
+// leo 2026-08-14 的驗收線：「用戶只做一件事——回安裝器再按一次——就要能裝成功。」
+// 不准叫他開 Cloudflare 後台、不准叫他跑指令、不准要他懂 namespace／binding。
+//
+// 這一格與上面三個情境的差別：資源**在**、worker **一顆都沒有**
+// ⇒ 沒有任何綁定可以當事實，而帳號上偏偏已經有一批同名資源。
+// 封測者 1.4.45 實撞：`a namespace with this account ID and title already exists`。
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** 真實 CF 不准同名——fixture 沒模擬這條，所以這個死路一直測不出來。 */
+function withDuplicateNameRejection(account) {
+  const inner = account.fetch;
+  return async (input, init) => {
+    const path = new URL(String(input)).pathname.replace(/^\/client\/v4\/accounts\/[^/]+/, '');
+    if (path === '/storage/kv/namespaces' && (init?.method ?? 'GET').toUpperCase() === 'POST') {
+      const { title } = JSON.parse(String(init.body));
+      const listed = await (await inner('https://api.cloudflare.com/client/v4/accounts/x/storage/kv/namespaces', {})).json();
+      if (listed.result.some((n) => n.title === title)) {
+        return new Response(JSON.stringify({
+          success: false, result: null,
+          errors: [{ message: 'a namespace with this account ID and title already exists' }],
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+    return inner(input, init);
+  };
+}
+
+test('#123：上次裝到一半死掉 → 安裝器再按一次就過，且一顆資源都不必新建', async () => {
+  const account = makeAccount('half-finished');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withDuplicateNameRejection(account);
+  try {
+    // mode='init'：上次沒裝完 ⇒ INSTALLER_KV 沒有 `deployed:<account>:` 那筆紀錄。
+    const reqs = manifestRequirements(manifestFromFixture(), BASE_NAME, true);
+    const r = await resolveResourcesByRule('fake-token', 'fake-account', reqs, 'init');
+
+    assert.equal(r.blocked, false, r.blockers.join('\n'));
+    assert.deepEqual(account.created.kv, [], '不該新建任何 KV（同名的那批要接回來用）');
+    assert.deepEqual(account.created.d1, [], '不該新建任何 D1');
+
+    // 每個 binding 都有著落，安裝才走得下去
+    for (const b of KV_BINDINGS) {
+      assert.equal(r.bindings[`kv_namespace:${b}`], account.kvIdFor(b), `${b} 要綁回上次建的那一顆本尊`);
+      assert.equal(r.origin[`kv_namespace:${b}`], 'adopted');
+    }
+    assert.equal(r.bindings['d1:DB'], account.d1Id);
+    assert.equal(r.bindings['d1:DB'], r.bindings['d1:CREDENTIALS_DB'], '兩個 d1 binding 仍指同一顆');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('#123 對照組：安裝器若沒聲明 createNameIsOurs → 停手，且訊息不叫用戶開 CF 後台', async () => {
+  const account = makeAccount('half-finished');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withDuplicateNameRejection(account);
+  try {
+    // 拿掉聲明 ＝ 修好之前的判斷（「沒人綁著就可以新建」）⇒ 舊版在這裡撞 CF 的同名限制。
+    const reqs = manifestRequirements(manifestFromFixture(), BASE_NAME, true)
+      .map(({ createNameIsOurs, ...rest }) => rest);
+    const r = await resolveResourcesByRule('fake-token', 'fake-account', reqs, 'init');
+
+    assert.equal(r.blocked, true, '證明不了是自己的 → fail-closed');
+    assert.match(r.blockers.join('\n'), /RES-NAME-TAKEN/, '要給得出可回報的錯誤碼');
+    assert.doesNotMatch(r.blockers.join('\n'), /後台|dashboard/, '不准叫用戶自己去 CF 後台（#121／D88）');
+    assert.deepEqual(account.created.kv, [], '被擋下時一顆都不能被建出來');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
