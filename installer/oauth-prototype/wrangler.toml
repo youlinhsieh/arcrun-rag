@@ -121,7 +121,7 @@ DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
 # 實測見本次交付回報（curl /auth/start?code=<真碼> 直接拿到 CF OAuth 302，
 # 而不是 error=code_unreachable）。
 
-INSTALLER_SRC_SHA = "ace25cb03bc792728484b0e91c1229c639e9affaf11577f94adde81592e97b4c"
+INSTALLER_SRC_SHA = "2b22d2b751446f445d7e29fbfb6b123a4ea100d46b4f485ea9316b3add861c6c"
 [env.staging.observability]
 enabled = true
 

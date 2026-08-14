@@ -2035,20 +2035,20 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "已與遠端同步，沒有要推的"
     },
     {
      "id": "pin",
@@ -2095,7 +2095,7 @@
    ],
    "sourceCommit": "Arcrun@94d545242589",
    "machine": "9f06f3113188",
-   "ts": 1786685928415
+   "ts": 1786709574159
   },
   "prod": {
    "results": [
