@@ -1870,8 +1870,8 @@
     {
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
-     "status": "skip",
-     "note": "bundle 已是 changelog 最新已發佈版：v0.18.26"
+     "status": "done",
+     "note": null
     },
     {
      "id": "daemon-check",
@@ -1894,8 +1894,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "skip",
-     "note": "已是最新：不會再把整理結果寫進你的 Logseq／Obsidian 筆記庫・不會再無聲蓋掉你原本就有的檔案"
+     "status": "done",
+     "note": null
     },
     {
      "id": "version",
@@ -1912,8 +1912,8 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
@@ -1966,13 +1966,13 @@
     {
      "id": "github-release",
      "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "GitHub 已有 v1.4.44：https://github.com/youlinhsieh/arcrun-rag/releases/tag/v1.4.44"
     }
    ],
    "sourceCommit": "Arcrun@1ccee0055ebd",
    "machine": "9f06f3113188",
-   "ts": 1786617224371
+   "ts": 1786619315087
   }
  }
 }

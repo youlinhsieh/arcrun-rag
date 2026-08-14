@@ -6,14 +6,14 @@
 | --- | --- | --- | --- |
 | 1 | 對齊目標（打錯目標打不進去） | ✅ | ✅ |
 | 2 | 掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…） | ✅ | ✅ |
-| 3 | 把本機最新已發佈的 daemon 產物搬進 bundle | ⬜ | ⬜ |
+| 3 | 把本機最新已發佈的 daemon 產物搬進 bundle | ⬜ | ✅ |
 | 4 | 核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推） | ✅ | ✅ |
 | 5 | 從來源重打 bundle（版本號由內容算，不由人宣告） | ✅ | ✅ |
 | 6 | 核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應） | ✅ | ✅ |
-| 7 | 產生更新畫面那一行（來源＝changelog） | ⬜ | ⬜ |
+| 7 | 產生更新畫面那一行（來源＝changelog） | ⬜ | ✅ |
 | 8 | 算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼） | ✅ | ✅ |
 | 9 | 確認這版已經寫進說明文件（缺了就中止，不安靜跳過） | ✅ | ✅ |
-| 10 | bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字） | ⬜ | ✅ |
+| 10 | bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字） | ⬜ | ⬜ |
 | 11 | 把產物寫進 bundle repo 的版控 | ⬜ | ✅ |
 | 12 | 推上 bundle repo | ⬜ | ✅ |
 | 13 | 換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋） | ⬜ | ✅ |
@@ -22,7 +22,7 @@
 | 16 | 部署郵差（忘記密碼代寄），並驗證它真的接得起來 | ✅ | ✅ |
 | 17 | 讓送貨管道拿到新版並確認它真的收斂了 | ✅ | ✅ |
 | 18 | 驗收（用戶端視角，不是部署訊息） | ✅ | ✅ |
-| 19 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | ⬜ | ✅ |
+| 19 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | ⬜ | ⬜ |
 
 真的做事的站：stage 11／19 站（與上次相同）　｜　prod 17／19 站（上次 11 站）
 
@@ -35,8 +35,8 @@
    · stage｜pin：釘子與安裝器原始碼都沒動（built 2026-08-13，src ace25cb03bc7）
    · stage｜deploy：線上已是 1.4.44／pin 9b106bf／安裝器原始碼 ace25cb03bc7 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜github-release：本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）
-   · prod｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.26
-   · prod｜notes：已是最新：不會再把整理結果寫進你的 Logseq／Obsidian 筆記庫・不會再無聲蓋掉你原本就有的檔案
+   · prod｜readme：README 已是最新（零件清單與版本都沒變）
+   · prod｜github-release：GitHub 已有 v1.4.44：https://github.com/youlinhsieh/arcrun-rag/releases/tag/v1.4.44
 
 件數：stage 19 站　｜　prod 19 站
 ✅ 兩欄件數相同（19 站）——暫存站有的，上架也有
