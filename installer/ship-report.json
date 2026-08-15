@@ -2309,8 +2309,8 @@
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "線上已是 1.4.46／pin b85572c／安裝器原始碼 eb3f3bd237a8 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -2327,22 +2327,25 @@
     {
      "id": "purge",
      "title": "讓送貨管道拿到新版並確認它真的收斂了",
-     "status": "failed"
+     "status": "done",
+     "note": null
     },
     {
      "id": "verify",
      "title": "驗收（用戶端視角，不是部署訊息）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "github-release",
      "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
-     "status": "not-run"
+     "status": "skip",
+     "note": "本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）"
     }
    ],
    "sourceCommit": "Arcrun@cacaa33f7d4e",
    "machine": "9f06f3113188",
-   "ts": 1786809884200
+   "ts": 1786814005993
   }
  }
 }
