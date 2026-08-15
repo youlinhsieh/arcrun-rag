@@ -36,11 +36,11 @@ func TestT210ProgressWiring(t *testing.T) {
 
 	// Gemini 替身：pageName 是 "stuck" 或 "pending" 的一律萃取失敗（模擬「本地萃取失敗」
 	// 這一種無法同步的成因），其餘（"ok"）成功萃出一張最簡卡片。用 prompt 裡「# <pageName>」
-	// 那行分辨是哪個檔（gemmaPrompt 的契約：第一行必須是「# <pageName>」）。
+	// 那行分辨是哪個檔（wikiExtractPrompt 的契約：第一行必須是「# <pageName>」）。
 	restoreGemma := gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch {
-		case strings.Contains(string(body), "「# stuck」"), strings.Contains(string(body), "「# pending」"):
+		case strings.Contains(string(body), "檔名：stuck）"), strings.Contains(string(body), "檔名：pending）"):
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("上游炸了（測試用）"))
 		default:

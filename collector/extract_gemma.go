@@ -27,11 +27,54 @@ const defaultLLMModel = "gemma-4-31b-it"
 
 var gemmaHTTP = &http.Client{Timeout: 120 * time.Second}
 
-// gemmaPrompt 組出與 rag_extract_one 同款的萃卡指令。
-func gemmaPrompt(pageName, content string) string {
-	return "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# " + pageName +
-		"」，不要任何前言、思考過程、英文草稿或說明。格式：\n# " + pageName +
-		"\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n" + content
+// wikiExtractPrompt 組出「文件卡＋N 張原子概念卡」的結構化萃取指令（InkStoneCo#44 ④）。
+//
+// 🔴 這是**全部萃取路共用的唯一一份**提示詞（Arcrun#134 起原名 gemmaPrompt 改此名）：
+// gemma 路自己打 Gemini 用它；workers-ai 路把它整段帶去雲端（`prompt` 欄位）給
+// env.AI 跑。契約（提示詞＋parseWikiExtractJSON＋BuildWikiDoc）同住本 package
+// ⇒ 兩條路的卡片形狀由同一份程式碼保證，不再靠「兩邊要一起改」的叮嚀。
+//
+// 🔴 分工：模型只回 JSON（判斷），格式與落點全由 wikishape.go 機械組裝——
+// 模型不寫 markdown、不決定檔名、不碰路徑。Luhmann ②（一卡一概念）在**萃取端**做，
+// 否則 place_card 只會一直回 orphan（規範待裁 6 的裁定理由）。
+func wikiExtractPrompt(pageName, content string) string {
+	return `你是知識整理員。讀完原稿後，把它整理成「一份文件的總覽＋N 個原子概念」。只輸出一個 JSON 物件，不要任何說明、markdown 圍欄或思考過程。
+
+規則（違反任何一條都算失敗）：
+- 卡片內容是你的**判斷與重組**（正體中文），禁止整句照抄原稿。
+- 概念數由內容決定（多數文件 1-5 個）；每個概念要能**離開原稿獨立成立**。
+- 報價單、發票、純待辦、純流水帳＝沒有可萃取概念：回 {"no_concept":true,"reason":"一句話理由"} 即可。
+- gloss＝一句話（40 字內）。summary＝一小段（80-200 字）。points＝3-8 條判斷句（不是條列複述）。
+- 文件層的 points 每條要把相關概念名用 [[概念名]] 嵌在**句子中間**（不可放句首當標題）。
+- entities：每個實體帶 type（人物/組織/工具/概念/地點/事件/檔案 擇一）與一句描述。
+- facts＝[主詞,述詞,受詞] 三元組，端點盡量用 entities 的名字；任何欄位不得含雙箭頭符號。
+- relations＝概念之間的關係（to 填另一個概念的 name）。
+
+JSON 形狀（照這個結構填）：
+{"gloss":"","tags":[""],"summary":"","points":["…句子中間嵌 [[概念名]]…"],
+ "no_concept":false,"reason":"",
+ "concepts":[{"name":"","gloss":"","tags":[""],"summary":"","points":[""],
+   "entities":[{"name":"","type":"","desc":""}],
+   "facts":[["","",""]],
+   "relations":[{"to":"","pred":""}]}]}
+
+原稿（檔名：` + pageName + `）：
+` + content
+}
+
+// parseWikiExtractJSON 從模型輸出撈出 JSON 並解析成 DocExtract。
+// thinking 模型可能在 JSON 前後夾雜文字／圍欄：取第一個 '{' 到最後一個 '}'。
+func parseWikiExtractJSON(text string) (*DocExtract, error) {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return nil, fmt.Errorf("模型輸出裡找不到 JSON 物件：%.120s", text)
+	}
+	var ex DocExtract
+	if err := json.Unmarshal([]byte(text[start:end+1]), &ex); err != nil {
+		return nil, fmt.Errorf("萃取 JSON 解析失敗：%w（%.120s）", err, text[start:end+1])
+	}
+	return &ex, nil
 }
 
 // cleanGemmaCard 淨化思考型模型輸出：取最後一個「# <pageName>」起的內容（前面全是草稿）。
@@ -71,7 +114,7 @@ func ExtractWithGemma(apiKey, model, absRoot, relPath string) ([]string, error) 
 
 	reqBody, _ := json.Marshal(map[string]any{
 		"contents": []map[string]any{
-			{"parts": []map[string]any{{"text": gemmaPrompt(pageName, srcText)}}},
+			{"parts": []map[string]any{{"text": wikiExtractPrompt(pageName, srcText)}}},
 		},
 		"generationConfig": map[string]any{"temperature": 0.2, "maxOutputTokens": 8192},
 	})
@@ -120,17 +163,18 @@ func ExtractWithGemma(apiKey, model, absRoot, relPath string) ([]string, error) 
 		return nil, fmt.Errorf("Gemini 回應沒有可用文字（thought-only 或空回應）")
 	}
 
-	card := cleanGemmaCard(text, pageName)
-	if !strings.HasPrefix(card, "# ") {
-		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)
+	// InkStoneCo#44 ④（2026-08-15）：產出改走塑形層——模型回 JSON（判斷），
+	// wikishape.go 機械組裝出規範形的 `.wiki/` 卡（文件卡＋原子概念卡＋索引＋manifest）。
+	// 舊的「單檔一卡落 cards/」由此淘汰（差距表 #6–#10 的現狀）；
+	// #60 的兩條保護換了形式仍在：落點是隱藏目錄（不進筆記軟體）、既有檔一律不覆蓋。
+	ex, perr := parseWikiExtractJSON(text)
+	if perr != nil {
+		return nil, perr
 	}
-	// arcrun-rag#60：路徑與檔名都由 cardRelFor 決定——非 vault 落 system-dev/wiki/cards/、
-	// vault 落隱藏目錄，且**檔名一律帶 arcrun- 前綴**（第二輪：光換目錄擋不住撞名，
-	// 因為 Logseq 的頁名是 basename）。落地前先查目標存不存在、不無條件覆蓋（safeWriteCard）。
-	cardRel := cardRelFor(absRoot, pageName)
-	dest := filepath.Join(absRoot, filepath.FromSlash(cardRel))
-	if err := safeWriteCard(absRoot, dest, []byte(card)); err != nil {
-		return nil, err
+	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, time.Now())
+	if berr != nil {
+		return nil, berr
 	}
-	return []string{cardRel}, nil
+	// 沒有可萃概念＝合法結果：不產卡，但 00-INDEX 已列「空」（差距 #10）。
+	return cards, nil
 }

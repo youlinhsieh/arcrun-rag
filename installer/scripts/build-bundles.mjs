@@ -21,9 +21,17 @@
  *   （youlinhsieh/*），安裝器透過 jsDelivr（`cdn.jsdelivr.net/gh/...`）純 API 抓來上傳。
  *   （leo 2026-07-21 拍板 jsDelivr；R2 因綁卡淘汰。）
  *
- * 懶載首裝 = 4 顆核心：cypher-executor / kbdb / http_request / code
- *   （13 個邏輯零件 RAG 產品鏈不用 → 不裝、用到才長，見 journeys/installer-lazy-load-feasibility.md）。
- *   cypher 的 `stripped.services=13` 標記沿用 Arcrun 那邊成品自帶的 metadata。
+ * ── 這個 bundle 裡有什麼（2026-08-15 改，Arcrun#125）───────────────────────────
+ *   **公庫**：這一版 Arcrun 編出來的**全部**零件，通通複製進來。
+ *   **首裝**：`manifest.core`——安裝器真的會部署的那幾顆。
+ *   **懶載**：公庫 − 首裝。它們的檔案**就在這個 bundle 裡**，所以「用到才下載」有貨可載。
+ *   三份名單都由 `bundle-components.mjs` 算出來，沒有人在維護清單。
+ *
+ * 🔴 這段以前寫的是「首裝 4 顆核心，13 個邏輯零件用到才長」。
+ *   前半是真的，後半**沒有任何實作，而且那些零件根本不在 bundle 裡**
+ *   ⇒ 有人（包括 AI）照著這句話把解憑證那顆排除在首裝之外，於是 2026-08-14
+ *     凡走網頁安裝器裝出來的實例，工作流一跑就 500（Arcrun#124／#125）。
+ *   leo：「留著一個描述不存在機制的註解，比沒有註解更糟。」——這就是那次的物證。
  *
  * 用法：ARCRUN_REPO_ROOT=/path/to/Arcrun node build-bundles.mjs [--out bundles]
  *   要求：ARCRUN_REPO_ROOT 底下已經跑過 `node scripts/build-worker-artifacts.mjs`，
@@ -34,7 +42,7 @@
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { execSync } from 'node:child_process';
-import { CORE_COMPONENTS, BUNDLE_COMPONENT_NAMES } from './bundle-components.mjs';
+import { resolveBundlePlan, layoutFor } from './bundle-components.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
 
 const REPO = process.env.ARCRUN_REPO_ROOT || process.env.ARCRUN_REPO || '';
@@ -47,11 +55,8 @@ const OUT = (() => {
   return resolve(i >= 0 ? process.argv[i + 1] : 'bundles');
 })();
 
-/** 4 顆核心 worker 定義。stripServices=cypher 去 13 個 service binding（懶載）。
- *  🔴 2026-08-09（arcrun-rag#27）：定義本身搬去 `bundle-components.mjs`——
- *  那裡是「一個 bundle 有哪幾顆」的唯一真相源，ship.mjs 的提升路徑讀的是同一份。
- *  以前這裡一份、ship.mjs `BUILD_MANAGED` 一份，兩份人手維護的清單＝必然漂移。 */
-const CORE = CORE_COMPONENTS;
+/** arcrun-rag 這個 repo 的根（找出貨的那顆安裝器與它會推的工作流用）。 */
+const RAG_REPO_ROOT = join(import.meta.dirname, '..', '..');
 
 /** Arcrun 官方成品的固定位置——見 Arcrun repo `scripts/build-worker-artifacts.mjs`。
  *  本檔的「安裝器 name」（`arcrun-cypher-executor` 等）與 Arcrun 那邊的成品 name
@@ -91,36 +96,36 @@ function assertNotBehindMain(repoRoot) {
 
 /** 從 Arcrun 官方成品複製一顆到本檔輸出目錄——**取代舊版的 esbuild buildOne()**。
  *  不重新編譯，只搬運 + 補上安裝器層需要的欄位。找不到官方成品＝硬停，不退回自己編。 */
-function copyOne(w, artifactByName) {
-  const artifact = artifactByName.get(w.name);
+function copyOne(name, artifactByName) {
+  const artifact = artifactByName.get(name);
   if (!artifact) {
     throw new Error(
-      `Arcrun 官方成品沒有 ${w.name}（.worker-builds/manifest.json 缺這一筆）——` +
-      `這不是本檔的職責範圍，去 Arcrun repo 補上 scripts/build-worker-artifacts.mjs 的 WORKERS 清單`,
+      `Arcrun 官方成品沒有 ${name}（.worker-builds/manifest.json 缺這一筆）——` +
+      `這不是本檔的職責範圍，去 Arcrun repo 跑 scripts/build-worker-artifacts.mjs`,
     );
   }
-  const srcDir = join(ARTIFACTS_DIR, w.name);
-  const outDir = join(OUT, w.name);
+  const { relDir, mainName } = layoutFor(name);
+  const srcDir = join(ARTIFACTS_DIR, name);
+  const outDir = join(OUT, relDir);
   mkdirSync(outDir, { recursive: true });
 
   const srcMain = join(srcDir, artifact.main_module || 'worker.mjs');
   if (!existsSync(srcMain)) throw new Error(`官方成品缺主檔: ${srcMain}`);
-  copyFileSync(srcMain, join(outDir, 'worker.mjs'));
+  copyFileSync(srcMain, join(outDir, mainName));
 
   const modules = [];
   for (const m of artifact.modules || []) {
-    const srcWasm = join(ARTIFACTS_DIR, m.file || join(w.name, m.name));
+    const srcWasm = join(ARTIFACTS_DIR, m.file || join(name, m.name));
     if (!existsSync(srcWasm)) throw new Error(`官方成品缺 wasm part: ${srcWasm}`);
     copyFileSync(srcWasm, join(outDir, m.name));
-    modules.push({ name: m.name, type: m.type, file: `${w.name}/${m.name}` });
+    modules.push({ name: m.name, type: m.type, file: `${relDir}/${m.name}` });
   }
 
-  const jsSize = artifact.js_bytes ?? readFileSync(join(outDir, 'worker.mjs')).length;
+  const jsSize = artifact.js_bytes ?? readFileSync(join(outDir, mainName)).length;
   return {
-    name: w.name,
-    canonical: w.canonical,
-    main_module: 'worker.mjs',
-    main_file: `${w.name}/worker.mjs`,
+    name,
+    main_module: mainName,
+    main_file: `${relDir}/${mainName}`,
     js_bytes: jsSize,
     modules,
     compat_date: artifact.compat_date,
@@ -128,7 +133,9 @@ function copyOne(w, artifactByName) {
     // binding 需求（安裝器據此把「已建的資源 id」對上）——直接沿用官方成品算好的 requires，
     // 不在本檔重新解析 wrangler.toml（單一真相源＝Arcrun 那邊的建置腳本）。
     requires: artifact.requires,
-    stripped: w.stripServices ? { services: 13 } : undefined,
+    // 🔴 `stripped` 也照抄官方成品自己記的，不由本檔再宣告一次
+    //   （再宣告一次＝多一份會跟成品不同步的說法）。
+    stripped: artifact.stripped,
     // 每顆的來源答到單顆層級（Arcrun#80 的核心要求）——不再是整包一個 source 欄位。
     source_commit: artifact.source_commit || null,
     source_content_sha256: artifact.content_sha256 || null,
@@ -164,10 +171,18 @@ async function main() {
   //    kbdb（a7e23ba vs 3eb8b31）送出去的都是舊執行檔。是人工逐顆比才發現的。
   //
   // 擺在這裡而不是更後面：**產物生成後才發現就太晚了**（同 t173 落後閘的理由）。
+  // 這一版 bundle 的完整計畫：公庫（全部帶走）／首裝（安裝器會部署）／懶載（用到才下載）。
+  // 三份名單都是算出來的，沒有人維護——見 bundle-components.mjs 檔頭。
+  const plan = resolveBundlePlan({ arcrunRepo: REPO, repoRoot: RAG_REPO_ROOT, artifactManifest });
+  console.log(
+    `✔ 這一版：公庫 ${plan.library.length} 顆｜首裝 ${plan.firstInstall.length} 顆｜懶載 ${plan.lazy.length} 顆`);
+  console.log(`   首裝：${plan.firstInstall.join('、')}`);
+  for (const w of plan.warnings) console.log(`   ⚠️ ${w}`);
+
   const fresh = requireFreshArtifacts({
     repo: REPO,
     manifest: artifactManifest,
-    components: CORE,
+    components: plan.library.map((name) => ({ name })),
     allowDirty: process.env.ARTIFACT_ALLOW_DIRTY_SOURCE === '1',
   });
   if (fresh.ok) console.log(`✔ 成品新鮮度：${fresh.results.length} 顆的 source_commit 都還等於它源碼目錄的現況`);
@@ -184,8 +199,8 @@ async function main() {
   //    都不是本腳本產的，卻跟著陪葬。
   //    ⇒ 只清「本次重建的那幾個目錄」，不碰別人的東西。
   mkdirSync(OUT, { recursive: true });
-  for (const w of CORE) {
-    const d = join(OUT, w.name);
+  for (const name of plan.library) {
+    const d = join(OUT, layoutFor(name).relDir);
     if (existsSync(d)) rmSync(d, { recursive: true, force: true });
   }
 
@@ -195,41 +210,52 @@ async function main() {
   //   「這批位元組真正是哪個 commit 編的」）。
   const sourceRef = artifactManifest.repo_head ? `Arcrun@${artifactManifest.repo_head.slice(0, 12)}` : '';
 
-  const manifest = { schema: 1, built_for: 'oauth-installer-lazy-load', core: [], notes: [] };
+  const manifest = {
+    schema: 2,
+    built_for: 'oauth-installer-lazy-load',
+    // core     ＝ 安裝器真的會部署的那幾顆（首裝）
+    // library  ＝ 這一版公庫的全部零件，**檔案都在這個 bundle 裡**——
+    //             「用到才下載」下載的就是它們（D48：公庫永遠是全部，這台有幾顆是它自己要過幾顆）
+    core: [],
+    library: [],
+    first_install_reasons: [],
+    notes: [],
+  };
   if (sourceRef) manifest.source = sourceRef;
-  for (const w of CORE) {
+
+  const firstInstall = new Set(plan.firstInstall);
+  const entries = new Map();
+  for (const name of plan.library) {
     try {
-      const entry = copyOne(w, artifactByName);
-      manifest.core.push(entry);
+      const entry = copyOne(name, artifactByName);
+      entries.set(name, entry);
       const wasmNote = entry.modules.length ? ` +${entry.modules.length} wasm` : '';
-      console.log(`✔ ${w.name}  js=${(entry.js_bytes / 1024).toFixed(0)}KB${wasmNote}  source=${(entry.source_commit || '').slice(0, 8)}`);
+      const tag = firstInstall.has(name) ? '首裝' : '懶載';
+      console.log(`✔ [${tag}] ${name}  js=${(entry.js_bytes / 1024).toFixed(0)}KB${wasmNote}  source=${(entry.source_commit || '').slice(0, 8)}`);
     } catch (e) {
-      manifest.notes.push(`FAILED ${w.name}: ${e.message}`);
-      console.error(`✗ ${w.name}: ${e.message}`);
+      manifest.notes.push(`FAILED ${name}: ${e.message}`);
+      console.error(`✗ ${name}: ${e.message}`);
     }
   }
-  // 🔴 2026-08-05（leo 出貨時實撞）：先讀既有 manifest，只覆寫本次重建的欄位，其餘原樣保留。
+  manifest.core = plan.firstInstall.map((n) => entries.get(n)).filter(Boolean);
+  // 公庫條目寫**完整**的一份（含 requires／compat／wasm part）——
+  // 懶載那一刻要部署它，需要的資訊與首裝完全一樣，少寫一欄就是那時候才炸。
+  manifest.library = plan.library.map((n) => entries.get(n)).filter(Boolean)
+    .map((e) => ({ ...e, first_install: firstInstall.has(e.name) }));
+  manifest.first_install_reasons = plan.reasons;
+  if (plan.warnings.length) manifest.notes.push(...plan.warnings);
+
+  // 🔴 2026-08-05（leo 出貨時實撞）：先讀既有 manifest，只覆寫本次重建的欄位，其餘原樣保留
+  //    （`daemon` 欄＝桌面 App 版本，不是本腳本產的，被吃掉會讓所有人的「檢查更新」失效）。
   const merged = { ...prevManifest, ...manifest };
-  // 🔴 2026-08-05 三修 + 2026-08-09 四修（arcrun-rag#27）：只沿用「舊 manifest 有、
-  //    不屬於本腳本 CORE、且在 BUNDLE_COMPONENT_NAMES 清單上、且檔案確實還在」的條目
-  //    （＝ portal 前端 arcrun-rag-ui）。清單上沒有的，一律不進 manifest——棘輪拆掉。
-  const ownNames = new Set(CORE.map((w) => w.name));
-  const canonical = new Set(BUNDLE_COMPONENT_NAMES);
-  const prevCore = prevManifest.core ?? [];
-  const inherited = prevCore.filter(
-    (c) => c && c.name && !ownNames.has(c.name) && canonical.has(c.name)
-      && c.main_file && existsSync(join(OUT, c.main_file)),
-  );
-  const dropped = prevCore.filter((c) => c && c.name && !canonical.has(c.name));
-  merged.core = [...manifest.core, ...inherited];
-  if (inherited.length) {
-    console.log(`↺ 沿用非本腳本產的 ${inherited.length} 顆：${inherited.map((c) => c.name).join('、')}`);
-  }
+  // 🔴 棘輪拆掉（arcrun-rag#27／D48）：manifest 的內容**完全**由本次計畫決定，
+  //    不再從舊 manifest 沿用任何零件條目。以前需要「沿用非本腳本產的那幾顆」，
+  //    是因為 portal 前端由另一支腳本產；現在它跟其他零件走同一條路（D91），
+  //    那個沿用路徑就沒有存在理由了——而它正是 08-09 那 19 顆殘留的通道。
+  const prevNames = new Set((prevManifest.core || []).map((c) => c && c.name).filter(Boolean));
+  const dropped = [...prevNames].filter((n) => !entries.has(n));
   if (dropped.length) {
-    console.log(
-      `🧹 清單外的 ${dropped.length} 顆已從 manifest 移除（棘輪殘留，非本 bundle 應有內容）：` +
-      `${dropped.map((c) => c.name).join('、')}`);
-    console.log(`   （磁碟上的檔案**不動**——要不要回收由人決定，見 arcrun-rag#27）`);
+    console.log(`🧹 上一版 manifest 有、這一版公庫沒有的 ${dropped.length} 顆已移除：${dropped.join('、')}`);
   }
   writeFileSync(join(OUT, 'manifest.json'), JSON.stringify(merged, null, 2));
   // 🔴 2026-08-02（leo：「做成自動化，不依賴你記得去更新」）：
@@ -237,7 +263,10 @@ async function main() {
   //    不會再出現「走 A 路徑版本會動、走 B 路徑不會動」的漂移。
   const { syncManifest } = await import('./release.mjs');
   const { release, changed } = syncManifest(OUT, { repoRoot: join(import.meta.dirname, '..', '..') });
-  console.log(`\nmanifest → ${join(OUT, 'manifest.json')} (${manifest.core.length}/${CORE.length} bundled)｜版本 ${release}${changed ? '（已 bump）' : '（內容未變）'}`);
-  if (manifest.core.length < CORE.length) process.exit(1);
+  console.log(
+    `\nmanifest → ${join(OUT, 'manifest.json')}` +
+    `（公庫 ${manifest.library.length}/${plan.library.length}、首裝 ${manifest.core.length}/${plan.firstInstall.length}）` +
+    `｜版本 ${release}${changed ? '（已 bump）' : '（內容未變）'}`);
+  if (manifest.library.length < plan.library.length) process.exit(1);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

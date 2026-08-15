@@ -262,7 +262,7 @@ func assertVaultUntouched(t *testing.T, vaultDir string, before, after map[strin
 	t.Logf("筆記庫裡新增的檔案（%d 個）：%v", len(added), added)
 
 	for _, rel := range added {
-		if !IsMarked(filepath.Base(rel)) {
+		if !IsMachineOwnedRel(rel) {
 			t.Fatalf("筆記庫裡多了一個沒帶 %q 標記的檔：%s", MachineMark, rel)
 		}
 		if !isHiddenRel(rel) {
@@ -324,11 +324,17 @@ func TestVaultFootprint_WatchRootInsideVault(t *testing.T) {
 			if len(added) == 0 {
 				t.Fatal("這一輪什麼都沒產出——紅線是「東西照樣產出、但不撞進使用者的命名空間」")
 			}
-			// 卡片確實落在 docs/.arcrun-rag/... 底下（在監看根裡，且是隱藏的）。
-			wantPrefix := filepath.ToSlash(filepath.Join("docs", vaultCardsRelDir)) + "/"
+			// 產物一律落在兩個隱藏目錄底下（都在監看根裡）：
+			//   `docs/.arcrun-rag/`＝工作區（.gitignore 等）
+			//   `docs/.wiki/`＝wiki 產物（InkStoneCo#44 ④ 起：卡片＋00-INDEX＋manifest）
+			workspacePrefix := filepath.ToSlash(filepath.Join("docs", workspaceRelDir)) + "/"
+			wikiPrefix := filepath.ToSlash(filepath.Join("docs", wikiRelDir)) + "/"
 			for _, rel := range added {
-				if !strings.HasPrefix(rel, wantPrefix) {
-					t.Fatalf("產物 %s 不在預期的隱藏卡片區 %s 底下", rel, wantPrefix)
+				if !strings.HasPrefix(rel, workspacePrefix) && !strings.HasPrefix(rel, wikiPrefix) {
+					t.Fatalf("產物 %s 不在預期的隱藏目錄（%s 或 %s）底下", rel, workspacePrefix, wikiPrefix)
+				}
+				if strings.HasSuffix(rel, ".md") && !strings.HasPrefix(rel, wikiPrefix) {
+					t.Fatalf("卡片 %s 不在預期的隱藏 wiki 區 %s 底下", rel, wikiPrefix)
 				}
 			}
 		})
@@ -396,7 +402,7 @@ func TestVaultFootprint_SubVaultBelowWatchRoot(t *testing.T) {
 					continue
 				}
 				produced++
-				if !IsMarked(filepath.Base(rel)) {
+				if !IsMachineOwnedRel(rel) {
 					t.Fatalf("監看根上多了一個沒帶標記的檔：%s", rel)
 				}
 			}
@@ -466,12 +472,12 @@ func TestMigrateCardNames_RelocatesVisibleCardsInsideVault(t *testing.T) {
 	})
 
 	t.Logf("收拾前：%v", relList(t, watch))
-	n := MigrateCardNames(watch)
+	mig := MigrateCardNames(watch)
 	got := relList(t, watch)
-	t.Logf("收拾後（搬了 %d 筆）：%v", n, got)
+	t.Logf("收拾後（搬了 %d 筆）：%v", mig.Moved, got)
 
-	if n != 2 {
-		t.Fatalf("搬了 %d 筆，want 2", n)
+	if mig.Moved != 2 {
+		t.Fatalf("搬了 %d 筆，want 2", mig.Moved)
 	}
 	for _, rel := range got {
 		if !isHiddenRel(rel) {
@@ -483,8 +489,8 @@ func TestMigrateCardNames_RelocatesVisibleCardsInsideVault(t *testing.T) {
 	}
 
 	// 冪等：再跑一次不該有任何動作。
-	if again := MigrateCardNames(watch); again != 0 {
-		t.Fatalf("第二次跑又搬了 %d 筆，應為 0（冪等）", again)
+	if again := MigrateCardNames(watch); again.Moved != 0 {
+		t.Fatalf("第二次跑又搬了 %d 筆，應為 0（冪等）", again.Moved)
 	}
 }
 

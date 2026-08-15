@@ -133,6 +133,9 @@ func TestRunDirectOnceMultiRootDryRun(t *testing.T) {
 		if r.Status != "planned" {
 			t.Fatalf("dry-run 事件應為 planned：%+v", r)
 		}
+		if r.Type == "inventory" {
+			continue // 結構先行：每根各有一張總覽卡（planned），檔案事件另計
+		}
 		byRoot[r.Root] = append(byRoot[r.Root], r.Path)
 	}
 	if len(byRoot[rootA]) != 1 || byRoot[rootA][0] != "a.md" {

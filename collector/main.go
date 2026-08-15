@@ -163,12 +163,29 @@ func run(args []string, mode runMode) int {
 	if err != nil {
 		return fail(err)
 	}
+	// arcrun-rag#104：CLI 與 daemon 走同一套收檔策略——兩邊對同一個資料夾得出不同答案
+	// 本身就是 bug（同 vault.go 開頭那條「安裝器與 daemon 必須一致」）。
+	// 這裡刻意**不**動 CLI 原有的 SkipDirNames 行為（它本來就沒有；`system-dev/` 由
+	// TemplateOwns 擋，curated-wiki 模式的解除也走 Plan 那條路，見 scan.go）。
+	plan := PlanIngest(absRoot)
 	payload, err := Scan(absRoot, m, ScanOptions{
 		MaxRemovedRatio: *ratio,
 		SkipPaths:       map[string]bool{absManifest: true}, // manifest 若住在 root 底下，不掃自己
+		Plan:            plan,
 	})
 	if err != nil {
 		return fail(err)
+	}
+	// 策略走 stderr：stdout 是給程式吃的 payload JSON，不能污染。
+	// 印出來不是 debug 訊息，是 #104 的紅線——排除規則要看得見。
+	fmt.Fprintf(os.Stderr, "收檔策略：%s — %s\n", plan.Mode, plan.Reason)
+	if payload.ExcludedByPlan > 0 {
+		fmt.Fprintf(os.Stderr, "依這個策略跳過了 %d 個檔案。\n", payload.ExcludedByPlan)
+	}
+	if len(plan.OtherWikiDirs) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"這個資料夾底下還有 %d 個子專案有自己的知識庫，我沒有收（要收請個別加進看守清單）：%v\n",
+			len(plan.OtherWikiDirs), plan.OtherWikiDirs)
 	}
 
 	exitCode := 0

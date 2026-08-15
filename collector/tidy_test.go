@@ -250,8 +250,8 @@ func TestMigrateCardNames_TouchesOnlyCardDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if n := MigrateCardNames(root); n != 1 {
-		t.Fatalf("改名筆數=%d，want 1", n)
+	if mig := MigrateCardNames(root); mig.Moved != 1 {
+		t.Fatalf("改名筆數=%d，want 1", mig.Moved)
 	}
 	if _, err := os.Stat(filepath.Join(cardDir, "arcrun-舊卡.md")); err != nil {
 		t.Fatalf("舊卡沒被改名：%v", err)

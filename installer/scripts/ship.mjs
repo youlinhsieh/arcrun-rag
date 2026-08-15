@@ -99,7 +99,8 @@ import { createHash } from 'node:crypto';
 import { syncManifest, verifyManifest } from './release.mjs';
 import { notesFromChangelog, checkNotes, CHANGELOG_REL } from './daemon-notes.mjs';
 import { checkArmed, logGithubContact } from './d20-guard.mjs';
-import { BUNDLE_COMPONENTS, BUNDLE_COMPONENT_NAMES, CORE_COMPONENTS, diffAgainstCanonical } from './bundle-components.mjs';
+import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
+import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
@@ -472,10 +473,13 @@ const STEPS = [
       `     出貨真正拿去部署的執行檔就是 .worker-builds/ 裡那批；沒有它就沒有「這一版從哪來」。\n` +
       `     → 在 ${ctx.arcrunRepo} 跑 \`node scripts/build-worker-artifacts.mjs\` 並把成品 commit 進去`);
   }
+  const artifactManifest = JSON.parse(readFileSync(artifactManifestPath, 'utf8'));
   const freshness = requireFreshArtifacts({
     repo: ctx.arcrunRepo,
-    manifest: JSON.parse(readFileSync(artifactManifestPath, 'utf8')),
-    components: CORE_COMPONENTS,
+    manifest: artifactManifest,
+    // 公庫的**每一顆**都要驗新鮮度，不只首裝那幾顆——懶載那些同樣會被裝到使用者機器上，
+    // 只是晚一點。舊的懶載零件不會有人發現，因為它裝下去的那一刻沒有人在看。
+    components: (artifactManifest.workers || []).map((w) => ({ name: w.name })),
     // selftest（不推、不部署、沒有任何人會拿到東西）才允許工作區髒；
     // 「已經 commit 了卻沒重編」不受這個旗標影響，一律擋。
     allowDirty: !!T.allowDirtySource,
@@ -758,17 +762,60 @@ const STEPS = [
   return { status: 'done', detail: [`本機（changelog）／bundle 版本一致：${bundleVersion}`] };
 }},
 
-// ── 2. build：**每個目標都重打**（2026-08-11，D65 三次補述訂正，arcrun-rag#73 缺③；
-//   拆掉「提升」——見 (b) 的 preflight 註解與 source-pin.mjs）。版本號由內容算，不由人宣告。
-{ id: 'build', title: '從來源重打 bundle（版本號由內容算，不由人宣告）', mutates: true, async run() {
+// ── 2. fetch-artifacts：**向 Arcrun 取貨**（這一站不編任何東西）────────────────
+//
+// 🔴 2026-08-15 改名（leo：「install 會抓到同意 build 的東西」「刪掉出貨的 build 流程」）：
+//   這一站的 id 以前叫 `build`，而它**早就不 build 了**——檔頭、站表、輸出訊息都這樣寫，
+//   只有名字還留在原地。那正是今晚一路咬人的病：**名字說一件事，實際做另一件**。
+//   下一個人（或 AI）看到 `id: build` 就會以為出貨線還在編東西，然後照那個誤解做決策
+//   ——2026-08-14 的災情就是有人照著一段描述不存在機制的註解做決策。
+//   ⇒ 名字改成它真正在做的事：**取貨**。要編請去 Arcrun（唯一產地，D91）。
+//
+// 舊的 `build` 這個 id 在 `installer/ship-report.json` 的歷史紀錄裡照舊留著——
+// 那是**當時真的叫什麼**，改它才是竄改歷史。報告工具靠逐筆比對 id，不靠寫死名字。
+//
+// （2026-08-11，D65 三次補述訂正，arcrun-rag#73 缺③：拆掉「提升」，每個目標都重新取貨、
+//   版本號由內容算不由人宣告——見 (b) 的 preflight 註解與 source-pin.mjs。）
+{ id: 'fetch-artifacts', title: '向 Arcrun 取用編好的零件（這一站不編任何東西）', mutates: true, async run() {
   shLive('node', [join(import.meta.dirname, 'build-bundles.mjs'), '--out', ctx.bundlesDir],
     // ARTIFACT_ALLOW_DIRTY_SOURCE：把登錄簿的 `allowDirtySource` 一路傳到 build-bundles 的
     // 新鮮度閘（Arcrun#93）。不傳的話 selftest（唯一允許髒工作區的目標）會在 preflight
     // 過關、卻在這裡被自己人擋下——同一份判準在兩支腳本各有一套，正是漂移的起點。
     REPO_ROOT, { ARCRUN_REPO_ROOT: ctx.arcrunRepo, ARTIFACT_ALLOW_DIRTY_SOURCE: T.allowDirtySource ? '1' : '' });
-  shLive('node', [join(import.meta.dirname, 'build-ui-bundle.mjs'),
-    '--arcrun', ctx.arcrunRepo, '--out', ctx.bundlesDir, '--repo-root', REPO_ROOT], REPO_ROOT);
-  return { status: 'done', detail: ['4 顆核心 ＋ portal 前端已依來源重建'] };
+  // 🔴 2026-08-15（D91）：這裡以前還跑一支 `build-ui-bundle.mjs`——它讀 Arcrun 的
+  //   console-ui/public，**在這台機器上把 portal 前端拼裝成一顆 worker**。
+  //   那是這條線上最後一個「在 arcrun-rag 產生成品」的地方，已經搬回 Arcrun
+  //   （`scripts/build-ui-worker.mjs`），現在 portal 前端跟其他零件走同一條複製路徑。
+  //   順帶解掉一個舊坑：以前「只跑 build-bundles 的話 UI 永遠送不出去」（2026-08-07 實撞）。
+  return { status: 'done', detail: ['公庫已全部從 Arcrun 官方成品複製過來（含 portal 前端）'] };
+}},
+
+// ── 2.1 no-local-build：**每一個位元組都要說得出是 Arcrun 哪一顆 commit 編的**（D91）──
+//
+// leo 2026-08-14：「今天開始出貨一律不准在 arcrun rag 或任何別的地方 build，
+//   這就是 arcrun 的專屬工作。你告訴我要把 cypher 搬到 arcrun，我說好，
+//   **結果搞到現在還用違反的方式**。」
+//
+// 重點是後半句：規則早就講定，而實作至今仍在違反——**因為沒有任何東西在檢查**。
+// 這一站就是那個檢查。它驗來源（位元組 vs Arcrun 官方成品）而不是驗寫法，
+// 所以不管誰用什麼新方法在這裡產生零件，都會被同一句話擋下。範圍與誤傷邊界見
+// no-local-build-gate.mjs 檔頭。mutates:false ⇒ 預演也會跑。
+{ id: 'no-local-build', title: '確認這些零件不是我們自己編的（D91：成品只有一個產地）', mutates: false, async run() {
+  const mPath = join(ctx.bundlesDir, 'manifest.json');
+  if (!existsSync(mPath)) return { status: 'skip', detail: ['manifest.json 還不存在'] };
+  const manifest = JSON.parse(readFileSync(mPath, 'utf8'));
+  const artifactManifest = readArtifactManifest(ctx.arcrunRepo);
+  const r = requireNoLocalBuild({
+    bundlesDir: ctx.bundlesDir,
+    manifest,
+    artifactManifest,
+    arcrunRepo: ctx.arcrunRepo,
+    scriptsDir: import.meta.dirname,
+  });
+  return {
+    status: 'done',
+    detail: [`${r.checked} 顆逐位元等於 Arcrun 官方成品（Arcrun@${String(artifactManifest.repo_head || '').slice(0, 8)}）`],
+  };
 }},
 
 // ── 2.2 parity：**這個 bundle 有哪幾顆，必須恰好等於唯一真相源**───────────────
@@ -792,28 +839,37 @@ const STEPS = [
   const mPath = join(ctx.bundlesDir, 'manifest.json');
   if (!existsSync(mPath)) return { status: 'skip', detail: ['manifest.json 還不存在'] };
   const m = JSON.parse(readFileSync(mPath, 'utf8'));
-  const { missing, extra, ok } = diffAgainstCanonical(m.core);
-  if (!ok) {
+  // 2026-08-15（Arcrun#125）：現在夾兩份名單，因為它們壞掉的樣子不同——
+  //   `core`（首裝）少一顆 ⇒ 裝完不能用；多一顆 ⇒ 使用者白付 worker 成本
+  //   `library`（公庫）少一顆 ⇒ 那顆永遠載不到（懶載變空話）；多一顆 ⇒ 棘輪殘留
+  const plan = resolveBundlePlan({ arcrunRepo: ctx.arcrunRepo, repoRoot: REPO_ROOT });
+  const d = diffAgainstPlan(m, plan);
+  if (!d.ok) {
     throw new Error(
-      `bundle 內容與唯一真相源（installer/scripts/bundle-components.mjs）對不上，拒絕出貨：\n` +
-      (missing.length ? `       少了 ${missing.length} 顆：${missing.join('、')}\n` +
-        `         → 這幾顆沒被打出來（build 失敗被吞掉？），裝出來的實例會缺零件\n` : '') +
-      (extra.length ? `       多了 ${extra.length} 顆：${extra.join('、')}\n` +
-        `         → 清單外的東西混進 bundle。這正是 stage 變成 24 顆的病：\n` +
-        `           「檔案還在就沿用」的棘輪只加不減，一邊有一邊沒有，只會越差越多\n` : '') +
-      `     → 要增減 bundle 內容，改 bundle-components.mjs（一個地方改，兩條路徑同時生效），\n` +
-      `       不要在這裡放行例外——放行一次，stage 與 prod 就再也不是同一個東西。`);
+      `bundle 內容與這一版算出來的計畫對不上，拒絕出貨：\n` +
+      (d.coreMissing.length ? `       首裝少了 ${d.coreMissing.length} 顆：${d.coreMissing.join('、')}\n` +
+        `         → 裝出來的實例會缺零件。2026-08-14 就是少了解憑證那顆 ⇒ 每支工作流 500\n` : '') +
+      (d.coreExtra.length ? `       首裝多了 ${d.coreExtra.length} 顆：${d.coreExtra.join('、')}\n` +
+        `         → 每個使用者要為它付 worker 成本，而沒有任何工作流證明它非裝不可\n` : '') +
+      (d.libMissing.length ? `       公庫少了 ${d.libMissing.length} 顆：${d.libMissing.join('、')}\n` +
+        `         → 「用到才下載」對這幾顆是空話：bundle 裡根本沒有貨\n` : '') +
+      (d.libExtra.length ? `       公庫多了 ${d.libExtra.length} 顆：${d.libExtra.join('、')}\n` +
+        `         → 清單外的東西混進 bundle。這正是 stage 變成 24 顆的病（棘輪只加不減）\n` : '') +
+      `     → 兩份名單都是算出來的：公庫＝Arcrun 這一版編了什麼；首裝＝工作流證明需要什麼。\n` +
+      `       要改，去改那兩個來源，不要在這裡放行例外。`);
   }
   // 每顆的產物都要真的在磁碟上：manifest 說有、檔案卻不在＝安裝時 404。
-  const ghosts = BUNDLE_COMPONENTS.filter((c) => !existsSync(join(ctx.bundlesDir, c.relDir)));
+  const ghosts = (m.library || []).filter((c) => c && c.main_file && !existsSync(join(ctx.bundlesDir, c.main_file)));
   if (ghosts.length) {
     throw new Error(
-      `manifest 宣告有這幾顆，但產物資料夾不存在（安裝器會抓到 404）：\n` +
-      ghosts.map((c) => `       • ${c.name}（${c.relDir}）`).join('\n'));
+      `manifest 宣告有這幾顆，但產物檔案不存在（安裝器會抓到 404）：\n` +
+      ghosts.map((c) => `       • ${c.name}（${c.main_file}）`).join('\n'));
   }
+  for (const w of plan.warnings) console.log(`     ⚠️ ${w}`);
   return { status: 'done', detail: [
-    `${BUNDLE_COMPONENT_NAMES.length} 顆，逐項相符：${BUNDLE_COMPONENT_NAMES.join('、')}`,
-    `（同一份清單也夾著另一個目標 ⇒ stage 與 prod 結構上不可能再分岔）`,
+    `公庫 ${plan.library.length} 顆、首裝 ${plan.firstInstall.length} 顆、懶載 ${plan.lazy.length} 顆，逐項相符`,
+    `首裝：${plan.firstInstall.join('、')}`,
+    `（兩份名單都由同一份算式夾住 ⇒ stage 與 prod 結構上不可能再分岔）`,
   ] };
 }},
 
@@ -909,7 +965,7 @@ const STEPS = [
 //
 //   這跟 `bundle-components.mjs` 檔頭記的那次「兩份人維護的零件清單」是同一種病，
 //   差別是這次沒有任何機械閘夾住它，連「漂移了」這件事本身都不會被發現。
-//   ⇒ 解法跟那次一樣：README 由 BUNDLE_COMPONENTS（唯一真相源）算出來，
+//   ⇒ 解法跟那次一樣：README 由這一版真的算出來的名單產生，
 //     出貨管線每次都重寫這份檔案——內容跟零件清單不同步，在結構上不再可能發生。
 { id: 'readme', title: 'bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）', mutates: true, async run() {
   const mPath = join(ctx.bundlesDir, 'manifest.json');
@@ -918,19 +974,39 @@ const STEPS = [
   const text = renderBundlesReadme({
     release: m.release, source: m.source, built: m.built,
     hasDaemon: !!(m.daemon && m.daemon.version),
+    library: (m.library || []).map((c) => c.name),
+    firstInstall: (m.core || []).map((c) => c.name),
   });
   const rPath = join(ctx.bundlesDir, 'README.md');
   const before = existsSync(rPath) ? readFileSync(rPath, 'utf8') : null;
   if (before === text) return { status: 'skip', detail: ['README 已是最新（零件清單與版本都沒變）'] };
   writeFileSync(rPath, text);
   return { status: 'done', detail: [
-    `README 重寫：${BUNDLE_COMPONENTS.length} 顆零件｜release ${m.release}`,
+    `README 重寫：公庫 ${(m.library || []).length} 顆／首裝 ${(m.core || []).length} 顆｜release ${m.release}`,
     before === null ? '（這個 bundle repo 原本沒有 README，首次產生）' : '（取代舊版手寫內容）',
   ] };
 }},
 
 // ── 4. commit ────────────────────────────────────────────────────────────
 { id: 'commit', title: '把產物寫進 bundle repo 的版控', mutates: true, async run() {
+  // 🔴 2026-08-15：**在寫進版控的那一刻再驗一次來源**（leo①「install 會抓到同意 build 的東西」）。
+  //   為什麼「no-local-build 站驗過就夠了」不成立：那一站與這一站之間還隔著
+  //   notes／version／readme／daemon-sync 四站，它們都會寫進 bundle 工作區。
+  //   今天它們不碰零件檔，但**「今天不碰」是觀察，不是機制**——而使用者拿到的是這裡
+  //   commit 進去的那一份，不是那一站當時看到的那一份。
+  //   ⇒ 閘要貼著「真的送出去的東西」，不是貼著中途某個快照。
+  //   成本＝重算 23 顆的雜湊（毫秒級），換掉一整類「中途被動過而沒人知道」。
+  {
+    const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+    const r = requireNoLocalBuild({
+      bundlesDir: ctx.bundlesDir,
+      manifest,
+      artifactManifest: readArtifactManifest(ctx.arcrunRepo),
+      arcrunRepo: ctx.arcrunRepo,
+      scriptsDir: import.meta.dirname,
+    });
+    console.log(`     ✔ 入庫前複驗：${r.checked} 顆仍逐位元等於 Arcrun 官方成品`);
+  }
   if (!sh('git', ['status', '--porcelain'], ctx.bundlesDir)) {
     return { status: 'skip', detail: ['工作區乾淨——這一版的產物已經在版控裡了'] };
   }
@@ -1539,10 +1615,10 @@ for (const [i, step] of RUN_STEPS.entries()) {
   const n = `${i + 1}/${RUN_STEPS.length}`;
   if (failedAt) { results.push({ id: step.id, title: step.title, status: 'not-run' }); continue; }
   if (step.mutates && !CONFIRM) {
-    // 預演：build/version 會寫本機工作目錄，但不推不部署 ⇒ 允許；其餘改變外界的一律不做。
+    // 預演：取貨／算版本會寫本機工作目錄，但不推不部署 ⇒ 允許；其餘改變外界的一律不做。
     // `--delivery-only` 的整個存在理由就是**單獨跑那一站**，所以那一站在這個模式下要真的跑
     //   （它不 push 不 deploy；會碰到的只有送貨管道的作廢／重讀，而這個模式禁用在 publish 目標）。
-    const localOnly = step.id === 'build' || step.id === 'version' || (DELIVERY_ONLY && step.id === 'purge');
+    const localOnly = step.id === 'fetch-artifacts' || step.id === 'version' || (DELIVERY_ONLY && step.id === 'purge');
     if (!localOnly) {
       console.log(`⏸  ${n} ${step.id}｜${step.title}`);
       console.log(`     預演不執行（加 --confirm 才會做）`);

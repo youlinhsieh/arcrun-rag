@@ -1,122 +1,155 @@
 /**
- * bundle-components.mjs — **一個 bundle 裡有哪幾顆零件**的唯一定義。
+ * bundle-components.mjs — **一個 bundle 裡有什麼**的唯一定義。
  *
- * 🔴 leo 2026-08-09（arcrun-rag#27）立這個檔的理由，一句話：
- *   「我的現實是 prod 已經有人在用了，在你還沒進行任何修改前，stage = prod，至少一一對應。
- *     結果你重做，那你重做過程可能有問題，就造成 prod 新問題。」
- *   「如果都相同，我測試一次安裝，就發現 5 顆變 24 顆。**如果是複製，為什麼不一致？**」
+ * 現在它回答的是三個問題，不是一個：
+ *   公庫（library）      這一版 Arcrun 編出來的**全部**零件，通通放進 bundle repo。
+ *   首裝（first install） 安裝器真的會部署的那幾顆（`manifest.core`）＝**現階段就是公庫全部**。
+ *   懶載（lazy）         公庫 − 首裝＝現階段是空的。
  *
- * ── 病史（為什麼「兩邊各有一份人寫的清單」必然漂移）─────────────────────────
+ * 🔴 都不是人寫的清單：
+ *   公庫 ＝ 讀 Arcrun `.worker-builds/manifest.json`（D91：成品只有一個產地）
+ *   首裝 ＝ 公庫全部。leo 2026-08-15：「所有的零件也只有幾十個，量很少，我們只是希望
+ *          啟動不要等太久，但**全裝上也不會太大，沒必要刪除**。」
+ *   另外**推導**一份「這次帶的工作流證明需要哪幾顆」（`first-install-set.mjs`），
+ *   角色是**證明首裝沒有漏**——leo：「不是設計一個清單，是設計工作流。」
  *
- * 08-09 實測：prod manifest.core = 5 顆，stage manifest.core = 24 顆（那 5 顆 ＋ 另外 19 顆）。
- * 而 prod 自己宣告 `promoted_from.sha = ab4ef01`，也就是「複製自 stage 的那個 commit」——
- * 回頭查 stage 的 ab4ef01，它當時就是 **24 顆**。
- * ⇒ **「提升＝複製」這句話是假的**：複製的路上被一份白名單濾掉了 19 顆，
- *   而那份白名單只有 prod 這條路徑會走。stage 從來沒有被同一把尺量過。
+ * ⚖️ **代價不對稱**：漏裝是 bug（2026-08-14 實證：打死整個產品）；多裝只是多等一下下。
+ *   所以推導的目的是「不會漏」，**不是「裝得少」**；有疑慮時往「裝上去」倒。
+ *   「哪些可以延後以縮短首裝等待」是第二階段的優化。
  *
- * 那 19 顆哪來的？不是誰去建的——是 **ratchet（棘輪）**：
- *   `build-bundles.mjs` 只打 4 顆、`build-ui-bundle.mjs` 只打 1 顆（＝本檔這 5 顆），
- *   但兩支腳本都有一條「**舊 manifest 有、且檔案還在磁碟上，就沿用**」的保命邏輯
- *   （那條邏輯本身是對的，它救過 daemon 與 portal 前端被重打包砍掉的事故）。
- *   副作用是：**只要有東西曾經掉進 bundle 目錄，就永遠留在那裡，沒有任何路徑會把它拿掉。**
- *   stage 的 `tier1/` 是 1.4.17（ea96906，stage repo 的第一個 commit）播種時帶進來的
- *   舊世代版型；prod 從來沒有 `tier1/`。於是一邊有、一邊沒有，而且**只會越差越多**。
+ * ⚠️ **「用到才下載」的觸發還沒有實作**（Arcrun#125 第二階段）。現況是「貨齊了、清單算得出來」，
+ *   還缺「執行期跑同一條推導、把缺的裝上」那一段。在它落地之前，不要把懶載講成已經會動。
  *
- * ⇒ 所以病不是「數字不一樣」，是「**沒有任何一個地方說得出『一個 bundle 應該有哪幾顆』**」。
- *   本檔就是那個地方。從此：
- *     · 重打路徑（stage）＝照本檔打，本檔以外的一律不進 manifest
- *     · 提升路徑（prod）＝照本檔複製
- *     · 兩條路徑跑完都要過同一道 parity 閘（ship.mjs `parity` 步驟）：
- *       `manifest.core` 的名字集合**必須恰好等於本檔**——多一顆少一顆都當場失敗。
- *   ⇒ 「stage 與 prod 一一對應」不再靠人記得，而是**兩邊都被同一個定義夾住**。
+ * ── 為什麼從「一份手寫清單」改成這樣（2026-08-14／15，Arcrun#125）──────────────
+ * leo：「懶載一定要包含 ingest，這是它的基本功能，沒有它就只是 Arcrun，有它才是 Arcrun RAG。」
+ *      「一切零件由 Arcrun 包好，而不是出貨時 build」「下載就給個清單觸發下載」
  *
- * 要增減 bundle 內容＝改本檔，一個地方改完兩條路徑同時生效（這正是重點）。
+ * 舊版這裡是一份手寫的 6 顆清單，它同時扮演公庫與首裝兩個角色。後果：
+ *   ① 解憑證那顆不在清單上 ⇒ 每支產品工作流一遇到 `{{credential.…}}` 就去 fetch
+ *      一顆不存在的 worker ⇒ `error code: 1042` ⇒ **ingest 與查詢全死**（Arcrun#124）。
+ *      而那份清單**沒有任何辦法自己知道工作流需要什麼**——不是誰忘了寫。
+ *   ② 清單以外的零件根本不在 bundle 裡 ⇒ 「用到才下載」**沒有貨可以下載**，
+ *      於是那句話只是一段註解（stage 有一份 1.4.17 播種的舊 `tier1/`，prod 連那個都沒有）。
+ *
+ * ── 舊版留下、仍然成立的那一條（arcrun-rag#27／D48）────────────────────────────
+ * leo 2026-08-09：「如果都相同，我測試一次安裝，就發現 5 顆變 24 顆。**如果是複製，為什麼不一致？**」
+ * 真兇是**棘輪**：東西一旦掉進 bundle 目錄就永遠留著，沒有任何路徑會把它拿掉。
+ * 那條教訓在新模型下更強：公庫、首裝兩份名單都由機器算出來，
+ * `ship.mjs` 的 parity 站再拿同一份算式夾住結果——多一顆少一顆都當場失敗。
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  firstInstallSet,
+  loadInstallerPlaceholders,
+  loadRecipeIds,
+} from './first-install-set.mjs';
 
 /**
- * 一個 bundle 的完整零件清單。
+ * bundle 裡的擺放位置。
  *
- * 欄位：
- *   name    manifest.core[].name，也是 worker 名——所有路徑對帳都用它當主鍵
- *   relDir  相對 bundle 根目錄的產物資料夾（提升路徑照這個複製；parity 閘照這個查檔案在不在）
- *   builder 誰負責重打：'core' = build-bundles.mjs（esbuild 打 worker）
- *                       'ui'   = build-ui-bundle.mjs（把 console-ui/public 內嵌成單檔 worker）
- *   build   builder === 'core' 專用的打包參數（dir/entry/canonical/stripServices）
+ * 預設＝`<worker 名>/worker.mjs`（與 Arcrun 成品目錄同構，最少驚喜）。
+ * 唯一的例外是 portal 前端：它從第一天就住在 `tier2/ui/index.js`，
+ * 而**安裝器、bundle repo 的 README、驗收腳本都照那個路徑寫死過**。
+ * 搬它不會讓任何事情更對，只會在這次改動裡多一個會壞的地方 ⇒ 明文留成例外。
  */
-export const BUNDLE_COMPONENTS = [
-  {
-    name: 'arcrun-cypher-executor',
-    relDir: 'arcrun-cypher-executor',
-    builder: 'core',
-    // stripServices＝拿掉 13 個 service binding（懶載版）。prod 的 manifest 裡那個
-    // `stripped: { services: 13 }` 就是這裡來的——stage 也走同一支腳本、同一個旗標，
-    // 所以「stage 的懶載行為與 prod 一致」是結構保證，不是巧合。
-    build: { dir: 'cypher-executor', entry: 'src/index.ts', canonical: null, stripServices: true },
-  },
-  {
-    name: 'arcrun-kbdb',
-    relDir: 'arcrun-kbdb',
-    builder: 'core',
-    build: { dir: 'kbdb', entry: 'src/index.ts', canonical: null },
-  },
-  {
-    name: 'arcrun-http-request',
-    relDir: 'arcrun-http-request',
-    builder: 'core',
-    build: { dir: '.component-builds/http_request', entry: 'src/index.ts', canonical: 'http_request' },
-  },
-  {
-    name: 'arcrun-code',
-    relDir: 'arcrun-code',
-    builder: 'core',
-    build: { dir: 'registry/components/code', entry: 'index.ts', canonical: 'code' },
-  },
-  {
-    name: 'arcrun-rag-ui',
-    relDir: 'tier2/ui',
-    builder: 'ui',
-  },
-  {
-    // 🔴 2026-08-10（leo：「今天只要清單含有 MCP 即可」）：**MCP 從來沒被裝過**。
-    //
-    // 病：prod 1.4.30 的 manifest.core 全文沒有 `arcrun-mcp` ⇒ 每個新用戶裝完都沒有 MCP
-    //    ⇒ 產品承諾的「把自己的 AI 接上自己的知識庫」**從第一步就不成立**。
-    //    安裝器那一側其實早就備妥（SERVICE_BINDINGS 有它、部署順序有它、租戶 var 有它、
-    //    KBDB_INTERNAL_TOKEN 同步迴圈也有它）——**唯獨沒有人把它打進 bundle**。
-    //    所以症狀長得像「MCP 壞了」而不是「MCP 不存在」：安裝器對一顆不存在的 worker
-    //    寫 secret，`PUT /scripts/arcrun-mcp/secrets` 回 404，被 try/catch 吃成
-    //    `secretSyncError` 一行字，沒有任何一步會因此紅燈。
-    //    ⇒ 這是本檔存在理由的第二個實例：「**沒有任何一個地方說得出一個 bundle 應該有哪幾顆**」
-    //      ——上次的後果是多了 19 顆，這次是少了關鍵的 1 顆，而少的那顆沒有棘輪會補。
-    //
-    // 依賴：三個 service binding 由安裝器的 SERVICE_BINDINGS 還原。其中
-    //   COMPONENT_REGISTRY → `arcrun-registry` **不在本清單裡**，因此標成 optional
-    //   （見 worker.js SERVICE_BINDINGS 那張表的說明）。
-    // ⚠️ D48 仍然成立：本檔是止血帶，正解是「安裝＝一張清單」（arcrun-rag#37／#39）。
-    //   在正解落地前，「加一筆」就是讓 MCP 真的到得了用戶手上的唯一路徑。
-    name: 'arcrun-mcp',
-    relDir: 'arcrun-mcp',
-    builder: 'core',
-    build: { dir: 'mcp', entry: 'src/index.ts', canonical: null },
-  },
-];
+const LAYOUT_OVERRIDE = {
+  'arcrun-rag-ui': { relDir: 'tier2/ui', mainName: 'index.js' },
+};
 
-/** 全部零件名（parity 閘的比對基準）。 */
-export const BUNDLE_COMPONENT_NAMES = BUNDLE_COMPONENTS.map((c) => c.name);
+/** 這顆零件在 bundle 裡的相對位置。 */
+export function layoutFor(name) {
+  return LAYOUT_OVERRIDE[name] || { relDir: name, mainName: 'worker.mjs' };
+}
 
-/** build-bundles.mjs 負責重打的那幾顆（附打包參數）。 */
-export const CORE_COMPONENTS = BUNDLE_COMPONENTS
-  .filter((c) => c.builder === 'core')
-  .map((c) => ({ name: c.name, relDir: c.relDir, ...c.build }));
+/** 讀 Arcrun 官方成品 manifest（公庫的真相源）。 */
+export function readArtifactManifest(arcrunRepoRoot) {
+  return JSON.parse(readFileSync(join(arcrunRepoRoot, '.worker-builds', 'manifest.json'), 'utf8'));
+}
 
 /**
- * 把一份 manifest.core 與本檔對帳。
- * 回傳 { missing, extra, ok }——`extra` 就是 08-09 那 19 顆棘輪殘留會落進來的地方。
+ * 算出這一版 bundle 的完整計畫。
+ *
+ * @param {{ arcrunRepo: string, repoRoot: string, artifactManifest?: object }} opts
+ *   `repoRoot` ＝ arcrun-rag 的 repo 根（用來找出貨的那顆安裝器與它會推的工作流）
+ * @returns {{ artifactManifest: object, library: string[], firstInstall: string[],
+ *             lazy: string[], reasons: Array<{worker:string,why:string}>, warnings: string[] }}
  */
-export function diffAgainstCanonical(core) {
-  const have = new Set((core || []).map((c) => c && c.name).filter(Boolean));
-  const want = new Set(BUNDLE_COMPONENT_NAMES);
-  const missing = BUNDLE_COMPONENT_NAMES.filter((n) => !have.has(n));
-  const extra = [...have].filter((n) => !want.has(n));
-  return { missing, extra, ok: missing.length === 0 && extra.length === 0 };
+export function resolveBundlePlan({ arcrunRepo, repoRoot, artifactManifest }) {
+  const artifacts = artifactManifest || readArtifactManifest(arcrunRepo);
+  const library = (artifacts.workers || []).map((w) => w.name).sort();
+
+  // 出貨的那顆安裝器＝`installer/oauth-prototype/`（見 installer/ship.targets.json）。
+  // 首裝清單必須照**它**會推的工作流與**它**的佔位符代換表來算，不是照別的副本。
+  const installerSrc = join(repoRoot, 'installer', 'oauth-prototype', 'worker.js');
+  const workflowsJson = join(repoRoot, 'installer', 'oauth-prototype', 'workflows.json');
+
+  const placeholders = loadInstallerPlaceholders(installerSrc);
+  const recipes = loadRecipeIds(arcrunRepo);
+  const workflows = JSON.parse(readFileSync(workflowsJson, 'utf8'));
+
+  // 🔴 leo 2026-08-15：「**第一次安裝到底需要哪些零件，就看裡面有哪些工作流，
+  //   不是設計一個清單，是設計工作流。**」
+  //
+  // ⇒ 這份推導**不是被寫下來的，是被算出來的**：加一支工作流，它要的零件自動出現在結果裡。
+  //   它的用途是**證明首裝沒有漏**（見下面 uncovered 那道閘），不是拿來刪東西
+  //   ——「哪些可以不裝」是第二階段的優化，見下一段 leo 的補述。
+  //
+  // ⚠️ 推導必須抓得到**隱含依賴**，不只節點型別——2026-08-14 打死整個產品的
+  //   `auth_static_key`，工作流對它的依賴寫在 `{{credential.X}}` 這種參照裡，
+  //   不在任何節點的型別上。只掃節點型別會產出一份「看起來很合理、卻漏掉關鍵那顆」的清單，
+  //   跟出事的那份一模一樣。`first-install-set.mjs` 的自我檢查就是：它必須出現在結果裡。
+  const { names: required, reasons, warnings } = firstInstallSet(workflows, {
+    placeholders,
+    recipes,
+    library: new Set(library),
+  });
+
+  // 🔴 leo 2026-08-15（推導的目的是「不會漏」，不是「裝得少」）：
+  //   「這個有考量，因為**所有的零件也只有幾十個，量很少**，
+  //     我們只是希望**啟動不要等太久**，但**全裝上也不會太大，沒必要刪除**。」
+  //
+  // ⇒ **代價不對稱**：漏裝是 bug（2026-08-14 實證：打死整個產品）；多裝只是多等一下下。
+  //   有疑慮時往「裝上去」倒。所以首裝＝公庫全部，而推導的角色是**證明沒有漏**。
+  //
+  // 「哪些可以延後到用到才裝、以縮短首裝等待」是第二階段的優化，不是現在要解的題。
+  const firstInstall = [...library];
+  const uncovered = required.filter((n) => !firstInstall.includes(n));
+  if (uncovered.length) {
+    throw new Error(
+      `首裝清單漏了工作流證明需要的零件：${uncovered.join('、')}\n` +
+      `  ⇒ 這正是 2026-08-14 那台「裝完什麼都不能做」的實例的成因（Arcrun#124／#125）。`);
+  }
+
+  // 公庫 − 首裝。現階段是空的（全裝）。
+  // 🔴 **「用到才下載」的觸發沒有實作**（Arcrun#125 第二階段）。留這個欄位是為了讓
+  //   「哪些不進首裝」有地方講，**不是**在暗示機制已經存在。
+  const lazy = library.filter((n) => !firstInstall.includes(n));
+  return { artifactManifest: artifacts, library, firstInstall, lazy, required, reasons, warnings };
+}
+
+/**
+ * 把一份 manifest 與計畫對帳（`ship.mjs` 的 parity 站用）。
+ *
+ * 兩件事一起驗，因為它們壞掉的樣子不同：
+ *   `core`    少一顆 ⇒ 裝完不能用（Arcrun#124）
+ *   `library` 少一顆 ⇒ 這一版少帶了一顆零件；多一顆 ⇒ 棘輪殘留（08-09 那 19 顆的病）
+ */
+export function diffAgainstPlan(manifest, plan) {
+  const nameSet = (arr) => new Set((arr || []).map((c) => (typeof c === 'string' ? c : c && c.name)).filter(Boolean));
+
+  const haveCore = nameSet(manifest.core);
+  const wantCore = new Set(plan.firstInstall);
+  const coreMissing = plan.firstInstall.filter((n) => !haveCore.has(n));
+  const coreExtra = [...haveCore].filter((n) => !wantCore.has(n));
+
+  const haveLib = nameSet(manifest.library);
+  const wantLib = new Set(plan.library);
+  const libMissing = plan.library.filter((n) => !haveLib.has(n));
+  const libExtra = [...haveLib].filter((n) => !wantLib.has(n));
+
+  return {
+    coreMissing, coreExtra, libMissing, libExtra,
+    ok: !coreMissing.length && !coreExtra.length && !libMissing.length && !libExtra.length,
+  };
 }

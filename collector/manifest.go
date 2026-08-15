@@ -72,6 +72,15 @@ type Manifest struct {
 	FolderID string                    `json:"folder_id"`
 	Root     string                    `json:"root"`
 	Entries  map[string]*ManifestEntry `json:"entries"`
+	// InventoryHash＝最後一次**成功送達雲端**的資料夾總覽卡內容雜湊（結構先行，
+	// InkStoneCo#43，見 inventory.go）。與 entries 的跨輪 carry 陷阱無關——這是
+	// Manifest 層欄位，Scan() 的 rebuild 只重建 Entries，不會碰它，天然跨輪存活。
+	InventoryHash string `json:"inventory_hash,omitempty"`
+	// InventoryFailHash／InventoryNextRetry＝總覽卡上一次送失敗的內容雜湊與下次可重試
+	// 時間（unix）。存在理由＝t195 同款：積壓卡住時每輪都有事件，沒有這道退避，
+	// 雲端一壞就是每 5 秒撞一次。內容變了（雜湊不同）視同新卡，立即可再試。
+	InventoryFailHash  string `json:"inventory_fail_hash,omitempty"`
+	InventoryNextRetry int64  `json:"inventory_next_retry,omitempty"`
 }
 
 // newUUID 產生 RFC 4122 v4 UUID（純 stdlib）。

@@ -33,7 +33,7 @@ import (
 var ErrNoText = fmt.Errorf("檔案裡沒有可抽取的文字")
 
 // ErrUnsupported：副檔名不在支援清單內。與 ErrNoText 分開，因為給用戶的說法不同
-//（「這種檔案我還不會讀」vs「這個檔看起來是掃描的圖」）。
+// （「這種檔案我還不會讀」vs「這個檔看起來是掃描的圖」）。
 var ErrUnsupported = fmt.Errorf("尚未支援的檔案格式")
 
 // extractor 吃檔案位元組，吐純文字。
@@ -70,7 +70,8 @@ var preNormExtractors = map[string]extractor{
 // IsPlainText 回報這個副檔名是否本來就是純文字（不需要轉檔）。
 func IsPlainText(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".md", ".markdown", ".txt":
+	case ".md", ".markdown", ".txt", ".feature", ".yaml", ".yml", ".org", ".rst":
+		// 後五個：規範洞 6 白名單（2026-08-15）——都是純文字知識檔，原樣通過。
 		return true
 	}
 	return false

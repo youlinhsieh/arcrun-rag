@@ -949,13 +949,30 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// arcrun-rag#60：把上一版 daemon 落下的舊卡歸位——沒帶 arcrun- 標記的改名，
 	// 位置不對的（第三輪：監看根在筆記庫裡，卡卻落在看得見的 system-dev/wiki/cards/）搬進隱藏目錄。
 	// 自動跑而不是叫人下指令——leo 的紅線：「他不該為了保護自己的筆記去學新選項」。
-	// 只碰卡片產物區（那整個目錄只有我們會寫），目標已存在就跳過、永不刪檔，見 tidy.go。
+	// 目標已存在就跳過、永不刪檔，見 tidy.go。
 	// template 殘留不在這裡處理：那要人確認「這是不是你自己的 repo」，走 `collector tidy`。
+	//
+	// 🔴 arcrun-rag#105：監看根在版控裡時**一個檔都不動**（MigrateCardNames 自己擋），
+	// 這裡負責把「沒動、以及為什麼沒動」講出來——靜默跳過等於讓使用者猜。
 	if !dryRun {
-		if n := MigrateCardNames(absRoot); n > 0 {
+		// daemon 自己的工作區先自我忽略，之後落卡/收容/身分標記檔才不會弄髒使用者的
+		// git status（#105 驗收條件就是「跑一輪 git status 必須乾淨」）。
+		EnsureWorkspaceIgnored(absRoot)
+		mig := MigrateCardNames(absRoot)
+		if mig.Moved > 0 {
 			results = append(results, DirectResult{
 				Type: "warning", Path: absRoot, Status: "skipped",
-				Error: fmt.Sprintf("已把 %d 張舊卡片歸位（加上 arcrun- 前綴／搬離筆記軟體看得到的位置）", n),
+				Error: fmt.Sprintf("已把 %d 張舊卡片歸位（加上 arcrun- 前綴／搬離筆記軟體看得到的位置）", mig.Moved),
+			})
+		}
+		if mig.Blocked > 0 {
+			results = append(results, DirectResult{
+				Type: "warning", Path: absRoot, Status: "skipped",
+				Error: fmt.Sprintf(
+					"這個資料夾在版本控制裡（%s），所以有 %d 個舊卡片我沒有自動整理"+
+						"——改名搬移會變成你 git status 上的刪除。要整理請自己跑："+
+						"collector tidy --folder %s（先看清單，確認後再加 --apply）",
+					mig.RepoRoot, mig.Blocked, absRoot),
 			})
 		}
 	}
@@ -973,6 +990,23 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	for k, v := range m.Entries {
 		preScanEntries[k] = v
 	}
+	// arcrun-rag#104：走訪之前先問「這個資料夾是什麼」——是開發專案就只讀它整理好的
+	// wiki（沒有 wiki 才退到文件區），是一般資料夾／筆記庫才全收。見 ingestplan.go。
+	plan := PlanIngest(absRoot)
+
+	// 🔴 #104 的一個必然後果：curated-wiki 模式要收的正是 `system-dev/wiki/`，
+	// 而 daemon-beta task 2 為了「template 代裝的產物區不要被當原稿」把整個
+	// `system-dev` 列進 SkipDirNames——兩者直接對撞，不處理的話這個模式會一個檔都收不到。
+	//
+	// 解法不是拿掉那條保護，是**看它保護的是誰**：task 2 擋的是「**我們自己**代裝進
+	// 使用者資料夾的 template 產物」；curated-wiki 模式的前提則是「**使用者自己**
+	// 在他的 repo 裡整理好的知識庫」——同一個路徑，兩種身分，由 PlanIngest 分辨
+	// （他的 repo 有 `.git`，我們代裝的資料夾沒有）。所以只在 curated-wiki 模式解除。
+	skipDirNames := map[string]bool{"system-dev": true}
+	if plan.Mode == IngestCuratedWiki && strings.HasPrefix(plan.WikiRelDir, "system-dev/") {
+		skipDirNames = map[string]bool{}
+	}
+
 	payload, err := Scan(absRoot, m, ScanOptions{
 		MaxRemovedRatio: cfg.MaxRemoved,
 		SkipPaths: map[string]bool{
@@ -981,7 +1015,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			filepath.Join(absRoot, "CLAUDE.md"): true,
 		},
 		// template 代裝後 system-dev/（wiki 產物區）不得被當原稿掃進 ingest（task 2）
-		SkipDirNames: map[string]bool{"system-dev": true},
+		SkipDirNames: skipDirNames,
+		Plan:         plan,
 	})
 	if err != nil {
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
@@ -1002,6 +1037,22 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		if serr := m.Save(absManifest); serr != nil {
 			results = append(results, DirectResult{Status: "failed", Error: "manifest 存檔失敗（斷點續傳可能失效）：" + serr.Error()})
 			exit = 1
+		}
+	}
+
+	// 結構先行（InkStoneCo#43，2026-08-15）：掃描一結束（純本機、免費、秒級）就先把
+	// 「這個資料夾有哪些檔案／最近改了什麼」送上知識庫，**不等 LLM 萃取、不受額度影響**
+	// ——走 rag_ingest_card（零 LLM 的機械收口），所以刻意放在：
+	//   ① 逐檔萃取迴圈之前——萃取可能要跑幾小時（積壓）甚至幾天（等額度），
+	//     結構性問題不該跟它排同一條隊；
+	//   ② qs.inCooldown 的閘之外——額度撞牆期間這正是使用者唯一還能問的東西；
+	//   ③ 「removed 暫時放回」之前——總覽反映檔案系統**現況**，剛刪掉的檔
+	//     不該還列在清單上（放回只是下架重試的記帳，不是現況）。
+	// 冪等與失敗處理見 syncInventory 註解；失敗不設 exit（加值層壞了不擋檔案同步）。
+	if invRes := syncInventory(cfg, absRoot, m, len(payload.Events) > 0, dryRun, runNow); invRes != nil {
+		results = append(results, *invRes)
+		if invRes.Status != "planned" {
+			saveManifest() // 記住 inventory_hash／失敗退避（斷點續傳同款：當下就落盤）
 		}
 	}
 
@@ -1118,7 +1169,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					continue
 				}
 				ok := true
-				for _, cardRel := range cards {
+				// InkStoneCo#44 ④（2026-08-15）：gemma 路現在一份文件產「文件卡＋N 張
+				// 概念卡」（cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert、
+				// 下架以原稿頁名比對 ⇒ N 張卡都送會互相蓋寫同一頁。
+				// ⇒ 本環先只送文件卡（雲端行為與改版前一致）；原子卡與三元組上雲的
+				// 形狀是第⑤環（Arcrun#129/#130）的題目，屆時在這裡展開。
+				// cards 為空＝該檔被判「無可萃取概念」（00-INDEX 已標「空」），不送雲端。
+				for cardIdx, cardRel := range cards {
 					cardData, cerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)))
 					if cerr != nil {
 						res.Status, res.Error = "failed", "讀卡片失敗："+cerr.Error()
@@ -1144,6 +1201,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					//   pageNameOf(ev.Path)（原稿頁名，不帶前綴）⇒ 兩邊從此對不上，
 					//   「刪原檔→下架」永遠 0 命中，跟 07-24 那枚 source_uri 的坑同一個形狀。
 					//   改成原稿頁名後，**雲端看到的頁名與改版前完全相同**（本次只動本機檔名）。
+					if cardIdx > 0 {
+						continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
+					}
 					cardBody := map[string]any{
 						"page_name":    pageNameOf(ev.Path),
 						"path":         ev.Path,
@@ -1245,6 +1305,14 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 								Error: "本地卡刪除失敗（不擋下架）：" + rerr.Error(),
 							})
 						}
+					}
+					// InkStoneCo#44 ④：新制 `.wiki/` 的卡（文件卡＋概念卡）＋索引＋manifest
+					// 一起收走——鍵同樣是原稿路徑，與上面的舊制清理並存（過渡期兩制都可能有卡）。
+					if werr := RemoveWikiDoc(absRoot, ev.Path); werr != nil {
+						results = append(results, DirectResult{
+							Type: "warning", Path: ev.Path, Status: "skipped",
+							Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
+						})
 					}
 				}
 			}

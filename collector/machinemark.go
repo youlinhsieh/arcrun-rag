@@ -55,3 +55,50 @@ func IsMarked(base string) bool {
 func UnmarkName(base string) string {
 	return strings.TrimPrefix(base, MachineMark)
 }
+
+// IsMachineOwnedRel 回答「這個相對路徑是不是我們寫的東西」——**規約的完整判準**，
+// 迴歸網（vault_footprint_test.go／vault_subdir_test.go）用的就是這一支。
+//
+// 兩條路，第二條是規約唯一認可的例外：
+//
+//	① basename 帶 MachineMark ⇒ 走在使用者的檔案之間也一眼分得出（規約主體）
+//	② 路徑上**任何一層**是 `.arcrun-rag/` ⇒ **那個目錄名自己就是標記**，且它是隱藏目錄
+//
+// ②「任何一層」而不是「開頭」：呼叫端給的相對起點不一定是監看根——迴歸網比對整個
+// 筆記庫時，同一個檔的相對路徑是 `docs/.arcrun-rag/…`（監看根是 vault 底下的 docs/）。
+// 判「誰擁有這個檔」不該受呼叫端從哪裡起算影響。
+//
+// 🔴 為什麼需要 ②（arcrun-rag#105）：我們得在使用者的 repo 裡放一份 `.gitignore`
+// （讓整個工作區對 git 隱形，他跑一輪 `git status` 才會是乾淨的）。那個檔名是
+// **git 定的，我們改不得**——叫 `arcrun-.gitignore` 的話 git 根本不認，功能等於沒做。
+//
+// 這不是替規約開後門：規約的目的是「打開資料夾一眼分得出哪些是機器寫的」，
+// 而 `.arcrun-rag/` 這個目錄名把整叢東西一次講完，比逐檔前綴**更強**。
+//
+// 🔴 例外 ③ `.wiki/`（InkStoneCo#44 第④環，2026-08-15）：《llm-wiki-作業規範》定案
+// 「wiki 是文件的摘要，摘要只准寫進 `<節點>/.wiki/`」，且卡片檔名＝H1（差距表 #7
+// 明列「檔名加 arcrun- 前綴」是要修掉的現狀——卡名就是 [[連結]] 的錨點，帶前綴
+// 會讓連結與頁名對不上）。與例外 ② 同一個理由成立：點開頭的隱藏目錄名自身就是標記，
+// 筆記軟體與我們自己的 Scan() 都不會掃進去。
+// ⚠️ 例外只有這兩個目錄。監看根底下**其他任何位置**的新檔，一律得帶前綴——
+// 想在別處寫一個「名字不能改」的檔時，先想清楚那個檔為什麼不能住進這兩個目錄。
+func IsMachineOwnedRel(relSlash string) bool {
+	if IsMarked(pathBase(relSlash)) {
+		return true
+	}
+	for _, seg := range strings.Split(relSlash, "/") {
+		if seg == workspaceRelDir || seg == wikiRelDir {
+			return true
+		}
+	}
+	return false
+}
+
+// pathBase 取斜線路徑的最後一段（不用 filepath.Base：這裡的輸入一律是斜線分隔的
+// 相對路徑，不該受執行平台的分隔符影響）。
+func pathBase(relSlash string) string {
+	if i := strings.LastIndex(relSlash, "/"); i >= 0 {
+		return relSlash[i+1:]
+	}
+	return relSlash
+}

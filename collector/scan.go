@@ -31,6 +31,14 @@ var allowedExt = map[string]bool{
 	".pdf":      true,
 	".csv":      true,
 	".xlsx":     true,
+	// 2026-08-15 InkStoneCo#44 ④：《llm-wiki-作業規範》洞 6 的掃描白名單——
+	// .feature（Gherkin 規格）、.yaml/.yml、.org、.rst 都是知識文件（真實 repo 實測
+	// 34 個非 md 檔裡 9 個是 .feature）。它們是純文字，走 passthrough（見 IsPlainText）。
+	".feature": true,
+	".yaml":    true,
+	".yml":     true,
+	".org":     true,
+	".rst":     true,
 }
 
 // docLikeExt＝「使用者明顯把它當文件、但我們還讀不了」的副檔名。
@@ -118,6 +126,13 @@ type TriggerPayload struct {
 	// DuplicateFormats＝本輪偵測到、同檔名主幹的多格式重複（2026-08-07，見 FormatDuplicate）。
 	// 同 Skipped：只給本機使用者看，不隨 payload 送雲端（schema additionalProperties:false 會擋）。
 	DuplicateFormats []FormatDuplicate `json:"-"`
+
+	// Plan／ExcludedByPlan＝這一輪用了什麼收檔策略、據此擋掉幾個檔（arcrun-rag#104）。
+	// 同上，`json:"-"`：給本機使用者看的，不送雲端。
+	// 🔴 這兩個欄位就是 #104 那條紅線的載體——「排除規則要看得見」。少了它們，
+	//    使用者接上一個一萬檔的 repo 只看到 32 個進度，會以為系統壞了。
+	Plan           IngestPlan `json:"-"`
+	ExcludedByPlan int        `json:"-"`
 }
 
 // FormatDuplicate＝同一份內容被偵測到有多種格式並存（同檔名主幹、不同副檔名）。
@@ -217,6 +232,9 @@ type ScanOptions struct {
 	// SkipDirNames：目錄名黑名單（任一層命中整棵跳過）。daemon-beta task 2：
 	// template 代裝後 `system-dev/`（wiki 產物區）不得被當成原稿掃進 ingest。
 	SkipDirNames map[string]bool
+	// Plan：收檔策略（arcrun-rag#104）。零值＝IngestAll，行為與加這個欄位之前**完全一致**
+	// ——既有呼叫端與測試不必全部改。要拿到 #104 的效果就傳 PlanIngest(root)。
+	Plan IngestPlan
 }
 
 const DefaultMaxRemovedRatio = 0.4
@@ -259,11 +277,21 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	var skipped []SkippedFile
 	skippedOther := 0
 	var skippedOtherNames []string
+	// arcrun-rag#104：被策略擋掉的檔案數。**一定要數出來**——票上的紅線是
+	// 「用戶要知道有 8,000 個檔沒被收，因為它們是程式碼」，不是安靜地少收。
+	excludedByPlan := 0
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
 		name := d.Name()
+		relOf := func() (string, bool) {
+			rel, rerr := filepath.Rel(root, p)
+			if rerr != nil {
+				return "", false
+			}
+			return filepath.ToSlash(rel), true
+		}
 		if d.IsDir() {
 			if p != root && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir // 隱藏目錄（.git、.obsidian…）整棵跳過
@@ -271,9 +299,21 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			if p != root && opts.SkipDirNames[name] {
 				return filepath.SkipDir // 名單目錄（system-dev…）整棵跳過
 			}
+			// #104：依策略整棵跳過（依賴／建置產物／範本／worktree／巢狀 repo／
+			// 以及非本次策略要收的區域）。整棵跳掉的檔不逐一計數——
+			// 那個數字對使用者沒有意義，Plan.Reason 那句話才是他要的解釋。
+			if p != root {
+				if rel, ok := relOf(); ok && opts.Plan.SkipsDir(rel, p) {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		if rel, ok := relOf(); ok && !opts.Plan.KeepsFile(rel) {
+			excludedByPlan++
 			return nil
 		}
 		if abs, aerr := filepath.Abs(p); aerr == nil && opts.SkipPaths[abs] {
@@ -284,8 +324,17 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		//    template 本來就不是隱藏的，靠隱藏判斷會漏掉一大半。
 		//    也不計進「有 N 個檔案沒有被整理」——那是給使用者看他自己的檔案的，
 		//    我們自己鋪的東西不該佔用他的注意力。
-		if rel, rerr := filepath.Rel(root, p); rerr == nil && TemplateOwns(filepath.ToSlash(rel)) {
-			return nil
+		//
+		// 🔴 arcrun-rag#104 例外：curated-wiki 模式下，`system-dev/wiki/` **正是要收的那一份**。
+		//    上面那條規則（2026-08-06）與 leo 2026-08-14 的規格直接對撞，衝突由身分化解：
+		//    · 我們代裝 template 的資料夾（沒有 `.git`）⇒ 那些檔是**我們鋪的**，照舊不收
+		//    · 使用者自己的 repo（有 `.git`）⇒ 那份 wiki 是**他寫的**，正是他要我們讀的
+		//    判準只有 PlanIngest 一個地方，見 ingestplan.go。
+		if rel, rerr := filepath.Rel(root, p); rerr == nil {
+			relSlash := filepath.ToSlash(rel)
+			if TemplateOwns(relSlash) && !opts.Plan.OverridesTemplateOwned(relSlash) {
+				return nil
+			}
 		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if !allowedExt[ext] {
@@ -505,5 +554,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		SkippedOther:      skippedOther,
 		SkippedOtherNames: skippedOtherNames,
 		DuplicateFormats:  duplicateFormats,
+		Plan:              opts.Plan,
+		ExcludedByPlan:    excludedByPlan,
 	}, nil
 }

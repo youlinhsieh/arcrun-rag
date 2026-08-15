@@ -83,7 +83,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@bd409f61494fe8d845f72dfd9735b0825200304b';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@03ac719fcbbf691941f61d8a40290ed65834481e';
 const BUNDLE_BUILT = '2026-08-14'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
@@ -907,22 +907,56 @@ async function resolveResourcesByRule(token, accountId, requirements, mode) {
 }
 
 /**
- * Vectorize 的 metadata index（best-effort）。
+ * Vectorize 的 metadata index。
  *
- * ⚠️ 這支**不建 index 本身**（那是共用規則的事），只在既有 index 上補 metadata 欄位；
- * 失敗不阻塞——語意搜尋不過濾 metadata 仍然可用。
+ * ⚠️ 這支**不建 index 本身**（那是共用規則的事），只在既有 index 上補 metadata 欄位。
+ *
+ * 🔴 2026-08-15（leo21c 實撞，語意搜尋整台掛掉、沒有任何畫面說壞掉）——
+ *    **這是 `Arcrun#11`（2026-07-06）同一個 bug 的第二次**：那次的根因就是
+ *    「Vectorize 從沒建 metadata index，CF v2 要 filter 先建 index」，修法落在
+ *    **CLI 的 `cli/src/lib/deploy.ts`**（那邊到今天都是對的）。
+ *    後來網頁安裝器**另寫了一份**，而這一份打錯字——同一個病換一個實作又發作一次。
+ *
+ *    三個缺陷疊在一起，任何一個單獨存在都不致命：
+ *    ① **網址打錯**：`metadata-index/create`（連字號）。CF 的路徑是
+ *       `metadata_index/create`（**底線**，見 `deploy.ts:791`）⇒ 每次都 404。
+ *    ② **錯誤被吞掉**：`catch {}` 是空的，不記不報 ⇒ ① 從來沒被任何人看到。
+ *    ③ **「失敗不阻塞」的理由本身是錯的**：舊註解寫「語意搜尋不過濾 metadata 仍然可用」，
+ *       但 cypher-executor `routes/portal-data.ts:273` **每一次查詢都強制注入 `owner_id`
+ *       當 Vectorize filter**（租戶邊界，不可能拿掉）。而 Vectorize v2 規定
+ *       **沒建 metadata index 的欄位不能拿來 filter**
+ *       ⇒「不過濾 metadata」這個情況在真實用戶路徑上**根本不存在**
+ *       ⇒ 這幾個 index 不是加分項，是語意搜尋的**必要條件**。
+ *
+ *    實測（leo21c，2026-08-15）：D1 說 3653 筆已嵌、Vectorize `/info` 也真的回 3653 條
+ *    1024 維向量——**拿一則 entry 自己的原文去查它自己，仍然 0 筆**。
+ *    自我相似度 ~0.99 對上 0.45 的門檻，不可能被分數擋掉；擋掉它的是一個永遠命不中的 filter。
+ *
+ * ⚠️ **建了 metadata index 不會回溯索引既有向量**——`Arcrun#11` 那次是「已建 index
+ *    ＋ **reindex 45**」才通的。所以老實例補完這幾個 index 之後，還要把既有向量重推一次
+ *    （`POST /embed/reconcile` → `POST /embed/backfill`）。新裝的實例沒這問題，
+ *    因為這一步跑在寫入任何向量之前。
+ *
+ * 仍然不阻塞安裝（裝不完比搜不到更糟），但**失敗要留痕**，回傳給呼叫端寫進 progress。
  */
 async function ensureVectorizeMetadataIndexes(token, accountId, indexName) {
   const metaProps = ['owner_id', 'entry_type', 'source', 'library'];
+  const failures = [];
   for (const prop of metaProps) {
     try {
-      await cfFetch(token, `/accounts/${accountId}/vectorize/v2/indexes/${indexName}/metadata-index/create`, {
+      await cfFetch(token, `/accounts/${accountId}/vectorize/v2/indexes/${indexName}/metadata_index/create`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ propertyName: prop, indexType: 'string' }),
       });
-    } catch { /* metadata index 失敗不阻塞 */ }
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      // 已經有了＝這台先前建過，是好事不是錯誤。
+      if (/already exists|duplicate/i.test(msg)) continue;
+      failures.push(`${prop}: ${msg}`);
+    }
   }
+  return failures;
 }
 
 /** 向 landing 中央服務驗證辨識碼（P0-1）。fail-closed：驗不過或連不上都回 ok:false。 */
@@ -1893,11 +1927,17 @@ async function runInstall(env, sid, progress, force) {
         progress.result.subdomain = subdomain;
       }
       // 語意搜尋：index 該用哪一顆（沿用或新建）已經在上面由共用規則決定完了。
-      // 這裡只補「新建出來的那顆要加 metadata 欄位」——沿用既有的不動它
-      // （跟舊寫法一致：以前 GET 得到就直接 return，不會去補 metadata）。
+      // 這裡補 metadata 欄位。
+      //
+      // 🔴 2026-08-15：舊寫法只在 `created` 時才補，理由是「沿用既有的不動它」。
+      //    但**沿用的那顆同樣可能沒有 metadata index**——例如上一輪安裝在建完 index
+      //    之後就中斷、或那一輪剛好踩到上面那個打錯的網址。這種實例每按一次「更新」
+      //    都會走「沿用」這條路，於是**永遠沒有人會去補**，語意搜尋一輩子零命中。
+      //    補這幾個 index 是冪等的（已存在會被當成成功），沒有只在新建時做的理由。
       if (vectorizeIndexName && !progress.result.vectorizeReady) {
-        const created = (progress.result.resourceOrigin || {})['vectorize:VECTORIZE'] === 'created';
-        if (created) await ensureVectorizeMetadataIndexes(token, accountId, vectorizeIndexName);
+        const metaFailures = await ensureVectorizeMetadataIndexes(token, accountId, vectorizeIndexName);
+        // 不阻塞安裝，但要留痕——舊寫法把錯誤吞進空 catch，是這個 bug 活了一個月的原因。
+        if (metaFailures.length) progress.result.vectorizeMetadataWarning = metaFailures.join('\n');
         progress.result.vectorizeReady = true;
         await writeProgress(env, sid, progress);
       }

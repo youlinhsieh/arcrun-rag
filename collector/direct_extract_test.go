@@ -12,30 +12,26 @@ import (
 	"testing"
 )
 
-// cardFixture 組出一張 B2 合格四段卡（H1 段名齊全且順序正確＋H2 一句話定義恰一行＋
-// H3 3–12 條要點＋H4 3–8 條端點閉合三元組——2026-08-09 併入品質 lint 後，minimal
-// 兩段卡會被 H1 硬擋，這裡改成全段合格卡，讓所有沿用 cardFixture 的既有測試自動過關）。
-// 三元組的分隔符在原始碼裡用組字串的方式產生，避免被 arcrun 意圖 guard 誤判成工作流的邊。
+// cardFixture 組出一份合格的萃取 JSON（InkStoneCo#44 ④：wikiExtractPrompt 的契約改為
+// 「文件總覽＋N 個原子概念」的 JSON，卡片格式由 wikishape.go 機械組裝）。
+// 概念名固定為「<subject>·概念」——避免與各測試原稿的 H1／頁名撞名。
 func cardFixture(subject, object string) string {
-	sep := strings.Repeat(">", 2)
-	return "# " + subject + "\n" +
-		"## 一句話定義\n" + subject + "是一張測試用的自包含知識卡。\n" +
-		"## 要點\n" +
-		"- 第一個要點含具體條件\n" +
-		"- 第二個要點含具體條件\n" +
-		"- 第三個要點含具體條件\n" +
-		"## 關鍵實體\n" +
-		"- **" + subject + "** — 測試主體\n" +
-		"- **" + object + "** — 測試客體\n" +
-		"## 關聯\n" +
-		"- " + subject + " " + sep + " 屬於 " + sep + " " + object + "\n" +
-		"- " + subject + " " + sep + " 關聯到 " + sep + " " + object + "\n" +
-		"- " + object + " " + sep + " 對應 " + sep + " " + subject + "\n"
+	concept := subject + "·概念"
+	return `{"gloss":"` + subject + `的測試用一句話","tags":["測試"],` +
+		`"summary":"這是測試用的文件摘要，交代 ` + subject + ` 與 ` + object + ` 的關係。",` +
+		`"points":["本文的核心判斷落在 [[` + concept + `]] 上，其餘是背景"],` +
+		`"no_concept":false,"reason":"",` +
+		`"concepts":[{"name":"` + concept + `","gloss":"一句話說明這個概念",` +
+		`"tags":["測試"],"summary":"概念層的摘要，說明它離開原稿也能獨立成立。",` +
+		`"points":["第一個判斷句含具體條件"],` +
+		`"entities":[{"name":"` + subject + `","type":"概念","desc":"測試主體"},` +
+		`{"name":"` + object + `","type":"組織","desc":"測試客體"}],` +
+		`"facts":[["` + subject + `","屬於","` + object + `"]],` +
+		`"relations":[]}]}`
 }
 
-// gemmaCardStub 讓 Gemini 替身回傳一張以 pageName 命名的卡片（t176 起產品只走 gemma 路，
+// gemmaCardStub 讓 Gemini 替身回傳一份萃取 JSON（t176 起產品只走 gemma 路，
 // 測試也跟著走真實路徑——不再用 claude stub，否則測的是產品走不到的分支＝假綠）。
-// 卡片內容照 gemmaPrompt 的契約：含「## 一句話定義」與「## 關聯」。
 func gemmaCardStub(t *testing.T, cardBody string) func() {
 	t.Helper()
 	return gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +47,8 @@ func gemmaCardStub(t *testing.T, cardBody string) func() {
 // → 原文從未離開本機 → manifest 標 ingested（下一輪不重送）。
 func TestDirectExtractorModeE2E(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "報銷規則.md"), []byte("# 原稿機密內容 XYZZY"), 0o644); err != nil {
+	// H1＝卡名（規範洞 1）；機密哨兵放內文，驗「原文不出機」看的是內容不是標題。
+	if err := os.WriteFile(filepath.Join(root, "報銷規則.md"), []byte("# 報銷規則\n\n機密內容 XYZZY"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,37 +81,55 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit=%d results=%+v", exit, results)
 	}
-	if len(results) != 1 || results[0].Status != "ingested" {
-		t.Fatalf("results=%+v", results)
+	// 結構先行（InkStoneCo#43）：每輪多一張機械總覽卡（零 LLM），檔案事件另計
+	inv, fileResults := splitInventory(results)
+	if len(inv) != 1 || inv[0].Status != "ingested" {
+		t.Fatalf("總覽卡應送達：%+v", inv)
 	}
-	// 卡片落地本地（用戶看得到自己的 wiki）
-	if _, err := os.Stat(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-報銷規則.md")); err != nil {
-		t.Fatalf("卡片未落地：%v", err)
+	if len(fileResults) != 1 || fileResults[0].Status != "ingested" {
+		t.Fatalf("results=%+v", fileResults)
 	}
-	// 上雲的是卡片、不是原文
-	if len(posted) != 1 {
-		t.Fatalf("應恰好 POST 一張卡，got %d", len(posted))
+	// 卡片落地本地 `.wiki/`（InkStoneCo#44 ④：檔名＝H1、文件卡＋概念卡＋索引齊備）
+	for _, rel := range []string{".wiki/報銷規則.md", ".wiki/報銷規則·概念.md", ".wiki/00-INDEX.md", ".wiki/manifest.json"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("wiki 產物未落地 %s：%v", rel, err)
+		}
 	}
-	cc, _ := posted[0]["card_content"].(string)
-	if !strings.Contains(cc, "## 一句話定義") {
-		t.Fatalf("card_content 不是卡片：%.80s", cc)
+	// 上雲的是「總覽卡＋內容卡」兩張，都不含原文
+	if len(posted) != 2 {
+		t.Fatalf("應恰好 POST 兩張卡（總覽＋內容），got %d", len(posted))
 	}
-	if strings.Contains(cc, "XYZZY") {
-		t.Fatal("原文內容洩上雲＝違反四步定稿邊界")
+	for _, p := range posted {
+		if cc, _ := p["card_content"].(string); strings.Contains(cc, "XYZZY") {
+			t.Fatal("原文內容洩上雲＝違反四步定稿邊界")
+		}
+	}
+	var contentCard map[string]any
+	for _, p := range posted {
+		if pn, _ := p["page_name"].(string); !strings.HasPrefix(pn, "資料夾總覽") {
+			contentCard = p
+		}
+	}
+	if contentCard == nil {
+		t.Fatal("找不到內容卡")
+	}
+	cc, _ := contentCard["card_content"].(string)
+	if !strings.Contains(cc, "## 摘要") || !strings.Contains(cc, "gloss:") {
+		t.Fatalf("card_content 不是規範形卡片：%.80s", cc)
 	}
 	// path 必須是「原檔路徑」（takedown 比對鍵＋B4 溯源）——不是卡片路徑（07-24 第五枚坑）
-	if p, _ := posted[0]["path"].(string); p != "報銷規則.md" {
+	if p, _ := contentCard["path"].(string); p != "報銷規則.md" {
 		t.Fatalf("path=%q（應為原檔路徑）", p)
 	}
 	// 🔴 arcrun-rag#60 第二輪：本機卡片檔名加了 arcrun- 前綴，但**上雲的 page_name 不准跟著變**。
 	// 下架分支用的是原稿頁名（見下一支測試斷言 takedown page_name=="報銷規則"），
 	// 這裡若跟著卡片檔名變成 "arcrun-報銷規則"，兩邊就永遠對不上、刪原檔再也下架不掉。
-	if pn, _ := posted[0]["page_name"].(string); pn != "報銷規則" {
+	if pn, _ := contentCard["page_name"].(string); pn != "報銷規則" {
 		t.Fatalf("page_name=%q（應為原稿頁名，不含 arcrun- 前綴，否則下架對不上）", pn)
 	}
-	// 第二輪：原稿沒變 → 不重萃不重送
+	// 第二輪：原稿沒變 → 不重萃不重送（總覽卡雜湊相同也不重送）
 	results2, exit2, _ := RunDirectOnce(cfg, false)
-	if exit2 != 0 || len(results2) != 0 || len(posted) != 1 {
+	if exit2 != 0 || len(results2) != 0 || len(posted) != 2 {
 		t.Fatalf("第二輪應零事件：results=%+v posted=%d", results2, len(posted))
 	}
 }
@@ -157,7 +172,7 @@ func TestDirectExtractorRemovedClearsLocalCard(t *testing.T) {
 	if _, exit, _ := RunDirectOnce(cfg, false); exit != 0 {
 		t.Fatalf("第一輪 ingest 失敗 exit=%d", exit)
 	}
-	cardPath := filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-報銷規則.md")
+	cardPath := filepath.Join(root, ".wiki", "原稿.md") // 原稿內容「# 原稿」⇒ H1＝卡名
 	if _, err := os.Stat(cardPath); err != nil {
 		t.Fatalf("前置失敗：卡片未落地 %v", err)
 	}
@@ -170,8 +185,10 @@ func TestDirectExtractorRemovedClearsLocalCard(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("第二輪 exit=%d results=%+v", exit, results)
 	}
-	if len(results) != 1 || results[0].Status != "removed" {
-		t.Fatalf("results=%+v", results)
+	// 結構先行：刪檔輪總覽卡也會更新（清單不該還列著剛刪的檔），檔案事件另計
+	_, fileResults := splitInventory(results)
+	if len(fileResults) != 1 || fileResults[0].Status != "removed" {
+		t.Fatalf("results=%+v", fileResults)
 	}
 	if len(takedowns) != 1 {
 		t.Fatalf("應恰好一次 takedown，got %d", len(takedowns))
@@ -207,14 +224,16 @@ func TestDirectExtractorRemovedNoLocalCardOK(t *testing.T) {
 		t.Fatal("第一輪失敗")
 	}
 	// 模擬用戶已手動清走本地卡 → removed 分支「存在才刪」不應報錯或多出 warning
-	if err := os.Remove(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-a.md")); err != nil {
+	// （原稿內容 "x" 無 H1 ⇒ 文件卡名 fallback＝檔名 "a"）
+	if err := os.Remove(filepath.Join(root, ".wiki", "a.md")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(root, "a.md")); err != nil {
 		t.Fatal(err)
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
-	if exit != 0 || len(results) != 1 || results[0].Status != "removed" {
+	_, fileResults := splitInventory(results) // 結構先行：總覽卡另計
+	if exit != 0 || len(fileResults) != 1 || fileResults[0].Status != "removed" {
 		t.Fatalf("exit=%d results=%+v", exit, results)
 	}
 }
@@ -237,13 +256,15 @@ func TestDirectExtractorFailKeepsRetry(t *testing.T) {
 		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
-	if exit != 1 || len(results) != 1 || results[0].Status != "failed" {
+	_, fileResults := splitInventory(results) // 結構先行：總覽卡另計（此處 cypher 不通，總覽也 failed）
+	if exit != 1 || len(fileResults) != 1 || fileResults[0].Status != "failed" {
 		t.Fatalf("exit=%d results=%+v", exit, results)
 	}
-	// 再跑一輪：仍是同一個事件（manifest 沒標 ingested＝會重試）
+	// 再跑一輪：仍是同一個事件（manifest 沒標 ingested＝會重試）；
+	// 總覽卡則在自己的失敗退避窗口內，不重撞
 	results2, _, _ := RunDirectOnce(cfg, false)
-	if len(results2) != 1 {
-		t.Fatalf("失敗檔應重試：%+v", results2)
+	if inv2, fileResults2 := splitInventory(results2); len(fileResults2) != 1 || len(inv2) != 0 {
+		t.Fatalf("失敗檔應重試、總覽應退避：%+v", results2)
 	}
 }
 
@@ -314,9 +335,18 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var serverCalled bool
+	// 結構先行後，總覽卡（只含檔名、零原文）照常會 POST 到 rag_ingest_card——
+	// 本測試守的契約是「PDF 位元組／原文不出機」，改成逐請求驗內容與端點。
+	var ingestDirectCalled bool
+	var leaked bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalled = true
+		body, _ := io.ReadAll(r.Body)
+		if strings.HasSuffix(r.URL.Path, "/rag_ingest_direct/trigger") {
+			ingestDirectCalled = true
+		}
+		if strings.Contains(string(body), "%PDF") || strings.Contains(string(body), "機密原文") {
+			leaked = true
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
@@ -337,16 +367,20 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 	if exit != 1 {
 		t.Fatalf("exit=%d，應是 1（非文字檔無萃取器＝失敗）", exit)
 	}
-	if serverCalled {
-		t.Error("防禦閘失效：PDF 被直送上雲（契約破壞）")
+	if ingestDirectCalled {
+		t.Error("防禦閘失效：走了舊制直送端點（契約破壞）")
 	}
-	if len(results) != 1 || results[0].Status != "failed" {
-		t.Fatalf("results=%+v", results)
+	if leaked {
+		t.Error("防禦閘失效：PDF 位元組／原文被送上雲（契約破壞）")
+	}
+	_, fileResults := splitInventory(results) // 結構先行：總覽卡（只含檔名）另計
+	if len(fileResults) != 1 || fileResults[0].Status != "failed" {
+		t.Fatalf("results=%+v", fileResults)
 	}
 	// t182：這裡是「選了 Gemini 卻沒有金鑰」⇒ 停在萃取層、誠實報缺什麼。
-	// 本測真正要守的契約沒變、也仍然綠：**PDF 不得被直送上雲**（上面的 serverCalled）。
-	if !strings.Contains(results[0].Error, "gemini_api_key") {
-		t.Errorf("錯誤訊息不符：%q", results[0].Error)
+	// 本測真正要守的契約沒變、也仍然綠：**PDF 不得被直送上雲**（上面的 leaked）。
+	if !strings.Contains(fileResults[0].Error, "gemini_api_key") {
+		t.Errorf("錯誤訊息不符：%q", fileResults[0].Error)
 	}
 }
 

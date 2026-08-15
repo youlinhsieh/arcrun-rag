@@ -102,3 +102,125 @@ func TestExtractWithWorkersAI_NonVaultUnchanged(t *testing.T) {
 		t.Fatalf("非 vault 卡片路徑不對：%v，want [system-dev/wiki/cards/arcrun-note.md]", cards)
 	}
 }
+
+// ── Arcrun#134：workers-ai 路與 gemma 路共用同一份契約 ─────────────────────────
+//
+// 修法＝daemon 把 wikiExtractPrompt 整段帶去雲端（request `prompt` 欄位），
+// 雲端只回模型原文（response `output`），解析與組卡回到本 package 與 gemma 路
+// 同一段程式碼。⇒ 「兩條路的卡同形」不再是兩份 prompt 各自維持的巧合，
+// 是同一份程式碼的必然。以下兩則就是這句話的機械守衛；
+// 檔案上方兩則既有測試（stub 只回 `card`）則守住「舊雲端 fallback 不斷炊」。
+
+// request 必帶 prompt，且必須就是 wikiExtractPrompt 本人——不是另一份手抄。
+func TestExtractWithWorkersAI_SendsSharedPrompt(t *testing.T) {
+	root := t.TempDir()
+	const srcName = "報銷規則.md"
+	const srcBody = "# 報銷規則\n\n內文"
+	if err := os.WriteFile(filepath.Join(root, srcName), []byte(srcBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotPrompt string
+	url, closeFn := workersAIStub(t, func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotPrompt = req["prompt"]
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"output":  cardFixture("報銷規則", "財務"),
+		})
+	})
+	defer closeFn()
+
+	if _, err := ExtractWithWorkersAI(url, "key123", root, srcName); err != nil {
+		t.Fatal(err)
+	}
+	srcText, err := ConvertToText(srcName, []byte(srcBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := wikiExtractPrompt("報銷規則", srcText); gotPrompt != want {
+		t.Fatalf("送上雲的 prompt 不是共用那份 wikiExtractPrompt（len got=%d want=%d）", len(gotPrompt), len(want))
+	}
+}
+
+// wikiTreeOf 收齊 root 底下所有 .wiki/ 產物（相對路徑 → 內容）。
+func wikiTreeOf(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		if !strings.Contains(filepath.ToSlash(rel), ".wiki/") {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		out[filepath.ToSlash(rel)] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// 🔴 本票的驗收本體：同一份原稿＋同一份模型判斷，走 gemma 路與 workers-ai 路，
+// `.wiki/` 產物（卡、00-INDEX、manifest）必須**逐位元組相同**。
+func TestExtractWorkersAIAndGemmaProduceIdenticalWiki(t *testing.T) {
+	const srcName = "報銷規則.md"
+	const srcBody = "# 報銷規則\n\n機密內容 XYZZY"
+	fixture := cardFixture("報銷規則", "財務")
+
+	// gemma 路
+	rootG := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootG, srcName), []byte(srcBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	undo := gemmaCardStub(t, fixture)
+	cardsG, errG := ExtractWithGemma("k-test", "", rootG, srcName)
+	undo()
+	if errG != nil {
+		t.Fatal(errG)
+	}
+
+	// workers-ai 路
+	rootW := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootW, srcName), []byte(srcBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	url, closeFn := workersAIStub(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "output": fixture})
+	})
+	cardsW, errW := ExtractWithWorkersAI(url, "key123", rootW, srcName)
+	closeFn()
+	if errW != nil {
+		t.Fatal(errW)
+	}
+
+	if strings.Join(cardsG, "|") != strings.Join(cardsW, "|") {
+		t.Fatalf("兩條路回報的卡片清單不同：gemma=%v workers-ai=%v", cardsG, cardsW)
+	}
+	treeG, treeW := wikiTreeOf(t, rootG), wikiTreeOf(t, rootW)
+	if len(treeG) == 0 {
+		t.Fatal("gemma 路沒有產出任何 .wiki 檔案（測試前提壞了）")
+	}
+	for rel, want := range treeG {
+		got, ok := treeW[rel]
+		if !ok {
+			t.Errorf("workers-ai 路缺檔：%s", rel)
+			continue
+		}
+		if got != want {
+			t.Errorf("兩條路的 %s 內容不同（前 200 字）：\n─ gemma ─\n%.200s\n─ workers-ai ─\n%.200s", rel, want, got)
+		}
+	}
+	for rel := range treeW {
+		if _, ok := treeG[rel]; !ok {
+			t.Errorf("workers-ai 路多出 gemma 路沒有的檔：%s", rel)
+		}
+	}
+}

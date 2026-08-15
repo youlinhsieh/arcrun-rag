@@ -58,8 +58,18 @@ func TestDirect_QuotaExhausted_ShowsHumanMessageNoRawCode(t *testing.T) {
 	if exit != 1 {
 		t.Fatalf("兩份都該萃取失敗，exit 應為 1，got %d", exit)
 	}
-	if len(results) != 2 {
-		t.Fatalf("results=%+v", results)
+	// 結構先行：本測試的假伺服器對**所有**端點回額度 502，總覽卡也會失敗——
+	// 它的錯誤同樣不准裸露錯誤碼（下方 banned 檢查涵蓋全部 results），
+	// 但三句話（成就／出口）是萃取路 quotaState 的契約，總覽卡只講自己的狀態。
+	inv, fileResults := splitInventory(results)
+	if len(inv) != 1 || inv[0].Status != "failed" {
+		t.Fatalf("inv=%+v", inv)
+	}
+	if !strings.Contains(inv[0].Error, "額度") || !strings.Contains(inv[0].Error, "不影響檔案同步") {
+		t.Errorf("總覽卡的額度失敗要說人話：%q", inv[0].Error)
+	}
+	if len(fileResults) != 2 {
+		t.Fatalf("results=%+v", fileResults)
 	}
 
 	banned := []string{"4006", "502", "HTTP", "neurons"}
@@ -69,6 +79,8 @@ func TestDirect_QuotaExhausted_ShowsHumanMessageNoRawCode(t *testing.T) {
 				t.Errorf("結果不該出現裸露的錯誤碼 %q：%q", b, r.Error)
 			}
 		}
+	}
+	for _, r := range fileResults {
 		// arcrun-rag#59：這支測試裡兩份檔案全部失敗、dailyCount 全程是 0——
 		// 正是 leo 實查那個「一份都沒成功、額度卻用完」的情境，buildQuotaNotice
 		// 改口不再承諾「自動恢復」（那是做不到的承諾）、也不再建議換模型

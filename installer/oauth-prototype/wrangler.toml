@@ -2,6 +2,19 @@ name = "arcrun-installer"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
+# 🔴 D90（leo 2026-08-14 拍板「把 prod 補成跟 stage 一樣」）：
+#   本行原本**只加在 [env.staging]**，理由寫「prod 的呼叫方是 custom domain
+#   （install.arcrun.dev）不踩這條」。但 CF 的 1042 **看的是目標，不是呼叫方**——
+#   而 prod 與 staging 同樣要去 fetch 用戶的 *.workers.dev cypher。
+#   ⇒ 若那個理由不成立，**每個走正式安裝器的用戶都會在最後一步撞 404，
+#     而我們永遠測不出來**（因為我們只在有 flag 的 stage 上測）。
+#
+#   D90 的規則：stage 與 prod 只准差「身分」（名稱／網址／憑證／環境標記），
+#   **不准差「行為」**（flag、相容性設定、程式路徑）。
+#   修法方向刻意選「把 prod 補成跟 stage 一樣」而不是「把 stage 的拿掉」——
+#   所有測試都是在**有**這個 flag 的環境上做的，拿掉等於把驗過的改成沒驗過的。
+compatibility_flags = ["global_fetch_strictly_public"]
+
 # 用到 File / FormData 建 multipart 上傳；標準 Workers runtime 已支援，
 # 這裡不需要 nodejs_compat。
 
@@ -47,7 +60,7 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@bd409f61494fe8d845f72dfd9735b0825200304b"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@03ac719fcbbf691941f61d8a40290ed65834481e"
 BUNDLE_BUILT = "2026-08-14"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
@@ -78,7 +91,7 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 #   - BUNDLE_BUILT＝釘點 manifest.built（D37 單一真相源：換釘點時跟著 manifest 改）
 #   - DEPLOY_ENV=staging → 首頁版本字串帶 +staging，一眼分辨
 # ---------------------------------------------------------------------------
-INSTALLER_SRC_SHA = "ace25cb03bc792728484b0e91c1229c639e9affaf11577f94adde81592e97b4c"
+INSTALLER_SRC_SHA = "2b22d2b751446f445d7e29fbfb6b123a4ea100d46b4f485ea9316b3add861c6c"
 [env.staging]
 name = "arcrun-rag-installer-staging"
 # P10（2026-08-07）：允許本 worker（在 workers.dev 上）直接 fetch 同帳號其他

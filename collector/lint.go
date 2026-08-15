@@ -147,8 +147,102 @@ func nonEmptyLines(lines []string) []string {
 // runeLen 全形字數（rune 計數）。
 func runeLen(s string) int { return len([]rune(s)) }
 
+// ── 新格式（InkStoneCo#44 ④，2026-08-15）：wikishape.go 產的規範形卡 ──
+// frontmatter（tags/gloss/created/updated）＋「## 摘要／## 重點／## 實體／## 關聯」。
+// 舊四段格式（一句話定義/要點/關鍵實體/關聯）仍由 workers-ai 雲端路產出，雙軌並存：
+// 雲端 prompt 升級歸 matrix/arcrun（B 類），在那之前這裡不能把舊卡全打成硬缺。
+const (
+	nsecSum = "摘要"
+	nsecPts = "重點"
+	nsecEnt = "實體"
+	nsecRel = "關聯"
+)
+
+var glossRe = regexp.MustCompile(`(?m)^gloss:\s*(.*)$`)
+
+// isWikiShapeCard 認新格式：frontmatter 開頭且帶 gloss。
+func isWikiShapeCard(card string) bool {
+	return strings.HasPrefix(card, "---\n") && glossRe.MatchString(card)
+}
+
+// lintWikiShapeCard 對新格式卡跑等價的 H1–H6（代號沿用，回報端不用改）。
+func lintWikiShapeCard(card string, opts LintOptions) LintResult {
+	var r LintResult
+	secs := parseSections(card)
+
+	// H1 四段齊且順序對（硬）。
+	required := []string{nsecSum, nsecPts, nsecEnt, nsecRel}
+	idx := map[string]int{}
+	var missing []string
+	for _, name := range required {
+		if s, ok := sectionByName(secs, name); ok {
+			idx[name] = s.order
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		r = r.addHard("H1", "缺段名："+strings.Join(missing, "、")+"（四段須齊：摘要→重點→實體→關聯）")
+	} else if !(idx[nsecSum] < idx[nsecPts] && idx[nsecPts] < idx[nsecEnt] && idx[nsecEnt] < idx[nsecRel]) {
+		r = r.addHard("H1", "段名順序錯（須依序：摘要→重點→實體→關聯）")
+	}
+
+	// H2 gloss 恰一句、非空（硬）；過長軟提醒。
+	if m := glossRe.FindStringSubmatch(card); m != nil {
+		g := strings.TrimSpace(m[1])
+		switch {
+		case g == "":
+			r = r.addHard("H2", "frontmatter 的 gloss 是空的")
+		case runeLen(g) > defMaxRunes:
+			r = r.addSoft("H2", "gloss "+itoa(runeLen(g))+" 全形字（建議 ≤80，過長像小作文）")
+		}
+	} else {
+		r = r.addHard("H2", "frontmatter 缺 gloss")
+	}
+
+	// H3 重點條數（軟）：原子卡自然落在 1–8，超過 12 是沒消化的地毯複製。
+	if pts, ok := sectionByName(secs, nsecPts); ok {
+		bullets := 0
+		for _, l := range nonEmptyLines(pts.lines) {
+			if bulletRe.MatchString(l) {
+				bullets++
+			}
+		}
+		if bullets < 1 || bullets > 12 {
+			r = r.addSoft("H3", "重點 "+itoa(bullets)+" 條（應 1–12 條）")
+		}
+	}
+
+	// H4 三元組行形（軟）：每行恰三項，述詞裡不得再夾分隔符。
+	if rel, ok := sectionByName(secs, nsecRel); ok {
+		for _, l := range nonEmptyLines(rel.lines) {
+			if !strings.HasPrefix(strings.TrimSpace(l), "- ") {
+				continue
+			}
+			if strings.Count(l, triSep) > 2 {
+				r = r.addSoft("H4", "三元組不是三項（述詞裡夾了分隔符）："+trimForMsg(l))
+			}
+		}
+	}
+
+	// H5 機敏值（硬）與 H6 相似度（軟）：與舊格式同一套。
+	if hits := scanSecrets(card); len(hits) > 0 {
+		r = r.addHard("H5", "疑似機敏值："+strings.Join(hits, "、")+"（依規約該段應改寫成描述，不得照抄）")
+	}
+	if opts.Source != "" {
+		if msg := checkSimilarity(card, opts.Source); msg != "" {
+			r = r.addSoft("H6", msg)
+		}
+	}
+	return r
+}
+
 // LintCard 對一張 daemon 形知識卡跑 H1–H6，回傳分級結果（B2 §1＋§6 T4-C）。
+// 新格式（wikishape）與舊格式（workers-ai 雲端路）雙軌：先認格式再挑對應規則。
 func LintCard(card string, opts LintOptions) LintResult {
+	if isWikiShapeCard(card) {
+		return lintWikiShapeCard(card, opts)
+	}
 	var r LintResult
 	secs := parseSections(card)
 

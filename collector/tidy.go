@@ -192,18 +192,56 @@ func collectTemplateItems(absRoot string, isVault bool) []TidyItem {
 	return items
 }
 
+// CardMigration＝MigrateCardNames 一輪的帳目。
+//
+// Blocked 不是「失敗」，是**刻意沒動**：那個資料夾在版控裡，我們沒有資格自己決定
+// 改別人版控中的檔案。它要被講出來（direct.go 收進 results ⇒ status.json ⇒ App），
+// 不是靜默跳過——#105 的紅線與 #104 同一條：「不要讓用戶猜」。
+type CardMigration struct {
+	Moved    int    // 真的改名/搬移了幾個
+	Blocked  int    // 認出是舊卡、但因為在版控裡而沒動的
+	RepoRoot string // Blocked > 0 時：那個版控工作目錄的根
+}
+
 // MigrateCardNames 把卡片產物區裡「位置不對或沒帶標記」的舊卡歸位。daemon 每輪自動呼叫。
-// 回傳實際動到的筆數。**只碰卡片產物區**，其餘一概不動。
+// **只碰卡片產物區**，其餘一概不動。
 //
-// 為什麼可以自動：那兩個目錄從頭到尾只有 daemon 會寫（見 cardsRelDirFor 的註解），
-// 不存在「誤把使用者的檔案改名」的可能。目標已存在就跳過，不覆蓋。
+// 🔴 第四輪＝arcrun-rag#105（2026-08-14 實撞）：**版控中的資料夾一個檔都不動。**
 //
-// 🔴 第三輪起也負責**搬移**（不只改名）：監看根在 vault 裡時，舊版寫在可見目錄的卡
-// 會被搬進 `.arcrun-rag/wiki/cards/`。這是自動的，因為紅線寫著「不准要使用者去設定
-// 什麼開關才能保護自己的筆記」——他不該為了收拾機器留下的東西去學一個新指令。
-func MigrateCardNames(absRoot string) int {
-	n := 0
-	for _, it := range collectCardItems(absRoot) {
+//	前三輪（#60，f71e5a2／578ac2b）修的都是同一個場景的深度——「卡片會不會汙染
+//	使用者的**筆記庫**」，方向一路往「更自動」走，因為那條紅線是「不准要使用者
+//	去設定什麼開關才能保護自己的筆記」。**本輪不推翻那個方向**：非版控資料夾
+//	（含 vault）的行為與 578ac2b 完全一致。
+//
+//	本輪修的是另一個場景——「監看的是他的 **git repo**」。上一版這裡的理由是
+//	「那兩個目錄從頭到尾只有 daemon 會寫，不存在誤把使用者的檔案改名的可能」。
+//	那句話在 repo 上錯了，而且錯得很貴：`system-dev/wiki/cards/` 是
+//	system-dev-template 的規約路徑，而 template 就是要裝進**開發者自己的 repo**——
+//	leo 的 `InkStoneCo` 裡那個目錄底下是他自己寫的知識卡（還有 `autonomy/` 這種
+//	他自己開的子目錄）。daemon 把它們壓平改名，**16 個版控中的檔案當場變成刪除**。
+//
+//	⇒ 判準加一問「這裡有沒有 `.git`」（見 repoguard.go 對「這夠不夠」的討論）。
+//	有＝停手、記帳、講給使用者聽，要整理請他自己跑 `collector tidy --apply`
+//	（那條路預設 dry-run，會先把要動什麼列給他看）。
+//	兩條紅線不衝突：「不要他學新選項才能保護筆記」管的是筆記庫；
+//	repo 那邊 leo 的原話是「**預設應該是不動，要動要有出口**」。
+func MigrateCardNames(absRoot string) CardMigration {
+	items := collectCardItems(absRoot)
+	if repoRoot := DetectRepoRoot(absRoot); repoRoot != "" {
+		// 只把**確定是我們寫的**（帶 arcrun- 標記、只是位置不對）算進 Blocked。
+		// 沒帶標記的在 repo 裡預設就是使用者自己的檔案——把它們算進來，訊息就會變成
+		// 「有 40 個舊卡片沒整理」，而那 40 張是 leo 自己寫的知識卡，
+		// 報一個全錯的數字比不報更糟（#105 要的是誠實，不是熱心）。
+		blocked := 0
+		for _, it := range items {
+			if IsMarked(filepath.Base(it.Rel)) {
+				blocked++
+			}
+		}
+		return CardMigration{Blocked: blocked, RepoRoot: repoRoot}
+	}
+	out := CardMigration{}
+	for _, it := range items {
 		from := filepath.Join(absRoot, filepath.FromSlash(it.Rel))
 		to := filepath.Join(absRoot, filepath.FromSlash(it.To))
 		if _, err := os.Stat(to); err == nil {
@@ -213,10 +251,10 @@ func MigrateCardNames(absRoot string) int {
 			continue
 		}
 		if err := os.Rename(from, to); err == nil {
-			n++
+			out.Moved++
 		}
 	}
-	return n
+	return out
 }
 
 // Tidy 掃出所有舊產物；apply=false 只報告，apply=true 才真的改名/搬移。

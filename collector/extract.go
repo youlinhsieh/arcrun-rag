@@ -73,15 +73,21 @@ const cardsRelDir = "system-dev/wiki/cards"
 const vaultCardsRelDir = ".arcrun-rag/wiki/cards"
 
 // cardsRelDirFor 決定某次萃取的卡片該落在哪個相對路徑：
-// 監看根不在任何筆記庫範圍內＝cardsRelDir（一般資料夾行為，零改變）；
-// 落在筆記庫範圍內＝vaultCardsRelDir（隱藏目錄）。
+// 監看根既不在筆記庫、也不在版控裡＝cardsRelDir（一般資料夾行為，零改變）；
+// 落在筆記庫或版控範圍內＝vaultCardsRelDir（隱藏目錄）。
 //
 // 🔴 arcrun-rag#60 第三輪：判準從 IsVault（只看監看根**這一層**）換成 DetectVaultContext
 // （監看根**在不在**某個筆記庫裡）。前者在「監看根是 vault 底下的子資料夾」時回 false，
 // 於是卡片落回 `<監看根>/system-dev/wiki/cards/`——那個位置就在使用者的 vault 裡面，
 // 而且不是隱藏目錄，Logseq/Obsidian 會把每一張卡收編成一頁。全文見 vault.go 第三輪那段。
+//
+// 🔴 arcrun-rag#105：**版控中的資料夾與 vault 同待遇**。理由是同一個形狀——
+// `system-dev/wiki/cards/` 在 repo 裡不是空地，那是 template 規約路徑，
+// 使用者自己的卡就住在那裡；而且不管撞不撞名，往那裡寫東西就是往他的 git status
+// 裡塞 untracked 檔。落進 `.arcrun-rag/`（配 EnsureWorkspaceIgnored 自我忽略）
+// ＝寫得進去、又不弄髒他的版控。
 func cardsRelDirFor(absRoot string) string {
-	if DetectVaultContext(absRoot).InVault() {
+	if DetectVaultContext(absRoot).InVault() || UnderVersionControl(absRoot) {
 		return vaultCardsRelDir
 	}
 	return cardsRelDir
@@ -178,7 +184,7 @@ func ExtractWithClaude(binPath, absRoot, relPath string) ([]string, error) {
 	if len(cards) == 0 {
 		return nil, fmt.Errorf("claude 跑完但 %s 沒有新卡片（輸出尾段：%.200s）", cardsRelDirFor(absRoot), string(out))
 	}
-	return enforceCardMarks(absRoot, cards), nil
+	return enforceCardMarks(absRoot, cards, before), nil
 }
 
 // enforceCardMarks 把「不是我們親手命名」的卡片**歸位並補上標記**。
@@ -192,13 +198,38 @@ func ExtractWithClaude(binPath, absRoot, relPath string) ([]string, error) {
 // ⇒ **命名與落點的契約收回 Go 這一側強制執行**：不管上游寫成什麼、寫到哪，
 // 離開這個函式時一定是 cardRelFor 算出來的那個位置與名字。
 // 目標已被佔用或搬不動時，照實回報原路徑（不覆蓋、不假裝成功），剩下的交給 tidy。
-func enforceCardMarks(absRoot string, cards []string) []string {
+func enforceCardMarks(absRoot string, cards []string, before map[string]fileState) []string {
 	want := cardsRelDirFor(absRoot)
 	out := make([]string, 0, len(cards))
 	for _, rel := range cards {
 		base := filepath.Base(rel)
 		dir := filepath.ToSlash(filepath.Dir(rel))
 		if IsMarked(base) && dir == want {
+			out = append(out, rel)
+			continue
+		}
+		// 🔴 arcrun-rag#105 第二輪（2026-08-15）：**本來就存在的檔案，一律不搬。**
+		//
+		// 這是 `cc6e500`（08-14，`MigrateCardNames`）同一個事故的第二次，連數字都一樣：
+		// 那次「把 system-dev/wiki/cards/autonomy/ 整個子目錄壓平改名，16 個版控中的檔案
+		// 變成刪除」；今天換成 `cards/decisions/`，同樣 16 個。
+		// **上次只修了 MigrateCardNames，這支做一模一樣的事卻被漏掉。**
+		//
+		// 真兇在 `cards` 這份清單的來源：`diffCards` 把「**新增**」與「**內容變動**」
+		// 併成同一個回傳值，而 `snapshotCards` **同時掃 cardsRelDir 與 vaultCardsRelDir
+		// 兩棵樹**。於是萃取 skill 正當地更新一張既有索引卡（`cards/decisions/00-INDEX.md`）
+		// ⇒ mtime 變了 ⇒ 被當成「本次產出的卡」⇒ 判定「不在 want 目錄」⇒ 搬走改名。
+		// **更新一張索引卡，就會害它被踢出自己的桶子。**
+		// 而子資料夾不是意外，是規約：`system-dev/wiki/INDEX.md` 寫著
+		// 「INDEX →『cards/<bucket>/00-INDEX.md』→ 概念原子卡」。壓平＝把那條檢索鏈剪斷。
+		//
+		// 🔴 分界是「**這次新生的，還是本來就在的**」，不是「在不在某個目錄底下」：
+		//   - 這次新生 ⇒ 就是 skill 剛寫的那張，歸位＋加前綴（#60 防撞名、#105 落 .arcrun-rag，
+		//     兩條保護都要留著，那是這支存在的理由）
+		//   - 本來就在 ⇒ **不管它在哪、叫什麼，都不准動**。它可能是使用者手寫的 wiki。
+		// `IsMarked` 分不出「上游寫錯位置的卡」與「使用者自己的檔案」，而猜錯的代價不對等：
+		// 名字沒前綴只是難看，**搬走使用者的檔案是不可逆的**。
+		if _, existed := before[rel]; existed {
 			out = append(out, rel)
 			continue
 		}

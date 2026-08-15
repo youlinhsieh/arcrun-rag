@@ -2053,14 +2053,14 @@
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "釘子與安裝器原始碼都沒動（built 2026-08-14，src 2b22d2b75144）"
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "線上已是 1.4.45／pin dcfd202／安裝器原始碼 2b22d2b75144 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -2095,7 +2095,7 @@
    ],
    "sourceCommit": "Arcrun@94d545242589",
    "machine": "9f06f3113188",
-   "ts": 1786709574159
+   "ts": 1786714214106
   },
   "prod": {
    "results": [
@@ -2174,14 +2174,14 @@
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
-     "status": "skip",
-     "note": "釘子與安裝器原始碼都沒動（built 2026-08-14，src ace25cb03bc7）"
+     "status": "done",
+     "note": null
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "skip",
-     "note": "線上已是 1.4.45／pin bd409f6／安裝器原始碼 ace25cb03bc7 未變，且釘子沒動 ⇒ 不重複部署"
+     "status": "done",
+     "note": null
     },
     {
      "id": "docs",
@@ -2210,13 +2210,13 @@
     {
      "id": "github-release",
      "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "GitHub 已有 v1.4.45：https://github.com/youlinhsieh/arcrun-rag/releases/tag/v1.4.45"
     }
    ],
    "sourceCommit": "Arcrun@94d545242589",
    "machine": "9f06f3113188",
-   "ts": 1786692061035
+   "ts": 1786714417955
   }
  }
 }

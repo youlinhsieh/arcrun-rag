@@ -22,6 +22,15 @@
 //	讀原檔 → ConvertToText（本機轉檔）→ 送 API → 淨化 → 落卡
 //	                                    ↑ 只有這一步不同
 //
+// 🔴 Arcrun#134（2026-08-15）：**提示詞也由 daemon 帶去**（request 的 `prompt` 欄位）。
+// 之前雲端自備一份 prompt、daemon 另有一份 gemma 用的，兩份靠註解叮嚀「一起改」——
+// InkStoneCo#44 ④ 改了 gemma 那份（JSON 契約＋wikishape 機械組卡），雲端沒跟上，
+// 免金鑰預設路的用戶因此繼續拿舊格式卡。修法＝契約只住本 package 一份
+// （wikiExtractPrompt ＋ parseWikiExtractJSON ＋ BuildWikiDoc 同進同出），
+// 雲端只是「用實例自己的 env.AI 跑生成」的執行器，回應 `output` 原文。
+// 版本歪斜：舊雲端會忽略 prompt、照舊回 `card`（舊格式 markdown）⇒ 本檔 fallback
+// 走 legacy 落卡（收端 lint 新舊雙軌仍接受，#60 的前綴與不覆蓋保護原封不動）。
+//
 // ⚠️ 隱私邊界不變：送出去的是**已在本機轉成純文字的原稿**，回來的是知識卡；
 // 原始檔案（docx/pdf/xlsx）仍然不出用戶的電腦。
 package collector
@@ -66,9 +75,12 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 	}
 
 	pageName := pageNameOf(relPath)
+	// #134：prompt＝與 gemma 路同一份契約（同 package 同函式，物理上不可能漂移）。
+	// page_name/text 仍照送：舊雲端不認得 prompt，會拿它們組 legacy 提示詞回舊卡。
 	reqBody, _ := json.Marshal(map[string]string{
 		"page_name": pageName,
 		"text":      srcText,
+		"prompt":    wikiExtractPrompt(pageName, srcText),
 	})
 
 	url := strings.TrimSuffix(strings.TrimSpace(cypherURL), "/") + "/portal/daemon/extract"
@@ -104,19 +116,37 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 	var parsed struct {
 		Success bool   `json:"success"`
 		Card    string `json:"card"`
+		Output  string `json:"output"` // #134：新雲端在 prompt 模式回模型原文
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("雲端回應解析失敗：%w", err)
 	}
-	if !parsed.Success || strings.TrimSpace(parsed.Card) == "" {
+	if !parsed.Success || (strings.TrimSpace(parsed.Card) == "" && strings.TrimSpace(parsed.Output) == "") {
 		if parsed.Error != "" {
 			return nil, fmt.Errorf("雲端萃取失敗：%s", parsed.Error)
 		}
 		return nil, fmt.Errorf("雲端沒有回傳卡片內容")
 	}
 
-	// 與 gemma 路共用同一套淨化與落卡（卡片格式契約一致：第一行必須是「# <頁名>」）
+	// #134 主線：新雲端回 `output`（模型對 wikiExtractPrompt 的原始回應）⇒
+	// 與 gemma 路走**同一段**收尾：解析 JSON 判斷 → wikishape 機械組卡落 `.wiki/`。
+	// 兩條萃取路的卡片形狀從此由同一份程式碼保證，不是由兩份 prompt 各自維持。
+	if strings.TrimSpace(parsed.Output) != "" {
+		ex, perr := parseWikiExtractJSON(parsed.Output)
+		if perr != nil {
+			return nil, perr
+		}
+		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, time.Now())
+		if berr != nil {
+			return nil, berr
+		}
+		// 沒有可萃概念＝合法結果：不產卡，00-INDEX 列「空」（同 gemma 路）。
+		return cards, nil
+	}
+
+	// legacy fallback：舊雲端（不認得 prompt）回 `card`（舊格式 markdown）。
+	// 與 gemma 舊路同一套淨化與落卡（第一行必須是「# <頁名>」），#60 保護不動。
 	card := cleanGemmaCard(parsed.Card, pageName)
 	if !strings.HasPrefix(card, "# ") {
 		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)

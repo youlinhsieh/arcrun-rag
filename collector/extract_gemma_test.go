@@ -19,10 +19,10 @@ func gemmaStub(t *testing.T, handler http.HandlerFunc) func() {
 	return func() { gemmaBaseURL = old; srv.Close() }
 }
 
-// happy path：思考型回應（parts[0]=thought）→ 取最後非 thought part、去草稿、落卡。
+// happy path：思考型回應（parts[0]=thought）→ 取最後非 thought part、撈 JSON、落規範形卡。
 func TestExtractWithGemmaThinkingModel(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "會議記錄.md"), []byte("# 原稿"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "會議記錄.md"), []byte("# 會議記錄\n\n內文"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -32,14 +32,14 @@ func TestExtractWithGemmaThinkingModel(t *testing.T) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		b, _ := json.Marshal(req)
-		if !strings.Contains(string(b), "# 會議記錄") {
+		if !strings.Contains(string(b), "檔名：會議記錄") {
 			t.Errorf("prompt 未帶頁名")
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{
 					{"thought": true, "text": "let me think..."},
-					{"text": "草稿雜訊\n# 會議記錄\n## 一句話定義\n測試卡\n"},
+					{"text": "草稿雜訊\n" + cardFixture("會議記錄", "專案")},
 				}},
 			}},
 		})
@@ -48,15 +48,21 @@ func TestExtractWithGemmaThinkingModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != "system-dev/wiki/cards/arcrun-會議記錄.md" {
+	// 文件卡（H1＝會議記錄）＋一張概念卡，全部落 `.wiki/`
+	if len(cards) != 2 || cards[0] != ".wiki/會議記錄.md" || cards[1] != ".wiki/會議記錄·概念.md" {
 		t.Fatalf("cards=%v", cards)
 	}
-	data, _ := os.ReadFile(filepath.Join(root, "system-dev", "wiki", "cards", "arcrun-會議記錄.md"))
-	if !strings.HasPrefix(string(data), "# 會議記錄") {
-		t.Fatalf("卡片未淨化（應從最後的 # 頁名 起）：%.80s", string(data))
+	data, _ := os.ReadFile(filepath.Join(root, ".wiki", "會議記錄.md"))
+	if !strings.HasPrefix(string(data), "---\n") || !strings.Contains(string(data), "gloss: 會議記錄的測試用一句話") {
+		t.Fatalf("卡片不是規範形（frontmatter+gloss）：%.120s", string(data))
 	}
 	if strings.Contains(string(data), "草稿雜訊") {
 		t.Fatal("思考草稿洩入卡片")
+	}
+	for _, sec := range []string{"← [[00-INDEX]]", "## 摘要", "## 重點", "## 實體", "## 關聯", "### 出處"} {
+		if !strings.Contains(string(data), sec) {
+			t.Fatalf("文件卡缺「%s」：\n%s", sec, data)
+		}
 	}
 }
 
@@ -110,7 +116,7 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{
-					{"text": "# 會議記錄\n## 一句話定義\n測試卡\n"},
+					{"text": cardFixture("會議記錄", "專案")},
 				}},
 			}},
 		})
@@ -122,8 +128,9 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 || cards[0] != ".arcrun-rag/wiki/cards/arcrun-會議記錄.md" {
-		t.Fatalf("vault 目標的卡片路徑不對：%v，want [.arcrun-rag/wiki/cards/arcrun-會議記錄.md]", cards)
+	// 原稿內容「# 原稿」⇒ 文件卡名＝H1「原稿」；`.wiki/` 是隱藏目錄，Logseq 不掃
+	if len(cards) != 2 || cards[0] != ".wiki/原稿.md" {
+		t.Fatalf("vault 目標的卡片路徑不對：%v，want [.wiki/原稿.md …]", cards)
 	}
 
 	pagesAfter := countMD(t, filepath.Join(root, "pages")) + countMD(t, filepath.Join(root, "journals")) + countTopLevelMD(t, root)
@@ -141,24 +148,25 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 	}
 
 	// 卡片確實落在隱藏目錄，且是「監看根底下」（呼叫端 absRoot-relative 假設仍成立）。
-	cardAbs := filepath.Join(root, ".arcrun-rag", "wiki", "cards", "arcrun-會議記錄.md")
+	cardAbs := filepath.Join(root, ".wiki", "原稿.md")
 	if _, err := os.Stat(cardAbs); err != nil {
 		t.Fatalf("卡片沒有落在預期的隱藏目錄：%v", err)
 	}
 }
 
-// 故意在 vault 的隱藏卡片目錄放一個同名檔案，跑完必須被備份、不能無聲蓋掉。
+// 故意在 `.wiki/` 先放一個「不是本文件產的」同名檔案：不覆蓋、誠實報錯、原檔原封不動
+// （#105 的分界：本來就在的檔案一律不動——wikishape 的 writeCard 以 manifest 認擁有權）。
 func TestExtractWithGemma_VaultExistingCardNotClobbered(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, "logseq"))
 	srcRel := "x.md"
-	if err := os.WriteFile(filepath.Join(root, srcRel), []byte("# 原稿"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, srcRel), []byte("# 既有主題\n內文"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cardDir := filepath.Join(root, ".arcrun-rag", "wiki", "cards")
+	cardDir := filepath.Join(root, ".wiki")
 	mustMkdir(t, cardDir)
-	preexisting := "# x\n這份是先前就存在的內容"
-	cardPath := filepath.Join(cardDir, "arcrun-x.md")
+	preexisting := "# 既有主題\n這份是先前就存在的內容"
+	cardPath := filepath.Join(cardDir, "既有主題.md")
 	if err := os.WriteFile(cardPath, []byte(preexisting), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -167,32 +175,22 @@ func TestExtractWithGemma_VaultExistingCardNotClobbered(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{
-					{"text": "# x\n## 一句話定義\n新卡\n"},
+					{"text": cardFixture("既有主題", "專案")},
 				}},
 			}},
 		})
 	})()
 
-	if _, err := ExtractWithGemma("k123", "gemma-test", root, srcRel); err != nil {
-		t.Fatal(err)
+	_, err := ExtractWithGemma("k123", "gemma-test", root, srcRel)
+	if err == nil {
+		t.Fatal("目標位置被別人佔用時應報錯，不得無聲覆蓋")
 	}
-
-	entries, err := os.ReadDir(cardDir)
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "佔用") {
+		t.Fatalf("錯誤訊息看不出原因：%v", err)
 	}
-	var foundBackup bool
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "arcrun-x.md.bak-") {
-			foundBackup = true
-			data, _ := os.ReadFile(filepath.Join(cardDir, e.Name()))
-			if string(data) != preexisting {
-				t.Fatalf("備份內容不對：%q", data)
-			}
-		}
-	}
-	if !foundBackup {
-		t.Fatalf("既有卡片沒有被備份，可能被無聲覆蓋。目錄內容：%v", entries)
+	data, _ := os.ReadFile(cardPath)
+	if string(data) != preexisting {
+		t.Fatalf("既有檔案被動過：%q", data)
 	}
 }
 

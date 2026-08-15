@@ -47,12 +47,12 @@ import (
 	"testing"
 )
 
-// gemmaEchoStub＝會**看請求是哪一頁**、回傳對應那一頁合格卡片的 Gemini 替身。
+// gemmaEchoStub＝會**看請求是哪一頁**、回傳對應那一頁合格萃取 JSON 的 Gemini 替身。
 //
-// 為什麼不能沿用 gemmaCardStub（固定回同一張卡）：這一支測試的 fixture 是「真的有
-// 既有頁面的 vault」，一輪會萃好幾份（journals、pages、丟進去的原稿）。固定回同一張卡
-// 會讓 pageName 對不上 cleanGemmaCard 的「# <頁名>」契約 ⇒ 被品質 lint 擋下 ⇒ 測試
-// 綠不了，而那是替身的問題不是產品的問題。頁名從 gemmaPrompt 的「# <頁名>」裡取回來。
+// 為什麼不能沿用 gemmaCardStub（固定回同一份）：這一支測試的 fixture 是「真的有
+// 既有頁面的 vault」，一輪會萃好幾份（journals、pages、丟進去的原稿）。固定回同一份
+// 會讓多份文件的概念卡同名互撞（wikishape 的佔用保護會擋下）⇒ 測試綠不了，
+// 而那是替身的問題不是產品的問題。頁名從 wikiExtractPrompt 的「檔名：<頁名>）」裡取回來。
 func gemmaEchoStub(t *testing.T) func() {
 	t.Helper()
 	return gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +69,9 @@ func gemmaEchoStub(t *testing.T) func() {
 			prompt = req.Contents[0].Parts[0].Text
 		}
 		page := "未知頁"
-		if i := strings.Index(prompt, "「# "); i >= 0 {
-			rest := prompt[i+len("「# "):]
-			if j := strings.Index(rest, "」"); j >= 0 {
+		if i := strings.Index(prompt, "檔名："); i >= 0 {
+			rest := prompt[i+len("檔名："):]
+			if j := strings.Index(rest, "）"); j >= 0 {
 				page = rest[:j]
 			}
 		}
@@ -213,7 +213,7 @@ func TestVaultFootprint_EveryNewFileIsMarked(t *testing.T) {
 			continue
 		}
 		added = append(added, rel)
-		if !IsMarked(filepath.Base(rel)) {
+		if !IsMachineOwnedRel(rel) {
 			unmarked = append(unmarked, rel)
 		}
 	}
@@ -312,7 +312,7 @@ func TestPlainFolderFootprint_EveryNewFileIsMarked(t *testing.T) {
 			continue
 		}
 		newCount++
-		if !IsMarked(filepath.Base(rel)) {
+		if !IsMachineOwnedRel(rel) {
 			t.Fatalf("一般資料夾也不准有沒帶標記的新檔：%s", rel)
 		}
 	}
@@ -324,46 +324,31 @@ func TestPlainFolderFootprint_EveryNewFileIsMarked(t *testing.T) {
 	}
 }
 
-// 備份檔也在網內：既有卡片被改寫時產生的 .bak-<ts>，同樣必須帶標記。
+// 佔用保護也在網內：`.wiki/` 裡「不是本文件產的」同名檔案，改寫必須被擋下、
+// 原檔原封不動（InkStoneCo#44 ④：塑形層以 manifest 認擁有權，佔用＝報錯不覆蓋）。
 //
-// 這一條是「足跡測試比點測強」的最好例子——沒有人特地為備份檔寫過測試，
-// 但它確確實實是 daemon 寫進使用者資料夾的檔案。
-func TestVaultFootprint_BackupFilesAreMarkedToo(t *testing.T) {
+// 這一條是「足跡測試比點測強」的最好例子——沒有人特地為既有檔寫過測試，
+// 但那正是 daemon 最不准碰的東西。
+func TestVaultFootprint_ForeignWikiFileNotClobbered(t *testing.T) {
 	root, _ := newVaultWithRealJournals(t)
 	srcRel := "會議記錄.md"
-	if err := os.WriteFile(filepath.Join(root, srcRel), []byte("# 原稿 v1"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, srcRel), []byte("# 會議記錄\n內文 v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 先放一張同名舊卡（內容不同）→ 這一輪落卡會先備份它。
-	cardDir := filepath.Join(root, filepath.FromSlash(vaultCardsRelDir))
+	// 先放一個同名檔（不是 manifest 記載的產物）→ 這一輪落卡必須被擋。
+	cardDir := filepath.Join(root, wikiRelDir)
 	mustMkdir(t, cardDir)
-	cardName := MarkName("會議記錄.md")
-	if err := os.WriteFile(filepath.Join(cardDir, cardName), []byte("# 會議記錄\n舊的內容"), 0o644); err != nil {
+	preexisting := "# 會議記錄\n這是先前就存在的內容"
+	if err := os.WriteFile(filepath.Join(cardDir, "會議記錄.md"), []byte(preexisting), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	defer gemmaCardStub(t, cardFixture("會議記錄", "專案"))()
-	if _, err := ExtractWithGemma("k-test", "gemma-test", root, srcRel); err != nil {
-		t.Fatal(err)
+	if _, err := ExtractWithGemma("k-test", "gemma-test", root, srcRel); err == nil {
+		t.Fatal("目標被佔用時應報錯，不得無聲覆蓋")
 	}
-
-	entries, err := os.ReadDir(cardDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	foundBackup := false
-	for _, e := range entries {
-		names = append(names, e.Name())
-		if !IsMarked(e.Name()) {
-			t.Fatalf("卡片目錄裡出現沒帶標記的檔案：%s（目錄內容：%v）", e.Name(), names)
-		}
-		if bakSuffix.MatchString(e.Name()) {
-			foundBackup = true
-		}
-	}
-	t.Logf("卡片目錄內容：%v", names)
-	if !foundBackup {
-		t.Fatalf("既有卡片沒有被備份就被改寫了，目錄內容：%v", names)
+	data, _ := os.ReadFile(filepath.Join(cardDir, "會議記錄.md"))
+	if string(data) != preexisting {
+		t.Fatalf("既有檔案被動過：%q", data)
 	}
 }

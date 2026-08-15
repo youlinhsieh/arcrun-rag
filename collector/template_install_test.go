@@ -76,7 +76,8 @@ func TestScanSkipsTemplateArtifacts(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("dry-run 失敗：%+v", results)
 	}
-	if len(results) != 1 || results[0].Path != "我的筆記.md" {
+	_, fileResults := splitInventory(results) // 結構先行：總覽卡另計
+	if len(fileResults) != 1 || fileResults[0].Path != "我的筆記.md" {
 		t.Fatalf("應只掃到用戶檔（template 產物須跳過），got %+v", results)
 	}
 }

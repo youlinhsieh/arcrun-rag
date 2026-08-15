@@ -182,18 +182,24 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 		t.Error("全部處理完不該再有延後交代")
 	}
 
-	// 全部 8 個都真的送到雲端了（沒有一個被永久漏掉）
+	// 全部 8 個都真的送到雲端了（沒有一個被永久漏掉）；總覽卡（結構先行）另計
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 8 {
-		t.Fatalf("雲端總共應收到 8 次卡片，got %d: %v", len(order), order)
+	var contentCards []string
+	for _, pn := range order {
+		if !strings.HasPrefix(pn, "資料夾總覽") {
+			contentCards = append(contentCards, pn)
+		}
+	}
+	if len(contentCards) != 8 {
+		t.Fatalf("雲端總共應收到 8 次卡片，got %d: %v", len(contentCards), order)
 	}
 }
 
 func ingestedPaths(results []DirectResult) []string {
 	var out []string
 	for _, r := range results {
-		if r.Status == "ingested" {
+		if r.Status == "ingested" && r.Type != "inventory" { // 結構先行：總覽卡另計
 			out = append(out, r.Path)
 		}
 	}
@@ -228,7 +234,9 @@ func TestDirect_ResumeAfterInterruption(t *testing.T) {
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)
 		mu.Lock()
-		posted = append(posted, m["path"].(string))
+		if p, _ := m["path"].(string); !strings.HasPrefix(p, ".arcrun-rag/") {
+			posted = append(posted, p) // 結構先行：總覽卡（合成路徑）另計
+		}
 		mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
