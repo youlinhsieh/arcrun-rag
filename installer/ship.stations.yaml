@@ -90,7 +90,7 @@
     由誰處理: [fetch-artifacts, no-local-build, parity, commit, push]
   - id: 桌面小幫手
     是什麼: 使用者下載安裝的那個 App（mac .dmg／win .exe）
-    由誰處理: [daemon-sync, daemon-check, verify]
+    由誰處理: [daemon-sync, daemon-check, daemon-source-check, verify]
   - id: 安裝器
     是什麼: 使用者按「開始安裝／更新」的那個網站
     由誰處理: [pin, deploy, verify]
@@ -108,7 +108,7 @@
     是什麼: 說明文件對使用者寫死「完整發佈紀錄在 GitHub」的那一頁
     由誰處理: [github-release]
 
-# ── 站表：20 站，兩邊都走 ───────────────────────────────────────────────────
+# ── 站表：21 站，兩邊都走（2026-08-15 新增 daemon-source-check）─────────────
 站:
 
   - id: preflight
@@ -160,6 +160,26 @@
             卡的是 changelog 在 private repo。給 Arcrun 一把 Gitea 讀取憑證，這站就能整個搬。
     理由: 比對的兩邊（本機 changelog、本機 bundle 目錄）都是本機檔案。
     驗法: 兩邊版本字串一致
+
+  - id: daemon-source-check
+    名字: 核對 changelog 宣告的 daemon 版本＝collector/ 源碼現況（不是瞎推）
+    由來: |
+      2026-08-15 夜間：e7c715f／d4d79f1／91f6171 三顆 commit 全動了 collector/（daemon 源碼），
+      changelog 最上面已發佈段卻還是 08-13 打包時戳的 v0.18.27——沒人戳新版、沒人重打包。
+      daemon-sync／daemon-check 比的是 bundle vs changelog，兩邊當晚都沒人動 ⇒ 永遠對得上，
+      `--target stage --confirm` 印出「⏭ 跳過：bundle 已是 changelog 最新已發佈版」，
+      而使用者按「檢查更新」拿到的還是舊執行檔。本站補上鏈裡缺的那一段：
+      changelog 最上面已發佈的版本 vs collector/ 源碼現況，不管 bundle 現況如何都比得到。
+    用什麼: 本機
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      比對的兩邊（changelog、collector/ 的 git 歷史）都是本機檔案；
+            搬去 Arcrun 的前提與 daemon-check 相同——先解決 changelog 在 private repo 的讀取權限。
+    理由: 比對的兩邊（本機 changelog、本機 collector/ 的 git 歷史）都是本機檔案。
+    驗法: |
+      changelog 最上面已發佈版本標題是哪顆 commit 加上去的（git log -S 找得到）；
+      那顆 commit 之後 collector/ 目錄沒有任何新 commit、也沒有未提交改動 ⇒ 通過；
+      有 ⇒ 中止並列出差幾顆、是哪幾顆（installer/scripts/daemon-freshness.mjs＋其測試）。
 
   - id: fetch-artifacts
     名字: 向 Arcrun 取用編好的零件（這一站不編任何東西）

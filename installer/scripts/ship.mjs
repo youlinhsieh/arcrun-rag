@@ -102,6 +102,7 @@ import { checkArmed, logGithubContact } from './d20-guard.mjs';
 import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
 import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
+import { requireFreshDaemonSource } from './daemon-freshness.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
@@ -760,6 +761,37 @@ const STEPS = [
       `     → 若這次真的不打算出新 daemon（只改別的零件），確認 changelog 最上面本來就該是 ${bundleVersion}（別的東西被誤標成已發佈）。`);
   }
   return { status: 'done', detail: [`本機（changelog）／bundle 版本一致：${bundleVersion}`] };
+}},
+
+// ── 1.6 daemon-source-check：**changelog 宣告的那一版，源碼是不是還算數**（2026-08-15 夜間）──
+//
+// `daemon-sync`／`daemon-check` 兩站比的是 bundle vs changelog；這一站補上那條鏈缺的另一段：
+// changelog **最上面已發佈**那個版本 vs `collector/`（daemon 源碼）現況。
+//
+// 08-15 夜間實況：e7c715f／d4d79f1／91f6171 三顆 commit 全動了 `collector/`，changelog 最上面
+// 已發佈段卻還是 08-13 打包時戳的 v0.18.27——沒人戳新版、沒人重打包。而 daemon-sync／
+// daemon-check 比的兩個值（bundle.daemon.version、changelog 頂端版號）從頭到尾沒人要求跟
+// 源碼現況對過帳，於是兩邊同時落後於現實、永遠對得上：`--target stage --confirm` 印出
+// 「⏭ 跳過：bundle 已是 changelog 最新已發佈版：v0.18.27」，而使用者按「檢查更新」拿到的
+// 還是 08-13 那顆執行檔。詳細背景與判法見 daemon-freshness.mjs 檔頭。
+//
+// 擺在這裡（daemon-check 之後、fetch-artifacts 之前）而不是只靠 daemon-check 的理由：
+// daemon-check 比對的是**這個 bundle 現在委任的版本**，只要今天沒人動過 bundle 就不會被
+// 觸發；本站直接比對**源碼本身**，不管 bundle 現況如何，任何一次預演都能看到「源碼動了」。
+//
+// mutates:false ⇒ 預演（不加 --confirm）也會跑，且跑在任何會送出東西的動作之前。
+{ id: 'daemon-source-check', title: '核對 changelog 宣告的 daemon 版本＝collector/ 源碼現況（不是瞎推）', mutates: false, async run() {
+  const r = requireFreshDaemonSource({
+    repo: REPO_ROOT,
+    changelogRel: CHANGELOG_REL,
+    // selftest（不推、不部署、沒有任何人會拿到東西）才允許工作區髒；
+    // 「已經 commit 了卻沒重打包」不受這個旗標影響，一律擋（同 artifact-freshness 的規矩）。
+    allowDirty: !!T.allowDirtySource,
+  });
+  return { status: 'done', detail: [
+    `changelog 已發佈的 daemon 版本（${r.version}）與 collector/ 源碼現況一致 ✓` +
+    (r.hasDraft ? '（changelog 另有「下一版（未發佈）」草稿，尚未戳版，不影響本項判定）' : ''),
+  ] };
 }},
 
 // ── 2. fetch-artifacts：**向 Arcrun 取貨**（這一站不編任何東西）────────────────
