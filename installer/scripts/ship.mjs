@@ -115,6 +115,7 @@ import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './
 import { machineId } from './ship-machine.mjs';
 import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedError, DRILL_ENV } from './ship-delivery.mjs';
 import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
+import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -390,13 +391,30 @@ const STEPS = [
   // (a2) 發佈目標要用到的環境前置（憑證存不存在，不使用、不外洩值）——**不管有沒有
   //   --confirm 都先查**，這樣「解保險之前」就能看到會不會因為缺前置環境而失敗，
   //   不必等真的打到 github-release 那一步才發現（08-10 那兩次失敗其中一次正是這樣）。
-  if (T.githubRelease && !process.env.GITHUB_MIRROR_TOKEN) {
-    throw new Error(
-      `缺 GITHUB_MIRROR_TOKEN（環境變數）——github-release 步驟會需要它，現在就能發現，\n` +
-      `     不必等解保險、打到那一步才失敗。查 system-dev/wiki/credentials-map.md 找這把鑰匙在哪，\n` +
-      `     在啟動本管線的 shell 裡先 export（D36 金鑰鐵律：只讀名字，不落地、不印真身）。`);
+  //
+  // 🔴 2026-08-16（arcrun-rag#102）：**這一站現在自己去把鑰匙拿出來，不再要人先 export。**
+  //   leo：「每次出貨必有這個問題，為什麼不把它編入流程必備？」——舊版這裡只**查**，
+  //   查不到就丟一條「請你去查憑證地圖、回 shell export」的指示。但那三件事管線全做得到：
+  //   它知道自己要哪些名字、系統有一張表記著每把鑰匙住哪個 `.env`、`.env` 就在往上找得到
+  //   的地方 ⇒ 人在中間只是搬運工，而**每次出貨都要重來一次**（08-10 那次失敗就是它）。
+  //   做法沿用 2026-08-06 已經治過同款病的 `build-msix.sh`（Store Identity 三值自己讀頂層
+  //   `.env`，884ae8f）——這裡把它抽成管線共用的 `credential-store.mjs`。
+  //
+  //   ⚠️ 三件事**刻意不變**：
+  //     ① 斷點沒有往後挪——拿不到照樣在 preflight 斷，訊息還多講了「查過哪幾份 .env」
+  //     ② 操作者在 shell 明確給的值**永遠贏**，自動來源不覆蓋（見 credential-store.fill）
+  //     ③ D36：只取被點名的鍵、值不落地不列印；下面 push 出去的都只有名字與來源檔路徑
+  if (T.githubRelease) {
+    //   GITHUB_ACCOUNT_NAME 一起帶（github-release／publish-github.sh 組 Basic auth 要用，
+    //   缺了會退回字面 'git'）——它不是硬前置，所以不進 missing 判定，拿得到就用。
+    const cred = fillCredentials(['GITHUB_MIRROR_TOKEN', 'GITHUB_ACCOUNT_NAME'], { startDir: REPO_ROOT });
+    if (!process.env.GITHUB_MIRROR_TOKEN) {
+      throw missingCredentialError(
+        { ...cred, missing: ['GITHUB_MIRROR_TOKEN'] },
+        { need: 'github-release 步驟會需要它，現在就能發現，不必等解保險、打到那一步才失敗' });
+    }
+    for (const l of describeSources(cred)) lines.push(l);
   }
-  if (T.githubRelease) lines.push('GITHUB_MIRROR_TOKEN 已就位（github-release 步驟需要它）');
 
   // (b) 產物來源：**每個目標都從 Arcrun 原始碼重打**（2026-08-11，D65 三次補述訂正，
   //     arcrun-rag#73 缺③：leo「10 次原始碼重建完全不是問題……你要改的只有內外不同
