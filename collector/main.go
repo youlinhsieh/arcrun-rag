@@ -182,6 +182,18 @@ func run(args []string, mode runMode) int {
 	if payload.ExcludedByPlan > 0 {
 		fmt.Fprintf(os.Stderr, "依這個策略跳過了 %d 個檔案。\n", payload.ExcludedByPlan)
 	}
+	// 🔴 上面那個數字只數得到「走進去了才被逐檔擋下」的檔——整棵剪掉的子樹一個都不算。
+	// 實測 leo 的 `pms`（2,127 檔，78% 在依賴目錄底下）：排除了絕大多數，這個數字卻是 0。
+	// ⇒ 剪掉的目錄要逐筆講，不然「看得見」只是看得見一個 0。
+	if payload.ExcludedDirCount > 0 {
+		fmt.Fprintf(os.Stderr, "整個跳過了 %d 個資料夾：\n", payload.ExcludedDirCount)
+		for _, d := range payload.ExcludedDirs {
+			fmt.Fprintf(os.Stderr, "  · %s — %s\n", d.Path, d.Reason)
+		}
+		if payload.ExcludedDirCount > len(payload.ExcludedDirs) {
+			fmt.Fprintf(os.Stderr, "  …等 %d 個。\n", payload.ExcludedDirCount)
+		}
+	}
 	if len(plan.OtherWikiDirs) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"這個資料夾底下還有 %d 個子專案有自己的知識庫，我沒有收（要收請個別加進看守清單）：%v\n",
@@ -268,20 +280,36 @@ func fail(err error) int {
 	return 1
 }
 
-// runLint 是 `collector lint <卡片.md>` 子命令：對一張卡跑 B2 品質檢查（H1–H6）。
+// runLint 是 `collector lint <卡片.md>` 子命令：對一張卡跑 B2 品質檢查（H1–H8）。
 // 印出分級 JSON；被擋（硬缺，或 --strict 下含軟項）＝exit 1，方便腳本/CI 銷帳（施工順序步驟 4）。
 func runLint(args []string) int {
 	fs := newFlagSet()
-	strict := fs.Bool("strict", false, "軟項（H3/H4/H6）也算擋（測試/CI）")
-	source := fs.String("source", "", "原稿檔路徑（H6 相似度需要；不給＝跳過 H6）")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	strict := fs.Bool("strict", false, "軟項（H3/H4/H6/H7/H8）也算擋（測試/CI）")
+	source := fs.String("source", "", "原稿檔路徑（H6 相似度／H7 落地／H8 通膨都需要；不給＝三項全跳過）")
+
+	// 🔴 旗標必須也能出現在檔名**後面**（InkStoneCo#44 2026-08-16 實撞）。
+	// Go 的 flag 套件遇到第一個非旗標就停止解析 ⇒ 照上面用法字串寫的
+	// `lint <卡> --source <原稿>` 會讓 --source **靜默地不生效**，
+	// 於是 H6/H7/H8 全部跳過、印出一個漂亮的空結果 `{}`、exit 0。
+	// **一個查幻覺的工具自己靜默不查**，正是本票在講的那種病 ⇒ 就地修掉。
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		rest = fs.Args()[1:]
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(os.Stderr, "用法：collector lint <卡片.md> [--source <原稿>] [--strict]")
 		return 2
 	}
-	card, err := os.ReadFile(fs.Arg(0))
+	cardPath := positional[0]
+	card, err := os.ReadFile(cardPath)
 	if err != nil {
 		return fail(err)
 	}
@@ -300,7 +328,7 @@ func runLint(args []string) int {
 		Strict  bool       `json:"strict"`
 		Blocked bool       `json:"blocked"`
 		Result  LintResult `json:"result"`
-	}{fs.Arg(0), *strict, blocked, res}, "", "  ")
+	}{cardPath, *strict, blocked, res}, "", "  ")
 	fmt.Println(string(out))
 	if blocked {
 		return 1

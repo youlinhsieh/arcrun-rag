@@ -632,6 +632,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	skippedOther := 0
 	var skippedOtherNames []string
 
+	// arcrun-rag#104：每個看守資料夾這一輪的收檔策略與「少收了什麼」。
+	// key＝資料夾路徑（同一個根被多帳號看守時後寫覆蓋——策略只看資料夾，與帳號無關）。
+	folderPlans := map[string]FolderPlanStatus{}
+
 	// t210：跨帳號、跨資料夾累加的總量進度（見 rootProgress 註解）。
 	var totalProgress SyncProgress
 	var stuckReasons []string
@@ -732,6 +736,16 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 				skippedOther += p.SkippedOther
 				// 同理，每一根的檔名都要收（上限在寫進 status 時才裁）。
 				skippedOtherNames = append(skippedOtherNames, p.SkippedOtherNames...)
+				// #104：這一根用了什麼策略、少收了什麼 —— 以前到這裡就被丟掉了
+				// （只有 CLI 的 stderr 講得出來，App 走的這條路一個字都不說）。
+				folderPlans[root] = FolderPlanStatus{
+					Mode:             string(p.Plan.Mode),
+					Reason:           p.Plan.Reason,
+					ExcludedFiles:    p.ExcludedByPlan,
+					ExcludedDirs:     p.ExcludedDirs,
+					ExcludedDirCount: p.ExcludedDirCount,
+					OtherWikiDirs:    p.Plan.OtherWikiDirs,
+				}
 			}
 		}
 
@@ -808,6 +822,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			skippedOtherNames = skippedOtherNames[:maxOtherNames]
 		}
 		st.SkippedOtherNames = skippedOtherNames
+		// #104：收檔策略與被排除的東西 —— 使用者要知道「有幾千個檔沒被收、為什麼」。
+		if len(folderPlans) > 0 {
+			st.FolderPlans = folderPlans
+		}
 		st.SkippedDocCount = len(skippedSeen)
 		for _, sf := range skippedSeen {
 			st.SkippedDocs = append(st.SkippedDocs, sf)
@@ -1220,19 +1238,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// wiki（沒有 wiki 才退到文件區），是一般資料夾／筆記庫才全收。見 ingestplan.go。
 	plan := PlanIngest(absRoot)
 
-	// 🔴 #104 的一個必然後果：curated-wiki 模式要收的正是 `system-dev/wiki/`，
-	// 而 daemon-beta task 2 為了「template 代裝的產物區不要被當原稿」把整個
-	// `system-dev` 列進 SkipDirNames——兩者直接對撞，不處理的話這個模式會一個檔都收不到。
-	//
-	// 解法不是拿掉那條保護，是**看它保護的是誰**：task 2 擋的是「**我們自己**代裝進
-	// 使用者資料夾的 template 產物」；curated-wiki 模式的前提則是「**使用者自己**
-	// 在他的 repo 裡整理好的知識庫」——同一個路徑，兩種身分，由 PlanIngest 分辨
-	// （他的 repo 有 `.git`，我們代裝的資料夾沒有）。所以只在 curated-wiki 模式解除。
-	skipDirNames := map[string]bool{"system-dev": true}
-	if plan.Mode == IngestCuratedWiki && strings.HasPrefix(plan.WikiRelDir, "system-dev/") {
-		skipDirNames = map[string]bool{}
-	}
-
+	// 🔴 2026-08-16：這裡以前還手捏了**第二張**排除表
+	//（`skipDirNames := {"system-dev": true}`，daemon-beta task 2 的 template 產物區保護），
+	// 而 #104 的排除清單住在 ingestplan.go。**兩張表分居兩處** ⇒ 2026-08-16 讀源碼的人
+	// 只看到這一張，就把「排除清單根本沒接上」寫成了真兇——實際上兩張都接上了
+	//（下面那行 `Plan: plan` 就是）。誤判本身正是「同一件事有兩個地方管」的代價。
+	// ⇒ 那條保護已搬進 IngestPlan（templateOwnedDirNames），連同「curated-wiki 模式
+	//   要收的正是 system-dev/wiki」這個例外一起 ⇒ **判準只剩一個地方，沒有第二張表可漏看。**
 	payload, err := Scan(absRoot, m, ScanOptions{
 		MaxRemovedRatio: cfg.MaxRemoved,
 		SkipPaths: map[string]bool{
@@ -1240,9 +1252,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			// template 代裝的根層 CLAUDE.md 是 CC 設定檔，永遠不是用戶知識（task 2）
 			filepath.Join(absRoot, "CLAUDE.md"): true,
 		},
-		// template 代裝後 system-dev/（wiki 產物區）不得被當原稿掃進 ingest（task 2）
-		SkipDirNames: skipDirNames,
-		Plan:         plan,
+		Plan: plan,
 	})
 	if err != nil {
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}

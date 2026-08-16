@@ -133,7 +133,17 @@ type TriggerPayload struct {
 	//    使用者接上一個一萬檔的 repo 只看到 32 個進度，會以為系統壞了。
 	Plan           IngestPlan `json:"-"`
 	ExcludedByPlan int        `json:"-"`
+	// ExcludedDirs／ExcludedDirCount＝整棵被剪掉的目錄與理由（2026-08-16 補）。
+	// 🔴 ExcludedByPlan 只數得到「走進去了才被逐檔擋下」的檔；整棵剪掉的子樹
+	//    一個都數不到 ⇒ 拿 leo 真實的 pms 跑一輪，2,127 個檔裡絕大多數被排除，
+	//    而畫面上的數字是 **0**。講一個 0 跟安靜地少收，對使用者是同一件事。
+	ExcludedDirs     []ExcludedDir `json:"-"` // 已排序，上限 MaxExcludedDirsListed
+	ExcludedDirCount int           `json:"-"` // 總數（可能大於清單長度）
 }
+
+// MaxExcludedDirsListed：最多逐筆列幾個被跳過的目錄。超過的只反映在 ExcludedDirCount
+// （同 MaxSkippedListed 的道理：狀態檔不該被撐成一面看不完的清單牆）。
+const MaxExcludedDirsListed = 20
 
 // FormatDuplicate＝同一份內容被偵測到有多種格式並存（同檔名主幹、不同副檔名）。
 //
@@ -232,8 +242,14 @@ type ScanOptions struct {
 	// SkipDirNames：目錄名黑名單（任一層命中整棵跳過）。daemon-beta task 2：
 	// template 代裝後 `system-dev/`（wiki 產物區）不得被當成原稿掃進 ingest。
 	SkipDirNames map[string]bool
-	// Plan：收檔策略（arcrun-rag#104）。零值＝IngestAll，行為與加這個欄位之前**完全一致**
-	// ——既有呼叫端與測試不必全部改。要拿到 #104 的效果就傳 PlanIngest(root)。
+	// Plan：收檔策略（arcrun-rag#104）。
+	//
+	// 🔴 2026-08-16 改成「不填就自己算」（Mode == "" ⇒ Scan 自己呼叫 PlanIngest）。
+	// 原本的註解寫著「要拿到 #104 的效果就傳 PlanIngest(root)」——也就是**排除規則
+	// 要不要生效，取決於呼叫端記不記得傳**。那正是這一票（以及同一天 #88、#46、
+	// Arcrun#125）的共同形狀：**能力做好了，而它不在會被執行的那條路上**。
+	// 讓走訪器自己裝上判準，「忘了接」這個失敗模式就不存在了。
+	// 呼叫端仍可覆寫（測試要造特定情境時照傳即可）。
 	Plan IngestPlan
 }
 
@@ -269,6 +285,11 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	if opts.MaxRemovedRatio <= 0 {
 		opts.MaxRemovedRatio = DefaultMaxRemovedRatio
 	}
+	// 🔴 呼叫端沒給策略就自己算——見 ScanOptions.Plan 的說明。
+	// 這一行就是「排除規則不可能不在執行路徑上」的保證本身。
+	if opts.Plan.Mode == "" {
+		opts.Plan = PlanIngest(root)
+	}
 	orig := m.Entries
 	manifestCountBefore := len(orig)
 
@@ -280,6 +301,9 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	// arcrun-rag#104：被策略擋掉的檔案數。**一定要數出來**——票上的紅線是
 	// 「用戶要知道有 8,000 個檔沒被收，因為它們是程式碼」，不是安靜地少收。
 	excludedByPlan := 0
+	// 整棵剪掉的目錄與理由。**剪掉的重點就是不走進去**，所以這裡記的是目錄不是檔案數
+	// ——使用者要知道的本來就是「哪幾個資料夾沒收、為什麼」。見 ExcludedDir 的說明。
+	var excludedDirs []ExcludedDir
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -297,14 +321,18 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 				return filepath.SkipDir // 隱藏目錄（.git、.obsidian…）整棵跳過
 			}
 			if p != root && opts.SkipDirNames[name] {
-				return filepath.SkipDir // 名單目錄（system-dev…）整棵跳過
+				return filepath.SkipDir // 名單目錄（呼叫端自訂）整棵跳過
 			}
-			// #104：依策略整棵跳過（依賴／建置產物／範本／worktree／巢狀 repo／
-			// 以及非本次策略要收的區域）。整棵跳掉的檔不逐一計數——
-			// 那個數字對使用者沒有意義，Plan.Reason 那句話才是他要的解釋。
+			// #104：依策略整棵跳過（使用者的 .gitignore／依賴／建置產物／範本／
+			// worktree／巢狀 repo／以及非本次策略要收的區域）。
+			// 🔴 每一次剪枝都要留下「哪一個、為什麼」——票上的紅線是排除規則要看得見，
+			//    而 2026-08-16 實測發現原本整棵剪掉的部分完全沒有被記錄。
 			if p != root {
-				if rel, ok := relOf(); ok && opts.Plan.SkipsDir(rel, p) {
-					return filepath.SkipDir
+				if rel, ok := relOf(); ok {
+					if skip, why := opts.Plan.SkipsDirWhy(rel, p); skip {
+						excludedDirs = append(excludedDirs, ExcludedDir{Path: rel, Reason: why})
+						return filepath.SkipDir
+					}
 				}
 			}
 			return nil
@@ -543,6 +571,12 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		events = []Event{}
 	}
 	sort.Slice(skipped, func(i, j int) bool { return skipped[i].Path < skipped[j].Path })
+	// 排序＝畫面每輪穩定；裁切前先記總數，不然「等 N 個」會少報。
+	sort.Slice(excludedDirs, func(i, j int) bool { return excludedDirs[i].Path < excludedDirs[j].Path })
+	excludedDirCount := len(excludedDirs)
+	if len(excludedDirs) > MaxExcludedDirsListed {
+		excludedDirs = excludedDirs[:MaxExcludedDirsListed]
+	}
 	return &TriggerPayload{
 		SchemaVersion:     1,
 		FolderID:          m.FolderID,
@@ -556,5 +590,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		DuplicateFormats:  duplicateFormats,
 		Plan:              opts.Plan,
 		ExcludedByPlan:    excludedByPlan,
+		ExcludedDirs:      excludedDirs,
+		ExcludedDirCount:  excludedDirCount,
 	}, nil
 }

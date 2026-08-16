@@ -62,6 +62,27 @@ type IngestPlan struct {
 	// OtherWikiDirs＝這個 repo 底下**其他**子專案自己的 wiki（相對路徑）。
 	// 刻意不收（見 wantsPath 的說明），但一定要列出來——不然使用者只會覺得東西不見了。
 	OtherWikiDirs []string `json:"other_wiki_dirs,omitempty"`
+
+	// ── 以下不外露成 JSON：判準的材料，不是給使用者看的結論 ──────────────────
+	// ignore＝使用者自己寫的 `.gitignore` 的**內容**（見 ignorerules.go）。
+	// 🔴 只用內容，不把「有沒有這個檔」當門檻——leo 2026-08-16：他的 KB 筆記庫也有 git，
+	//    版控訊號分辨不出「筆記庫 vs 軟體專案」。沒有 `.gitignore` 的資料夾同樣要被正確處理。
+	ignore *IgnoreRules
+}
+
+// ExcludedDir＝走訪時整棵跳過的一個目錄，連同「講給使用者聽的理由」。
+//
+// 🔴 票上的紅線是「排除規則要看得見」，而原本的做法只數了**檔案層**被擋掉的數量
+// （ExcludedByPlan）；整棵剪掉的子樹一個都沒數 ⇒ 拿 leo 真實的 `pms` 跑一輪，
+// 2,127 個檔裡排除了絕大多數，畫面上的數字卻是 **0**。
+// 「安靜地少收」與「講了一個 0」對使用者是同一件事。
+//
+// 為什麼記目錄而不是記檔案數：整棵剪掉的重點就是**不走進去**，要數就得走一趟，
+// 那正是這一票要省掉的成本。而使用者真正要知道的本來就是
+// 「哪幾個資料夾沒收、為什麼」，不是「少收了幾千個檔」。
+type ExcludedDir struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 // curatedWikiCandidates＝「整理好的知識庫」慣例位置，依優先序。
@@ -72,26 +93,106 @@ var curatedWikiCandidates = []string{"system-dev/wiki", "docs/wiki", "wiki"}
 // docDirCandidates＝沒有現成 wiki 時，「文件住在哪」的慣例位置。
 var docDirCandidates = []string{"docs", "doc", "documentation"}
 
-// noiseDirNames＝任何模式下都整棵跳過的目錄名。
+// ─────────────────────────────────────────────────────────────────────────────
+// 排除一個目錄的三種理由。**順序就是強度**，理由不同、要求的佐證也不同。
 //
-// 分三類，全部都是「這個 repo 的零件，不是誰的知識」：
-//   - 依賴：別人的原始碼，不是使用者的
-//   - 建置產物：從別的檔生出來的，收了就是同一份內容收兩次（#104 實據：`.next`／`.vercel`）
-//   - 範本／樣板：`templatefs` 是我們自己要鋪給別人的檔，收自己鋪的東西最荒謬
-//     （#104 實據：8 份 `collector/templatefs/system-dev/wiki`）
-var noiseDirNames = map[string]bool{
-	// 依賴
-	"node_modules": true, "vendor": true, "bower_components": true,
-	"site-packages": true, "venv": true, "virtualenv": true, "__pycache__": true,
+// 🔴 2026-08-16 修正（本檔原本只有一張大表 noiseDirNames，任何模式一律照殺）：
+// 那張表把「沒有人會這樣命名」與「這是普通英文字」混在一起，於是同時犯了兩個方向的錯——
+//
+//	實測：一個一般筆記庫（無 `.git`）放 8 個 .md，其中 7 個分別住在
+//	`build/`、`專案/dist/`、`out/`、`target/`、`coverage/`、`bin/`、`fixtures/`，
+//	**只送出 1 個，而且 ExcludedByPlan 回報 0**——安靜地弄丟使用者七份筆記。
+//	（`build` 可以是樂高作品集，`out` 可以是外出旅遊，`vendor` 可以是廠商。）
+//
+// ⇒ 判準要問的不是「這個名字像不像雜訊」，是「**這東西是誰放的**」。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// toolOwnedDirNames＝名字本身就不是人話的目錄——沒有人會把自己的筆記
+// 放進一個叫 `node_modules` 或 `__pycache__` 的資料夾。
+// **任何模式、任何脈絡下都跳過，不需要佐證。**
+var toolOwnedDirNames = map[string]bool{
+	// 依賴（別人的原始碼，不是使用者的）
+	"node_modules": true, "bower_components": true, "site-packages": true,
+	"venv": true, "virtualenv": true, "__pycache__": true,
 	"Pods": true, "Carthage": true,
-	// 建置產物／快取
-	"dist": true, "build": true, "out": true, "target": true, "bin": true, "obj": true,
+	// 建置產物／快取（從別的檔生出來的，收了就是同一份內容收兩次）
+	// #104 實據：`.next`／`.vercel`。這些以 `.` 開頭的其實已被 Scan 的隱藏目錄規則擋下，
+	// 列在這裡是為了讓「為什麼跳過」講得出理由，也讓 LoadIgnoreRules 少走幾趟。
 	".next": true, ".nuxt": true, ".vercel": true, ".output": true, ".turbo": true,
-	".parcel-cache": true, "coverage": true, ".pytest_cache": true, ".gradle": true,
-	// 範本／樣板（我們自己鋪給別人的檔）
-	"templatefs": true, "template-fs": true, "skeleton": true,
-	// 測試素材（不是知識，是給程式吃的樣本）
-	"testdata": true, "fixtures": true, "__fixtures__": true, "__snapshots__": true,
+	".parcel-cache": true, ".pytest_cache": true, ".gradle": true,
+	// 範本／樣板：我們自己要鋪給別人的檔，收自己鋪的東西最荒謬
+	// （#104 實據：8 份 `collector/templatefs/system-dev/wiki`）
+	"templatefs": true, "template-fs": true,
+	// 給程式吃的樣本，不是知識
+	"__fixtures__": true, "__snapshots__": true,
+}
+
+// ambiguousBuildDirNames＝**旁邊擺著專案檔時**是建置產物／依賴，但在別的脈絡下
+// 完全可能是使用者真正的內容的目錄名。
+//
+// 🔴 只有 looksGenerated 為真時才生效。
+// 一般筆記庫裡的 `build/`（樂高作品集）、`out/`（外出）、`vendor/`（廠商）一律照收。
+var ambiguousBuildDirNames = map[string]bool{
+	"dist": true, "build": true, "out": true, "target": true,
+	"bin": true, "obj": true, "coverage": true,
+	"vendor": true, "skeleton": true, "testdata": true, "fixtures": true,
+}
+
+// toolOwnedFileNames＝機器產生的鎖定檔。與 toolOwnedDirNames 同一條理由
+// （名字本身就不是人話），只是它們是檔不是目錄。
+//
+// 🔴 為什麼要另外列：`.yaml`／`.yml` 在 2026-08-15 被加進 allowedExt（InkStoneCo#44 ④，
+// 因為 `.feature`／`.yaml` 常常真的是知識文件）。副作用是 **`pnpm-lock.yaml` 變成了
+// 「知識」**——實測 pms 那棵樹時它真的被送出去了。鎖定檔是解析器的輸出，
+// 幾千行雜湊值，萃出來的卡只會跟使用者真正的筆記競爭排序（同授權條款那個病）。
+var toolOwnedFileNames = map[string]bool{
+	"pnpm-lock.yaml": true, "package-lock.json": true, "yarn.lock": true,
+	"go.sum": true, "Cargo.lock": true, "composer.lock": true,
+	"Gemfile.lock": true, "poetry.lock": true, "pnpm-workspace.yaml": true,
+}
+
+// templateOwnedDirNames＝system-dev-template 鋪出來的產物區，任何深度都不當原稿
+// （daemon-beta task 2，2026-08-06，原始出處 commit b4fee43）。
+//
+// 🔴 這一條以前是 direct.go 自己手捏的第二張表（`SkipDirNames{"system-dev": true}`），
+// 而 #104 的排除清單在這裡——**兩張表分居兩處，於是 2026-08-16 讀源碼的人只看到其中一張，
+// 把「清單根本沒接上」當成了真兇**（實際上兩張都有接上，見 direct.go 的 `Plan: plan`）。
+// 收成同一個地方，就不會再有第二張表可以漏看。
+// curated-wiki 模式要收的正是 `system-dev/wiki` ⇒ 那條路由 onPathTo 放行。
+var templateOwnedDirNames = map[string]bool{"system-dev": true}
+
+// projectManifestFiles＝「有人在這一層跑建置工具」的佐證檔。
+//
+// 🔴 為什麼**不是**看 `.git`（leo 2026-08-16 當場推翻）：
+//
+//	「**你不需要判斷有沒有 git，我的 KB 筆記庫也有 git，
+//	  是否用 github/gitea 追蹤完全沒意義。**」
+//
+// ⇒ 版控是「這個人有沒有在做版本備份」，與「這個資料夾是不是軟體專案」無關。
+// 同理 `.gitignore` 的**存在**也不是門檻（它的**內容**仍是有用的線索，見 ignorerules.go）。
+// ⇒ 判準只准建在「**這個目錄本身／旁邊是什麼**」上——這樣筆記庫與軟體專案一視同仁。
+var projectManifestFiles = []string{
+	"package.json", "go.mod", "Cargo.toml", "pyproject.toml", "requirements.txt",
+	"pom.xml", "build.gradle", "build.gradle.kts", "Gemfile", "composer.json",
+	"CMakeLists.txt", "Makefile", "pnpm-workspace.yaml", "tsconfig.json",
+}
+
+// looksGenerated 回答「這個叫 build／dist／out… 的目錄，真的是工具生出來的嗎」。
+//
+// 判準是**目錄局部的**：它的**上一層**有沒有擺著專案檔（package.json、go.mod…）。
+// 建置產物一定跟產生它的專案檔同一層——`pms/workers/x/package.json` 旁邊的
+// `pms/workers/x/dist` 是產物；筆記庫 `專案/build`（樂高作品集）旁邊什麼都沒有。
+//
+// 為什麼用「上一層」而不是「整棵樹有沒有專案檔」：monorepo 底下同時有程式與筆記，
+// 用整棵樹當旗標會把筆記那一半也一起殺掉。局部判斷才不會誤傷。
+func looksGenerated(absDir string) bool {
+	parent := filepath.Dir(absDir)
+	for _, n := range projectManifestFiles {
+		if _, err := os.Stat(filepath.Join(parent, n)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // PlanIngest 決定某個監看根的收檔策略。**這支是 #104 的入口，Scan 在走訪前呼叫一次。**
@@ -103,10 +204,14 @@ var noiseDirNames = map[string]bool{
 // 誰的筆記本。判準只有一個地方（repoguard.go），兩張票共用，不會漂移。
 func PlanIngest(absRoot string) IngestPlan {
 	repoRoot := DetectRepoRoot(absRoot)
+	// 使用者自己寫的排除宣告——只讀它的**內容**當線索，不拿它的存在當門檻。
+	ignore := LoadIgnoreRules(absRoot)
+
 	if repoRoot == "" {
 		return IngestPlan{
 			Mode:   IngestAll,
-			Reason: "這是一般資料夾，裡面的文件我全部都會讀。",
+			Reason: "這是一般資料夾，裡面的文件我全部都會讀（別人的套件與建置產物除外）。",
+			ignore: ignore,
 		}
 	}
 
@@ -119,6 +224,7 @@ func PlanIngest(absRoot string) IngestPlan {
 			Reason: "這是一個開發專案，而且你已經整理好一份知識庫（" + wiki + "）——" +
 				"我直接讀那一份就好，不再把整個專案的原始碼與零散檔案重萃一次。",
 			OtherWikiDirs: others,
+			ignore:        ignore,
 		}
 	}
 
@@ -133,6 +239,7 @@ func PlanIngest(absRoot string) IngestPlan {
 		DocRelDirs:    docs,
 		Reason:        reason,
 		OtherWikiDirs: others,
+		ignore:        ignore,
 	}
 }
 
@@ -208,7 +315,9 @@ func otherWikiDirs(absRoot string) []string {
 			return nil
 		}
 		name := d.Name()
-		if strings.HasPrefix(name, ".") || noiseDirNames[name] {
+		// 與 SkipsDirWhy 的 ②③ 同一組判準（泛用名同樣要旁邊有專案檔才算）。
+		if strings.HasPrefix(name, ".") || toolOwnedDirNames[name] ||
+			(ambiguousBuildDirNames[name] && looksGenerated(p)) {
 			return filepath.SkipDir
 		}
 		if IsLinkedWorktree(p) {
@@ -244,30 +353,56 @@ func otherWikiDirs(absRoot string) []string {
 // 再加上模式限定的：curated-wiki 只走那一份 wiki 的路；docs-only 只走文件目錄的路。
 // （隱藏目錄由 Scan 自己擋，那條規則比本檔更早存在，不搬過來。）
 func (p IngestPlan) SkipsDir(relSlash, absPath string) bool {
+	skip, _ := p.SkipsDirWhy(relSlash, absPath)
+	return skip
+}
+
+// SkipsDirWhy 同 SkipsDir，但一併回「講給使用者聽的理由」。
+//
+// 🔴 理由不是 debug 字串，是產品文案：使用者看到「兩千個檔只送了九個」的當下，
+// 唯一能讓他不慌的東西就是這一句（票上的紅線，同 #121「不要讓用戶猜」）。
+func (p IngestPlan) SkipsDirWhy(relSlash, absPath string) (bool, string) {
 	name := filepath.Base(relSlash)
-	if noiseDirNames[name] {
-		return true
+
+	// ① 使用者自己宣告過的（最有力的理由——他親手寫的，不是我們猜的）
+	if p.ignore.Ignores(relSlash, true) {
+		return true, "你的 .gitignore 說不要收這裡"
+	}
+	// ② 名字本身就不是人話（不需要佐證）
+	if toolOwnedDirNames[name] {
+		return true, "這是工具產生的（別人的套件、快取或建置產物），不是你寫的東西"
+	}
+	// ③ 泛用名（build／dist／out…）——只有在它旁邊真的擺著專案檔時才算。
+	//    判準是目錄局部的，與版控無關（leo 2026-08-16：他的筆記庫也有 git）。
+	if ambiguousBuildDirNames[name] && looksGenerated(absPath) {
+		return true, "這是建置工具產生的目錄（旁邊就是產生它的專案檔）"
+	}
+	// ④ template 鋪出來的產物區（任何深度）。curated-wiki 要收的那條路例外。
+	if templateOwnedDirNames[name] && !(p.Mode == IngestCuratedWiki && onPathTo(relSlash, p.WikiRelDir)) {
+		return true, "這是開發範本鋪出來的目錄，不是你的知識"
 	}
 	if IsLinkedWorktree(absPath) {
-		return true
+		return true, "這是同一個專案的第二份簽出（git worktree），內容與主資料夾重複"
 	}
 	// 巢狀 repo：監看根自己不算（relSlash == "." 走不到這裡，Scan 只對子目錄呼叫）。
 	if IsRepoRoot(absPath) {
-		return true
+		return true, "這是另一個獨立的專案，要收請把它自己加進看守清單"
 	}
 	switch p.Mode {
 	case IngestCuratedWiki:
 		// 只有「通往那份 wiki 的路」與「那份 wiki 底下」要走。
-		return !onPathTo(relSlash, p.WikiRelDir)
+		if !onPathTo(relSlash, p.WikiRelDir) {
+			return true, "這次只讀你整理好的 " + p.WikiRelDir
+		}
 	case IngestDocsOnly:
 		for _, d := range p.DocRelDirs {
 			if onPathTo(relSlash, d) {
-				return false
+				return false, ""
 			}
 		}
-		return true
+		return true, "這是一個開發專案，這次只讀文件區，不讀程式碼"
 	}
-	return false
+	return false, ""
 }
 
 // KeepsFile 回答「這個檔要不要收」。relSlash 是相對監看根的路徑。
@@ -277,6 +412,14 @@ func (p IngestPlan) SkipsDir(relSlash, absPath string) bool {
 // 專案唯一的入門文件，把它們漏掉，一個只有 README 的 repo 會變成一個檔都不收）。
 // all：全收，判準交回 Scan 原本的副檔名白名單。
 func (p IngestPlan) KeepsFile(relSlash string) bool {
+	// 使用者自己宣告過的檔案（`*.log`、`.dev.vars`…）同樣當真——與目錄同一條理由。
+	if p.ignore.Ignores(relSlash, false) {
+		return false
+	}
+	// 機器產生的鎖定檔不是知識（見 toolOwnedFileNames）。
+	if toolOwnedFileNames[filepath.Base(relSlash)] {
+		return false
+	}
 	switch p.Mode {
 	case IngestCuratedWiki:
 		return strings.HasPrefix(relSlash, p.WikiRelDir+"/")

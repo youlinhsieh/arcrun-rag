@@ -6,11 +6,20 @@
 // 落點（草案 §3 第一層「品質迴路」）：插在 extract 之後、POST rag_ingest_card 之前。
 // 手上有原稿（H6 相似度只有這裡能做）；不過的分級依 §6 裁決 T4-C：
 //   - 硬缺（H1 段名／H2 一句話定義／H5 機敏值）＝結構壞或洩密 → 拒收（不 POST）。
-//   - 軟項（H3 要點條數／H4 關聯漂移／H6 相似度）＝現行管線會產生的正常瑕疵 → 照送、標 quality:low。
+//   - 軟項（H3 要點條數／H4 關聯漂移／H6 相似度／H7 憑空指稱／H8 宣稱通膨）＝
+//     現行管線會產生的正常瑕疵 → 照送、標 quality:low。
 //   - --strict：軟項也擋（測試／CI 用，讓「形檢天花板」外的問題全部現形）。
 //
+// 🔴 **H7/H8（InkStoneCo#44，2026-08-16 加）是這裡唯一問「內容是不是真的」的一項。**
+// H1–H6 全是形檢：段名齊不齊、有沒有照抄、有沒有洩密——**沒有任何一項問過
+// 「卡上宣稱的東西，原文裡到底有沒有」**。而 08-16 實測的事故正是這個洞：
+// 同一個 220 bytes 的檔在兩台實例上，一台萃出四條全部追得回原文，
+// 一台萃出八條、四條憑空，**而那張假卡帶著真實存在的 source_path**。
+// 判準與刻意留下的盲區全文寫在 `grounding.go` 檔頭，改它之前先讀那一段。
+//
 // 誠實限制（抄 wiki-secret-scan.sh 的自陳）：H5 regex 偵測有偽陰/偽陽，擋的是「明顯特徵的
-// 機敏字串被自動抄進卡」，擋不了刻意混淆；H3/H4/H6 是形檢，擋形不擋神（草案 §H3 ZZ-T7 天花板）。
+// 機敏字串被自動抄進卡」，擋不了刻意混淆；H3/H4/H6 是形檢，擋形不擋神（草案 §H3 ZZ-T7 天花板）；
+// H7 只認「翻譯與改寫帶不走的錨點」（拉丁專名、兩位數以上的數字），純中文的憑空宣稱抓不到。
 package collector
 
 import (
@@ -233,6 +242,16 @@ func lintWikiShapeCard(card string, opts LintOptions) LintResult {
 		if msg := checkSimilarity(card, opts.Source); msg != "" {
 			r = r.addSoft("H6", msg)
 		}
+		r = r.addGrounding(card, opts.Source)
+	}
+	return r
+}
+
+// addGrounding 跑 H7/H8 落地檢查並掛成軟項（grounding.go；InkStoneCo#44 2026-08-16）。
+// 🔴 軟項不是「比較不重要」，是「不准靜默丟掉使用者的知識」——見 grounding.go 檔頭分級段。
+func (r LintResult) addGrounding(card, source string) LintResult {
+	for _, f := range groundingFindings(CheckGrounding(card, source)) {
+		r = r.addSoft(f[0], f[1])
 	}
 	return r
 }
@@ -329,10 +348,12 @@ func LintCard(card string, opts LintOptions) LintResult {
 	}
 
 	// ── H6　不整段複製原文（軟；只有拿得到原稿時做）──────────────
+	// ── H7/H8　卡上的宣稱在原文有沒有落地（軟；同樣只有拿得到原稿時做）──
 	if opts.Source != "" {
 		if msg := checkSimilarity(card, opts.Source); msg != "" {
 			r = r.addSoft("H6", msg)
 		}
+		r = r.addGrounding(card, opts.Source)
 	}
 
 	return r
@@ -374,6 +395,14 @@ func checkSimilarity(card, source string) string {
 	srcRunes := runeLen(source)
 
 	// 絕對上限：卡片字數 ≤ min(4000, 原稿字數 × 60%)——防「萃取失敗就整檔照抄」。
+	//
+	// ⚠️ **已知偽陽（InkStoneCo#44 2026-08-16 實測，提案在 pending-changes.md 等 confirm）**：
+	// 這條比例規則對**薄原稿是反的**。220 字的原稿 ⇒ 上限 132 字，
+	// 而一張規範形卡光是機械骨架就三百多字（實測忠實卡 471、編造卡 550）
+	// ⇒ **兩張都超標，忠實的那張同樣被打成「疑似整段照抄」**。
+	// 🔴 這條沒有在本票一併改：它是 B2 §H6 的硬標準，且有兩個既有測試
+	//（TestLintH6LengthCapSoft／TestLintH6OverlapSoft）就寫在這個行為上
+	// ⇒ 屬規格層變更，依 SDD 生命週期鐵律第 3 條走提案、不自行改。
 	limit := h6MaxCardRunes
 	if byRatio := int(float64(srcRunes) * h6SrcRatio); byRatio < limit {
 		limit = byRatio

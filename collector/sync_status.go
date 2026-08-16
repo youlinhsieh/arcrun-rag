@@ -100,6 +100,10 @@ type SyncStatus struct {
 	// 沒人判斷得出那到底是什麼檔。
 	SkippedOtherNames []string `json:"skipped_other_names,omitempty"`
 
+	// FolderPlans＝每個看守資料夾這一輪的收檔策略與少收了什麼（key＝資料夾路徑）。
+	// 與 SkippedDocs 同族：每輪照現況重算的快照，**不進 CarryForwardActivity**。
+	FolderPlans map[string]FolderPlanStatus `json:"folder_plans,omitempty"`
+
 	// ── t210 統計層（2026-08-08，Evan 封測：「9000 個檔，雲端只有 101 張卡，
 	//    畫面卻說 20 份沒送——這幾個數字到底是怎麼回事？」）──────────────────────
 	//
@@ -115,6 +119,29 @@ type SyncStatus struct {
 	// 不會被清成 0（現況快照，不是本輪計數）。
 	Progress         SyncProgress     `json:"progress"`
 	FailureBreakdown FailureBreakdown `json:"failure_breakdown"`
+}
+
+// FolderPlanStatus＝某個看守資料夾這一輪用了什麼收檔策略、據此少收了什麼
+// （arcrun-rag#104，2026-08-16 補接線）。
+//
+// 🔴 為什麼補這個：#104 第一階段的收工留言宣稱「策略、理由、擋掉幾個檔…
+// 都經 TriggerPayload.Plan 走進 status.json」，**但那從來沒有發生過**——
+// `ExcludedByPlan` 與 `Plan` 在整個 repo 裡只有 `main.go`（CLI，走 stderr）讀過，
+// daemon（`direct.go`，也就是 App 真正在跑的那條路）拿到 payload 之後直接把這兩欄丟掉。
+// ⇒ 使用者接上一個兩千檔的專案、只看到九份進度，畫面**一個字都不會解釋**。
+//
+// 這是與本票真兇同一天、同一個形狀的第四例：**東西做好了，但不在會被執行的那條路上。**
+// 差別只在前三例是「沒接上」，這一例是「接了一半——CLI 有，使用者走的那條沒有」。
+type FolderPlanStatus struct {
+	Mode   string `json:"mode"`   // all／curated-wiki／docs-only
+	Reason string `json:"reason"` // 一句話講給使用者聽的「為什麼只收這些」
+	// ExcludedFiles＝走進去了但逐檔被策略擋下的數量。
+	ExcludedFiles int `json:"excluded_files"`
+	// ExcludedDirs／ExcludedDirCount＝整棵被剪掉的目錄與理由（清單有上限，總數看 Count）。
+	ExcludedDirs     []ExcludedDir `json:"excluded_dirs,omitempty"`
+	ExcludedDirCount int           `json:"excluded_dir_count"`
+	// OtherWikiDirs＝底下其他子專案自己的知識庫，刻意不收但一定要講。
+	OtherWikiDirs []string `json:"other_wiki_dirs,omitempty"`
 }
 
 // MaxSkippedListed：status.json 裡最多逐檔列幾個。
