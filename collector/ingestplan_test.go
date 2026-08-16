@@ -61,6 +61,21 @@ func countDocFiles(t *testing.T, root string) int {
 	return n
 }
 
+// codeProjectFiles 把「這裡真的是一套軟體專案」的內容鋪進 fixture：
+// 一個專案檔 ＋ 夠多的原始碼檔。
+//
+// 🔴 2026-08-16 第二層修法之後，**這件事必須用內容表達，不能再用 `mustMkdir(.git)` 表達**
+// ——判準已經改成看資料夾裡實際裝了什麼（foldershape.go）。
+// 以前的 fixture 造一個空的 `.git` 目錄就算「開發專案」，那正是 leo 推翻的那個訊號：
+// 「我的 KB 筆記庫也有 git，是否用 github/gitea 追蹤完全沒意義。」
+func codeProjectFiles(prefix, ext, body string) map[string]string {
+	out := map[string]string{prefix + "go.mod": "module example\n\ngo 1.22\n"}
+	for i := 0; i < softwareProjectMinCodeFiles+5; i++ {
+		out[fmt.Sprintf("%ssrc/mod%02d%s", prefix, i, ext)] = body
+	}
+	return out
+}
+
 // makeMonorepoFixture 造一個「leo 的 InkStoneCo」形狀的 repo。
 // 回傳「真正整理好的那份 wiki」有幾個檔——那就是唯一該被送上去的量。
 func makeMonorepoFixture(t *testing.T) (root string, curatedCount int) {
@@ -78,10 +93,12 @@ func makeMonorepoFixture(t *testing.T) (root string, curatedCount int) {
 	curatedCount = len(curated) + 1
 
 	// ② 程式碼與一般專案檔（leo：「只有文件要讀，程式碼不用讀」）
+	//    ——這一段同時也是「這個資料夾是軟體專案」的**唯一**證據來源（見 codeProjectFiles）。
 	for i := 0; i < 40; i++ {
 		files[fmt.Sprintf("collector/file%02d.go", i)] = "package collector"
 		files[fmt.Sprintf("collector/note%02d.md", i)] = "# 散落在程式碼旁邊的說明"
 	}
+	files["go.mod"] = "module inkstone\n\ngo 1.22\n"
 	files["README.md"] = "# 專案說明"
 	files["CHANGELOG.md"] = "# 版本紀錄"
 
@@ -103,7 +120,7 @@ func makeMonorepoFixture(t *testing.T) (root string, curatedCount int) {
 		}
 	}
 
-	// 監看根是版控中的專案
+	// 監看根同時也在版控裡——**故意留著**：它不准影響任何判斷（見本檔最後那條迴歸測試）。
 	mustMkdir(t, filepath.Join(root, ".git"))
 
 	// ⑤ 出貨用 worktree（`.git` 是**檔案**）——主 repo 的第二份簽出，內容重複（實據：5 份）
@@ -214,22 +231,17 @@ func TestPlanIngest_ExclusionsAreVisible(t *testing.T) {
 // 沒有現成 wiki 的 repo：退到「只讀文件、不讀程式碼」（leo 明講的第三步）。
 func TestPlanIngest_RepoWithoutWikiReadsDocsOnly(t *testing.T) {
 	root := t.TempDir()
-	files := map[string]string{
+	files := codeProjectFiles("", ".go", "package main")
+	for rel, body := range map[string]string{
 		"README.md":         "# 專案",
 		"docs/請假規則.md":      "# 特休 14 天",
 		"docs/報銷政策.md":      "# 每日 3000 元",
-		"src/main.go":       "package main",
 		"src/說明.md":         "# 散在程式碼旁邊",
 		"internal/notes.md": "# 也是程式碼旁邊",
+	} {
+		files[rel] = body
 	}
-	for rel, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		mustMkdir(t, filepath.Dir(p))
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mustMkdir(t, filepath.Join(root, ".git"))
+	writeFixture(t, root, files)
 
 	payload, plan := scanWithPlan(t, root)
 	got := eventPaths(payload)
@@ -279,8 +291,9 @@ func TestPlanIngest_PlainFolderUnchanged(t *testing.T) {
 func TestPlanIngest_EmptyWikiFallsBackToDocs(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, "system-dev", "wiki"))
-	mustMkdir(t, filepath.Join(root, ".git"))
-	writeFixture(t, root, map[string]string{"docs/說明.md": "# 說明"})
+	files := codeProjectFiles("", ".go", "package main")
+	files["docs/說明.md"] = "# 說明"
+	writeFixture(t, root, files)
 
 	plan := PlanIngest(root)
 	if plan.Mode != IngestDocsOnly {
@@ -314,6 +327,11 @@ func makePMSFixture(t *testing.T) (root string, mine []string) {
 	// ② 專案本體（有 package.json ⇒ 這一層旁邊的 dist 才算產物）
 	files["package.json"] = `{"name":"pms"}`
 	files["pnpm-lock.yaml"] = "lockfileVersion: 1"
+	// 真的有一整套程式碼——**這才是「這是軟體專案」的證據**，不是 `.git`
+	// （真樹 2,127 檔裡絕大多數是 `.ts`／`.js`）。
+	for i := 0; i < softwareProjectMinCodeFiles+5; i++ {
+		files[fmt.Sprintf("workers/pms-order-search/src/handler%02d.ts", i)] = "export const x = 1"
+	}
 	files[".gitignore"] = "node_modules/\ndist/\n.wrangler/\n*.log\n.dev.vars\n"
 
 	// ③ 別人的套件：undici 的 API 文件與第三方授權條款
@@ -429,16 +447,34 @@ func TestPlanIngest_同一個名字看旁邊擺什麼決定(t *testing.T) {
 	}
 }
 
-// 有 `.git` 但其實是筆記庫：**版控不得改變收檔行為**（leo 2026-08-16 推翻 .git 判準）。
+// 🔴 本票最重要的一條：**版控訊號不得改變任何收檔行為**（leo 2026-08-16 推翻 .git 判準）。
 //
-// ⚠️ 已知落差（不在本輪範圍，另報總管）：`PlanIngest` 的**模式選擇**仍看 `.git`
-// ——所以帶 `.git` 的筆記庫會被判成 docs-only。本測試只釘住「排除規則那一層
-// 不看版控」，模式選擇那一層要另外開票處理。
-func TestPlanIngest_排除判準不看有沒有版控(t *testing.T) {
+//	「**你不需要判斷有沒有 git，我的 KB 筆記庫也有 git，
+//	  是否用 github/gitea 追蹤完全沒意義。**」
+//
+// 這條測試原本只釘住**排除規則**那一層，函式上方還記著一條已知落差：
+// 「`PlanIngest` 的模式選擇仍看 `.git`，要另外開票」。
+// 2026-08-16 第二層修法把那個落差補掉了 ⇒ **本測試同時擴充到模式選擇**，
+// 而不是另開一條平行的（兩條分開釘，下一個人只會改到其中一條）。
+//
+// 判準也從「幾個個別行為一樣」升成「**收到的檔案集合一模一樣**」——
+// 那才是使用者手上真正會少掉東西的那一維。
+func TestPlanIngest_排除判準與模式選擇都不看有沒有版控(t *testing.T) {
+	// 🔴 地雷本體：一個**有 wiki 目錄、也有大量其他內容**的筆記庫。
+	// 這正是 `~/Documents/KB` 的形狀（實測：5,915 份文件，而它真的有 `system-dev/wiki`）。
+	// 舊判準下：沒有 `.git` ⇒ all（全收）；跑一次 `git init` ⇒ curated-wiki ⇒ 只剩 wiki 那幾張。
+	// **一個純粹的版控動作，會讓使用者手上的知識少掉九成，而畫面上不會有任何提示。**
 	base := map[string]string{
-		"docs/說明.md":          "# 文件",
-		"build/樂高作品集.md":      "# 使用者的東西",
-		"node_modules/x/a.md": "# 別人的套件",
+		"docs/說明.md":                "# 文件",
+		"build/樂高作品集.md":            "# 使用者的東西",
+		"node_modules/x/a.md":       "# 別人的套件",
+		"wiki/status.md":            "# 我自己開的 wiki 資料夾",
+		"wiki/INDEX.md":             "# 索引",
+		"system-dev/wiki/status.md": "# 我在筆記庫裡也順手裝過 template（KB 真的是這樣）",
+	}
+	// 「大量其他內容」——真正會被吃掉的那一批。
+	for i := 0; i < 30; i++ {
+		base[fmt.Sprintf("journals/2026_08_%02d.md", i)] = "# 日記"
 	}
 
 	withoutGit := t.TempDir()
@@ -447,26 +483,225 @@ func TestPlanIngest_排除判準不看有沒有版控(t *testing.T) {
 	writeFixture(t, withGit, base)
 	mustMkdir(t, filepath.Join(withGit, ".git"))
 
+	var firstSet string
 	for _, tc := range []struct{ name, root string }{
-		{"沒有版控", withoutGit}, {"有版控", withGit},
+		{"沒有版控", withoutGit}, {"有版控（跑過 git init）", withGit},
 	} {
 		payload, plan := scanWithPlan(t, tc.root)
 		reasons := map[string]string{}
 		for _, d := range payload.ExcludedDirs {
 			reasons[d.Path] = d.Reason
 		}
-		t.Logf("%s：策略=%s｜跳過=%v", tc.name, plan.Mode, reasons)
+		got := eventPaths(payload)
+		t.Logf("%s：策略=%s｜送出 %d 個檔｜跳過=%v", tc.name, plan.Mode, len(got), reasons)
 
+		// ① 排除規則那一層（原本就釘住的）
 		if reasons["node_modules"] == "" {
 			t.Errorf("%s：node_modules 沒被排除——它是誰的套件跟有沒有版控無關", tc.name)
 		}
-		// 🔴 本測試釘的是**排除規則那一層**：`build` 旁邊沒有任何專案檔，
-		//    所以無論有沒有版控，都不准把它當成「建置工具產生的」。
-		//    （帶 `.git` 時 `build` 仍會因為**模式選擇**落在文件區之外而不收——
-		//     那是另一層，見本函式上方的已知落差說明。）
 		if strings.Contains(reasons["build"], "建置") {
 			t.Errorf("%s：`build` 被判成建置產物（%q），但它旁邊沒有任何專案檔"+
 				"——版控訊號不得改變這個判斷", tc.name, reasons["build"])
 		}
+		// ② 模式選擇那一層（本輪補上的）
+		if plan.Mode != IngestAll {
+			t.Errorf("%s：策略=%s，want %s——這是筆記庫（沒有專案檔、沒有成堆原始碼），"+
+				"有沒有跑過 git init 都不該改變它", tc.name, plan.Mode, IngestAll)
+		}
+		// ③ 🔴 真正的判準：**收到的檔案集合必須一模一樣**
+		set := strings.Join(got, "\n")
+		if firstSet == "" {
+			firstSet = set
+			// 34＝30 篇日記＋docs/說明＋build/樂高＋wiki 的 2 張。
+			// （`system-dev/` 是 template 鋪出來的產物區，任何模式都不收——那條規則
+			//   比本票更早存在，也正是舊判準的殺傷力所在：一旦翻成 curated-wiki，
+			//   **唯一被收的就只剩那個平常根本不收的目錄**。）
+			if len(got) != 34 {
+				t.Fatalf("%s：只送出 %d 個檔（want 34）：%v", tc.name, len(got), got)
+			}
+		} else if set != firstSet {
+			t.Fatalf("🔴 跑一次 `git init` 就改變了收到的東西——這正是本票要拆掉的引信。\n"+
+				"沒有版控時：\n%s\n有版控時：\n%s", firstSet, set)
+		}
+	}
+}
+
+// 三種收法換了判準之後仍然各自正確——同一組內容，只差「裡面有沒有一整套程式碼」。
+//
+// 🔴 這條是防止「修好筆記庫卻把專案那兩種弄壞」：判準只有一個，三種答案必須都還在。
+func TestPlanIngest_三種收法在新判準下都還正確(t *testing.T) {
+	// 共用的內容：一份整理好的 wiki、一個文件區、一些散落在旁邊的 .md。
+	shared := map[string]string{
+		"wiki/status.md": "# 整理好的知識",
+		"wiki/INDEX.md":  "# 索引",
+		"docs/請假規則.md":   "# 特休 14 天",
+		"README.md":      "# 說明",
+		"雜/隨手記.md":       "# 散落在旁邊",
+	}
+	merge := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range shared {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name     string
+		files    map[string]string
+		wantMode IngestMode
+		wantGot  []string
+	}{
+		{
+			// ① 筆記庫：沒有專案檔、沒有成堆原始碼 ⇒ 整份讀進去
+			name:     "筆記庫整份收",
+			files:    merge(nil),
+			wantMode: IngestAll,
+			wantGot: []string{"README.md", "docs/請假規則.md",
+				"wiki/INDEX.md", "wiki/status.md", "雜/隨手記.md"},
+		},
+		{
+			// ② 軟體專案＋已經整理好 wiki ⇒ 只收那份 wiki
+			name:     "整理好的專案只收那份wiki",
+			files:    merge(codeProjectFiles("", ".go", "package main")),
+			wantMode: IngestCuratedWiki,
+			wantGot:  []string{"wiki/INDEX.md", "wiki/status.md"},
+		},
+		{
+			// ③ 軟體專案、沒有現成 wiki ⇒ 只收文件區＋根層說明檔，跳過原始碼
+			name: "沒wiki的專案只收文件跳過源碼",
+			files: func() map[string]string {
+				f := merge(codeProjectFiles("", ".go", "package main"))
+				delete(f, "wiki/status.md")
+				delete(f, "wiki/INDEX.md")
+				return f
+			}(),
+			wantMode: IngestDocsOnly,
+			wantGot:  []string{"README.md", "docs/請假規則.md"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixture(t, root, tc.files)
+			payload, plan := scanWithPlan(t, root)
+			got := eventPaths(payload)
+			t.Logf("策略=%s｜%s", plan.Mode, plan.Reason)
+			t.Logf("送出 %d 個：%v", len(got), got)
+
+			if plan.Mode != tc.wantMode {
+				t.Fatalf("策略=%s，want %s", plan.Mode, tc.wantMode)
+			}
+			sort.Strings(tc.wantGot)
+			if strings.Join(got, ",") != strings.Join(tc.wantGot, ",") {
+				t.Fatalf("送出 %v，want %v", got, tc.wantGot)
+			}
+		})
+	}
+}
+
+// 🔴 不誤殺（票上的紅線）：筆記庫裡名字像建置產物的資料夾，換了判準之後照樣要收。
+//
+// 上一輪已經有 TestPlanIngest_筆記庫裡真的叫build的資料夾不准誤殺 守著排除那一層；
+// 這一條守的是**模式選擇**那一層——判準若寫成「看到 build/dist/out 就算專案」，
+// 或看到零星幾個腳本就算專案，那些筆記一樣會整批消失，而且是換一個入口消失。
+func TestPlanIngest_筆記庫有像產物的資料夾與零星腳本也不准翻成專案(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"日記.md":            "# 日記",
+		"build/樂高作品集.md":   "# 我在做的模型",
+		"dist/出貨清單.md":     "# 交件",
+		"out/外出旅遊筆記.md":    "# 旅遊",
+		"vendor/廠商聯絡簿.md":  "# 廠商",
+		"target/年度目標.md":   "# 目標",
+		"coverage/保單整理.md": "# 保單",
+	}
+	// 筆記庫裡存幾個順手抄下來的腳本片段——**不足以讓整個資料夾變成軟體專案**。
+	for i := 0; i < softwareProjectMinCodeFiles-5; i++ {
+		files[fmt.Sprintf("片段/snippet%02d.py", i)] = "print('hi')"
+	}
+	writeFixture(t, root, files)
+
+	payload, plan := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	t.Logf("策略=%s（%s）", plan.Mode, plan.Reason)
+	t.Logf("送出 %d／7：%v", len(got), got)
+
+	if plan.Mode != IngestAll {
+		t.Fatalf("策略=%s，want %s——這是筆記庫，`build` 是樂高作品集、`out` 是外出旅遊，"+
+			"幾個腳本片段不能讓整個資料夾翻成軟體專案", plan.Mode, IngestAll)
+	}
+	if len(got) != 7 {
+		t.Fatalf("使用者的 7 份筆記只送了 %d 份：%v", len(got), got)
+	}
+	if payload.ExcludedDirCount != 0 {
+		t.Fatalf("筆記庫不該有任何資料夾被剪掉，卻剪了：%v", payload.ExcludedDirs)
+	}
+}
+
+// 判準的證據要看得見（票上的紅線：使用者要看得出「我對你的資料夾做了什麼」）。
+//
+// 「我判斷這是軟體專案」不附證據＝一個黑盒；附上「看到 go.mod，還有 25 個原始碼檔」，
+// 他自己就看得出對不對。而且**這句話裡不准再出現版控字眼**——
+// 那正是 leo 說「完全沒意義」的那個訊號。
+func TestPlanIngest_判成專案時要講得出憑什麼(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["docs/說明.md"] = "# 文件"
+	writeFixture(t, root, files)
+
+	plan := PlanIngest(root)
+	t.Logf("策略=%s", plan.Mode)
+	t.Logf("理由：%s", plan.Reason)
+	t.Logf("實測形狀：專案檔 %d 個（%v）／原始碼 %d 個／文件 %d 個",
+		plan.Shape.ManifestCount, plan.Shape.ManifestRels, plan.Shape.CodeFiles, plan.Shape.DocFiles)
+
+	if !strings.Contains(plan.Reason, "go.mod") {
+		t.Errorf("理由沒講出憑什麼判成專案：%q", plan.Reason)
+	}
+	if plan.Shape.CodeFiles < softwareProjectMinCodeFiles {
+		t.Errorf("形狀沒數到原始碼：%+v", plan.Shape)
+	}
+	for _, bad := range []string{"版控", "git", "Git", "GitHub", "gitea"} {
+		if strings.Contains(plan.Reason, bad) {
+			t.Errorf("理由裡出現了版控字眼 %q——判準已經不看版控了：%q", bad, plan.Reason)
+		}
+	}
+}
+
+// 🔴 接線：**模式選擇的判準只有一個地方**。
+//
+// 這一票的同款形狀出現過四次（能力做好了，卻不在會被執行的那條路上）。
+// 上一輪用 `go/ast` 釘住「不准再有第二張排除清單」；這一條釘住同一件事的另一半：
+// 除了 `PlanIngest` 自己，**沒有別的地方可以用版控訊號決定收檔策略**。
+func TestWiring_模式選擇不准再引用版控訊號(t *testing.T) {
+	src, err := os.ReadFile("ingestplan.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 註解裡當然會提到（那是在解釋為什麼不用），只看程式碼行。
+	for i, line := range strings.Split(string(src), "\n") {
+		code := line
+		if idx := strings.Index(code, "//"); idx >= 0 {
+			code = code[:idx]
+		}
+		for _, fn := range []string{"DetectRepoRoot(", "UnderVersionControl("} {
+			if strings.Contains(code, fn) {
+				t.Errorf("ingestplan.go:%d 又用版控訊號決定收檔策略了：%s\n"+
+					"leo 2026-08-16：「你不需要判斷有沒有 git，我的 KB 筆記庫也有 git」\n"+
+					"判準要建在資料夾裡實際裝了什麼（foldershape.go）", i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	// 反面：#105 那個**正當**的用途不准被一起拆掉（tidy.go：版控中的檔案不自動改名搬移）。
+	tidy, err := os.ReadFile("tidy.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tidy), "DetectRepoRoot(") {
+		t.Error("tidy.go 不再檢查版控——#105「不要改動使用者版控中的檔案」那一條是對的，" +
+			"它問的真的是版控，不准跟著這一票一起拿掉")
 	}
 }

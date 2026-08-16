@@ -17,8 +17,11 @@
 // ⇒ 本檔回答一個問題：**這個監看根該收哪些檔**。三種答案：
 //
 //	IngestAll        一般資料夾／筆記庫——收全部（行為與先前完全一致，零改變）
-//	IngestCuratedWiki 版控中的專案，而且**已經有整理好的 wiki** ⇒ 只收那一份
-//	IngestDocsOnly   版控中的專案，但沒有現成 wiki ⇒ 只收文件區，程式碼一律不讀
+//	IngestCuratedWiki 軟體專案，而且**已經有整理好的 wiki** ⇒ 只收那一份
+//	IngestDocsOnly   軟體專案，但沒有現成 wiki ⇒ 只收文件區，程式碼一律不讀
+//
+// 🔴 「是不是軟體專案」**看資料夾裡實際裝了什麼**，不看有沒有 `.git`
+// （2026-08-16 第二層修正，判準在 foldershape.go；為什麼見 PlanIngest 的說明）。
 //
 // 🔴 「不要用副檔名白名單當唯一判準」（票上的紅線）：本檔的主判準是**路徑身分**
 // （這個目錄在這個 repo 裡扮演什麼角色），副檔名只是最後一道。`.md` 在 repo 裡
@@ -51,8 +54,11 @@ const (
 // 的當下，唯一能讓他不慌的東西就是這句話。用他的話寫，不要寫路徑術語。
 type IngestPlan struct {
 	Mode IngestMode `json:"mode"`
-	// RepoRoot＝版控工作目錄的根（Mode != IngestAll 時非空）。
-	RepoRoot string `json:"repo_root,omitempty"`
+	// Shape＝「這個資料夾裡實際裝了什麼」的實測結果，也就是模式是怎麼決定的
+	// （foldershape.go）。**取代了原本的 RepoRoot（`.git` 的位置）**——
+	// leo 2026-08-16 推翻版控判準，判準改成內容，那麼「為什麼這樣判」的證據
+	// 也該是內容（幾個專案檔、幾個原始碼檔），不是一個路徑。
+	Shape FolderShape `json:"shape"`
 	// WikiRelDir＝現成 wiki 的相對路徑（僅 IngestCuratedWiki）。
 	WikiRelDir string `json:"wiki_rel_dir,omitempty"`
 	// DocRelDirs＝要收的文件目錄（僅 IngestDocsOnly；根層 .md 另由 keepsRootDoc 放行）。
@@ -199,29 +205,45 @@ func looksGenerated(absDir string) bool {
 //
 // 判斷順序刻意照 leo 的原話：先問「是不是專案」，再問「有沒有現成 wiki」，最後才退到文件區。
 //
-// 為什麼「是不是專案」用版控（`.git`）判：那是唯一不必猜的訊號，而且與 #105 同一個判準
-// ——一個資料夾在版控裡，就代表裡面有人在追每個檔案的歷史，那幾乎必然是原始碼專案而不是
-// 誰的筆記本。判準只有一個地方（repoguard.go），兩張票共用，不會漂移。
+// 🔴 「是不是專案」怎麼判：**看這個資料夾裡實際裝了什麼**（foldershape.go），不看版控。
+// leo 2026-08-16 當場推翻了原本的 `.git` 判準：
+//
+//	「**你不需要判斷有沒有 git，我的 KB 筆記庫也有 git，
+//	  是否用 github/gitea 追蹤完全沒意義。**」
+//
+// 舊判準是一顆定時炸彈：`~/Documents/KB`（leo 的真知識庫）今天沒有 `.git` ⇒ all
+// ⇒ 5,915 份文件全收；而它**真的有 `system-dev/wiki`**（他在那裡也裝過 template）
+// ⇒ 只要有人在那跑一次 `git init`，就翻成 curated-wiki、靜默塌成 14 張，
+// 而畫面上不會有任何提示。**引信早就接好了，只差一個很自然的動作。**
+// 換成內容判準之後，`git init` 跑幾次都不會改變答案
+// （TestPlanIngest_同一棵樹有沒有版控收到的必須一模一樣 釘死這件事）。
+//
+// ⚠️ **只有「用哪種收法」這個判斷改掉了。** `repoguard.go` 的另一個用途
+// （#105「版控中的資料夾一個檔都不自動改名搬移」，見 tidy.go）**沒有動、也不該動**
+// ——那一個問的真的是版控，而且問對了。
 func PlanIngest(absRoot string) IngestPlan {
-	repoRoot := DetectRepoRoot(absRoot)
+	shape := InspectFolder(absRoot)
 	// 使用者自己寫的排除宣告——只讀它的**內容**當線索，不拿它的存在當門檻。
 	ignore := LoadIgnoreRules(absRoot)
 
-	if repoRoot == "" {
+	if !shape.IsSoftwareProject() {
 		return IngestPlan{
-			Mode:   IngestAll,
-			Reason: "這是一般資料夾，裡面的文件我全部都會讀（別人的套件與建置產物除外）。",
+			Mode:  IngestAll,
+			Shape: shape,
+			Reason: "這是一般資料夾或筆記庫（裡面沒有成套的程式碼），" +
+				"裡面的文件我全部都會讀（別人的套件與建置產物除外）。",
 			ignore: ignore,
 		}
 	}
 
+	evidence := shape.Evidence()
 	others := otherWikiDirs(absRoot)
 	if wiki := findCuratedWiki(absRoot); wiki != "" {
 		return IngestPlan{
 			Mode:       IngestCuratedWiki,
-			RepoRoot:   repoRoot,
+			Shape:      shape,
 			WikiRelDir: wiki,
-			Reason: "這是一個開發專案，而且你已經整理好一份知識庫（" + wiki + "）——" +
+			Reason: "這是一個開發專案（" + evidence + "），而且你已經整理好一份知識庫（" + wiki + "）——" +
 				"我直接讀那一份就好，不再把整個專案的原始碼與零散檔案重萃一次。",
 			OtherWikiDirs: others,
 			ignore:        ignore,
@@ -229,13 +251,14 @@ func PlanIngest(absRoot string) IngestPlan {
 	}
 
 	docs := existingDocDirs(absRoot)
-	reason := "這是一個開發專案，我只讀文件、不讀程式碼。"
+	reason := "這是一個開發專案（" + evidence + "），我只讀文件、不讀程式碼。"
 	if len(docs) > 0 {
-		reason = "這是一個開發專案，我只讀文件（" + strings.Join(docs, "、") + "）與根目錄的說明檔，不讀程式碼。"
+		reason = "這是一個開發專案（" + evidence + "），我只讀文件（" +
+			strings.Join(docs, "、") + "）與根目錄的說明檔，不讀程式碼。"
 	}
 	return IngestPlan{
 		Mode:          IngestDocsOnly,
-		RepoRoot:      repoRoot,
+		Shape:         shape,
 		DocRelDirs:    docs,
 		Reason:        reason,
 		OtherWikiDirs: others,
@@ -445,8 +468,13 @@ func (p IngestPlan) KeepsFile(relSlash string) bool {
 // 是他親手整理的知識庫，而且是唯一該收的東西。
 //
 // 兩條規則對撞，用**身分**化解而不是拿掉任何一條：
-//   - 我們代裝的資料夾沒有 `.git` ⇒ PlanIngest 回 IngestAll ⇒ 這裡回 false ⇒ 舊規則照舊
-//   - 他自己的 repo 有 `.git` 且有現成 wiki ⇒ curated-wiki ⇒ 這裡回 true ⇒ 收那份 wiki
+//   - 我們代裝進使用者筆記資料夾的那份，那個資料夾裡沒有成套的程式碼
+//     ⇒ PlanIngest 回 IngestAll ⇒ 這裡回 false ⇒ 舊規則照舊
+//   - 他自己的軟體專案（有專案檔、有成堆原始碼）且有現成 wiki
+//     ⇒ curated-wiki ⇒ 這裡回 true ⇒ 收那份 wiki
+//
+// 🔴 2026-08-16 更新：以前這兩行寫的是「沒有 `.git`／有 `.git`」，而那正是
+// 本票第二層要拔掉的判準——leo 的 KB 筆記庫也有 git。現在兩邊都改看內容。
 func (p IngestPlan) OverridesTemplateOwned(relSlash string) bool {
 	if p.Mode != IngestCuratedWiki {
 		return false
