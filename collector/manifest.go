@@ -81,6 +81,35 @@ type Manifest struct {
 	// 雲端一壞就是每 5 秒撞一次。內容變了（雜湊不同）視同新卡，立即可再試。
 	InventoryFailHash  string `json:"inventory_fail_hash,omitempty"`
 	InventoryNextRetry int64  `json:"inventory_next_retry,omitempty"`
+
+	// PendingTakedowns＝改名／搬移後「舊路徑」在雲端知識庫裡還沒下架成功的待辦清單
+	// （key=舊相對路徑，value=該路徑當時導出的頁名）。InkStoneCo#44 ⑩：
+	//
+	// direct 模式把 renamed 事件當 added 處理（用新路徑重送一次萃取），但從未告訴
+	// 雲端「舊頁名／舊路徑那份已經死了」——純改檔名時舊頁名的舊卡永久留著；搬到
+	// 別的資料夾時（basename 不變 ⇒ 新舊頁名相同）舊的不刪、新的照寫，kbdb 裡同一份
+	// 文件變兩套，其中一套指向已不存在的路徑，而且沒有任何機制會回頭發現它。
+	//
+	// 為什麼要持久化而不是「失敗了下一輪自然重試」（removed 事件的作法）：removed
+	// 事件靠「檔案仍然不在」讓 Scan() 每輪重新偵測、重新補發；但 renamed 的配對
+	// （removed×added 以 content_hash 配對）只在偵測到的那一輪出現一次，舊路徑已經
+	// 不在任何一邊的掃描結果裡，下一輪不會再有 renamed 事件把它帶出來。不記住它，
+	// 一次下架失敗（雲端剛好那幾秒掛掉）就永久遺失，舊卡從此不會再被清。
+	PendingTakedowns map[string]string `json:"pending_takedowns,omitempty"`
+}
+
+// QueueTakedown 記一筆「這個舊路徑（連同當時的頁名）還沒在雲端下架」的待辦。
+// 冪等：同一路徑重複呼叫只覆蓋頁名（理論上不會變，但不假設呼叫端不會重複觸發）。
+func (m *Manifest) QueueTakedown(oldPath, pageName string) {
+	if m.PendingTakedowns == nil {
+		m.PendingTakedowns = map[string]string{}
+	}
+	m.PendingTakedowns[oldPath] = pageName
+}
+
+// ClearTakedown 下架成功後從待辦清單移除。
+func (m *Manifest) ClearTakedown(oldPath string) {
+	delete(m.PendingTakedowns, oldPath)
 }
 
 // newUUID 產生 RFC 4122 v4 UUID（純 stdlib）。

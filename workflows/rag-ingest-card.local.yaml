@@ -140,7 +140,15 @@ config:
         return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath, library: lib };
       });
       const rels = [];
-      const relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#|\n---|$)/.exec(md);
+      // InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」
+      // 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\n#|\n---|$) 把任何
+      // 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」
+      // 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的
+      // 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card
+      // 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。
+      // 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),
+      // 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。
+      const relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(md);
       if (relSec) {
         for (const line of relSec[1].split('\n')) {
           const m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);

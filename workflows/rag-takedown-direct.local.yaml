@@ -115,7 +115,14 @@ config:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # subject==頁名 或 source_uri==本卡 → 全下架（治 G9 主詞≠卡名缺口）。
+  # 比對規則（原：subject==頁名 或 source_uri==本卡 → 全下架，治 G9 主詞≠卡名缺口；
+  # InkStoneCo#44 ⑩ 2026-08-16 改：那條規則對「同頁名、多路徑並存」是過寬的洞——
+  # 資料夾搬移時，新舊路徑產出的三元組 subject 都等於同一個頁名，若只看 subject 就會把
+  # 搬移後、根本還活著的新三元組一起殺掉（實測：對舊路徑補打下架，新路徑那筆也被清空）。
+  # 修法照抄 build_deprecations 對 blocks 的做法：三元組**有帶 source_uri** 時只認精確比對，
+  # 只有**完全沒有 source_uri**（沒被本次改版前的舊資料）才退回寬鬆的 subject 比對——
+  # G9 的初衷（subject 文字可能跟頁名有落差、要用 source_uri 兜住）在「有 source_uri」分支
+  # 依然成立（不看 subject，只看 source_uri 是否精確等於這次要下架的那個），沒有被削弱。
   pick_dead_triplets:
     component: "__CODE_URL__"
     code: |
@@ -129,7 +136,8 @@ config:
         const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
         // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。
         if (!v || !r.record_id) continue;
-        const hit = v.subject === page || (srcUri && v.source_uri === srcUri);
+        const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';
+        const hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);
         if (!hit) continue;
         dead_records.push({ record_id: r.record_id });
       }

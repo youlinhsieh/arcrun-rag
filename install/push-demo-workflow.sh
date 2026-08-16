@@ -25,6 +25,9 @@ YAML="${1:?用法: push-demo-workflow.sh <workflow yaml 路徑>}"
 #   ⚠️ 新版實例（bundle_version 1.4.11+）的 workflow 由**安裝器**帶上去：
 #      workflows/*.local.yaml → installer/scripts/compile-workflows.mjs → workflows.json
 #      要更新新版實例走那條鏈，不是這支（這支走 /cypher/search，新版會回 not_found）。
+#   🔴 InkStoneCo#44 comment 2749（2026-08-16）：新版實例事後要「補推」單一 workflow 的
+#      修法，用 install/push-workflow-update.sh（讀 installer/src/workflows.json 裡已編譯
+#      好的 graph，跳過 /cypher/search 的節點名目錄比對，不會撞到「缺零件」）。
 NS="${NS:?必須指定 NS（實例 namespace，如 yuga3bse）——不再預設 demo/uncle6}"
 CYPHER="${CYPHER:?必須指定 CYPHER（該實例的 cypher-executor URL）}"
 KBDB="${KBDB:?必須指定 KBDB}"

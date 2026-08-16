@@ -1067,6 +1067,21 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		}
 	}
 
+	// InkStoneCo#44 ⑩：改名／搬移後,舊路徑在雲端知識庫裡要跟著下架,否則舊卡永久留著
+	// （純改檔名）或同一份文件在庫裡變兩套（搬到別的資料夾,新舊頁名相同）。
+	// renamed 事件只在 removed×added 配對到的那一輪出現一次（見 scan.go 步驟 3),
+	// 下一輪不會再有機會補發——所以「這個舊路徑要下架」必須在偵測到的當下就
+	// 寫進 manifest（QueueTakedown,持久化),不能只靠事件迴圈處理到才記,否則單輪
+	// 上限（perRunCap）把它排除在外、或這輪下架失敗時就會永久遺失這個待辦。
+	for _, ev := range payload.Events {
+		if ev.Type == "renamed" && ev.OldPath != "" {
+			m.QueueTakedown(ev.OldPath, pageNameOf(ev.OldPath))
+		}
+	}
+	if len(m.PendingTakedowns) > 0 && !dryRun {
+		saveManifest()
+	}
+
 	// 2026-08-07 pacing task 1：新改的檔優先＋單輪上限。
 	//   - 排序：把 payload.Events 依檔案 mtime 由新到舊重排（不動送雲端的 payload 本身，
 	//     只重排這裡的本機處理佇列——見 sortEventsNewestFirst 註解）。
@@ -1085,7 +1100,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		switch ev.Type {
 		case "added", "modified", "renamed":
 			// renamed 在 direct 模式視同 added：內容未變但為求 kbdb 有這頁名的卡，重送一次萃取
-			//（頁名可能改變＝要新頁名的卡）。冪等由 kbdb 端承擔（同頁名覆蓋語意）。
+			//（頁名可能改變＝要新頁名的卡）。新路徑這邊的冪等由 kbdb 端承擔（同頁名覆蓋語意）；
+			// 舊路徑那邊不會自動消失——上面已經把 ev.OldPath 排進 m.PendingTakedowns，
+			// 這裡送完新卡之後、本函式結尾會補打下架（InkStoneCo#44 ⑩）。
 			res := DirectResult{Type: ev.Type, Path: ev.Path}
 			// 2026-08-07 pacing task 2：帳號還在額度冷卻中 → 這輪連試都不試。
 			// 這不是這個檔的問題（不記 FailCount/退避——那是「這個檔」的病歷，
@@ -1316,6 +1333,49 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					}
 				}
 			}
+			results = append(results, res)
+		}
+	}
+
+	// InkStoneCo#44 ⑩：補打「改名／搬移後還沒下架成功」的舊路徑——包含本輪剛
+	// 上面排進去的，以及之前輪次失敗留下的（同一個待辦清單,一次處理完)。
+	// 與 orderedEvents 共用同一個節流器（pace）,避免一輪多筆改名瞬間打爆雲端。
+	if len(m.PendingTakedowns) == 0 {
+		// no-op：沒有待辦
+	} else if dryRun {
+		for oldPath := range m.PendingTakedowns {
+			results = append(results, DirectResult{Type: "renamed_takedown", Path: oldPath, Status: "planned"})
+		}
+	} else {
+		for oldPath, pageName := range m.PendingTakedowns {
+			pace()
+			res := DirectResult{Type: "renamed_takedown", Path: oldPath}
+			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
+				"page_name": pageName,
+				"path":      oldPath,
+			})
+			res.HTTPStatus = status
+			if perr != nil {
+				res.Status, res.Error = "failed", "改名/搬移後舊頁下架失敗（下輪重試）："+perr.Error()
+				exit = 1
+			} else {
+				res.Status = "removed"
+				m.ClearTakedown(oldPath)
+				// 同步清掉本地舊卡（若還存在)——與「removed」分支同一套清理,見下方。
+				if cfg.Extractor != "" {
+					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageName)))
+					if _, serr := os.Stat(cardAbs); serr == nil {
+						_ = os.Remove(cardAbs)
+					}
+					if werr := RemoveWikiDoc(absRoot, oldPath); werr != nil {
+						results = append(results, DirectResult{
+							Type: "warning", Path: oldPath, Status: "skipped",
+							Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
+						})
+					}
+				}
+			}
+			saveManifest()
 			results = append(results, res)
 		}
 	}
