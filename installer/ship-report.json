@@ -2238,11 +2238,17 @@
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
      "status": "skip",
-     "note": "bundle 已是 changelog 最新已發佈版：v0.18.27"
+     "note": "bundle 已是 changelog 最新已發佈版：v0.18.28"
     },
     {
      "id": "daemon-check",
      "title": "核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的 daemon 版本＝collector/ 源碼現況（不是瞎推）",
      "status": "done",
      "note": null
     },
@@ -2267,8 +2273,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "skip",
-     "note": "已是最新：監看的是筆記庫「裡面的某個資料夾」時，保護不會再失效・機器寫的檔案，一眼就看得出不是你自己的"
+     "status": "done",
+     "note": null
     },
     {
      "id": "version",
@@ -2291,26 +2297,26 @@
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "skip",
-     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+     "status": "done",
+     "note": null
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "skip",
-     "note": "已與遠端同步，沒有要推的"
+     "status": "done",
+     "note": null
     },
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
-     "status": "skip",
-     "note": "釘子與安裝器原始碼都沒動（built 2026-08-15，src eb3f3bd237a8）"
+     "status": "done",
+     "note": null
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "skip",
-     "note": "線上已是 1.4.46／pin b85572c／安裝器原始碼 eb3f3bd237a8 未變，且釘子沒動 ⇒ 不重複部署"
+     "status": "done",
+     "note": null
     },
     {
      "id": "docs",
@@ -2345,7 +2351,7 @@
    ],
    "sourceCommit": "Arcrun@cacaa33f7d4e",
    "machine": "9f06f3113188",
-   "ts": 1786814005993
+   "ts": 1786868163232
   }
  }
 }
