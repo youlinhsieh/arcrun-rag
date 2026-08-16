@@ -32,6 +32,12 @@
     "   路徑用 `~/` 開頭（ship.mjs 的 `expandHome` 展開）：**不准寫死 `/Users/<誰>/`**，",
     "   因為 `installer/` 會被推上 GitHub 公開鏡像，寫死等於公開使用者名稱、換機器也不成立。",
     "",
+    "⑥ 【2026-08-16 加，arcrun-rag#88】有 `installer` 的目標**必須宣告 `releaseRecord`**",
+    "   （＝這個環境的使用者要去哪裡讀「這版改了什麼」）。舊欄位 `githubRelease` 只有 prod 有，",
+    "   於是那一站對 stage 永遠是「本目標沒有這東西」⇒ 同一件事在兩個環境待遇不同。",
+    "   leo：「changelog 直接看 github，如果在 stage 直接看 gitea」「兩邊動作相同，",
+    "   不用這裡一套那裡一套」。現在兩個目標宣告同一欄，只有 `host` 不同（見不變式 Ⅵ）。",
+    "",
     "改這個檔＝改出貨會打到哪裡，等同改鐵律：要在 commit 說明理由。"
   ],
 
@@ -118,6 +124,35 @@
         "waitMs": 3000,
         "maxTries": 4
       },
+      "releaseRecord": {
+        "_": [
+          "版本發佈紀錄（Leo/arcrun-rag#88，2026-08-16 接上 stage 這一半）。",
+          "",
+          "leo 2026-08-13：「內部 Gitea 和外部 Github 在**每次提交 Stage, Prod 之前**，",
+          "一定要建立一個版本⋯⋯這樣從票、PR、Commit、version，每個都有歷史可查。」",
+          "leo 2026-08-16：「changelog 直接看 github，**如果在 stage 直接看 gitea**，",
+          "不要花力氣維護兩個地方。」「**兩邊動作相同，不用這裡一套那裡一套。**」",
+          "",
+          "🔴 為什麼這一欄叫 `releaseRecord` 而不是 `giteaRelease`：",
+          "  舊的欄位名是 `githubRelease`，而它只有 prod 有 ⇒ `github-release` 那一站",
+          "  對 stage 永遠印「本目標沒有 githubRelease（非發佈目標屬正常）」跳過。",
+          "  那正是**不變式 Ⅷ 點名的形狀**：只在單邊執行的站，是測試與 stage 的共同盲區。",
+          "  ⇒ 現在兩個目標都宣告同一個欄位，差別只在 `host`（＝「送到哪」，就是登錄簿",
+          "    唯一該決定的事）。一個目標漏填，開跑前就 exit 2，說不出「我這邊沒這東西」。",
+          "",
+          "🔑 Gitea 寫入權杖：**不另開一條路**。credentials-map.md 白紙黑字寫著",
+          "  「Gitea 寫入 token：各 repo 的 git remote 網址內嵌」⇒ 由 gitea-release.mjs 的",
+          "  `giteaWriteCredentialsFromRemote()` 從本機 `gitea` remote 讀出來（D36：只讀，",
+          "  不落地、不印真身）。`GITEA_TOKEN` 環境變數只有 read:repository，開 release 會 403。",
+          "",
+          "repoSlug 是**原始碼 repo**（票與 PR 住的地方），不是 bundle repo——leo 要的那條鏈",
+          "（票 → PR → commit → version）只有在這裡才串得起來。"
+        ],
+        "host": "gitea",
+        "repoSlug": "inkstone/arcrun-rag",
+        "baseUrl": "https://git.uncle6.me"
+      },
+
       "docsSite": {
         "_": "s2（stage-environment SDD）：文件站 stage 版，2026-08-09 加。同帳號不同 worker 名，不掛網域。",
         "cwd": "docs-site",
@@ -209,8 +244,13 @@
         "waitMs": 20000,
         "maxTries": 4
       },
-      "githubRelease": {
+      "releaseRecord": {
         "_": [
+          "🔴 2026-08-16 更名：`githubRelease` → `releaseRecord`（Leo/arcrun-rag#88）。",
+          "  只有欄位名與多了一個 `host` 欄，prod 這一側的動作一字未改。",
+          "  更名的理由在 stage 那一欄寫了：舊名字把「發佈紀錄」跟「GitHub」綁死，",
+          "  於是 stage 只能是「沒有這東西」——而 leo 要的是「兩邊動作相同」。",
+          "",
           "讓「完整發佈紀錄在 GitHub」這句承諾變成真的（2026-08-10，總管實測發現）。",
           "docs-site 的 changelog.md 對用戶寫死一句：「完整發佈紀錄在這裡：GitHub 版本發佈」，",
           "但 youlinhsieh/arcrun-rag 的 releases 一個都沒有、公開鏡像停在數週前——出貨管線",
@@ -220,6 +260,7 @@
           "mirrorRemote 是那個 mirror 的 GitHub 遠端網址（push 認證走環境變數",
           "GITHUB_MIRROR_TOKEN，不落地不進版控——查 credentials-map.md）。"
         ],
+        "host": "github",
         "repoSlug": "youlinhsieh/arcrun-rag",
         "mirrorDir": ".github-public",
         "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git"

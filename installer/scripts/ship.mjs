@@ -87,9 +87,12 @@
  *   SHIP_DELIVERY_DRILL=1 node installer/scripts/ship.mjs --target stage --delivery-only
  *                                                             # 反向演練：期望值不可能達成，
  *                                                             # 這一站**應該**判失敗（不失敗才是壞了）
+ *   node installer/scripts/ship.mjs --target stage --release-record-only
+ *                                                             # 只跑「留一筆版本發佈」那一站
  * 旗標：--quick（驗收略過真下載，只驗中繼資料）／--allow-deletions（bundle 有刪檔時放行）
  *       --verify-only（只跑最後那步驗收；不建/不推/不部署/不蓋章，判定與 --confirm 一樣嚴）
  *       --delivery-only（只跑送達收斂那一站；禁用在 publish 目標）
+ *       --release-record-only（只跑發佈紀錄那一站；禁用在 publish 目標 ⇒ 碰不到 GitHub）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync } from 'node:fs';
@@ -110,6 +113,10 @@ import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
 import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
+import {
+  giteaWriteCredentialsFromRemote, redactToken,
+  releaseExists as giteaReleaseExists, createRelease as giteaCreateRelease, commitExists as giteaCommitExists,
+} from './gitea-release.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
@@ -176,19 +183,56 @@ for (const [name, t] of Object.entries(cfg.targets)) {
   }
 }
 
-// 🔴 不變式 Ⅵ：**會發佈給用戶的目標，一定要有 githubRelease**（2026-08-10，總管實測發現）
+// 🔴 不變式 Ⅵ：**會有人拿到東西的目標，一定要有發佈紀錄（releaseRecord）**
+//   （2026-08-10 立，2026-08-16 從「只管 prod／只認 GitHub」擴到兩個目標，arcrun-rag#88）
+//
+//   ── 原始病史（2026-08-10，總管實測發現）──────────────────────────────────
 //   leo：「你的出貨沒有限制你一定要在 github 產生 release？」「那為什麼不改掉？」
 //   `docs-site/.../help/changelog.md` 對用戶承諾「完整發佈紀錄在 GitHub 版本發佈」，
 //   但 `youlinhsieh/arcrun-rag` 的 releases 一個都沒有、公開鏡像停在數週前——
 //   出貨管線從沒有任何一步碰過它。`docs-changelog` 那道閘擋得住「沒寫說明」，
-//   「GitHub 上有沒有這一版」卻完全沒有對應的閘 ⇒ 一個承諾有牙齒、一個沒有，
-//   於是後者每次出貨都安靜漏掉。跟 docsSite 同一種病、同一種解法：宣告成必填，
-//   漏填在任何步驟開跑前就擋下，不是出貨時的一行警告（也不是等用戶點進空頁面才發現）。
+//   「GitHub 上有沒有這一版」卻完全沒有對應的閘 ⇒ 一個承諾有牙齒、一個沒有。
+//
+//   ── 2026-08-16 為什麼要擴（同一個病的下一層，arcrun-rag#88）──────────────
+//   leo 看著 Gitea 的版本發佈頁問：「**你為什麼沒有發 Gitea 內部版本？**」
+//   實查：`gitea-release.mjs` 本身是能用的（三天前 #88 的演練在那頁上留下
+//   `demo-88-v1.4.44`／`demo-88-v0.1.1` 兩筆），但登錄簿的欄位叫 `githubRelease`、
+//   這裡的條件寫 `t.publish` ⇒ **stage 兩個條件都不成立** ⇒ 那一站對 stage
+//   永遠印「本目標沒有 githubRelease（非發佈目標屬正常）」跳過。
+//   🔴 這正是不變式 Ⅷ 已經寫過的形狀：**只在單邊執行的站，是測試與 stage 的共同盲區**，
+//     而且它在出貨報告的左右對照表上「看起來是合法的」（那一格的理由是「登錄簿宣告沒這東西」）。
+//     ⇒ 能力做好了一半，而那一半不是會被人用到的那半。
+//   leo 同日的裁決把「該長在哪」也講死了：「changelog 直接看 github，**如果在 stage
+//   直接看 gitea**，不要花力氣維護兩個地方」「**兩邊動作相同，不用這裡一套那裡一套。**」
+//
+//   ⇒ 兩處改動，**都只會變嚴、不會放寬**：
+//     ① 欄位 `githubRelease` → `releaseRecord`（多一個 `host`，決定送到哪個主機）
+//     ② 條件 `publish` → `installer || publish`
+//        （prod 兩者皆真，原本擋得住的現在照樣擋；stage 有 installer ⇒ 新被納入；
+//          selftest 兩者皆無 ⇒ 照舊免除，它不 push、不部署，不面對任何人）
+const RELEASE_HOSTS = {
+  gitea: ['repoSlug'],
+  github: ['repoSlug', 'mirrorDir', 'mirrorRemote'],
+};
 for (const [name, t] of Object.entries(cfg.targets)) {
-  if (t.publish && !t.githubRelease) {
-    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 會發佈給用戶（publish=true），卻沒宣告 githubRelease。`);
-    console.error(`   說明文件對用戶承諾「完整發佈紀錄在 GitHub」，沒有這一步就是承諾沒有機械保證。`);
-    console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 githubRelease（repoSlug／mirrorDir／mirrorRemote）`);
+  if (!(t.installer || t.publish)) continue;
+  if (!t.releaseRecord) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 會有人拿到東西，卻沒宣告 releaseRecord。`);
+    console.error(`   使用者想知道「這版改了什麼」，去這個環境對應的 repo 就要找得到；`);
+    console.error(`   沒有這一步，那句話就只是文件上的承諾，沒有任何東西在保證它。`);
+    console.error(`   → 在 installer/ship.targets.json 的 \`${name}\` 補 releaseRecord`);
+    console.error(`     （host：${Object.keys(RELEASE_HOSTS).join('／')}｜repoSlug｜host=github 另需 mirrorDir／mirrorRemote）`);
+    process.exit(2);
+  }
+  const host = String(t.releaseRecord.host || '');
+  if (!RELEASE_HOSTS[host]) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 的 releaseRecord.host 不認得（現在寫的是：${host || '(空白)'}）。`);
+    console.error(`   只准填：${Object.keys(RELEASE_HOSTS).join('／')}——「送到哪」是登錄簿唯一該決定的事，不准用手打。`);
+    process.exit(2);
+  }
+  const lack = RELEASE_HOSTS[host].filter((k) => !t.releaseRecord[k]);
+  if (lack.length) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 的 releaseRecord（host=${host}）缺欄位：${lack.join('、')}`);
     process.exit(2);
   }
 }
@@ -266,6 +310,27 @@ if (DELIVERY_ONLY && T.publish) {
   process.exit(2);
 }
 
+// 🔴 --release-record-only（2026-08-16，arcrun-rag#88）：**只跑發佈紀錄那一站**。
+//   理由與 `--verify-only`／`--delivery-only` 一字不差：「一道無法單獨演練的閘，
+//   修了也不知道修好沒有」。而這一站的病史正是那句話的極端版本——它從接上管線的那天起
+//   **在 stage 一次都沒被執行過**（條件寫死只認 prod），沒有人有辦法便宜地跑它一次。
+//   期望值同樣取自**磁碟上那份 bundle manifest**（`ensureExpectationsFromDisk`），
+//   問的是「上次送出去的那一版，發佈紀錄留了嗎」，不是拿一個手抄的數字去對。
+//   安全性：不建、不推 bundle、不部署、不蓋章；且**不准用在會發佈給用戶的目標**
+//   ——這一條同時是 D20 的結構性保證：這個模式**碰不到 GitHub**，
+//   唯一到得了的 host 是 Gitea（內部開發環境，D73），開閘儀式一步都沒被繞過。
+const RELEASE_RECORD_ONLY = flag('--release-record-only');
+if (RELEASE_RECORD_ONLY && (CONFIRM || VERIFY_ONLY || DELIVERY_ONLY)) {
+  console.error('❌ --release-record-only 不能跟 --confirm／--verify-only／--delivery-only 一起用：它只跑發佈紀錄那一站。');
+  process.exit(2);
+}
+if (RELEASE_RECORD_ONLY && T.publish) {
+  console.error(`❌ --release-record-only 不准用在會發佈給用戶的目標（${TARGET_NAME}）。`);
+  console.error(`   那一半是對外發佈、受 D20 人閘管制——演習視同作戰，但演習不在正式環境上做，`);
+  console.error(`   也不從一個「不需要解保險」的旗標繞進去。`);
+  process.exit(2);
+}
+
 // ── 小工具 ────────────────────────────────────────────────────────────────
 const sh = (cmd, args, cwd, env) =>
   execFileSync(cmd, args, { cwd, encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env }).trim();
@@ -275,6 +340,27 @@ function shLive(cmd, args, cwd, env) {
     cwd, stdio: 'inherit', env: env ? { ...process.env, ...env } : process.env,
   });
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} 失敗（exit ${r.status}）`);
+}
+
+/**
+ * 推出貨分支到 Gitea，且**不把權杖印出來**（D36：值不落地、不外洩）。
+ *
+ * 為什麼要專門寫一支而不是直接用 `sh('git', ['push', ...])`：
+ * `gitea` remote 的網址**內嵌帳密**（credentials-map.md 記載的既有做法），而 git 會把
+ * 解析後的完整網址回聲到 stderr——2026-08-16 實測，一句 LFS locking 的好心提示就把
+ * `https://<帳號>:<token>@git.uncle6.me/...` 整條印在出貨輸出裡。
+ * 而出貨輸出正是會被貼進票、貼進報告、留在終端記錄裡的東西 ⇒ 那把鑰匙就跟著散出去。
+ * ⇒ 成功時什麼都不印；失敗時才把訊息帶出來，且先把 `//帳號:權杖@` 遮掉再丟。
+ */
+function pushGiteaQuietly(branch) {
+  const r = spawnSync('git', ['push', 'gitea', `HEAD:refs/heads/${branch}`], {
+    cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+  });
+  if (r.status !== 0) {
+    const msg = `${r.stdout || ''}\n${r.stderr || ''}`.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, '//***:***@');
+    throw new Error(`把出貨分支推上 Gitea 失敗（exit ${r.status}）：\n     `
+      + msg.trim().split('\n').filter(Boolean).slice(-6).join('\n     '));
+  }
 }
 
 /** git remote 正規化：去掉協定、帳密、.git 結尾 ⇒ 只比「這是哪個 repo」。 */
@@ -392,28 +478,49 @@ const STEPS = [
   //   --confirm 都先查**，這樣「解保險之前」就能看到會不會因為缺前置環境而失敗，
   //   不必等真的打到 github-release 那一步才發現（08-10 那兩次失敗其中一次正是這樣）。
   //
-  // 🔴 2026-08-16（arcrun-rag#102）：**這一站現在自己去把鑰匙拿出來，不再要人先 export。**
-  //   leo：「每次出貨必有這個問題，為什麼不把它編入流程必備？」——舊版這裡只**查**，
-  //   查不到就丟一條「請你去查憑證地圖、回 shell export」的指示。但那三件事管線全做得到：
-  //   它知道自己要哪些名字、系統有一張表記著每把鑰匙住哪個 `.env`、`.env` 就在往上找得到
-  //   的地方 ⇒ 人在中間只是搬運工，而**每次出貨都要重來一次**（08-10 那次失敗就是它）。
-  //   做法沿用 2026-08-06 已經治過同款病的 `build-msix.sh`（Store Identity 三值自己讀頂層
-  //   `.env`，884ae8f）——這裡把它抽成管線共用的 `credential-store.mjs`。
+  // 🔴 2026-08-16：這一段是 **#88 與 #102 兩件事的交會處**，合併時兩邊都必須活著。
+  //   · #88（發佈紀錄兩邊動作相同）：條件從 `T.githubRelease` 改成看 `T.releaseRecord.host`
+  //     ⇒ stage 與 prod **各印一行「發佈紀錄目的地」**。在此之前 stage 連「我這一版的說明
+  //     要發到哪、憑證在不在」都不會印一個字 ⇒「stage 根本沒有發佈紀錄」在預演輸出上看不出來。
+  //   · #102（不再要人先 export 金鑰）：GitHub 那條路的憑證**由管線自己去 `.env` 取**，
+  //     不是丟一句「請你查憑證地圖、回 shell export」。leo：「每次出貨必有這個問題，
+  //     為什麼不把它編入流程必備？」
   //
-  //   ⚠️ 三件事**刻意不變**：
+  //   ⚠️ **合併時最容易出的事就在這裡**：#88 那一半的原始寫法保留了舊的手動 throw，
+  //   直接採用它會讓剛關掉的 #102 **靜默復發**——而且沒有任何測試會講一聲
+  //   （出貨線的憑證前置沒有測試守著，它只在真的跑出貨時才現形）。
+  //   ⇒ 解衝突時刻意把 #102 的自動取得放回 GitHub 那條路。
+  //
+  //   ⚠️ #102 的三條刻意不變，合併後照樣成立：
   //     ① 斷點沒有往後挪——拿不到照樣在 preflight 斷，訊息還多講了「查過哪幾份 .env」
   //     ② 操作者在 shell 明確給的值**永遠贏**，自動來源不覆蓋（見 credential-store.fill）
-  //     ③ D36：只取被點名的鍵、值不落地不列印；下面 push 出去的都只有名字與來源檔路徑
-  if (T.githubRelease) {
-    //   GITHUB_ACCOUNT_NAME 一起帶（github-release／publish-github.sh 組 Basic auth 要用，
-    //   缺了會退回字面 'git'）——它不是硬前置，所以不進 missing 判定，拿得到就用。
-    const cred = fillCredentials(['GITHUB_MIRROR_TOKEN', 'GITHUB_ACCOUNT_NAME'], { startDir: REPO_ROOT });
-    if (!process.env.GITHUB_MIRROR_TOKEN) {
-      throw missingCredentialError(
-        { ...cred, missing: ['GITHUB_MIRROR_TOKEN'] },
-        { need: 'github-release 步驟會需要它，現在就能發現，不必等解保險、打到那一步才失敗' });
+  //     ③ D36：只取被點名的鍵、值不落地不列印；push 出去的只有名字、來源檔與遮蔽後的權杖
+  {
+    const R = T.releaseRecord;
+    if (R.host === 'github') {
+      //   GITHUB_ACCOUNT_NAME 一起帶（release-record／publish-github.sh 組 Basic auth 要用，
+      //   缺了會退回字面 'git'）——它不是硬前置，所以不進 missing 判定，拿得到就用。
+      const cred = fillCredentials(['GITHUB_MIRROR_TOKEN', 'GITHUB_ACCOUNT_NAME'], { startDir: REPO_ROOT });
+      if (!process.env.GITHUB_MIRROR_TOKEN) {
+        throw missingCredentialError(
+          { ...cred, missing: ['GITHUB_MIRROR_TOKEN'] },
+          { need: 'release-record 步驟會需要它，現在就能發現，不必等解保險、打到那一步才失敗' });
+      }
+      for (const l of describeSources(cred)) lines.push(l);
+      lines.push(`發佈紀錄目的地：GitHub ${R.repoSlug}`);
+    } else {
+      // Gitea 寫入權杖＝本機 `gitea` remote 網址內嵌的帳密（credentials-map.md 白紙黑字寫著
+      // 「Gitea 寫入 token：各 repo 的 git remote 網址內嵌」）。**不另開一條路**——
+      // `GITEA_TOKEN` 環境變數只有 read:repository，開 release 會 403，不是替代品。
+      const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+      if (!cred) {
+        throw new Error(
+          `讀不到 Gitea 寫入權杖——release-record 步驟會需要它，現在就能發現，不必打到那一步才失敗。\n` +
+          `     來源＝本機 \`gitea\` remote 網址內嵌的帳密（system-dev/wiki/credentials-map.md）。\n` +
+          `     這個 clone 的 gitea remote 不存在，或網址沒有帶帳密。`);
+      }
+      lines.push(`發佈紀錄目的地：Gitea ${R.repoSlug}（寫入權杖已就位：${redactToken(cred)}）`);
     }
-    for (const l of describeSources(cred)) lines.push(l);
   }
 
   // (b) 產物來源：**每個目標都從 Arcrun 原始碼重打**（2026-08-11，D65 三次補述訂正，
@@ -1511,19 +1618,87 @@ const STEPS = [
   return { status: 'done', detail: lines };
 }},
 
-// ── 10. github-release：讓「完整發佈紀錄在 GitHub」這句話變成真的 ──────────────
+// ── 10. release-record：這個環境的使用者去哪讀「這版改了什麼」──────────────────
 //
 // 🔴 leo 2026-08-10：「你的出貨沒有限制你一定要在 github 產生 release？」「那為什麼不改掉？」
-//   放在 verify **之後**（最後一步）：只有全部驗收通過、用戶真的拿得到這一版，
-//   才在 GitHub 上留一筆紀錄——不然等於對用戶宣告一個沒送達的版本。
+// 🔴 leo 2026-08-16：「**你為什麼沒有發 Gitea 內部版本？**」
+//                    「changelog 直接看 github，**如果在 stage 直接看 gitea**，
+//                      不要花力氣維護兩個地方。」「**兩邊動作相同，不用這裡一套那裡一套。**」
 //
+// ── 2026-08-16 這一站為什麼改名（arcrun-rag#88）─────────────────────────────
+// 舊 id 是 `github-release`，而 leo 要的東西**跟 GitHub 沒有必然關係**——他要的是
+// 「使用者想看某一版有什麼變化時，去那個環境對應的地方就看得到」。名字綁死主機的結果，
+// 就是 stage 只能是「本目標沒有 githubRelease」，於是同一件事在兩個環境待遇完全不同。
+// 這與 `build` → `fetch-artifacts`（2026-08-15）是同一種更名：**照本質動作命名**。
+// `installer/ship-report.json` 的歷史照舊留著舊 id——那是當時真的叫什麼。
+//
+// 放在 verify **之後**（最後一步）：只有全部驗收通過、使用者真的拿得到這一版，
+//   才留下那一筆紀錄——不然等於對使用者宣告一個沒送達的版本。
 // 冪等：同一版重跑 --confirm 不該報錯或建出兩筆——先查 tag 是否已存在，存在就跳過。
-// D20：這裡的 push／API 呼叫是 fetch/execFileSync 開出去的，Bash hook 看不到，
-//   保險檢查與留痕跟 `push` 步驟一樣自己做（checkArmed + logGithubContact）。
-{ id: 'github-release', title: '在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄', mutates: true, async run() {
-  if (!T.githubRelease) return { status: 'skip', detail: ['本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）'] };
-  const G = T.githubRelease;
+// 兩個主機的形狀刻意一模一樣：① 先讓那顆 commit 在該主機上看得到 ② 再建 release。
+//   ①**不是儀式**：指到一顆只有某台機器看得到的 commit，leo 要的
+//   「票 → PR → commit → version 都有歷史可查」那條鏈就是斷的，而頁面看起來完全正常。
+// D20：**只有 github 那一半受管制**（fetch/execFileSync 開出去的呼叫 Bash hook 看不到，
+//   保險檢查與留痕跟 `push` 步驟一樣自己做）；Gitea 是內部開發環境（D73），寫入不需開閘。
+{ id: 'release-record', title: '在這個環境對應的 repo 留一份使用者點得到的版本發佈', mutates: true, async run() {
+  const R = T.releaseRecord;
+  // `--release-record-only` 沒跑 fetch-artifacts／version 兩步 ⇒ ctx 是空的。
+  // 期望值取自磁碟上那份 bundle manifest（＝上次真的送出去的內容），同 --verify-only。
+  const fromDisk = RELEASE_RECORD_ONLY ? ensureExpectationsFromDisk() : null;
   const tag = `v${ctx.release}`;
+
+  // ── host=gitea（stage）：內部封測者要看的那一份 ────────────────────────────
+  if (R.host === 'gitea') {
+    const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+    if (!cred) throw new Error('讀不到 Gitea 寫入權杖（preflight 已經查過一次，走到這裡還沒有＝remote 在兩步之間被改動過）');
+    const opts = { token: cred.token, baseUrl: R.baseUrl };
+
+    const existing = await giteaReleaseExists(R.repoSlug, tag, opts).catch((e) => {
+      throw new Error(`查詢 ${R.repoSlug} 是否已有 release ${tag} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
+    });
+    if (existing) return { status: 'skip', detail: [`Gitea 已有 ${tag}：${existing.html_url}`] };
+
+    const body = releaseSectionFor(REPO_ROOT, ctx.release);
+    if (!body) {
+      throw new Error(
+        `說明文件裡沒有 ${ctx.release} 這一版可以當作版本發佈的內容（${CHANGELOG_REL}）。\n` +
+        `     這不是「先跳過、之後再補」——少了它，封測者點進版本發佈頁看到的是空白。\n` +
+        `     （理論上 docs-changelog 那一站已經擋過，走到這裡還缺，代表 changelog 在兩步之間被改動過）`);
+    }
+
+    // ① 讓這一版的原始碼 commit 在 Gitea 上看得到（＝交貨，D73）。
+    //   看不到就把**目前這個分支**推上去——這與 github 那一半先推公開鏡像是同一個動作。
+    //   🔴 但絕不代推 main／master：那道閘（總管看過才併）是人的同意，
+    //     不能因為「出貨腳本順手做了」就被繞過（InkStoneCo 頂層規則二之一）。
+    const headSha = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
+    const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD'], REPO_ROOT);
+    const detail = fromDisk ? [fromDisk] : [];
+    let onServer = await giteaCommitExists(R.repoSlug, headSha, opts);
+    if (!onServer) {
+      if (/^(main|master|HEAD)$/.test(branch)) {
+        throw new Error(
+          `這一版的原始碼 commit（${headSha.slice(0, 7)}）在 ${R.repoSlug} 上找不到，而目前分支是 \`${branch}\`。\n` +
+          `     出貨線**不代推 main**（那道閘是人的同意，不能被腳本繞過）⇒ 請先把它併上去再出貨。\n` +
+          `     為什麼不放行：指到一顆別人看不到的 commit 的版本發佈，「票→PR→commit→version」那條鏈是斷的。`);
+      }
+      pushGiteaQuietly(branch);  // 不用 sh：git 會把內嵌帳密的網址回聲出來（D36）
+      detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
+      onServer = await giteaCommitExists(R.repoSlug, headSha, opts);
+      if (!onServer) throw new Error(`推完了，但 ${R.repoSlug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
+    } else {
+      detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}`);
+    }
+
+    // ② 建 release
+    const rel = await giteaCreateRelease({
+      repoSlug: R.repoSlug, tag, name: ctx.release, body, target: headSha, token: cred.token, baseUrl: R.baseUrl,
+    });
+    detail.unshift(`版本發佈：${rel.html_url}`);
+    return { status: 'done', detail };
+  }
+
+  // ── host=github（prod）：對外那一份（以下與 2026-08-10 版一字未改，只換了欄位名）──
+  const G = R;
 
   const existing = await releaseExists(G.repoSlug, tag).catch((e) => {
     throw new Error(`查詢 ${G.repoSlug} 是否已有 release ${tag} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
@@ -1615,6 +1790,7 @@ function setTomlVar(toml, section, key, value) {
 // --delivery-only 同理，濾成只剩送達收斂那一站（arcrun-rag#79）。
 const RUN_STEPS = VERIFY_ONLY ? STEPS.filter((s) => s.id === 'verify')
   : DELIVERY_ONLY ? STEPS.filter((s) => s.id === 'purge')
+  : RELEASE_RECORD_ONLY ? STEPS.filter((s) => s.id === 'release-record')
   : STEPS;
 
 // ── 站表閘：在任何東西被改動之前跑（Leo/arcrun-rag#77，leo 2026-08-11）─────────
@@ -1656,7 +1832,9 @@ console.log(`模式　${VERIFY_ONLY
   ? '🔬 只驗收（--verify-only）：不建、不推、不部署、不蓋章；判定與 --confirm 同樣嚴格'
   : DELIVERY_ONLY
     ? `📦 只查送達（--delivery-only）：只跑送達收斂那一站，不建、不推、不部署${process.env[DRILL_ENV] ? `｜🔬 ${DRILL_ENV} 反向演練：期望值不可能達成，這一站**應該**判失敗` : ''}`
-    : CONFIRM ? '⚡ 執行（--confirm）' : '🔎 預演（只做不改變外界的步驟；要真的走完加 --confirm）'}`);
+    : RELEASE_RECORD_ONLY
+      ? '🏷  只留發佈紀錄（--release-record-only）：只跑那一站，不建、不推 bundle、不部署、不蓋章'
+      : CONFIRM ? '⚡ 執行（--confirm）' : '🔎 預演（只做不改變外界的步驟；要真的走完加 --confirm）'}`);
 console.log(`步驟　${RUN_STEPS.map((s) => s.id).join(' → ')}\n`);
 
 let failedAt = null;
@@ -1668,7 +1846,12 @@ for (const [i, step] of RUN_STEPS.entries()) {
     // 預演：取貨／算版本會寫本機工作目錄，但不推不部署 ⇒ 允許；其餘改變外界的一律不做。
     // `--delivery-only` 的整個存在理由就是**單獨跑那一站**，所以那一站在這個模式下要真的跑
     //   （它不 push 不 deploy；會碰到的只有送貨管道的作廢／重讀，而這個模式禁用在 publish 目標）。
-    const localOnly = step.id === 'fetch-artifacts' || step.id === 'version' || (DELIVERY_ONLY && step.id === 'purge');
+    //   `--release-record-only` 同理（arcrun-rag#88）：它的整個存在理由就是單獨跑那一站。
+    //   它會寫外界（建一筆 Gitea release、可能推一次出貨分支），但那是**這個模式被要求做的事**，
+    //   而且 publish 目標已經在參數檢查那裡擋死 ⇒ 它到得了的地方只有內部 Gitea。
+    const localOnly = step.id === 'fetch-artifacts' || step.id === 'version'
+      || (DELIVERY_ONLY && step.id === 'purge')
+      || (RELEASE_RECORD_ONLY && step.id === 'release-record');
     if (!localOnly) {
       console.log(`⏸  ${n} ${step.id}｜${step.title}`);
       console.log(`     預演不執行（加 --confirm 才會做）`);
@@ -1769,6 +1952,12 @@ if (DELIVERY_ONLY) {
   }
   console.log(`\n✅ 送達收斂通過｜${TARGET_NAME} 的送貨管道此刻就是 release ${ctx.release}｜daemon ${ctx.daemonVersion}`);
   console.log(`   （只查證送達，沒有出貨、沒有改任何東西）`);
+  process.exit(0);
+}
+
+if (RELEASE_RECORD_ONLY) {
+  console.log(`\n✅ 發佈紀錄就位｜${TARGET_NAME} 的 ${T.releaseRecord.host} ${T.releaseRecord.repoSlug} 上有 v${ctx.release} 這一版`);
+  console.log(`   （只留紀錄，沒有出貨、沒有建 bundle、沒有部署任何東西）`);
   process.exit(0);
 }
 
