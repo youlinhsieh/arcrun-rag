@@ -627,6 +627,172 @@ test('P0-4 deployBundledWorker：帶 wasm 模組 → 一併 append 進 multipart
 });
 
 // ===========================================================================
+// Arcrun#106 另一半：安裝器這條路也要烙 commit（2026-08-16）
+// ---------------------------------------------------------------------------
+// leo 08-16 實撞：三台實例報同一個版號（1.4.46），而 youlin／geek6688 更新後
+// **commit 欄位整個消失**——`acr` 那條烙的印記被安裝器洗掉了。
+// ⇒ 版號是貼紙，commit 才是「真的部了哪份碼」；只剩貼紙＝沒有任何方法查它們是不是同一份碼。
+// 這幾條守的是「安裝器這條路真的把兩個印記都送上去了」，不是「程式碼裡有那一行」。
+// ===========================================================================
+
+import { probeInstanceStale } from './worker.js';
+
+/** 真實 prod bundle 的 manifest.source 格式（實測 1.4.46 ＝ `Arcrun@cacaa33f7d4e`）。 */
+const REAL_SOURCE = 'Arcrun@cacaa33f7d4e';
+
+test('#106 安裝器正面：cypher 同時拿到版號與 commit（兩個印記一起烙）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources,
+      { ...baseInject, bundleRelease: '1.4.46', bundleBuilt: '2026-08-15', bundleSource: REAL_SOURCE });
+    const vars = varsOf(captured());
+    assert.equal(vars.ARCRUN_BUNDLE_VERSION, '1.4.46');
+    assert.equal(vars.ARCRUN_BUNDLE_COMMIT, 'cacaa33f7d4e',
+      '只貼版號＝把「查得出標籤有沒有漂掉」這個能力洗掉（本 issue 的病灶）');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 安裝器正面：portal 前端那顆同樣兩個都拿到（兩顆規則一致，機械閘才守得住）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', { ...baseEntry, name: 'arcrun-rag-ui' }, baseResources,
+      { ...baseInject, bundleRelease: '1.4.46', bundleSource: REAL_SOURCE });
+    const vars = varsOf(captured());
+    assert.equal(vars.ARCRUN_BUNDLE_VERSION, '1.4.46');
+    assert.equal(vars.ARCRUN_BUNDLE_COMMIT, 'cacaa33f7d4e');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 反面：manifest 沒有 source（舊 bundle）⇒ 少一個欄位，但安裝照樣走完、版號照貼', async () => {
+  // 🔴 這條是紅線：安裝器這條路每個新使用者都會跑到。
+  //    「查不到 commit」絕不可以變成「裝不起來」，也絕不可以變成「編一個假的」
+  //    （前科：t144 一次安裝用了捏造的 commit 碼，之後每次重裝都被判跳過，永遠治不好）。
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    const r = await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources,
+      { ...baseInject, bundleRelease: '1.4.46', bundleBuilt: '2026-08-15' }); // 沒給 bundleSource
+    const vars = varsOf(captured());
+    assert.equal(vars.ARCRUN_BUNDLE_VERSION, '1.4.46', '版號照貼');
+    assert.equal(vars.ARCRUN_BUNDLE_COMMIT, undefined, '沒有就整個欄位不存在');
+    assert.equal(r.url, 'https://arcrun-rag-cypher.acme.workers.dev', '安裝流程照樣走完（少一個標籤 ≠ 裝不起來）');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 反面：source 是解不出 sha 的垃圾 ⇒ 一樣不貼（不把垃圾當 commit 烙上去）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources,
+      { ...baseInject, bundleRelease: '1.4.46', bundleSource: 'Arcrun@main' });
+    assert.equal(varsOf(captured()).ARCRUN_BUNDLE_COMMIT, undefined);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 其餘零件不烙印記（範圍沒有擴散）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', { ...baseEntry, name: 'arcrun-kbdb' }, baseResources,
+      { ...baseInject, bundleRelease: '1.4.46', bundleSource: REAL_SOURCE });
+    const vars = varsOf(captured());
+    assert.equal(vars.ARCRUN_BUNDLE_VERSION, undefined);
+    assert.equal(vars.ARCRUN_BUNDLE_COMMIT, undefined);
+  } finally {
+    restoreFetch();
+  }
+});
+
+// ── 存量怎麼補回來：印記不完整的實例要被判成「舊的」──────────────────────
+// 既有三台身上都沒有 commit 欄位。若只比版號，它們**永遠**不會因為「按更新」而重推
+// ⇒ 印記永遠補不進去（同 PORTAL_MAIL_RELAY_BASE 那次的形狀，見 probeInstanceStale 註解）。
+
+test('#106 存量：版號一樣但實例沒有 bundle_commit ⇒ 判定重推（印記才補得回去）', async () => {
+  const calls = installFetch(async (url) => {
+    if (url.endsWith('/health')) return { json: { ok: true, bundle_version: '1.4.46', mail_relay_configured: true } };
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.46' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.46', wantCommit: 'cacaa33f7d4e',
+    });
+    assert.equal(p.stale, true);
+    assert.match(p.reason, /沒有 bundle_commit/);
+    assert.ok(calls.length >= 1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 存量：版號一樣但 commit 不同 ⇒ 重推（「同一個版號」不代表同一份碼）', async () => {
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.46', bundle_commit: 'd7a98f53a1b2', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.46' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.46', wantCommit: 'cacaa33f7d4e',
+    });
+    assert.equal(p.stale, true);
+    assert.match(p.reason, /不是同一份碼/);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 收斂：commit 對上（acr 烙 40 碼 vs 安裝器 12 碼）⇒ 不再重推，不會變成無窮迴圈', async () => {
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.46', bundle_commit: 'cacaa33f7d4e0011223344556677889900aabb', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.46' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.46', wantCommit: 'cacaa33f7d4e',
+    });
+    assert.equal(p.stale, false, '長度不同但同一顆 commit，不該每次都全量重推');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#106 🔴 舊 bundle（我們自己也貼不出 commit）⇒ 不得因此判 stale（否則永遠重推、永遠治不好）', async () => {
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) return { json: { ok: true, bundle_version: '1.4.46', mail_relay_configured: true } };
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.46' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.46', wantCommit: '', // manifest 沒有 source
+    });
+    assert.equal(p.stale, false, '自己都貼不出來卻要求對方有＝t146 那型無窮迴圈');
+  } finally {
+    restoreFetch();
+  }
+});
+
+// ===========================================================================
 // t20④c：真品接線新增件（applySubs / pushWorkflowTo / STEPS 擴充）
 // ===========================================================================
 import { applySubs, pushWorkflowTo } from './worker.js';

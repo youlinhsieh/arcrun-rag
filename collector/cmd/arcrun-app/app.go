@@ -60,8 +60,14 @@ type accountCfg struct {
 	Namespace    string   `json:"namespace"`
 	APIKey       string   `json:"api_key,omitempty"`
 	WatchFolders []string `json:"watch_folders,omitempty"`
-	Extractor    string   `json:"extractor,omitempty"`
-	GeminiAPIKey string   `json:"gemini_api_key,omitempty"`
+	// RetiringFolders＝已按「移除並收回」、雲端還沒撤乾淨的資料夾（arcrun-rag#46）。
+	//
+	// 🔴 t108 那條教訓的直接適用：saveCfg 會把整個 accounts 陣列**用這個 struct 重新序列化**
+	//    ⇒ 這裡少一個欄位，寫在 config 裡的那一欄下次存檔就靜默消失（Go omitempty 直接不見）。
+	//    凡是 collector 的 AccountConfig 有、而 App 會改到的欄位，兩份必須鏡像。
+	RetiringFolders []string `json:"retiring_folders,omitempty"`
+	Extractor       string   `json:"extractor,omitempty"`
+	GeminiAPIKey    string   `json:"gemini_api_key,omitempty"`
 }
 
 type directConfig struct {
@@ -101,6 +107,9 @@ type syncStatus struct {
 	// 直接原樣接住，不重新定義一份會漂移的結構。key = instanceHostOf(cypher_url)
 	// （與 UIAccount.Host 同一套算法，見 shortHost）。
 	AccountDetails map[string]collector.AccountSyncStatus `json:"account_details,omitempty"`
+	// arcrun-rag#46：「移除並收回中」的資料夾進度（key＝資料夾路徑）。
+	// 形狀定義在 collector/sync_status.go，這裡原樣接住不另定義一份會漂移的結構。
+	Retiring map[string]collector.RetiringStatus `json:"retiring,omitempty"`
 }
 
 type skippedDoc struct {
@@ -219,6 +228,10 @@ func saveCfg(c *directConfig) error {
 type UIFolder struct {
 	Path   string `json:"path"`
 	AccIdx int    `json:"accIdx"`
+	// arcrun-rag#46：這個資料夾已經被移除，正在把雲端的資料收回來。
+	Retiring        bool   `json:"retiring,omitempty"`
+	RetireRemaining int    `json:"retireRemaining,omitempty"` // 還剩幾筆
+	RetireError     string `json:"retireError,omitempty"`     // 失敗真因（原文，不改寫）
 }
 type UIAccount struct {
 	Name    string     `json:"name"`
@@ -469,10 +482,31 @@ func (a *App) GetState() UIState {
 	}
 
 	sync := loadSyncStatus()
+
+	// arcrun-rag#46：collector 說收乾淨了的資料夾，這裡才真的從設定裡消失
+	// （App 是 config.json 的唯一寫入者，見 pruneFinishedRetirements）。
+	if pruneFinishedRetirements(cfg, sync) {
+		if err := saveCfg(cfg); err != nil {
+			appLog("清理已收回的資料夾失敗：%v", err)
+		} else {
+			restartWatch()
+		}
+	}
+
 	for i, acc := range cfg.Accounts {
 		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email}
 		for _, f := range acc.WatchFolders {
 			ui.Folders = append(ui.Folders, UIFolder{Path: f, AccIdx: i})
+		}
+		// 收回中的資料夾照樣列出來，只是標成「收回中」——不然按下移除之後它立刻消失，
+		// 使用者無從知道撤除還在跑、更看不到失敗的原因（那正是這張票的病的另一面）。
+		for _, f := range acc.RetiringFolders {
+			uf := UIFolder{Path: f, AccIdx: i, Retiring: true}
+			if st, ok := sync.Retiring[f]; ok {
+				uf.RetireRemaining = st.Remaining
+				uf.RetireError = st.LastError
+			}
+			ui.Folders = append(ui.Folders, uf)
 		}
 		// t215：per-account 雲端版本狀態——key 與 Host 同一套算法（shortHost），
 		// 對應 collector 寫入 status.json 時用的 instanceHostOf（兩者對一般 https URL 同值）。
@@ -647,6 +681,14 @@ func (a *App) AddFolder(accIdx int, path string) error {
 			return nil // 已經在看守了，不重複加
 		}
 	}
+	// arcrun-rag#46：正在收回中的資料夾不能同時又加回來看守——那會變成
+	// 「一邊撤除、一邊重新上傳同一批檔」，兩條路互相打架，結果不可預測。
+	// 擋一次比事後對帳容易解釋，訊息要告訴使用者現在是什麼狀況、該怎麼辦。
+	for _, f := range cfg.Accounts[accIdx].RetiringFolders {
+		if f == path {
+			return fmt.Errorf("這個資料夾正在從雲端收回資料，等它收完再加回來（可在畫面上看到進度）")
+		}
+	}
 	cfg.Accounts[accIdx].WatchFolders = append(cfg.Accounts[accIdx].WatchFolders, path)
 	sort.Strings(cfg.Accounts[accIdx].WatchFolders)
 	if err := saveCfg(cfg); err != nil {
@@ -656,7 +698,28 @@ func (a *App) AddFolder(accIdx int, path string) error {
 	return nil
 }
 
-func (a *App) RemoveFolder(accIdx int, path string) error {
+// RemoveFolder 把資料夾從清單移除。
+//
+// 🔴 arcrun-rag#46（leo 2026-08-16 實撞）：「我去把 Logseq plugin 刪掉以後，
+//
+//	**採集的 wiki 沒消失**。」——移除之後那個資料夾的內容在雲端一筆都沒少，
+//	照樣搜得到、照樣是已嵌入狀態、AI 照樣拿它回答。
+//
+// 真兇：這支函式原本只做三件事（從 WatchFolders 拿掉、存檔、重啟看守），
+// **一次都沒碰撤除**。撤除的能力本身是好的、有測試、也真的被部署，只是
+// 「整個資料夾從清單移除」這條路從來不呼叫它——
+// **在使用者眼裡是同一件事（我不要這份資料了），在程式裡是兩條完全不同的路。**
+//
+// takedown＝使用者在對話框上明確選的那一個：
+//   - true ：連同雲端已經整理好的知識一起收回（資料夾搬進 retiring_folders，
+//     由 collector 逐筆撤除；進度與失敗原因走 status.json 回到畫面）
+//   - false：只停止同步，雲端保留（＝這支函式原本的行為）
+//
+// 為什麼做成使用者選、而不是我們替他決定：兩種都是合理的需求（換電腦／重整資料夾
+// vs 我不要這份資料了），而**猜錯任何一邊都是不可逆的**——猜「保留」則產品承諾的
+// 「資料所有權完全屬於使用者」是假的；猜「收回」則整理好的知識被誤刪。
+// ⇒ 在動作的當下把兩個後果講清楚、讓他自己挑（見前端 confirmRemove 的文案）。
+func (a *App) RemoveFolder(accIdx int, path string, takedown bool) error {
 	cfg, err := loadCfg()
 	if err != nil {
 		return err
@@ -665,17 +728,61 @@ func (a *App) RemoveFolder(accIdx int, path string) error {
 		return fmt.Errorf("找不到這個知識庫帳號")
 	}
 	keep := []string{}
+	found := false
 	for _, f := range cfg.Accounts[accIdx].WatchFolders {
 		if f != path {
 			keep = append(keep, f)
+		} else {
+			found = true
 		}
 	}
 	cfg.Accounts[accIdx].WatchFolders = keep
+	if takedown && found {
+		// 只在「本來真的在看守」時排撤除——否則重複按會排出一堆重複待辦。
+		already := false
+		for _, f := range cfg.Accounts[accIdx].RetiringFolders {
+			if f == path {
+				already = true
+			}
+		}
+		if !already {
+			cfg.Accounts[accIdx].RetiringFolders = append(cfg.Accounts[accIdx].RetiringFolders, path)
+		}
+	}
 	if err := saveCfg(cfg); err != nil {
 		return err
 	}
 	restartWatch()
+	if takedown {
+		// 不必等下一輪輪詢——使用者剛按下按鈕，他期待「現在就開始」。
+		// 沿用既有的 sync-now 訊號檔，不新發明一套 IPC。
+		_ = a.SyncNow()
+	}
 	return nil
+}
+
+// pruneFinishedRetirements 把「collector 已回報收乾淨」的資料夾從設定裡清掉。
+//
+// 為什麼由 App 清而不是 collector 自己清：config.json 的寫入者只有 App 一個，
+// 兩個行程都寫同一個檔＝互相蓋掉對方的設定（t108 那類靜默掉欄位的病的另一種形狀）。
+// collector 只在 status.json 說「這個根收乾淨了」，且**每輪都照現況重說**
+// （level-triggered）——App 關著沒看到也不會卡住，下次開起來照樣清得掉。
+func pruneFinishedRetirements(cfg *directConfig, sync syncStatus) bool {
+	changed := false
+	for i := range cfg.Accounts {
+		keep := cfg.Accounts[i].RetiringFolders[:0:0]
+		for _, f := range cfg.Accounts[i].RetiringFolders {
+			if st, ok := sync.Retiring[f]; ok && st.Done {
+				changed = true
+				continue
+			}
+			keep = append(keep, f)
+		}
+		if len(keep) != len(cfg.Accounts[i].RetiringFolders) {
+			cfg.Accounts[i].RetiringFolders = keep
+		}
+	}
+	return changed
 }
 
 // SetAI 存 AI 設定。

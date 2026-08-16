@@ -24,6 +24,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,11 @@ type AccountConfig struct {
 	APIKey       string            `json:"api_key,omitempty"`
 	WatchFolders []string          `json:"watch_folders,omitempty"` // 此帳號看守的資料夾（多根）
 	Libraries    map[string]string `json:"libraries,omitempty"`     // 資料夾→庫對映（t52）
+	// RetiringFolders＝使用者已經按下「移除並收回雲端資料」、但雲端還沒撤乾淨的資料夾
+	// （arcrun-rag#46）。**App 是唯一寫入者**：它把路徑從 WatchFolders 搬到這裡；
+	// collector 只讀，撤乾淨後在 status.json 把該根標成 done，由 App 負責清掉這一筆。
+	// 一個寫入者＝不會有兩個行程互相蓋掉對方的設定。
+	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	// t126：每帳號獨立的萃取設定（空值繼承 DirectConfig 頂層）
 	Extractor    string `json:"extractor,omitempty"`
 	GeminiAPIKey string `json:"gemini_api_key,omitempty"`
@@ -59,6 +65,8 @@ type DirectConfig struct {
 	Accounts     []AccountConfig `json:"accounts,omitempty"`
 	WatchFolder  string          `json:"watch_folder,omitempty"`  // 監看的知識資料夾（單數舊制；與 watch_folders 至少填一）
 	WatchFolders []string        `json:"watch_folders,omitempty"` // 監看的知識資料夾清單（daemon-beta task 1 多資料夾）
+	// RetiringFolders＝舊制（單帳號）的「移除並收回中」清單；新制走 Accounts[].RetiringFolders。
+	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	Manifest     string          `json:"manifest"`                // manifest JSON 路徑（必填；多資料夾時為基底名，每根一份帶尾碼）
 	CypherURL    string          `json:"cypher_url,omitempty"`    // 實例 cypher base（舊制；新制走 Accounts）
 	Namespace    string          `json:"namespace,omitempty"`     // 租戶 namespace（舊制；新制走 Accounts）
@@ -187,6 +195,11 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 		for j, p := range c.Accounts[i].WatchFolders {
 			c.Accounts[i].WatchFolders[j] = expandHome(p)
 		}
+		// arcrun-rag#46：待撤資料夾同樣要展開 `~/`——它與 WatchFolders 是同一種東西
+		// （使用者選的路徑），漏掉這裡就會去找一個字面上叫 "~" 的資料夾（t39 那個病）。
+		for j, p := range c.Accounts[i].RetiringFolders {
+			c.Accounts[i].RetiringFolders[j] = expandHome(p)
+		}
 	}
 
 	// t104：舊格式遷移——頂層 CypherURL → Accounts[0]（冪等：有 Accounts 就跳過）
@@ -199,6 +212,10 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 			APIKey:       c.APIKey,
 			Libraries:    c.Libraries,
 			WatchFolders: c.Folders(), // 正規化後的監看清單
+			// arcrun-rag#46：待撤清單也要一起遷過來。漏掉這裡＝舊制使用者的
+			// retiring_folders 停在頂層、而 makeAccountSubConfig 會用帳號層覆蓋掉它
+			// ⇒ 撤除永遠不會發生，而且**沒有任何錯誤訊息**（同 t149 的形狀）。
+			RetiringFolders: c.RetiringRoots(),
 		}}
 	}
 
@@ -347,6 +364,30 @@ func (c *DirectConfig) Folders() []string {
 	return out
 }
 
+// RetiringRoots 回傳「已移除、雲端撤除進行中」的根清單（arcrun-rag#46）。
+// 正規化方式與 Folders() 一致（頂層舊制＋Accounts 新制、去重、保序）——刻意照抄
+// 而不是只讀 Accounts：t149 的病就是「只讀了其中一層」，一整個新制設定被靜默忽略。
+func (c *DirectConfig) RetiringRoots() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range c.RetiringFolders {
+		add(expandHome(p))
+	}
+	for _, a := range c.Accounts {
+		for _, p := range a.RetiringFolders {
+			add(expandHome(p))
+		}
+	}
+	return out
+}
+
 // instanceHostOf extracts the host from a CypherURL to use as a per-instance
 // distinguisher in manifest paths (t86b). Falls back to the full URL if parsing fails.
 func instanceHostOf(cypherURL string) string {
@@ -466,6 +507,9 @@ func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 	sub.InstanceName = acc.InstanceName
 	sub.WatchFolder = ""
 	sub.WatchFolders = acc.WatchFolders
+	// arcrun-rag#46：撤除中的資料夾同樣逐帳號隔離——撤除要打的是**這個帳號**的雲端實例，
+	// 沿用頂層清單會把 A 帳號的待撤資料夾拿去 B 帳號打（同 WatchFolders 的道理）。
+	sub.RetiringFolders = acc.RetiringFolders
 	sub.Libraries = acc.Libraries
 	if sub.Library == "" {
 		sub.Library = "kb"
@@ -575,6 +619,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			APIKey:       cfg.APIKey,
 			Libraries:    cfg.Libraries,
 			WatchFolders: cfg.Folders(),
+			// arcrun-rag#46：舊制（單帳號、頂層欄位）的待撤資料夾也要帶進來，
+			// 否則只有新制 accounts[] 的人撤得掉——t149 那個「只讀了其中一層」的病。
+			RetiringFolders: cfg.RetiringRoots(),
 		}}
 	}
 
@@ -588,6 +635,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	// t210：跨帳號、跨資料夾累加的總量進度（見 rootProgress 註解）。
 	var totalProgress SyncProgress
 	var stuckReasons []string
+
+	// arcrun-rag#46：這一輪各個「移除並收回中」資料夾的進度（key＝資料夾路徑）。
+	// 每輪重建、照現況重報（level-triggered），App 看到 done 才把設定裡那一筆清掉。
+	var retiring map[string]RetiringStatus
 
 	// t215：全域「雲端最新版」只抓一次（自帶節流，見 cloud_latest.go）——
 	// 這是所有帳號共用的同一把尺，不是逐帳號各打一次。
@@ -684,6 +735,30 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			}
 		}
 
+		// arcrun-rag#46：把「使用者按了移除並收回」的資料夾撤乾淨。
+		// 放在看守資料夾之後：正在用的資料夾優先，收回是善後。
+		for _, root := range accCfg.RetiringRoots() {
+			r, e, remaining, done := retireRootOnce(accCfg, root, dryRun)
+			for i := range r {
+				r[i].Root = root
+				r[i].Account = accHost
+			}
+			results = append(results, r...)
+			if e != 0 {
+				exit = e
+			}
+			rs := RetiringStatus{Remaining: remaining, Done: done}
+			for _, x := range r {
+				if x.Status == "failed" && x.Error != "" {
+					rs.LastError = shortError(x.Error) // 最後一筆失敗的真因——不然畫面只會說「還在收回」
+				}
+			}
+			if retiring == nil {
+				retiring = map[string]RetiringStatus{}
+			}
+			retiring[root] = rs
+		}
+
 		// 2026-08-07：把這輪（可能剛更新過的）額度冷卻／今天已萃份數寫回，
 		// 供下一輪 RunDirectOnce（甚至下一次程序啟動——status.json 落地磁碟）復原。
 		accSt.DailyIngestedDate = todayUTC(now)
@@ -710,6 +785,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			ExtractorOK:    extractorOK,
 			ExtractorError: extractorError,
 			AccountDetails: accountDetails,
+			Retiring:       retiring, // arcrun-rag#46：移除並收回中的資料夾進度
 		}
 		// G-6.2：把「讀不了的檔」寫進狀態檔，App 首頁才有東西可以講。
 		// 排序＝畫面每輪穩定（map 迭代順序隨機，不排的話清單會自己跳動）。
@@ -876,6 +952,156 @@ func saveDirectConfig(configPath string, cfg *DirectConfig) error {
 		return err
 	}
 	return os.WriteFile(configPath, data, 0o600)
+}
+
+// drainPendingTakedowns 把 manifest 的「待下架」清單逐筆送去雲端撤除，成功一筆清一筆。
+//
+// 為什麼抽成共用函式（arcrun-rag#46）：撤除的能力本來就存在且驗過（改名／搬移的舊路徑、
+// 被監看資料夾裡被刪掉的檔都走它），缺的只是**「整個資料夾被移除」這條路沒有呼叫它**。
+// 修法是把既有那條路叫起來，不是在別的地方再寫一份撤除邏輯——同一件事有兩份實作，
+// 就會像 2026-07-24 的 source_uri 鍵那樣各自漂移，而且只有真機 e2e 才抓得到。
+//
+// 🔴 payload 帶 library（arcrun-rag#46 邊界）：撤除的比對鍵是 (page_name, path)，而 path 是
+// **相對於根**的路徑。兩個被監看的資料夾各自有 `notes.md` 時，兩邊的 (page_name, path) 完全
+// 相同 ⇒ 撤除其中一個會連坐另一個。library 是逐根導出的（libraryFor），把它一起送上去，
+// 雲端才有辦法只殺對的那一份。這與 ingest 送的 library 是**同一個函式**算出來的，
+// 守 2026-07-24 那條教訓：成對操作（上架/下架）要用同一把鍵。
+func drainPendingTakedowns(
+	cfg *DirectConfig, m *Manifest, absRoot, resultType, failPrefix string,
+	pace func(), dryRun bool, saveManifest func(),
+) ([]DirectResult, int) {
+	var results []DirectResult
+	exit := 0
+	if len(m.PendingTakedowns) == 0 {
+		return results, exit
+	}
+	if dryRun {
+		for oldPath := range m.PendingTakedowns {
+			results = append(results, DirectResult{Type: resultType, Path: oldPath, Status: "planned"})
+		}
+		return results, exit
+	}
+	for oldPath, pageName := range m.PendingTakedowns {
+		pace()
+		res := DirectResult{Type: resultType, Path: oldPath}
+		status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
+			"page_name": pageName,
+			"path":      oldPath,
+			"library":   cfg.libraryFor(absRoot),
+		})
+		res.HTTPStatus = status
+		if perr != nil {
+			res.Status, res.Error = "failed", failPrefix+perr.Error()
+			exit = 1
+		} else {
+			res.Status = "removed"
+			m.ClearTakedown(oldPath)
+			// 同步清掉本地舊卡（若還存在)——與「removed」分支同一套清理。
+			if cfg.Extractor != "" {
+				cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageName)))
+				if _, serr := os.Stat(cardAbs); serr == nil {
+					_ = os.Remove(cardAbs)
+				}
+				if werr := RemoveWikiDoc(absRoot, oldPath); werr != nil {
+					results = append(results, DirectResult{
+						Type: "warning", Path: oldPath, Status: "skipped",
+						Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
+					})
+				}
+			}
+		}
+		saveManifest()
+		results = append(results, res)
+	}
+	return results, exit
+}
+
+// retireRootOnce 對「使用者已經按下移除並收回、但雲端還沒撤乾淨」的資料夾跑一輪撤除
+// （arcrun-rag#46）。回傳結果、exit 建議、還剩幾筆沒撤成功、以及這個根是不是已經收乾淨。
+//
+// 為什麼不在 App 按下按鈕的當下同步做完：
+//   - 一個資料夾可能有上萬筆（實據 27,164 檔），同步做＝畫面凍住；
+//   - 雲端剛好掛掉／額度用完時，一次性的動作會**永久遺失**這些待辦——
+//     這正是 PendingTakedowns 當初存在的理由（見 manifest.go 該欄位註解）。
+//
+// ⇒ App 只負責把資料夾搬進 `retiring_folders`（設定檔，App 是唯一寫入者），
+// collector 每輪把它排進 manifest 的待辦清單、照既有那條撤除路慢慢送、失敗自動下輪重試。
+// 收乾淨了就刪掉該根的 manifest 檔，並在 status.json 把這個根標成 done——
+// **level-triggered**（每輪照現況重報，不是只報一次的事件），App 漏看一輪也不會卡住。
+func retireRootOnce(cfg *DirectConfig, root string, dryRun bool) (
+	results []DirectResult, exit int, remaining int, done bool,
+) {
+	absRoot, err := filepath.Abs(expandHome(root))
+	if err != nil {
+		return []DirectResult{{Type: "folder_takedown", Path: root, Status: "failed",
+			Error: "解析資料夾路徑失敗：" + err.Error()}}, 1, 0, false
+	}
+	absManifest, err := filepath.Abs(cfg.manifestPathFor(absRoot))
+	if err != nil {
+		return []DirectResult{{Type: "folder_takedown", Path: root, Status: "failed",
+			Error: "解析帳本路徑失敗：" + err.Error()}}, 1, 0, false
+	}
+	cfg.migrateManifestIfNeeded(absRoot, absManifest)
+
+	// 沒有帳本＝這個根從來沒同步過（或已經收乾淨了）⇒ 雲端沒有它的東西，直接算完成。
+	if _, serr := os.Stat(absManifest); errors.Is(serr, os.ErrNotExist) {
+		return nil, 0, 0, true
+	}
+	m, err := LoadManifest(absManifest, absRoot)
+	if err != nil {
+		return []DirectResult{{Type: "folder_takedown", Path: root, Status: "failed",
+			Error: "讀不了這個資料夾的帳本，暫不撤除（下輪重試）：" + err.Error()}}, 1, 0, false
+	}
+
+	// 第一輪：把帳本裡「真的送上去過」的檔案排進待辦，然後清空 entries。
+	//
+	// 🔴 只排 IngestedHash 非空的：沒成功送上去過的檔案，雲端根本沒有它——為它送一次
+	// 撤除是零命中的空打。一個兩萬檔的資料夾裡若只有一百檔真的上去過，差別是 200 倍的
+	// 雲端呼叫（而且會跟正常同步搶同一個節流器）。
+	//
+	// 清空 entries 讓這一步天然冪等：下一輪回來時 entries 已空、只剩沒送成功的待辦，
+	// 不會把已經撤掉的又排一次。
+	if len(m.Entries) > 0 && !dryRun {
+		for path, e := range m.Entries {
+			if e != nil && strings.TrimSpace(e.IngestedHash) != "" {
+				m.QueueTakedown(path, pageNameOf(path))
+			}
+		}
+		m.Entries = map[string]*ManifestEntry{}
+		if serr := m.Save(absManifest); serr != nil {
+			return []DirectResult{{Type: "folder_takedown", Path: root, Status: "failed",
+				Error: "撤除待辦存檔失敗（下輪重試）：" + serr.Error()}}, 1, len(m.PendingTakedowns), false
+		}
+	} else if dryRun {
+		for path, e := range m.Entries {
+			if e != nil && strings.TrimSpace(e.IngestedHash) != "" {
+				m.QueueTakedown(path, pageNameOf(path))
+			}
+		}
+	}
+
+	saveManifest := func() {
+		if dryRun {
+			return
+		}
+		if serr := m.Save(absManifest); serr != nil {
+			results = append(results, DirectResult{Type: "folder_takedown", Path: root,
+				Status: "failed", Error: "撤除待辦存檔失敗：" + serr.Error()})
+		}
+	}
+	dr, de := drainPendingTakedowns(cfg, m, absRoot, "folder_takedown",
+		"移除資料夾後的雲端撤除失敗（下輪重試）：", pace, dryRun, saveManifest)
+	results = append(results, dr...)
+	exit = de
+
+	remaining = len(m.PendingTakedowns)
+	if remaining == 0 && !dryRun {
+		// 全部撤乾淨 ⇒ 帳本沒有存在的理由了。刪不掉不算失敗（下輪再刪；帳本已空，
+		// 就算留著也只是個空檔，不會讓資料復活）。
+		_ = os.Remove(absManifest)
+		done = true
+	}
+	return results, exit, remaining, done
 }
 
 // runDirectOnceRoot 對單一根掃一輪、直送 added/modified/renamed、下架 removed，2xx 後回寫該根 manifest。
@@ -1340,44 +1566,11 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// InkStoneCo#44 ⑩：補打「改名／搬移後還沒下架成功」的舊路徑——包含本輪剛
 	// 上面排進去的，以及之前輪次失敗留下的（同一個待辦清單,一次處理完)。
 	// 與 orderedEvents 共用同一個節流器（pace）,避免一輪多筆改名瞬間打爆雲端。
-	if len(m.PendingTakedowns) == 0 {
-		// no-op：沒有待辦
-	} else if dryRun {
-		for oldPath := range m.PendingTakedowns {
-			results = append(results, DirectResult{Type: "renamed_takedown", Path: oldPath, Status: "planned"})
-		}
-	} else {
-		for oldPath, pageName := range m.PendingTakedowns {
-			pace()
-			res := DirectResult{Type: "renamed_takedown", Path: oldPath}
-			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
-				"page_name": pageName,
-				"path":      oldPath,
-			})
-			res.HTTPStatus = status
-			if perr != nil {
-				res.Status, res.Error = "failed", "改名/搬移後舊頁下架失敗（下輪重試）："+perr.Error()
-				exit = 1
-			} else {
-				res.Status = "removed"
-				m.ClearTakedown(oldPath)
-				// 同步清掉本地舊卡（若還存在)——與「removed」分支同一套清理,見下方。
-				if cfg.Extractor != "" {
-					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageName)))
-					if _, serr := os.Stat(cardAbs); serr == nil {
-						_ = os.Remove(cardAbs)
-					}
-					if werr := RemoveWikiDoc(absRoot, oldPath); werr != nil {
-						results = append(results, DirectResult{
-							Type: "warning", Path: oldPath, Status: "skipped",
-							Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
-						})
-					}
-				}
-			}
-			saveManifest()
-			results = append(results, res)
-		}
+	dr, de := drainPendingTakedowns(cfg, m, absRoot, "renamed_takedown",
+		"改名/搬移後舊頁下架失敗（下輪重試）：", pace, dryRun, saveManifest)
+	results = append(results, dr...)
+	if de != 0 {
+		exit = de
 	}
 
 	// 防呆警告輪：Scan 已壓下 removed 事件，這裡只回報警告不下架。

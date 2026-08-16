@@ -229,12 +229,25 @@ export function injectWranglerConfig(rawToml, ctx) {
   //
   // 注入對象與安裝器一致：cypher ＋ arcrun-rag-ui 兩顆
   // （t170 教訓：只給 cypher 會讓 UI 的 `/__version` 回空字串 ⇒「比版本」的判準永遠跳過＝沒牙齒）。
+  //
+  // 🔴 2026-08-16（Arcrun#106 另一半）：**版號旁邊要有 commit**。
+  //   版號是部署時貼上去的標籤，貼了就看不出「這顆到底是哪份碼」——08-16 三台實例
+  //   報同一個版號，而唯一能拆穿它的 `bundle_commit` 欄位被安裝器那條路洗掉。
+  //   本腳本是第三條部署路徑，同一條規則照走：**凡烙版本，必烙 commit**
+  //   （機械閘＝`installer/scripts/version-stamp-gate.mjs`）。
+  //   `bundleCommit` 沒有就不貼——同 bundleVersion 的規矩，**不猜、不編**。
   if (ctx.bundleVersion && /\[vars\]/.test(toml)
       && (/name\s*=\s*"[^"]*cypher/.test(toml) || /name\s*=\s*"arcrun-rag-ui"/.test(toml))) {
     toml = /ARCRUN_BUNDLE_VERSION\s*=/.test(toml)
       ? toml.replace(/(ARCRUN_BUNDLE_VERSION\s*=\s*")[^"]*(")/, `$1${ctx.bundleVersion}$2`)
       : toml.replace(/(\[vars\]\n)/, `$1ARCRUN_BUNDLE_VERSION = "${ctx.bundleVersion}"\n`);
     summary.bundleVersion = true;
+    if (ctx.bundleCommit) {
+      toml = /ARCRUN_BUNDLE_COMMIT\s*=/.test(toml)
+        ? toml.replace(/(ARCRUN_BUNDLE_COMMIT\s*=\s*")[^"]*(")/, `$1${ctx.bundleCommit}$2`)
+        : toml.replace(/(\[vars\]\n)/, `$1ARCRUN_BUNDLE_COMMIT = "${ctx.bundleCommit}"\n`);
+      summary.bundleCommit = true;
+    }
   }
 
   // strip 官方專屬綁定（必須在注入 embed 之前）
@@ -412,6 +425,9 @@ export function buildContextFromEnv(env = process.env) {
     // 版本標記（見下方注入段的病史）。沒給就不注入——**不猜、不編**，
     // 因為安裝器有過「用捏造的 commit 碼把假版本號寫進實例」的前科（worker.js:1634）。
     bundleVersion: env.ARCRUN_BUNDLE_VERSION || '',
+    // Arcrun#106 另一半：版號旁邊的 commit 印記。env 沒給時由 main() 從 repo 樹的
+    // git HEAD 推導（`resolveRepoCommit`）——本腳本部的就是那棵樹，那是它唯一誠實的答案。
+    bundleCommit: env.ARCRUN_BUNDLE_COMMIT || '',
     kbdbEmbed: env.KBDB_EMBED !== 'false',
     kvNamespaceIds,
     missingKv,
@@ -425,9 +441,30 @@ function labelOf(dir) {
   return dir.replace(/^.*\.component-builds\//, '').replace(/^.*\//, '');
 }
 
+/**
+ * 這棵 repo 樹現在是哪顆 commit（Arcrun#106 另一半）。
+ *
+ * 本腳本不下載 tarball、部的就是本機這棵樹 ⇒ 「它是哪份碼」的誠實答案＝這棵樹的 git HEAD。
+ * 🔴 **工作區有未提交的改動就回空字串**——那時候貼任何 sha 都是在說謊
+ *   （部上去的位元組不等於那顆 commit）。回空 ⇒ 不貼 commit ⇒ 少一個欄位，
+ *   而不是貼一個假的：本 repo 有過「捏造 commit 碼」的前科（見注入段 t144）。
+ */
+export function resolveRepoCommit(root, exec = execFileSync) {
+  try {
+    const dirty = exec('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim();
+    if (dirty) return '';
+    const sha = exec('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : '';
+  } catch {
+    return ''; // 不是 git 樹／沒有 git ⇒ 查不到就不貼
+  }
+}
+
 async function main() {
   const ctx = buildContextFromEnv();
   const root = findRepoRoot();
+  // env 沒指定就問這棵樹自己（乾淨才算數，見 resolveRepoCommit）
+  if (!ctx.bundleCommit) ctx.bundleCommit = resolveRepoCommit(root);
   const { tier1, tier2 } = discoverWorkerDirs(root);
   const allDirs = [...tier1, ...tier2];
 
@@ -522,6 +559,7 @@ async function main() {
       summary.accountId ? 'CF_ACCOUNT_ID✓' : null,
       summary.d1 ? 'D1✓' : null,
       summary.bundleVersion ? `版本=${ctx.bundleVersion}` : null,
+      summary.bundleCommit ? `commit=${ctx.bundleCommit.slice(0, 12)}` : null,
       summary.multiTenant ? 'MULTI_TENANT=false' : null,
       summary.kbdbBaseUrl ? 'KBDB_BASE_URL✓' : null,
       summary.embed ? 'embed✓' : null,

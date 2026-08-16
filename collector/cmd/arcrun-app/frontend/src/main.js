@@ -268,7 +268,14 @@ function pageLib(s, idx) {
       <button class="primary" data-addto="${idx}">加入資料夾</button>
     </div>
     <div class="kbver">${kbVersionLine(a)}</div>
-    ${(a.folders || []).map((f) => `
+    ${(a.folders || []).map((f) => f.retiring ? `
+      <div class="folder">
+        <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
+        <span class="tag retiring">${f.retireError
+          ? '收回時出錯，會自動再試'
+          : `正在從雲端收回…${f.retireRemaining ? `還有 ${f.retireRemaining} 份` : ''}`}</span>
+      </div>
+      ${f.retireError ? `<div class="d folder-note">${esc(f.retireError)}</div>` : ''}` : `
       <div class="folder">
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
         <span class="tag">自動同步中</span>
@@ -467,15 +474,30 @@ async function addFolder(accIdx) {
   state = await go.GetState(); renderNav(); renderPage();
 }
 
+// 移除資料夾＝兩個後果完全不同的動作，所以給兩顆按鈕，不給一顆猜。
+//
+// 🔴 arcrun-rag#46（leo 2026-08-16 實撞）：「我去把 Logseq plugin 刪掉以後，
+//    **採集的 wiki 沒消失**。」舊文案寫的是「已經上傳的知識卡不會被刪除」——
+//    那句話**在技術上是對的**，但它預設使用者要的是「只停止同步」，
+//    而他要的是「我不要這份資料了」。⇒ 病不在少一句說明，在**替他決定了**。
+//    現在兩個選擇都擺出來、後果各寫一行，由他挑。
 function confirmRemove(accIdx, path) {
   openSheet(`
     <h2>移除這個資料夾？</h2>
-    <p>「${esc(path)}」不再自動同步。<br/>已經上傳的知識卡不會被刪除。</p>
-    <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">移除</button></div>`,
+    <p>「${esc(path)}」要怎麼處理？<b>你電腦裡的原始檔案不會被動到</b>，兩個選擇的差別只在雲端。</p>
+    <label class="radio"><input type="radio" name="rmMode" value="takedown" checked/>
+      <span><b>連同雲端的知識一起收回</b><br/>
+      <span class="d">這個資料夾整理出來的知識會從知識庫刪除，之後搜尋找不到、AI 也不會再拿它回答。<b>刪掉就要不回來</b>。</span></span></label>
+    <label class="radio"><input type="radio" name="rmMode" value="unwatch"/>
+      <span><b>只停止同步，雲端的知識保留</b><br/>
+      <span class="d">以後這個資料夾有變動不會再上傳，但之前整理好的知識留在知識庫裡，搜尋和 AI 照樣找得到。</span></span></label>
+    <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">確定</button></div>`,
     () => {
       $('c1').onclick = closeSheet;
       $('c2').onclick = async () => {
-        await go.RemoveFolder(accIdx, path); closeSheet();
+        const mode = document.querySelector('input[name="rmMode"]:checked');
+        const takedown = !mode || mode.value === 'takedown';
+        await go.RemoveFolder(accIdx, path, takedown); closeSheet();
         state = await go.GetState(); renderNav(); renderPage();
       };
     });

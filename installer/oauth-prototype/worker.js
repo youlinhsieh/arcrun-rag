@@ -231,6 +231,8 @@ import SKILLS from './skills.json' with { type: 'json' };
 //    已整段刪除——那正是 `Leo/Arcrun#97`「我按了更新，工作流和登入全不見了」的病根。
 import { planResources, applyResourcePlan, ResourcePlanBlocked, bindingKey } from './shared/resource-rule/rule.mjs';
 import { createCloudflareResourceApi } from './shared/resource-rule/cf-resource-api.mjs';
+// 版本＋commit 兩個印記的唯一產地（Arcrun#106 另一半）——見 version-stamp.mjs 檔頭。
+import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from './version-stamp.mjs';
 
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
@@ -1226,13 +1228,26 @@ async function seedCredential(token, accountId, dbId, apiKey, name, value, servi
  * 沒注入給 ui，這條判準整段沒在運作，當時沒爆純粹是靠「舊 UI 沒有這條路由」在擋
  * ——那是一次性的。所以這裡把空值明確列成 stale。
  *
- * @returns {{stale:boolean, instanceVersion:string, wantVersion:string, uiFingerprint:string, reason:string}}
+ * ── 🔴 版本號相同 ≠ 跑的是同一份碼（Arcrun#106 另一半，2026-08-16）─────────
+ * `bundle_version` 是**部署時貼上去的標籤**，不是內容的函數：跑過安裝器就換成安裝器的號。
+ * 所以「版本一樣」只證明「最後貼標籤的人貼了同一個號」。真正能拆穿它的是 `bundle_commit`
+ * ——而以前**只有 `acr` 那條路會烙它**，安裝器這條每跑一次就把它洗掉。
+ * ⇒ 這裡多問一句「commit 對不對」，兩種情況都算舊的（fail-stale，同 `mail_relay_configured`
+ *   那條的形狀：那個 var 也是後來才加的，只比版本號的話它永遠補不進去）：
+ *     · 實例根本沒有 `bundle_commit`（既有的三台都是這樣）＝印記不完整，查不出跑的是哪份碼
+ *     · 有，但跟這次要裝的不是同一顆
+ * ⚠️ **只有在「這趟自己烙得出 commit」時才這樣要求**（`wantCommit` 有值）。
+ *    舊 bundle 沒有 `manifest.source` ⇒ 我們也貼不出來 ⇒ 若照樣要求，實例永遠補不齊
+ *    ⇒ **每次安裝都全量重推、而且永遠治不好**（t146 那型無窮迴圈的形狀，不可再造一個）。
+ *
+ * @returns {{stale:boolean, instanceVersion:string, wantVersion:string, instanceCommit:string, uiFingerprint:string, reason:string}}
  */
-export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, timeoutMs = 10000 }) {
+export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wantCommit = '', timeoutMs = 10000 }) {
   const out = {
     stale: true,
     instanceVersion: '(讀不到)',
     wantVersion: wantVer,
+    instanceCommit: '(無)',
     uiFingerprint: '(無)',
     reason: '',
   };
@@ -1260,6 +1275,19 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, tim
     if (!(hj && hj.mail_relay_configured)) {
       out.reason = 'cypher 沒有設定 PORTAL_MAIL_RELAY_BASE（忘記密碼寄不出信）＝重推';
       return out;
+    }
+    // Arcrun#106 另一半（見上方檔頭）：版號對得上，還要 commit 也對得上。
+    const gotCommit = (hj && hj.bundle_commit) || '';
+    out.instanceCommit = gotCommit || '(無)';
+    if (wantCommit) {
+      if (!gotCommit) {
+        out.reason = 'cypher 沒有 bundle_commit（查不出它跑的是哪一份碼）＝重推';
+        return out;
+      }
+      if (!commitsAgree(gotCommit, wantCommit)) {
+        out.reason = `cypher bundle_commit=${gotCommit} ≠ ${wantCommit}（版號一樣但不是同一份碼）＝重推`;
+        return out;
+      }
     }
   } catch (e) {
     out.reason = 'cypher 探測失敗＝重推（實例可能根本還沒建）';
@@ -1375,17 +1403,29 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   //    當時沒出事純粹是靠「舊 UI 沒有 /__version 這條路由」在擋——
   //    但那是一次性的（下個世代大家都有 /__version 了就失效）＝又回到猜特徵的老路。
   //    ⇒ UI 也要注入版本，讓「比版本」這個判準真的有牙齒。
-  if (entry.name && (entry.name.includes('cypher') || entry.name === 'arcrun-rag-ui')) {
-    // D37：commit 短碼跟 bundleBase(env) 走——staging 用 env.BUNDLE_BASE 蓋釘點時才不會標成 prod 的碼
-    const bundleCommit = bundleCommitOf(env);
-    // 🔴 2026-08-02：優先寫 manifest.release（semver，例 `1.4.2`）——
-    //    portal 的版本卡拿它跟 /api/latest 的 release 比對，兩邊必須同一種格式才比得動。
-    //    舊 bundle 沒有 release 欄時退回舊格式 `建置日+短碼`（portal 會判定為「較舊版本」＝落後，
-    //    這正是我們要的：舊實例本來就該被提示更新）。
-    const versionText = inject.bundleRelease
-      ? String(inject.bundleRelease)
-      : (inject.bundleBuilt ? String(inject.bundleBuilt) : '') + '+' + bundleCommit;
-    bindings.push({ type: 'plain_text', name: 'ARCRUN_BUNDLE_VERSION', text: versionText });
+  //
+  // 🔴 2026-08-16 Arcrun#106 的另一半：**版號旁邊要有 commit**。
+  //    版號是這條路貼上去的標籤（誰跑過安裝器就換成誰的號），commit 才是「真的部了哪份碼」。
+  //    以前這裡只貼版號 ⇒ 跑一次安裝器就把 `acr` 那條烙上的 commit 洗掉
+  //    ⇒ 三台實例報同一個版號，而**沒有任何方法查出它們是不是同一份碼**（leo 08-16 實撞）。
+  //    兩個印記現在綁在一起、由 versionStampVars() 一處產出（理由見 version-stamp.mjs 檔頭），
+  //    **解不出 commit 就少貼一個欄位、安裝照樣走完**——不編一個假的（本 repo 有前科，見下方 t144）。
+  if (isStampTarget(entry.name)) {
+    const stamp = versionStampVars({
+      // 🔴 2026-08-02：優先寫 manifest.release（semver，例 `1.4.2`）——
+      //    portal 的版本卡拿它跟 /api/latest 的 release 比對，兩邊必須同一種格式才比得動。
+      //    舊 bundle 沒有 release 欄時退回舊格式 `建置日+短碼`（portal 會判定為「較舊版本」＝落後，
+      //    這正是我們要的：舊實例本來就該被提示更新）。
+      release: inject.bundleRelease,
+      built: inject.bundleBuilt,
+      // D37：釘點短碼跟 bundleBase(env) 走——staging 用 env.BUNDLE_BASE 蓋釘點時才不會標成 prod 的碼
+      pinCommit: bundleCommitOf(env),
+      // manifest.source（`Arcrun@<12 碼>`）＝這批位元組真的是哪顆 Arcrun commit 編的
+      sourceCommit: inject.bundleSource,
+    });
+    for (const [name, text] of Object.entries(stamp)) {
+      bindings.push({ type: 'plain_text', name, text });
+    }
   }
   // D36 第2步（07-29）：KBDB_INTERNAL_TOKEN **不再塞進 bindings**。
   //
@@ -2013,13 +2053,17 @@ async function runInstall(env, sid, progress, force) {
         const wantVer = manifest.release
           ? String(manifest.release)
           : (manifest.built || '') + '+' + (bundleBase(env).split('@')[1] || '').slice(0, 7);
+        // Arcrun#106 另一半：這趟要烙的 commit（manifest.source）。解不出來就傳空字串，
+        // probeInstanceStale 會退回「只比版本號」的舊行為——見它的檔頭註解。
         const probe = await probeInstanceStale({
           healthUrl: `https://arcrun-cypher-executor.${subdomain}.workers.dev/health`,
           uiVersionUrl: `https://arcrun-rag-ui.${subdomain}.workers.dev/__version`,
           wantVer,
+          wantCommit: sourceCommitOf(manifest.source),
         });
         instanceStale = probe.stale;
         progress.result.instanceVersion = probe.instanceVersion;
+        progress.result.instanceCommit = probe.instanceCommit;
         progress.result.wantVersion = probe.wantVersion;
         progress.result.uiFingerprint = probe.uiFingerprint;
         progress.result.staleReason = probe.reason;
@@ -2101,7 +2145,7 @@ async function runInstall(env, sid, progress, force) {
         // KV 裡留下的仍是「接力中」而不是「running」，前端就會自動接手（不會永久卡住）。
         progress.state = 'paused_continue';
         await writeProgress(env, sid, progress);
-        const r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant: suffix, bundleBuilt: manifest.built, bundleRelease: manifest.release });
+        const r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant: suffix, bundleBuilt: manifest.built, bundleRelease: manifest.release, bundleSource: manifest.source });
         progress.result.deployedNames.push(r.name);
         progress.state = 'running'; // 這一顆平安做完，恢復 running（上面是被砍時的保底）
         if (r.usedFallback) progress.result.bundleFallbackUsed = true;

@@ -40,6 +40,18 @@ type AccountSyncStatus struct {
 	QuotaMessage *QuotaNotice `json:"quota_message,omitempty"`
 }
 
+// RetiringStatus＝某個「已移除、雲端撤除進行中」資料夾的現況（arcrun-rag#46）。
+//
+// 為什麼要有這個欄位：撤除可能跨好幾輪（節流＋單輪上限＋雲端可能剛好掛掉），
+// 使用者按下「移除並收回」之後如果畫面什麼都不說，他會以為又是一顆沒作用的按鈕
+// ——那正是這張票的病。⇒ 進度與**失敗的真因**都要看得見
+// （leo 2026-08-06：「別人的錯誤一律要顯示給用戶看，不然就會變成我的錯誤」）。
+type RetiringStatus struct {
+	Remaining int    `json:"remaining"`            // 還有幾筆沒撤成功
+	Done      bool   `json:"done"`                 // 已經收乾淨（App 看到才把設定裡那一筆清掉）
+	LastError string `json:"last_error,omitempty"` // 最後一次失敗的真因（原文，不改寫）
+}
+
 // SyncStatus 彙總每輪同步的萃取結果，持久化至 ~/.arcrun-rag/status.json。
 // 托盤依此決定顯示「已萃 N 檔」、「⚠ 萃取失敗 M 檔」還是「⚠ 萃取引擎未就緒」。
 type SyncStatus struct {
@@ -66,6 +78,10 @@ type SyncStatus struct {
 	CloudCheckOK bool   `json:"cloud_check_ok"`          // 任一帳號 /health 可達即為 true
 	// t104：per-account 狀態（key = instanceHostOf(cypher_url)）
 	AccountDetails map[string]AccountSyncStatus `json:"account_details,omitempty"`
+
+	// arcrun-rag#46：「移除並收回中」的資料夾進度（key＝資料夾路徑）。
+	// 與 SkippedDocs 同族——每輪照現況重算的快照，不進 CarryForwardActivity。
+	Retiring map[string]RetiringStatus `json:"retiring,omitempty"`
 
 	// 🔴 G-6.2「不准安靜地略過」（2026-08-06）：副檔名不在 allowedExt 的檔案，
 	// 以前在 scan.go 的白名單閘就 `return nil` 蒸發了——沒事件、沒紀錄、沒畫面。

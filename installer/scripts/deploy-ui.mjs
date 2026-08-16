@@ -32,6 +32,7 @@
  *                     不給則現場用 build-ui-bundle.mjs 從 --arcrun 打一份到暫存目錄
  *   --arcrun <path>   Arcrun repo 路徑（只在沒給 --bundle 時用）
  *   --version <v>     ARCRUN_BUNDLE_VERSION；不給則讀 bundle 的 manifest.release
+ *   --commit <sha>    ARCRUN_BUNDLE_COMMIT；不給則讀 bundle 的 manifest.source（解不出就不貼）
  *   --dry-run         只印「將部署什麼、注入什麼」，不真部署
  *
  * 環境變數：
@@ -45,6 +46,8 @@ import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync } from 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+// 版本＋commit 兩個印記只有一份算法（Arcrun#106 另一半）——見 version-stamp.mjs 檔頭。
+import { sourceCommitOf } from '../oauth-prototype/version-stamp.mjs';
 
 const WORKER_NAME = 'arcrun-rag-ui';
 
@@ -56,6 +59,7 @@ const subdomain = opt('--subdomain', process.env.WORKER_SUBDOMAIN || '');
 const bundleDir = opt('--bundle', '');
 const arcrunPath = opt('--arcrun', '');
 const versionOpt = opt('--version', '');
+const commitOpt = opt('--commit', '');
 const dryRun = has('--dry-run');
 
 // ── 閘①：沒有 subdomain 就拒絕（這就是整場事故的那一格）──────────────────
@@ -108,11 +112,17 @@ if (!src.includes('x-arcrun-config-error')) {
 }
 
 // 版本號：優先 --version，其次 bundle 的 manifest.release
+// commit 印記（Arcrun#106 另一半）：優先 --commit，其次 manifest.source（`Arcrun@<12碼>`）。
+//   版號是這條路貼上去的標籤，commit 才是「真的部了哪份碼」——只貼版號＝把「查得出漂沒漂」
+//   這個能力洗掉（08-16 三台實例報同一個版號、卻無從比對的病根）。
+//   🔴 解不出合法 sha 就**不貼**，絕不編一個（見 version-stamp.mjs 檔頭的 t144 前科）。
 let version = versionOpt;
-if (!version) {
+let commit = sourceCommitOf(commitOpt);
+if (!version || !commit) {
   try {
     const m = JSON.parse(readFileSync(join(uiDir, 'manifest.json'), 'utf8'));
-    version = String(m.release || '');
+    if (!version) version = String(m.release || '');
+    if (!commit) commit = sourceCommitOf(m.source);
   } catch { /* 沒 manifest 就留空，下面警告 */ }
 }
 if (!version) {
@@ -125,7 +135,8 @@ const uiUrl = `https://${WORKER_NAME}.${subdomain}.workers.dev`;
 
 console.log(`[deploy-ui] worker      : ${WORKER_NAME}`);
 console.log(`[deploy-ui] 產物        : ${srcPath}（${(src.length / 1024).toFixed(0)}KB）`);
-console.log(`[deploy-ui] 注入 vars   : WORKER_SUBDOMAIN=${subdomain}｜ARCRUN_BUNDLE_VERSION=${version || '(空)'}`);
+console.log(`[deploy-ui] 注入 vars   : WORKER_SUBDOMAIN=${subdomain}｜ARCRUN_BUNDLE_VERSION=${version || '(空)'}`
+  + `｜ARCRUN_BUNDLE_COMMIT=${commit || '(查不到，這趟不貼)'}`);
 console.log(`[deploy-ui] 部署後 apiBase 應為 : ${apiBase}`);
 
 if (dryRun) {
@@ -145,6 +156,8 @@ writeFileSync(join(work, 'wrangler.toml'), [
   '[vars]',
   `WORKER_SUBDOMAIN = "${subdomain}"`,
   `ARCRUN_BUNDLE_VERSION = "${version}"`,
+  // 查不到就整行不寫（少一個欄位 ≠ 部署失敗；貼假的才是災難）
+  ...(commit ? [`ARCRUN_BUNDLE_COMMIT = "${commit}"`] : []),
   '',
 ].join('\n'));
 

@@ -14,7 +14,9 @@
 # 觸發（daemon 偵測到刪檔）：
 #   POST {cypher}/webhooks/named/__NAMESPACE__/rag_takedown_direct/trigger
 #     -H "X-Arcrun-API-Key: __NAMESPACE__"
-#     -d '{"page_name":"加班規定","path":"加班規定.md"}'
+#     -d '{"page_name":"加班規定","path":"加班規定.md","library":"hr_docs"}'
+#   library 選填（arcrun-rag#46）：帶了就只殺同一個庫的，避免兩個被監看資料夾裡
+#   同名同相對路徑的檔互相連坐；舊版 daemon 不帶，行為與從前一致。
 #
 # 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
 
@@ -41,11 +43,14 @@ config:
       const page = String(input.page_name == null ? '' : input.page_name).trim();
       if (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };
       const path = String(input.path || (page + '.md'));
+      // library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。
+      const library = String(input.library == null ? '' : input.library).trim();
       return { success: true, page_name: page, page_enc: encodeURIComponent(page),
-               path: path, source_uri: 'kb://' + path };
+               path: path, source_uri: 'kb://' + path, library: library };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
+      library: "{{input.library}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -60,6 +65,16 @@ config:
 
   # 逐筆核對（防「同頁名不同卡」誤殺）：meta.source_path === 刪卡路徑，或 meta.source 以
   # kb://<路徑># 開頭；兩者皆無（老資料）＝fallback page_name 相等即殺（本清單已按 page_name 查）。
+  #
+  # 🔴 arcrun-rag#46（2026-08-16）加第二道：**library 相符才殺**。
+  #   為什麼 path 相符還不夠：path 是**相對於被監看資料夾**的路徑。兩個被監看的
+  #   資料夾各自放著 `notes.md` 時，兩邊的 page_name 與 path 完全一樣
+  #   ⇒ 撤除其中一個會把另一個還在用的一起殺掉。巢狀資料夾（A 與 A/sub 同時被看守）
+  #   是同一個病的另一種形狀。library 是逐資料夾導出的（collector libraryFor），
+  #   ingest 寫進 metadata_json 時就帶著它 ⇒ 拿它當第二把鍵，兩份才分得開。
+  #   （同 pick_dead_triplets 2026-08-16 那次的形狀：比對忽略某一維 ⇒ 誤傷別份。）
+  #   只在**兩邊都有** library 時才收緊——payload 沒帶（舊版 daemon）或卡上沒有
+  #   （改版前的舊資料）都退回原本的行為，不會把既有的撤除路變成撤不掉。
   build_deprecations:
     component: "__CODE_URL__"
     code: |
@@ -67,6 +82,7 @@ config:
       const a = parse(input.blocks_body);
       const entries = (a && a.entries) || [];
       const path = String(input.path || '');
+      const lib = String(input.library || '');
       const kbPrefix = 'kb://' + path + '#';
       const dead_entries = [];
       for (const e of entries) {
@@ -84,6 +100,9 @@ config:
         } else {
           hit = true;
         }
+        // arcrun-rag#46：library 兩邊都有才比；不一致＝別的資料夾的同名檔，不准動。
+        const mLib = String(meta.library || '');
+        if (hit && lib !== '' && mLib !== '' && mLib !== lib) hit = false;
         if (!hit) continue;
         dead_entries.push({ id: e.id });   // 真刪只需要 id
       }
@@ -91,6 +110,7 @@ config:
     input:
       blocks_body: "{{list_dead_blocks.data.body}}"
       path: "{{prep.data.path}}"
+      library: "{{prep.data.library}}"
     limits:
       timeout_ms: 5000
       max_output_bytes: 4194304
@@ -131,13 +151,18 @@ config:
       let records = (body && Array.isArray(body.records)) ? body.records : [];
       const page = String(input.page_name || '');
       const srcUri = String(input.source_uri || '');
+      const lib = String(input.library || '');
       const dead_records = [];
       for (const r of records) {
         const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
         // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。
         if (!v || !r.record_id) continue;
         const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';
-        const hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);
+        let hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);
+        // arcrun-rag#46：與 build_deprecations 同一條規則——兩個資料夾各有同名同相對
+        // 路徑的檔時，source_uri 也會完全相同，library 是唯一分得開它們的那一維。
+        const vLib = typeof v.library === 'string' ? v.library : '';
+        if (hit && lib !== '' && vLib !== '' && vLib !== lib) hit = false;
         if (!hit) continue;
         dead_records.push({ record_id: r.record_id });
       }
@@ -146,6 +171,7 @@ config:
       body: "{{list_triplets.data.body}}"
       page_name: "{{prep.data.page_name}}"
       source_uri: "{{prep.data.source_uri}}"
+      library: "{{prep.data.library}}"
     limits:
       timeout_ms: 3000
       max_output_bytes: 2097152

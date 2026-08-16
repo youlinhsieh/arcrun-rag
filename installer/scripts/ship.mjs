@@ -122,6 +122,8 @@ import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './
 import { machineId } from './ship-machine.mjs';
 import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedError, DRILL_ENV } from './ship-delivery.mjs';
 import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
+// 版本印記閘（Arcrun#106 另一半）：凡烙版號的部署路徑，必須一起烙 commit。
+import { runGate as runVersionStampGate } from './version-stamp-gate.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
@@ -631,6 +633,20 @@ const STEPS = [
       gate.sections.filter((s) => !s.ok).map((s) => `     ✗ ${s.name}\n${s.problems.map((p) => `       - ${p}`).join('\n')}`).join('\n'));
   }
   lines.push(`資源規則閘：${gate.sections.length} 項全過（鏡射指紋／沒人自己建 CF 資源／真的接上／三種情境測試）`);
+
+  // (b4.5) 版本印記閘（Arcrun#106 另一半，2026-08-16）───────────────────────
+  //
+  // 擋的是「**部署路徑烙了版號卻沒烙 commit**」——版號是部署時貼上去的標籤，
+  // 只剩它就查不出「這台跑的是哪一份碼」，而且會把別條路烙的 commit 洗掉
+  // （08-16 實測：三台實例同報 1.4.46，commit 欄位全消失）。
+  // 位置理由同 (b4)：擺在 preflight，deploy 站的「已是這版就跳過」快路徑蓋不到它。
+  const stampGate = runVersionStampGate(REPO_ROOT);
+  if (!stampGate.ok) {
+    throw new Error(
+      '版本印記閘不過（Arcrun#106：烙了版號卻沒烙 commit ⇒ 查不出實例跑哪份碼）：\n' +
+      stampGate.sections.filter((s) => !s.ok).map((s) => `     ✗ ${s.name}\n${s.problems.map((p) => `       - ${p}`).join('\n')}`).join('\n'));
+  }
+  lines.push(`版本印記閘：${stampGate.sections.length} 項全過（每條部署路徑版號與 commit 成對／印記產地真的吐兩個）`);
 
   // (b5) 文案契約閘（順手接上，2026-08-12）──────────────────────────────────
   // `installer/oauth-prototype/copy-contract.test.mjs` 自己的檔頭寫著
