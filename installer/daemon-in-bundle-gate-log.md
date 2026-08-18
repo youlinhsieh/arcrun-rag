@@ -32,3 +32,4 @@
 | 2026-08-18 16:47:19 | stage | v0.18.30 | v0.18.30 | ✅ 放行 | — |
 | 2026-08-18 16:52:07 | stage | 0.18.31 | v0.18.30 | ⛔ 擋下 | version-match；filename-carries-version |
 | 2026-08-18 16:52:20 | stage | 0.18.31 | v0.18.30 | ⛔ 擋下 | version-match；filename-carries-version |
+| 2026-08-18 17:52:00 | stage | 0.18.32 | 0.18.32 | ✅ 放行 | — |
