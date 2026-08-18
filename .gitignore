@@ -12,12 +12,8 @@ node_modules/
 # GitHub 公開 mirror 工作目錄(publish-github.sh 產物)
 .github-public/
 
-# Windows 交叉編譯產物（build-windows.sh 生成，不進版控）
-collector/cmd/arcrun-tray/dist-windows/
-collector/cmd/arcrun-tray/dist-msix/
-
-# 本機 `go build` 在原地產出的托盤執行檔（與套件同名，不進版控）
-collector/cmd/arcrun-tray/arcrun-tray
+# msix 打包產物（build-msix.sh 生成，不進版控）
+collector/cmd/arcrun-app/dist-msix/
 
 # wrangler 本地快取／狀態（部署產物，不進版控）
 .wrangler/

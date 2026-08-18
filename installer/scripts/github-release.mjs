@@ -1,7 +1,13 @@
 /**
  * github-release.mjs — 讓「完整發佈紀錄在 GitHub 版本發佈」這句話變成真的
  *
- * ── 病史（2026-08-10，總管實測發現）───────────────────────────────────────────
+ * 🔴 2026-08-17（leo「這個頁面刪除」，inkstone/arcrun-rag#41）：那句承諾**不再是承諾，是唯一出路**。
+ * 文件站的版本說明頁已經刪掉——使用者要看版本紀錄只剩 GitHub 版本發佈這一個地方。
+ * ⇒ 本模組從「補上一副沒人給的牙齒」變成「那條鏈唯一的一環」：`releaseSectionFor()`
+ *   抽不到內文，使用者就**完全查不到這一版**（以前至少還有文件站那一頁墊底）。
+ *   兩份原稿：repo 根的 `CHANGELOG.md`（雲端 `1.4.x`）與 `collector/CHANGELOG.md`（桌面 `v0.18.x`）。
+ *
+ * ── 病史（2026-08-10，總管實測發現；以下是當時的世界，那一頁還在）─────────────
  * `docs-site/.../help/changelog.md` 對用戶寫死一句承諾：
  *   「每一版的完整發佈紀錄在這裡：GitHub 版本發佈
  *    （https://github.com/youlinhsieh/arcrun-rag/releases）」
@@ -27,15 +33,35 @@
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { CHANGELOG_REL } from './daemon-notes.mjs';
+import { CHANGELOG_REL, DAEMON_CHANGELOG_REL } from './daemon-notes.mjs';
 
 /**
  * 從說明文件抽出某一版的**完整段落**（不是 daemon-notes.mjs 那種一行摘要）——
- * 這段文字會原樣變成 GitHub release 的內文，用戶點進去看到的就是它。
- * @returns {string|null} 該版 markdown 內文（已去頭尾空行），或 null（changelog 沒這一版）
+ * 這段文字會原樣變成版本發佈的內文，用戶點進去看到的就是它。
+ *
+ * 🔴 2026-08-18（D95 第二輪，inkstone/InkStoneCo#40）：**兩份 changelog 都要問。**
+ *   本函式原本只讀 `CHANGELOG_REL`（當時＝docs-site 那一頁；2026-08-17 頁面刪除後
+ *   ＝repo 根的 `CHANGELOG.md`）。D95 第一輪把桌面版那條線搬進
+ *   `collector/CHANGELOG.md` 之後，這裡對 `v0.18.x` 一律回 null
+ *   ⇒ `release-record` 站替 **daemon 那條線**建發佈紀錄時必然失敗
+ *     （實測：`releaseSectionFor(root,'v0.18.29')` → `null`）。
+ *   而「每條版本線都要有一筆發在產品頁的版本發佈」正是 `release-line-gate.mjs`
+ *   （arcrun-rag#88，剛併進 main）整支存在的理由——本函式回 null 就是那條線斷在源頭。
+ *   查兩處的順序與 `notesFromChangelog()` 一致：**先問 daemon 的，再問雲端的**。
+ *   版號格式互斥（有沒有 `v` 前綴），不會互相撈到對方的段落。
+ *
+ * @returns {string|null} 該版 markdown 內文（已去頭尾空行），或 null（兩份都沒有這一版）
  */
 export function releaseSectionFor(repoRoot, version) {
-  const p = join(repoRoot, CHANGELOG_REL);
+  for (const rel of [DAEMON_CHANGELOG_REL, CHANGELOG_REL]) {
+    const body = sectionIn(join(repoRoot, rel), version);
+    if (body) return body;
+  }
+  return null;
+}
+
+/** 在一份 changelog 裡抓 `## <version>` 到下一個 `## ` 之間的內文。找不到回 null。 */
+function sectionIn(p, version) {
   if (!existsSync(p)) return null;
   const lines = readFileSync(p, 'utf8').split('\n');
   const escVer = String(version).replace(/[.\\]/g, '\\$&');

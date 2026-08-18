@@ -1,57 +1,72 @@
-# rag_chat — 同步問答：keyword＋semantic＋graph 三路檢索 → LLM 組答案（arcrun-rag 包件）
+# rag_chat — 圖譜優先檢索：問句 →（graph 三元組）選子庫 → 讀那些子庫的索引與原文 → LLM 作答
 #
-# 血統：2026-07-17 demo 化四件套的 rag_chat（雲端總管 API 直推版）之 v2 落地——
-#   v1 定義只存在 WEBHOOKS KV（無讀回 API），本檔即日起是 rag_chat 的 repo 真相源。
+# 血統：2026-07-17 demo 化四件套的 rag_chat；本檔即日起是 rag_chat 的 repo 真相源
+#   （引擎 repo 只有讀它：cypher-executor/src/routes/portal-data.ts:507 getTenantWorkflowGraph('rag_chat')，
+#    KV key `{tenant}:wf:rag_chat`）。
 #
-# v2 重做（2026-07-18，leo 客戶測試回饋「問 RAG 卻引用會議室規範」）：
-#   病根＝v1「semantic 前兩個命中頁全 blocks 聚合」——英文 embed 模型嵌中文（Arcrun#59）＋
-#   殘影向量（#58）讓 semantic 排名近乎雜訊，單發散彈就能把整頁無關文件拖進出處。
-#   v2 選頁改「IDF 加權字面重疊」主導（demo 量級直接撈全庫 active blocks 在 code 內計分，
-#   實測六題全對），semantic/keyword 降為小加分；並補檢索衛生：
-#   ① tombstone「（舊管線產物…」與 metadata status=deprecated 一律排除（keyword 面上游
-#      #46 家族不濾，這裡客端濾）。
-#   ② 次命中頁需門檻（≥max(3, 0.4×主頁分)），單發雜訊進不了出處。
-#   ③ graph 實體比對正規化（NFKC＋小寫），與 graph_neighbors 同款。
-#   ④ 出處帶 source（gitea:// 路徑），portal 可做來源回溯連結。
-#   誠實限制：殘影向量/embed 模型是上游 #58/#59，本件是檢索端繞法不是治本；
-#   全庫撈 blocks 的做法適用 demo 量級（≤500 blocks），正式版要回到索引面解。
+# ⚠️ 改 `flow` 之後必須重編預編圖：
+#     CYPHER_BASE=https://arcrun-cypher-executor.<subdomain>.workers.dev \
+#     CYPHER_NS=<namespace> node installer/scripts/compile-workflows.mjs
+#   （installer/src/workflows.json 與 installer/oauth-prototype/workflows.json 兩份；
+#    該腳本有保全閘，flow 變了沒重編會 exit 1，見其 t152 註解。）
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# v4（2026-08-17，Arcrun#44）：**圖譜優先檢索**——這個產品的兩個賣點本體。
+#
+# leo 的定性（判準以他的話為準）：
+#   「**不用傳統向量搜尋是特色一，用 graph 三元組是特色二，都沒有就是沒實現承諾。**」
+#   「**向量只拿來做 normalize entities，用來找到 alias，不是全量向量化，這是特點。**」
+#   「在 AI 搜尋格子應看到我輸入的內容從 graph 找到幾個子庫，從子庫的 index 讀到的內容⋯⋯
+#     會看到他的參照原文位置檔名，**而不是簡單向量搜尋的結果**。」
+#
+# v3 實際在做什麼（實測，非推測）——十個節點裡**沒有一個做選庫**：
+#   · `sem_search`  向量搜尋，命中頁 **+0.4 分** ⇒ 向量在檢索路徑上（違反特色一）
+#   · `fetch_triplets` 撈全表三元組（`by-template/triplet`，當時連 limit 都不接、100 筆封頂），
+#     撈回來只被 `assemble` 拿去產生一串**裝飾用的 `graph_facts` 字串餵進 prompt**，
+#     **不篩庫、不影響檢索範圍** ⇒ 三元組沒有參與檢索（違反特色二）
+#   · `fetch_blocks_a/b/c` 全租戶硬撈 180 筆封頂，再用 CJK bigram＋IDF **字面重疊**挑 top1～2 頁
+#   · yaml 自己寫著「demo 量級⋯**正式版要回到索引面解，不靠全庫撈**」——這一版就是那件事
+#
+# v4 的形狀（少三個節點，做的事多一件）：
+#   ① `select_libraries` → KBDB `GET /map/select`：**選庫決策在牆內**（聚合 SQL 只准住基本盤，D6）。
+#      問句 → 比對 active 三元組的 subject／object → 命中實體所在的庫。
+#      三條路：graph（命中實體）→ index（退回藏書地圖比對）→ all（都不中，誠實說改讀全庫）。
+#   ② `fetch_pages` 只撈**選中那幾個庫**的原文（`?library=a,b`），不再全租戶硬撈。
+#   ③ 回應多一個 `retrieval` 物件給前端畫檢索過程（契約見 console-ui/public/portal/index.html
+#      的 retrievalTraceHtml，b48f02b 已實作，本檔是對齊它的資料形狀，不是重做）。
+#
+# 🔴 **向量已從檢索路徑移除**（`sem_search` 節點刪除，不是降權重）。
+#    它的正確位置是 normalize entities／找 alias——那一步目前**還沒有東西可接**
+#    （Arcrun#60：alias 持久層完整卻閒置、沒人餵候選），所以現在誠實地少一層，
+#    而不是留一個假裝在做正規化的向量呼叫。接上去的位置在 KBDB selectLibrariesForQuestion
+#    的實體比對那一段，本檔不必改。
+#
+# 🔴 **館藏目錄一律進 prompt**：`/map/select` 回的 `indexes` 是整份藏書地圖（不只選中的）。
+#    「知識庫裡有哪些子庫、各自談什麼」這種問題的答案**在目錄裡，不在任何一頁原文裡**——
+#    v3 答不出來（08-17 早上回「知識庫裡沒有這方面資料」）正是因為目錄從來沒有進過 prompt。
 #
 # 觸發（同步查詢）：
 #   GET  {cypher}/q/__NAMESPACE__/rag_chat?question=<問題>
-#   POST {cypher}/webhooks/named/rag_chat/query  -H "X-Arcrun-API-Key: __NAMESPACE__"  -d '{"question":"…"}'
-#   → 直接回 { answer, sources:[{n,mode,page,source}], graph_facts:[…] }
+#   POST {cypher}/webhooks/named/rag_chat/query -H "X-Arcrun-API-Key: __NAMESPACE__" -d '{"question":"…"}'
+#   → { answer, sources:[{n,mode,page,source}], graph_facts:[…], retrieval:{…} }
 #
-# 佔位參數（推送前 sed 代入）：
-#   __NAMESPACE__        租戶 namespace（demo）
-#   __KBDB_BASE__        KBDB base URL
-#   __KBDB_TOKEN__       KBDB_INTERNAL_TOKEN（安裝器產生，workflow 帶 Bearer 授權）
-#   __HTTP_REQ_URL__     http_request 零件 worker URL
-#   __CODE_URL__         code 零件 worker URL
-#   （LLM 相關的佔位全部消失：生成改走 `workers_ai_chat` recipe ⇒ 免金鑰、免模型佔位。
-#    要換模型／換供應商＝改那筆 recipe，本檔不動。詳見 ask_llm 節點註解）
-#
-# v3（2026-08-03，Gitea arcrun-rag#9／CP rag-beta 關 7）：
-#   生成端由 Gemini `gemma-4-31b-it` 改走 **Workers AI**（`workers_ai_chat` recipe，auth: binding）。
-#   兩件事同時解決：
-#     ① **免金鑰**——封測者不填任何 API key，裝完就能問答（原本非填 Gemini key 不可，否則整個問答不能用）
-#     ② **變快**——同型提問實測 16.87 s → 2.2 s
-#   連帶：`finalize` 從 2786 字元縮到幾行（回應解讀搬進 recipe 的 response_map，換源才不會壞）。
+# 佔位參數（推送前代入）：
+#   __NAMESPACE__ 租戶 namespace／__KBDB_BASE__ KBDB base URL
+#   __HTTP_REQ_URL__ http_request 零件 worker URL／__CODE_URL__ code 零件 worker URL
+#   （LLM 相關佔位全部不存在：生成走 `workers_ai_chat` recipe ⇒ 免金鑰、免模型佔位。）
 
 name: rag_chat
 description: >
-  同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Workers AI
-  把檢索結果組成回答（繁中、附出處，**免金鑰**）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。
-  v2：選頁改 IDF 字面重疊主導＋tombstone/deprecated 過濾＋次頁門檻＋graph 比對正規化。
+  圖譜優先檢索問答：問句先用 graph 三元組比對出相關子庫（KBDB /map/select），只讀那些子庫的
+  索引敘事與原文，再由 Workers AI 作答（繁中、附出處與檢索過程，**免金鑰**）。
+  v4：向量移出檢索路徑；館藏目錄一律進 prompt；回應帶 retrieval 供前端顯示「答案怎麼被找出來的」。
 
 flow:
   - "input >> ON_SUCCESS >> prep"
-  - "prep >> ON_SUCCESS >> kw_search"
-  - "kw_search >> ON_SUCCESS >> sem_search"
-  - "sem_search >> ON_SUCCESS >> fetch_triplets"
-  - "fetch_triplets >> ON_SUCCESS >> fetch_blocks_a"
-  - "fetch_blocks_a >> ON_SUCCESS >> fetch_blocks_b"
-  - "fetch_blocks_b >> ON_SUCCESS >> fetch_blocks_c"
-  - "fetch_blocks_c >> ON_SUCCESS >> assemble"
+  - "prep >> ON_SUCCESS >> select_libraries"
+  - "select_libraries >> ON_SUCCESS >> pick_libs"
+  - "pick_libs >> ON_SUCCESS >> fetch_pages"
+  - "fetch_pages >> ON_SUCCESS >> assemble"
   - "assemble >> ON_SUCCESS >> ask_llm"
   - "ask_llm >> ON_SUCCESS >> finalize"
 
@@ -69,61 +84,84 @@ config:
       timeout_ms: 2000
       max_output_bytes: 65536
 
-  # 1) keyword 檢索（與搜尋頁同一 API；整句 LIKE，命中＝強佐證小加分）。
-  kw_search:
+  # 1) 🔴 圖譜選庫（本版的主路）——問句 → 三元組 → 命中哪幾個子庫。
+  #
+  #    決策在 KBDB 裡做，不在這裡：跨庫 join／按庫聚合是聚合 SQL，D6 說聚合 SQL 只准住基本盤，
+  #    workflow 全程禁 SQL。把它寫成這裡的 code 節點＝把牆內的事搬到牆外用 JS 重寫一次
+  #    （也就是 v3 的 fetch_triplets：撈全表回來自己比對）。
+  #
+  #    回應：{ route, vector_used:false, libraries_considered, libraries:[…], indexes:[…] }
+  #    `indexes` 是**整份**藏書地圖（不只選中的）＝館藏目錄，一律會進 prompt。
+  select_libraries:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=15"
+    url: "__KBDB_BASE__/map/select?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=3"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 2) semantic 檢索（與搜尋頁同一 API；上游 #58/#59 未修前只當小加分）。
-  sem_search:
+  # 2) 局部整形：把選庫結果轉成下一步的 query 參數（逗號分隔、已 encode）。
+  #    **只做形狀轉換，不做選擇**——選擇是上一步做完的。
+  #    沒命中任何庫（route=all）→ 回空字串 ⇒ fetch_pages 不帶 library ⇒ 誠實讀全庫。
+  pick_libs:
+    component: "__CODE_URL__"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      const sel = parse(input.sel_body) || {};
+      const libs = Array.isArray(sel.libraries) ? sel.libraries : [];
+      const names = [];
+      for (const l of libs) { const n = String((l && l.library) || '').trim(); if (n && names.indexOf(n) === -1) names.push(n); }
+      // 帶了 library= 就是限定；空字串代表「這次不限定」（route=all 的誠實路徑）
+      return {
+        success: true,
+        lib_param: names.length ? '&library=' + encodeURIComponent(names.join(',')) : '',
+        lib_count: names.length
+      };
+    input:
+      sel_body: "{{select_libraries.data.body}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 3) 只讀選中子庫的原文。
+  #    v3 是三段全租戶硬撈 180 筆（fetch_blocks_a/b/c）；現在範圍已由圖譜收斂，一次就夠。
+  #    http_request 零件回應上限 ~64KB（2026-07-18 實測 44KB 過／83KB 失敗）⇒ limit 保守取 60。
+  #
+  #    🔴 `exclude_kind=library_map` 非帶不可（Arcrun#44，2026-08-17 stage 實測）：
+  #    這條清單是 created_at DESC，而地圖摘要 block 是 lazy 重算產生的 ⇒ **永遠最新、永遠排最前**。
+  #    stage 上 library_map record 破百、每庫 9 筆以上，而 kb 只有 16 筆真內容
+  #    ⇒ 不濾的話 `limit=25` 撈回 25 筆**真內容 0 筆**、`limit=100` 撈回 56 筆真內容才 16 筆。
+  #    **這不是「樣本少一點」，是靜默地一筆素材都拿不到**，而 64KB 上限讓「撈更多」繞不過去。
+  #    這也正是 08-17 中午那樁事故的同一個池子：那些摘要的內容是
+  #    `<庫名>：（narrative 待 ingest 補寫）。核心：…` ⇒ LLM 把佔位字串當成一個真的子庫唸給 leo 聽。
+  #    ⚠️ 舊實例的 kbdb 還沒有這個參數（會被靜默忽略）⇒ assemble 的 usable() 保留同一條排除當第二道。
+  #
+  # 🚧 **這裡直打 KBDB base 是刻意的，不要「為了統一」改成走 cypher 的 /kbdb/ 代理。**
+  #    （⚠️ 本段刻意不寫出 cypher base 那個佔位符的字面——compile-workflows.mjs 是用
+  #     `__[A-Z0-9_]+__` 掃**整份原始檔文字**來列 placeholders，**註解裡提到也會被算進去**，
+  #     結果就是替這支 workflow 宣告一個它根本不需要的佔位符。實撞過：佔位 4 → 5。）
+  #    本檔三處 KBDB 呼叫全部直打 base，理由是安裝器註解寫的
+  #    「直打 kbdb（零跳數）＋祕密只存 credential 一份」（installer/oauth-prototype/worker.js）。
+  #    改成走 cypher 會多一層**白名單牆**：`kbdb-proxy.ts` 只轉發名單上的 query 參數，
+  #    沒在名單上的**被靜默丟棄**——症狀不是報錯，是「參數像是沒作用」，
+  #    caller 拿到 200＋一整頁資料，看起來完全正常，只是裡面沒有它要的東西。
+  #    那面牆已經吞過兩次參數：`q`／`search`（Arcrun#3 發現①）與 `exclude_kind`（Arcrun#44）。
+  #    ⇒ 「一致性」在這裡聽起來像好事，實際上是**把現在能跑的東西改壞**。
+  #    真要改走 cypher，先確認 proxy 白名單有 `library`／`exclude_kind`／`limit`／`entry_type`
+  #    這四格，且未來每加一個參數都要記得同步那面牆。
+  fetch_pages:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&mode=semantic&limit=15"
+    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&exclude_kind=library_map{{pick_libs.data.lib_param}}"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 3) graph：撈全表 triplet（demo 量級），實體比對在 assemble 內做。
-  fetch_triplets:
-    component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__"
-    headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
-
-  # 4) 全庫 active blocks（IDF 計分的語料底）。http_request 零件回應上限 ~64KB（2026-07-18
-  #    實測 44KB 通過/83KB 失敗）→ 分三段 limit=60 撈，容量 180 blocks；demo 每日 rag_reset
-  #    清場，量級足夠。正式版要回到索引面解，不靠全庫撈。
-  fetch_blocks_a:
-    component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=0"
-    headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
-
-  fetch_blocks_b:
-    component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=60"
-    headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
-
-  fetch_blocks_c:
-    component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=120"
-    headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
-
-  # 5) 計分選頁＋聚合＋編號＋組 prompt（單一 code 節點，決定性零 LLM）。
+  # 4) 組 prompt（決定性、零 LLM）＋產出 retrieval 給前端。
+  #
+  #    這裡的字面計分只用來決定「**選中庫內**哪幾頁先進 8000 字預算」——
+  #    它是排序，不是檢索：候選集已經由圖譜收斂過了。
+  #    v3 的字面計分是**主檢索機制**（要從全庫 180 筆裡挑出 1～2 頁），那才是被換掉的東西。
   assemble:
     component: "__CODE_URL__"
     code: |
@@ -135,165 +173,172 @@ config:
         if (!e.page_name) return false;
         const c = String(e.content || '');
         if (!c.trim() || c.indexOf(TOMB) === 0 || c.indexOf('（重複頁') === 0) return false;
-        if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); if (m && m.status === 'deprecated') return false; } catch (err) {} }
+        if (e.metadata_json) {
+          try {
+            const m = JSON.parse(e.metadata_json);
+            if (m && m.status === 'deprecated') return false;
+            // 🔴 地圖自己產的摘要 block（kind=library_map）不是使用者的原文。
+            //   實測（2026-08-17，youlin 真資料）：不濾的話它們會**霸佔出處清單前段**
+            //   ——因為它們的內容就是庫名＋核心實體，字面重疊分數天生最高，
+            //   於是 `library-map:kb` 這種內部頁名會被當成「參照原文位置」印給使用者看，
+            //   而 leo 要的正是「**會看到他的參照原文位置檔名**」。印內部產物＝答非所問。
+            //   同一個口徑 kbdb 那側早就有了（liveEntryCountsByLibrary 註解：
+            //   「地圖不該把自己算進地圖裡」），只是 GET /entries 是通用列表端點不做這個排除
+            //   ⇒ 排除留在讀端。它們的內容並沒有消失：已經以「子庫目錄」的形式在 prompt 最前面。
+            if (m && m.kind === 'library_map') return false;
+          } catch (err) {}
+        }
         return true;
       }
-      function srcOf(e) { if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); return String(m.source || ''); } catch (err) {} } return ''; }
+      function metaOf(e) { if (e && e.metadata_json) { try { return JSON.parse(e.metadata_json) || {}; } catch (err) {} } return {}; }
+      function srcOf(e) { return String(metaOf(e).source || ''); }
+      function libOf(e) { return String(metaOf(e).library || 'general'); }
       function chunkIdx(src) { const m = /#(\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }
       function toksOf(text) {
         const t = norm(text);
         const out = new Set();
-        const ascii = t.match(/[a-z0-9]{2,}/g) || [];
-        for (const w of ascii) out.add(w);
+        for (const w of (t.match(/[a-z0-9]{2,}/g) || [])) out.add(w);
         const cjk = t.replace(/[^一-鿿]/g, ' ');
-        for (const seg of cjk.split(/\s+/)) {
-          for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));
-        }
+        for (const seg of cjk.split(/\s+/)) { for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2)); }
         return out;
       }
+
       const question = String(input.question || '');
-      const qToks = toksOf(question);
-      // 全庫 blocks（三段分頁合併）→ usable → 去重（同頁同內容；同名卡 create-only 疊出的重複只留一份）
-      const all = [].concat(
-        ((parse(input.blocks_a) || {}).entries) || [],
-        ((parse(input.blocks_b) || {}).entries) || [],
-        ((parse(input.blocks_c) || {}).entries) || []
-      );
+      const sel = parse(input.sel_body) || {};
+      const route = String(sel.route || 'all');
+      const selLibs = Array.isArray(sel.libraries) ? sel.libraries : [];
+      const indexes = Array.isArray(sel.indexes) ? sel.indexes : [];
+
+      // ── 館藏目錄：一律進 prompt（「有哪些子庫、各自談什麼」的答案在這裡）──
+      let catalog = '';
+      if (indexes.length) {
+        catalog = '本知識庫的子庫目錄（共 ' + indexes.length + ' 個）：\n';
+        for (const ix of indexes) {
+          const bits = [];
+          if (typeof ix.entry_count === 'number') bits.push(ix.entry_count + ' 筆內容');
+          if (typeof ix.triplet_count === 'number') bits.push(ix.triplet_count + ' 條關聯');
+          // narrative 還沒寫進來的庫，用重點實體代替——不編造，也不留白
+          const desc = (ix.narrative && String(ix.narrative).trim())
+            ? String(ix.narrative).trim()
+            : ((Array.isArray(ix.top_entities) && ix.top_entities.length)
+                ? ('主要談：' + ix.top_entities.join('、'))
+                : '（這個子庫還沒有內容摘要）');
+          catalog += '- ' + ix.library + '（' + bits.join('・') + '）：' + desc + '\n';
+        }
+        catalog += '\n';
+      }
+
+      // ── 命中子庫與命中實體（graph 的話語）──
+      let hitTxt = '';
+      const facts = [];
+      if (selLibs.length) {
+        hitTxt = '這個問題從知識圖譜比對到下列子庫（' +
+          (route === 'graph' ? '依三元組實體命中' : '依子庫索引比對') + '）：\n';
+        for (const l of selLibs) {
+          const ents = Array.isArray(l.matched_entities) ? l.matched_entities : [];
+          hitTxt += '- ' + l.library + (ents.length ? '（命中實體：' + ents.join('、') + '）' : '') + '\n';
+          for (const e of ents) { const line = e + ' 出現在子庫 ' + l.library; if (facts.indexOf(line) === -1) facts.push(line); }
+        }
+        hitTxt += '\n';
+      }
+
+      // ── 選中子庫的原文 ──
+      const raw = ((parse(input.pages_body) || {}).entries) || [];
       const seenKey = new Set();
       const blocks = [];
-      for (const e of all) {
+      for (const e of raw) {
         if (!usable(e)) continue;
         const k = e.page_name + '|' + String(e.content).trim();
         if (seenKey.has(k)) continue;
         seenKey.add(k);
         blocks.push(e);
       }
-      // IDF：token 出現在越少 block 越有鑑別力
+      // 庫內排序（不是檢索）：IDF 字面重疊決定哪幾頁先進預算
+      const qToks = toksOf(question);
       const N = blocks.length || 1;
       const df = new Map();
       const bToks = [];
-      for (const e of blocks) {
-        const ts = toksOf(e.content);
-        bToks.push(ts);
-        for (const t of ts) df.set(t, (df.get(t) || 0) + 1);
-      }
-      const pageBlockScores = new Map();
+      for (const e of blocks) { const ts = toksOf(e.content); bToks.push(ts); for (const t of ts) df.set(t, (df.get(t) || 0) + 1); }
+      const pageScore = new Map();
       blocks.forEach(function (e, i) {
         let sc = 0;
-        for (const t of qToks) {
-          if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));
-        }
-        if (sc <= 0) return;
-        if (!pageBlockScores.has(e.page_name)) pageBlockScores.set(e.page_name, []);
-        pageBlockScores.get(e.page_name).push(sc);
+        for (const t of qToks) if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));
+        pageScore.set(e.page_name, Math.max(pageScore.get(e.page_name) || 0, sc));
       });
-      const score = new Map();
-      for (const entry of pageBlockScores) {
-        const top3 = entry[1].slice().sort(function (a, b) { return b - a; }).slice(0, 3);
-        score.set(entry[0], top3.reduce(function (a, b) { return a + b; }, 0));
-      }
-      // keyword / semantic 小加分（與搜尋頁同一套 API 的佐證訊號）
-      const kw = parse(input.kw_body), sem = parse(input.sem_body);
-      for (const e of ((kw && kw.entries) || []).filter(usable)) score.set(e.page_name, (score.get(e.page_name) || 0) + 2);
-      ((sem && sem.entries) || []).filter(usable).slice(0, 10).forEach(function (e) {
-        score.set(e.page_name, (score.get(e.page_name) || 0) + 0.4);
-      });
-      const pages = Array.from(score.keys()).sort(function (a, b) { return (score.get(b) || 0) - (score.get(a) || 0); });
-      const p1 = pages[0] || '';
-      const s1 = score.get(p1) || 0;
-      // 次頁門檻：分數 ≥ max(3, 0.4×主頁分)——單發雜訊進不了出處
-      let p2 = '';
-      if (pages.length > 1) {
-        const cand = pages[1];
-        const s2 = score.get(cand) || 0;
-        if (s2 >= Math.max(3, 0.4 * s1)) p2 = cand;
-      }
-      // graph_facts：問句包含的實體（正規化比對）之邊
-      let records = ((parse(input.tp_body) || {}).records) || [];
-      if (!Array.isArray(records)) records = [];
-      const qn = norm(question);
-      const facts = [];
-      const seenFact = new Set();
-      for (const r of records) {
-        const v = (r && r.values && typeof r.values === 'object') ? r.values : r;
-        if (!v || v.status === 'deprecated' || !v.subject || !v.object) continue;
-        const sN = norm(v.subject), oN = norm(v.object);
-        const hit = (sN.length >= 2 && qn.indexOf(sN) !== -1) || (oN.length >= 2 && qn.indexOf(oN) !== -1);
-        if (!hit) continue;
-        const line = v.subject + ' ' + (v.predicate || '→') + ' ' + v.object;
-        if (seenFact.has(line)) continue;
-        seenFact.add(line);
-        facts.push(line);
-        if (facts.length >= 12) break;
-      }
-      // 聚合選中頁 blocks（主頁在前、各頁按 chunk 序），8000 字上限
-      const picked = [];
-      function take(page, mode) {
-        if (!page) return;
-        const es = blocks.filter(function (e) { return e.page_name === page; });
-        es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });
-        for (const e of es) picked.push({ page: page, mode: mode, content: String(e.content), source: srcOf(e) });
-      }
-      take(p1, '主命中頁');
-      if (p2 && p2 !== p1) take(p2, '相關頁');
+      const pages = Array.from(new Set(blocks.map(function (e) { return e.page_name; })))
+        .sort(function (a, b) { return (pageScore.get(b) || 0) - (pageScore.get(a) || 0); });
+
+      // 預算 8000 字，範圍已收斂 ⇒ 可以收下多頁（v3 只敢收 1～2 頁，因為它是從全庫挑）
       let budget = 8000;
       const ctxBlocks = [];
-      for (const bk of picked) {
+      const pagesRead = [];
+      for (const page of pages) {
         if (budget <= 0) break;
-        let c = bk.content;
-        if (c.length > budget) c = c.slice(0, budget);
-        budget -= c.length;
-        ctxBlocks.push({ page: bk.page, mode: bk.mode, content: c, source: bk.source });
+        const es = blocks.filter(function (e) { return e.page_name === page; });
+        es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });
+        let chars = 0;
+        for (const e of es) {
+          if (budget <= 0) break;
+          let c = String(e.content);
+          if (c.length > budget) c = c.slice(0, budget);
+          budget -= c.length; chars += c.length;
+          ctxBlocks.push({ page: page, content: c, source: srcOf(e), library: libOf(e) });
+        }
+        if (chars > 0) pagesRead.push({ page: page, library: libOf(es[0]), chars: chars, source: srcOf(es[0]) });
       }
-      const sources = ctxBlocks.map(function (bk, i) { return { n: i + 1, mode: bk.mode, page: bk.page, source: bk.source }; });
+
+      const sources = ctxBlocks.map(function (bk, i) {
+        return { n: i + 1, mode: bk.library, page: bk.page, source: bk.source };
+      });
       let ctx = '';
-      ctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自《' + bk.page + '》）\n' + bk.content + '\n\n'; });
-      const factsTxt = facts.length ? ('已知知識關聯（也是可引用的資料，可據此回答）：\n' + facts.map(function (f) { return '- ' + f; }).join('\n') + '\n\n') : '';
+      ctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自子庫《' + bk.library + '》的《' + bk.page + '》）\n' + bk.content + '\n\n'; });
+
       const prompt = '你是企業知識庫問答助手。只根據下面提供的資料回答，資料裡沒有的不要編造；' +
-        '引用時標注資料編號如 [1]、[2]。\n\n' +
-        factsTxt + '資料：\n' + (ctx || '（沒有找到相關資料）\n') +
+        '引用原文時標注資料編號如 [1]、[2]。\n\n' +
+        catalog + hitTxt +
+        '原文片段：\n' + (ctx || '（這次沒有讀入原文片段——若問題可由上面的子庫目錄回答，就用目錄回答）\n') +
         '\n問題：' + question + '\n\n' +
         '輸出規則（嚴格遵守）：不要輸出思考過程或英文草稿，只輸出一行——' +
-        '以【答】開頭、用正體中文、一段話、帶 [n] 引用；資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';
-      return { success: true, prompt: prompt, sources: sources, graph_facts: facts, p1: p1, p2: p2, has_ctx: ctxBlocks.length > 0 };
+        '以【答】開頭、用正體中文、一段話；引用原文時帶 [n]，只用子庫目錄回答時不必帶編號；' +
+        '資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';
+
+      // 前端契約（console-ui/public/portal/index.html retrievalTraceHtml，b48f02b）
+      const retrieval = {
+        route: route,
+        vector_used: false,
+        libraries_considered: typeof sel.libraries_considered === 'number' ? sel.libraries_considered : indexes.length,
+        libraries: selLibs.map(function (l) {
+          return { library: l.library, score: l.score, via: l.via, matched_entities: Array.isArray(l.matched_entities) ? l.matched_entities : [] };
+        }),
+        indexes_read: indexes.map(function (ix) {
+          return {
+            library: ix.library, narrative: ix.narrative || '', selected: !!ix.selected,
+            top_entities: Array.isArray(ix.top_entities) ? ix.top_entities : [],
+            triplet_count: ix.triplet_count, entry_count: ix.entry_count
+          };
+        }),
+        pages_read: pagesRead
+      };
+
+      return { success: true, prompt: prompt, sources: sources, graph_facts: facts, retrieval: retrieval, has_ctx: ctxBlocks.length > 0 };
     input:
-      kw_body: "{{kw_search.data.body}}"
-      sem_body: "{{sem_search.data.body}}"
-      tp_body: "{{fetch_triplets.data.body}}"
-      blocks_a: "{{fetch_blocks_a.data.body}}"
-      blocks_b: "{{fetch_blocks_b.data.body}}"
-      blocks_c: "{{fetch_blocks_c.data.body}}"
+      sel_body: "{{select_libraries.data.body}}"
+      pages_body: "{{fetch_pages.data.body}}"
       question: "{{prep.data.question}}"
     limits:
       timeout_ms: 8000
       max_output_bytes: 4194304
 
-  # 6) 生成 —— **走 Workers AI，不需要任何 API 金鑰**（Gitea arcrun-rag#9／CP rag-beta 關 7）。
-  #
-  #    這個節點只寫「用哪個 recipe」與「餵什麼」。打哪個模型、body 長什麼樣、回應怎麼取值，
-  #    全在 `workers_ai_chat` recipe 裡（Arcrun cypher-executor 的 seed，裝完 /init/seed 就有）
-  #    ⇒ **換模型／換供應商＝改那一筆 recipe，本檔不動**。這就是「換源＝換 recipe 不是換引擎」。
-  #
-  #    為什麼能免金鑰：recipe 宣告 `auth: binding` + `binding_name: AI` ⇒ 引擎直接用
-  #    cypher 自己的 `env.AI` binding（cypher 的 requires.ai 本來就是 true，安裝器不必改）。
-  #
-  #    2026-08-03 實測（1.4.4 實例，真實長度 RAG prompt）：
-  #      舊路徑 Gemini `gemma-4-31b-it`               16.87 s，且吐整段英文思考草稿
-  #      新路徑 Workers AI llama-4-scout-17b          2.37／2.17 s，直接給乾淨的【答】行
-  #    ⇒ 快 7 倍以上，且不必再淨化思考草稿。
+  # 5) 生成 —— **走 Workers AI，不需要任何 API 金鑰**（Gitea arcrun-rag#9／CP rag-beta 關 7）。
+  #    打哪個模型、body 長什麼樣、回應怎麼取值，全在 `workers_ai_chat` recipe 裡
+  #    ⇒ 換模型／換供應商＝改那一筆 recipe，本檔不動。
   ask_llm:
     component: "workers_ai_chat"
     prompt: "{{assemble.data.prompt}}"
 
-  # 7) 收尾：把答案與出處包成回應。
-  #
-  #    **從 2786 字元縮到這幾行**——因為「回應怎麼解讀」已經搬進 recipe 的 response_map
-  #    （text_path／answer_marker／strip_prefixes），那才是它該待的地方：各家 LLM 回應形狀不同，
-  #    所以它屬於「換源時要跟著換的東西」＝recipe，不是 workflow。
-  #    舊版在這裡手寫 Gemini 的 candidates[0].content.parts、剔 thought=true、循環剝殼、
-  #    靠中文字數比例猜哪行是答案——那些全是為了 Gemma 思考型模型寫的，換源必壞。
-  #
-  #    這裡只留一件 workflow 該做的事：**沒拿到答案時誠實說沒有，不編造**（mindset §7）。
+  # 6) 收尾：把答案、出處與**檢索過程**包成回應。
+  #    retrieval 即使沒答案也照回——它描述的是「我們去查了什麼」，那件事有發生，
+  #    與「查到了沒有」是兩回事（前端徽章要能顯示「未命中圖譜、已改讀全庫」）。
   finalize:
     component: "__CODE_URL__"
     code: |
@@ -304,12 +349,14 @@ config:
         success: true,
         answer: answer || '（知識庫裡沒有找到足以回答的資料。）',
         sources: answer ? sources : [],
-        graph_facts: facts
+        graph_facts: facts,
+        retrieval: input.retrieval || null
       };
     input:
       answer: "{{ask_llm.text}}"
       sources: "{{assemble.data.sources}}"
       graph_facts: "{{assemble.data.graph_facts}}"
+      retrieval: "{{assemble.data.retrieval}}"
     limits:
       timeout_ms: 3000
       max_output_bytes: 1048576

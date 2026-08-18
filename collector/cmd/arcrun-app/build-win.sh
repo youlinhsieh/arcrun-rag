@@ -23,7 +23,7 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 # 🔴 2026-08-06：版本號**不再手打、也不再靠 git describe**。
 #   舊寫法 `git describe --tags` 在這個 repo 永遠拿不到 v0.18.x（一個 tag 都沒有）
 #   ⇒ 版本只能靠打包時人工 `VERSION=v0.18.4 ./build-win.sh` 敲 ⇒ manifest 說謊的病根。
-#   現在由 daemon-version.py 從 DAEMON_LINE + collector/ 的 commit 數算出來，
+#   現在由 daemon-version.py 從 collector/DAEMON_LINE + collector/CHANGELOG.md 算出來，
 #   兩條打包線（win／mac）在同一個 commit 上必得同一個號碼。理由全文見該腳本。
 VERSION="${VERSION:-$(./daemon-version.py --stamp)}"
 BUILD_TIME="$(date '+%Y%m%d-%H%M')"
@@ -31,7 +31,8 @@ echo "🏷  版本：${VERSION}（build ${BUILD_TIME}）"
 
 # 🔴 2026-08-06 機械閘：這一版的「更新內容」沒寫進 changelog ⇒ 不准打包。
 #   leo：「給版本號、本版更新內容、打包產品、顯示在前端，這一整串都應該是機械化」。
-#   單一真相源＝docs-site/.../help/changelog.md；manifest.notes 與前端全部投影自它。
+#   單一真相源＝collector/CHANGELOG.md；manifest.notes 與前端全部投影自它。
+#   （2026-08-18 D95 第一輪：從 docs-site 搬進 collector/，daemon 才算得出自己的版本。）
 #   理由與格式見 changelog-section.sh。
 ./changelog-section.sh "$VERSION" --check
 

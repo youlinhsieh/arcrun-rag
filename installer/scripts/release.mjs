@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { notesFromChangelog, checkNotes } from './daemon-notes.mjs';
+import { notesFromChangelog, checkNotes, changelogRelFor } from './daemon-notes.mjs';
 
 /** MAJOR.MINOR 放這裡——唯一需要人動的一行，且只在大改版時動。 */
 export const RELEASE_LINE_FILE = 'RELEASE_LINE';
@@ -289,7 +289,10 @@ export function verifyManifest(bundlesDir, { repoRoot = process.cwd() } = {}) {
       if (!expect) {
         problems.push(
           `changelog 沒有 ${declared} 這一版——使用者按「檢查更新」看不到這版改了什麼。` +
-          `先在 docs-site/src/content/docs/help/changelog.md 補一段再出貨。`);
+          // 🔴 2026-08-18（D95 第二輪）：這裡本來寫死 docs-site。桌面版那條線已經搬進
+          //   collector/CHANGELOG.md（daemon-notes.mjs 的 DAEMON_CHANGELOG_REL），
+          //   照舊指 docs-site 會叫人去改一份根本不管 daemon 的檔案。
+          `先在 ${changelogRelFor(repoRoot, declared)} 補一段再出貨。`);
       } else if (String(d.notes || '').trim() !== expect) {
         problems.push(
           `manifest.daemon.notes 與 changelog 對不上（有人手改了投影）。\n` +

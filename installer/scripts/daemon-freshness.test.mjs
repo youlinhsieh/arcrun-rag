@@ -21,7 +21,9 @@ import {
   checkDaemonFreshness, formatDaemonFreshnessProblem, requireFreshDaemonSource,
 } from './daemon-freshness.mjs';
 
-const CHANGELOG_REL = join('docs-site', 'src', 'content', 'docs', 'help', 'changelog.md');
+// daemon 那條線的 changelog（＝ ship.mjs 傳進來的 DAEMON_CHANGELOG_REL）。
+// 本測試在暫存目錄裡造假 repo，路徑只要與正式的一致就好。
+const CHANGELOG_REL = join('collector', 'CHANGELOG.md');
 
 function git(repo, args) {
   return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
@@ -39,9 +41,8 @@ function fakeRepo() {
   git(dir, ['init', '-q', '-b', 'main']);
   mkdirSync(join(dir, 'collector', 'cmd', 'arcrun-app'), { recursive: true });
   writeFileSync(join(dir, 'collector', 'cmd', 'arcrun-app', 'main.go'), 'package main\n');
-  mkdirSync(join(dir, 'docs-site', 'src', 'content', 'docs', 'help'), { recursive: true });
   writeFileSync(join(dir, CHANGELOG_REL),
-    '---\ntitle: 版本說明\n---\n\n## v0.18.27（2026-08-13）\n\n- 第一版\n');
+    '# Arcrun 桌面版（daemon）版本說明\n\n## v0.18.27（2026-08-13）\n\n- 第一版\n');
   commit(dir, '第一版源碼＋已發佈 changelog');
   // 戳版號那一刻，通常會另外 commit（同 62560e4 的形狀：只動版本鎖檔，不動 collector 的內容邏輯）。
   writeFileSync(join(dir, 'version-lock.json'), '{"v0.18.27":"abc"}\n');
@@ -133,7 +134,7 @@ test('🔴 問不出來一律停：changelog 沒有任何已發佈版本段 ⇒ 
     mkdirSync(join(dir, 'collector'), { recursive: true });
     writeFileSync(join(dir, 'collector', 'x.go'), 'package main\n');
     mkdirSync(join(dir, 'docs-site', 'src', 'content', 'docs', 'help'), { recursive: true });
-    writeFileSync(join(dir, CHANGELOG_REL), '---\ntitle: 版本說明\n---\n\n## 下一版（未發佈）\n\n- 還沒出過任何版本\n');
+    writeFileSync(join(dir, CHANGELOG_REL), '# Arcrun 桌面版（daemon）版本說明\n\n## 下一版（未發佈）\n\n- 還沒出過任何版本\n');
     commit(dir, '只有草稿，從沒發佈過');
     const r = checkDaemonFreshness({ repo: dir, changelogRel: CHANGELOG_REL });
     assert.equal(r.status, 'unknown');

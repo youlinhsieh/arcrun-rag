@@ -1,119 +1,85 @@
 /**
- * daemon-notes.mjs — 使用者在「版本與更新」畫面看到的那一行，**由 changelog 機械導出**
+ * daemon-notes.mjs（薄殼）— 實作已搬去 `collector/cmd/arcrun-app/daemon-notes.mjs`
  *
- * ── 這支解什麼病（leo 2026-08-08 真機看到 v0.18.24 的更新畫面）────────────
- * leo 原話：「**不要這麼長的散文，簡短講改了什麼，細節去 docs 讀。**」
+ * ── 為什麼是薄殼（2026-08-18，D95 第一輪）────────────────────────────────
+ * leo 08-17：「結構要很直接，不要有很多扭曲。」
  *
- * 他看到的是**一整面文字牆**，而且 `**粗體**` 原樣露在畫面上。
- * 真兇不是文案沒寫好，是**出貨當下靠人手工排版**：
- *   出貨時用一段臨時 python 把 changelog 的換行折掉塞進 `manifest.daemon.notes`，
- *   於是四條變成一大段；那段轉換每次出貨都要重寫一次，而且**沒人檢查結果長什麼樣**。
+ * daemon 的更新說明投影器本來住在 `installer/scripts/`、讀 repo 根的 docs-site
+ * ⇒ **daemon 沒辦法自己交出「這一版對用戶意味什麼」**，也就搬不成獨立 repo。
+ * 實作因此搬進 daemon 自己的樹底下，讀 `collector/CHANGELOG.md`。
  *
- * ⇒ 與「版本號由內容算」同一種解法：**這一行也由單一真相源導出，不由人當場捏**。
+ * 🔴 方向是**單向**的：**根可以往內伸手，collector 不可以往外伸手。**
+ * 本檔就是那隻「往內伸的手」——出貨管線（ship／release／github-release）
+ * 的 import 路徑因此完全不用改。
  *
- * ── 為什麼是「只取粗體標題、串成一行」──────────────────────────────────
- * 畫面那個欄位是**純文字**：`main.js:215` 是 `<div class="d">${esc(u.notes)}</div>`，
- *   ① `esc()` ⇒ 任何 markdown 符號都會原樣露出來（leo 看到的 `**` 就是這樣來的）
- *   ② HTML 不保留換行（`.d` 沒有 white-space:pre）⇒ 塞 `\n` 進去也**不會**變成分行
- * ⇒ 唯一能讀的形狀就是**一行短句**。而 changelog 每條的 `**粗體標題**` 本來就是
- *   那條的一句話摘要——直接拿它，不必另外維護第二份文案（第二份必然漂移）。
+ * ── 一個檔變兩個檔：為什麼查兩處 ────────────────────────────────────────
+ * 這個 changelog 原本**同時裝兩條版本線**：桌面版 `v0.18.x` 與雲端引擎 `1.4.x`。
+ * 拆開之後：
+ *   · `v0.18.x` → `collector/CHANGELOG.md`（daemon 自己的，旁邊就是 `collector/DAEMON_LINE`）
+ *   · `1.4.x`   → repo 根的 `CHANGELOG.md`（雲端的，旁邊就是根的 `RELEASE_LINE`）
+ * 出貨管線兩條線都要問，所以 `notesFromChangelog()` **先問 collector、再問根**。
+ * 版號格式互斥（有沒有 `v` 前綴），不會互相撈到對方的段落。
  *
- * 用法：
- *   import { notesFromChangelog } from './daemon-notes.mjs';
- *   notesFromChangelog(repoRoot, 'v0.18.24')   // → 一行字，或 null（changelog 沒這版）
+ * 🔴 **兩份都不是網頁，是出貨原稿**（2026-08-17 leo「這個頁面刪除」，inkstone/arcrun-rag#41）。
+ *    雲端那份原本是 `docs-site/src/content/docs/help/changelog.md`——它**同時**是文件站的
+ *    一頁與出貨原稿，而 D95 第一輪拆的是 daemon 那半，這半原地沒動。頁面刪掉之後
+ *    原稿搬來 repo 根：使用者讀的是 GitHub 版本發佈（由 `github-release.mjs` 拿這兩份檔
+ *    的段落產生），文件站不再自己維護一份。
+ *
+ * ⚠️ 這是過渡形態。collector/ 真的搬成獨立 repo 時，本檔該只剩雲端那一條，
+ *    daemon 那條改成向獨立 repo 取。**不要把它當成長期設計。**
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import {
+  CHANGELOG_PATH as DAEMON_CHANGELOG_PATH,
+  NOTES_MAX, stripMarkdown, headlinesFor, checkNotes, notesForVersion,
+} from '../../collector/cmd/arcrun-app/daemon-notes.mjs';
 
-export const CHANGELOG_REL = 'docs-site/src/content/docs/help/changelog.md';
-/** 畫面上一行讀得完的上限。超過就截，並改叫使用者去看說明文件。 */
-export const NOTES_MAX = 100;
-const TAIL = '（細節見說明文件）';
+export { NOTES_MAX, stripMarkdown, headlinesFor, checkNotes };
 
-/** 把 markdown 行內語法剝成純文字——畫面不渲染 markdown，留著就是雜訊。 */
-export function stripMarkdown(s) {
-  return String(s)
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')   // [字](連結) → 字
-    .replace(/[*_`]+/g, '')                     // 粗體/斜體/行內碼標記
-    .replace(/\s+/g, ' ')                       // 換行與連續空白 → 單一空白
-    .trim();
-}
+/** 雲端引擎（`1.4.x`）的版本說明＝repo 根的 `CHANGELOG.md`（出貨原稿，不是網頁）。 */
+export const CHANGELOG_REL = 'CHANGELOG.md';
+/** 桌面版（`v0.18.x`）的版本說明——已搬進 collector/。 */
+export const DAEMON_CHANGELOG_REL = 'collector/CHANGELOG.md';
 
 /**
- * 從 changelog 取某一版的「一句話摘要」清單。
- * 規則：只認**頂層條目**（行首 `- `）的第一個粗體片段——那就是該條的標題。
- *   沒有粗體的條目退而取整行（截短），因為「有寫總比漏掉好」。
+ * 從說明文件取某一版的「一句話摘要」。**先問 daemon 的，再問雲端的。**
+ * 回傳 null＝兩份都沒有這一版（呼叫端該當成錯誤）。
  */
-export function headlinesFor(changelogText, version) {
-  const lines = changelogText.split('\n');
-  const start = lines.findIndex((l) => new RegExp(`^##\\s+${version.replace(/[.\\]/g, '\\$&')}(\\D|$)`).test(l.trim()));
-  if (start < 0) return null;
-  const out = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    const l = lines[i];
-    if (/^##\s/.test(l)) break;                 // 下一版開始
-    if (!/^-\s/.test(l)) continue;              // 只取頂層條目（續行、巢狀一律略過）
-    const body = l.replace(/^-\s*/, '');
-    const bold = body.match(/\*\*([^*]+)\*\*/);
-    let h = stripMarkdown(bold ? bold[1] : body);
-    h = h.replace(/^[^\p{L}\p{N}「（(]+/u, '');  // 去掉開頭的 emoji／符號
-    h = h.replace(/[：:，,。.]+$/, '');           // 去掉尾標點（要串接）
-    if (h) out.push(h);
-  }
-  return out;
-}
-
-/** 組成畫面上那一行。回傳 null＝changelog 裡沒有這一版（呼叫端該當成錯誤）。 */
 export function notesFromChangelog(repoRoot, version) {
-  const p = join(repoRoot, CHANGELOG_REL);
-  if (!existsSync(p)) return null;
-  const heads = headlinesFor(readFileSync(p, 'utf8'), version);
-  if (!heads || !heads.length) return null;
-
-  let line = heads.join('・');
-  if (line.length > NOTES_MAX) {
-    // 截到「最後一個完整條目」為止，再掛尾巴——不要把句子切一半給使用者看。
-    const kept = [];
-    for (const h of heads) {
-      if ([...kept, h].join('・').length + TAIL.length > NOTES_MAX) break;
-      kept.push(h);
-    }
-    line = (kept.length ? kept.join('・') : heads[0].slice(0, NOTES_MAX - TAIL.length)) + TAIL;
-  }
-  return line;
+  const daemonPath = repoRoot
+    ? join(repoRoot, DAEMON_CHANGELOG_REL)
+    : DAEMON_CHANGELOG_PATH;
+  const fromDaemon = existsSync(daemonPath) ? notesForVersion(version, daemonPath) : null;
+  if (fromDaemon) return fromDaemon;
+  return notesForVersion(version, join(repoRoot, CHANGELOG_REL));
 }
 
 /**
- * 機械閘用：這一行本身可不可以送到使用者眼前？
- * 回傳問題清單（空＝通過）。這道閘存在的理由＝**手寫的那一行沒有任何人檢查**。
+ * 這個版號的說明在哪一份檔案裡（相對 repo 根）。給錯誤訊息用——
+ * 「找不到 v0.18.30」時要能指出**該去哪個檔補**，指錯地方比不指還糟。
  */
-export function checkNotes(notes) {
-  const problems = [];
-  const s = String(notes ?? '');
-  if (!s.trim()) return ['manifest.daemon.notes 是空的——使用者按「檢查更新」看不到這版改了什麼'];
-  if (/[*_`#]|\]\(/.test(s)) {
-    problems.push(`manifest.daemon.notes 裡有 markdown 符號，畫面是純文字會原樣露出來：${JSON.stringify(s.slice(0, 60))}`);
-  }
-  if (/\n/.test(s)) {
-    problems.push('manifest.daemon.notes 有換行——畫面不保留換行（.d 沒有 white-space:pre），會擠成一坨');
-  }
-  if (s.length > NOTES_MAX + TAIL.length) {
-    problems.push(`manifest.daemon.notes 太長（${s.length} 字，上限 ${NOTES_MAX + TAIL.length}）——leo 08-08：「不要這麼長的散文，簡短講改了什麼，細節去 docs 讀」`);
-  }
-  return problems;
+export function changelogRelFor(repoRoot, version) {
+  const daemonPath = join(repoRoot, DAEMON_CHANGELOG_REL);
+  if (existsSync(daemonPath) && notesForVersion(version, daemonPath)) return DAEMON_CHANGELOG_REL;
+  if (/^v/.test(String(version))) return DAEMON_CHANGELOG_REL;  // 帶 v ＝ daemon 線
+  return CHANGELOG_REL;
 }
 
 // CLI：印出某版會顯示的那一行（出貨前想先看一眼時用）
-if (process.argv[1] && process.argv[1].endsWith('daemon-notes.mjs')) {
+if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
   const v = process.argv[2];
-  const root = join(import.meta.dirname, '..', '..');
+  const root = resolve(join(import.meta.dirname, '..', '..'));
   if (!v) { console.error('用法：node installer/scripts/daemon-notes.mjs <版本，例 v0.18.24>'); process.exit(2); }
   const line = notesFromChangelog(root, v);
-  if (!line) { console.error(`❌ changelog 沒有 ${v} 這一版（${CHANGELOG_REL}）`); process.exit(1); }
-  // stdout **只有那一行**——它會被別的腳本（changelog-section.sh）直接取用，
-  // 多印一個字就會被塞進 manifest。其餘一律走 stderr。
+  if (!line) {
+    console.error(`❌ 說明文件沒有 ${v} 這一版（找過 ${DAEMON_CHANGELOG_REL} 與 ${CHANGELOG_REL}）`);
+    process.exit(1);
+  }
+  // stdout **只有那一行**——它會被別的腳本直接取用，多印一個字就會被塞進 manifest。
   console.log(line);
-  console.error(`（${line.length} 字）`);
+  console.error(`（${line.length} 字，來源 ${changelogRelFor(root, v)}）`);
   const probs = checkNotes(line);
   if (probs.length) { probs.forEach((p) => console.error('❌ ' + p)); process.exit(1); }
   console.error('✅ 可以送到使用者眼前');

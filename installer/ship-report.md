@@ -1,4 +1,4 @@
-出貨報告　release 1.4.46　共 21 站（上次（1.4.45）19 站　＋daemon-source-check、fetch-artifacts、no-local-build　−build）
+出貨報告　release 1.4.46　共 22 站（上次（1.4.45）19 站　＋daemon-source-check、fetch-artifacts、no-local-build、release-record　−build）
 來源（stage）＝Arcrun@cacaa33f7d4e　｜　來源（prod）＝Arcrun@cacaa33f7d4e
 機器（stage）＝9f06f3113188　｜　機器（prod）＝9f06f3113188
 
@@ -12,7 +12,7 @@
 | 6 | 向 Arcrun 取用編好的零件（這一站不編任何東西）（🆕 本次新增） | ✅ | ✅ |
 | 7 | 確認這些零件不是我們自己編的（D91：成品只有一個產地）（🆕 本次新增） | ✅ | ✅ |
 | 8 | 核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應） | ✅ | ✅ |
-| 9 | 產生更新畫面那一行（來源＝changelog） | ✅ | ✅ |
+| 9 | 產生更新畫面那一行（來源＝changelog） | ⬜ | ✅ |
 | 10 | 算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼） | ✅ | ✅ |
 | 11 | 確認這版已經寫進說明文件（缺了就中止，不安靜跳過） | ✅ | ✅ |
 | 12 | bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字） | ⬜ | ✅ |
@@ -24,16 +24,18 @@
 | 18 | 部署郵差（忘記密碼代寄），並驗證它真的接得起來 | ✅ | ✅ |
 | 19 | 讓送貨管道拿到新版並確認它真的收斂了 | ✅ | ✅ |
 | 20 | 驗收（用戶端視角，不是部署訊息） | ✅ | ✅ |
-| 21 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | ⬜ | ✅ |
+| 21 | 在這個環境對應的 repo 留一份使用者點得到的版本發佈（🆕 本次新增） | ⬜ | （未出） |
+| 22 | 在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄 | （未出） | ✅ |
 
 🗑 上次有、這次清單已經沒有的站：build——如果不是刻意拿掉，這就是漏了
 
-真的做事的站：stage 18／21 站（上次 11 站）　｜　prod 20／21 站（上次 13 站）
+真的做事的站：stage 17／22 站（上次 11 站）　｜　prod 20／22 站（上次 13 站）
 
-⬜ 跳過的站（4 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
-   · stage｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.28
+⬜ 跳過的站（5 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
+   · stage｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.29
+   · stage｜notes：已是最新：「移除資料夾」現在真的會收回・不會再把別人的套件當成你的知識・有沒有用 git 不再影響收哪些檔・不影響你已經同步的資料
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
-   · stage｜github-release：本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）
+   · stage｜release-record：Gitea 已有 v1.4.46：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/v1.4.46
    · prod｜daemon-sync：bundle 已是 changelog 最新已發佈版：v0.18.28
 
 件數：stage 21 站　｜　prod 21 站

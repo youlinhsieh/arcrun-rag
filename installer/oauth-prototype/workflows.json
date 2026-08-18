@@ -76,16 +76,13 @@
   {
     "file": "rag-chat.local.yaml",
     "name": "rag_chat",
-    "description": "同步問答：keyword＋semantic＋graph 三路檢索 KBDB（與搜尋頁同一套 API）→ Workers AI 把檢索結果組成回答（繁中、附出處，**免金鑰**）。GET /q/__NAMESPACE__/rag_chat?question=… 直回。 v2：選頁改 IDF 字面重疊主導＋tombstone/deprecated 過濾＋次頁門檻＋graph 比對正規化。\n",
+    "description": "圖譜優先檢索問答：問句先用 graph 三元組比對出相關子庫（KBDB /map/select），只讀那些子庫的 索引敘事與原文，再由 Workers AI 作答（繁中、附出處與檢索過程，**免金鑰**）。 v4：向量移出檢索路徑；館藏目錄一律進 prompt；回應帶 retrieval 供前端顯示「答案怎麼被找出來的」。\n",
     "flow": [
       "input >> ON_SUCCESS >> prep",
-      "prep >> ON_SUCCESS >> kw_search",
-      "kw_search >> ON_SUCCESS >> sem_search",
-      "sem_search >> ON_SUCCESS >> fetch_triplets",
-      "fetch_triplets >> ON_SUCCESS >> fetch_blocks_a",
-      "fetch_blocks_a >> ON_SUCCESS >> fetch_blocks_b",
-      "fetch_blocks_b >> ON_SUCCESS >> fetch_blocks_c",
-      "fetch_blocks_c >> ON_SUCCESS >> assemble",
+      "prep >> ON_SUCCESS >> select_libraries",
+      "select_libraries >> ON_SUCCESS >> pick_libs",
+      "pick_libs >> ON_SUCCESS >> fetch_pages",
+      "fetch_pages >> ON_SUCCESS >> assemble",
       "assemble >> ON_SUCCESS >> ask_llm",
       "ask_llm >> ON_SUCCESS >> finalize"
     ],
@@ -101,55 +98,30 @@
           "max_output_bytes": 65536
         }
       },
-      "kw_search": {
+      "select_libraries": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=15",
+        "url": "__KBDB_BASE__/map/select?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&limit=3",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
         }
       },
-      "sem_search": {
-        "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/entries/search?q={{prep.data.q_enc}}&owner_id=__NAMESPACE__&mode=semantic&limit=15",
-        "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+      "pick_libs": {
+        "component": "__CODE_URL__",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst sel = parse(input.sel_body) || {};\nconst libs = Array.isArray(sel.libraries) ? sel.libraries : [];\nconst names = [];\nfor (const l of libs) { const n = String((l && l.library) || '').trim(); if (n && names.indexOf(n) === -1) names.push(n); }\n// 帶了 library= 就是限定；空字串代表「這次不限定」（route=all 的誠實路徑）\nreturn {\n  success: true,\n  lib_param: names.length ? '&library=' + encodeURIComponent(names.join(',')) : '',\n  lib_count: names.length\n};\n",
+        "input": {
+          "sel_body": "{{select_libraries.data.body}}"
+        },
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
         }
       },
-      "fetch_triplets": {
+      "fetch_pages": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__",
-        "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
-        }
-      },
-      "fetch_blocks_a": {
-        "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=0",
-        "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
-        }
-      },
-      "fetch_blocks_b": {
-        "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=60",
-        "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
-        }
-      },
-      "fetch_blocks_c": {
-        "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&offset=120",
+        "url": "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&exclude_kind=library_map{{pick_libs.data.lib_param}}",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -157,14 +129,10 @@
       },
       "assemble": {
         "component": "__CODE_URL__",
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nfunction norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }\nconst TOMB = '（舊管線產物';\nfunction usable(e) {\n  if (!e || typeof e !== 'object') return false;\n  if (!e.page_name) return false;\n  const c = String(e.content || '');\n  if (!c.trim() || c.indexOf(TOMB) === 0 || c.indexOf('（重複頁') === 0) return false;\n  if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); if (m && m.status === 'deprecated') return false; } catch (err) {} }\n  return true;\n}\nfunction srcOf(e) { if (e.metadata_json) { try { const m = JSON.parse(e.metadata_json); return String(m.source || ''); } catch (err) {} } return ''; }\nfunction chunkIdx(src) { const m = /#(\\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }\nfunction toksOf(text) {\n  const t = norm(text);\n  const out = new Set();\n  const ascii = t.match(/[a-z0-9]{2,}/g) || [];\n  for (const w of ascii) out.add(w);\n  const cjk = t.replace(/[^一-鿿]/g, ' ');\n  for (const seg of cjk.split(/\\s+/)) {\n    for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));\n  }\n  return out;\n}\nconst question = String(input.question || '');\nconst qToks = toksOf(question);\n// 全庫 blocks（三段分頁合併）→ usable → 去重（同頁同內容；同名卡 create-only 疊出的重複只留一份）\nconst all = [].concat(\n  ((parse(input.blocks_a) || {}).entries) || [],\n  ((parse(input.blocks_b) || {}).entries) || [],\n  ((parse(input.blocks_c) || {}).entries) || []\n);\nconst seenKey = new Set();\nconst blocks = [];\nfor (const e of all) {\n  if (!usable(e)) continue;\n  const k = e.page_name + '|' + String(e.content).trim();\n  if (seenKey.has(k)) continue;\n  seenKey.add(k);\n  blocks.push(e);\n}\n// IDF：token 出現在越少 block 越有鑑別力\nconst N = blocks.length || 1;\nconst df = new Map();\nconst bToks = [];\nfor (const e of blocks) {\n  const ts = toksOf(e.content);\n  bToks.push(ts);\n  for (const t of ts) df.set(t, (df.get(t) || 0) + 1);\n}\nconst pageBlockScores = new Map();\nblocks.forEach(function (e, i) {\n  let sc = 0;\n  for (const t of qToks) {\n    if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));\n  }\n  if (sc <= 0) return;\n  if (!pageBlockScores.has(e.page_name)) pageBlockScores.set(e.page_name, []);\n  pageBlockScores.get(e.page_name).push(sc);\n});\nconst score = new Map();\nfor (const entry of pageBlockScores) {\n  const top3 = entry[1].slice().sort(function (a, b) { return b - a; }).slice(0, 3);\n  score.set(entry[0], top3.reduce(function (a, b) { return a + b; }, 0));\n}\n// keyword / semantic 小加分（與搜尋頁同一套 API 的佐證訊號）\nconst kw = parse(input.kw_body), sem = parse(input.sem_body);\nfor (const e of ((kw && kw.entries) || []).filter(usable)) score.set(e.page_name, (score.get(e.page_name) || 0) + 2);\n((sem && sem.entries) || []).filter(usable).slice(0, 10).forEach(function (e) {\n  score.set(e.page_name, (score.get(e.page_name) || 0) + 0.4);\n});\nconst pages = Array.from(score.keys()).sort(function (a, b) { return (score.get(b) || 0) - (score.get(a) || 0); });\nconst p1 = pages[0] || '';\nconst s1 = score.get(p1) || 0;\n// 次頁門檻：分數 ≥ max(3, 0.4×主頁分)——單發雜訊進不了出處\nlet p2 = '';\nif (pages.length > 1) {\n  const cand = pages[1];\n  const s2 = score.get(cand) || 0;\n  if (s2 >= Math.max(3, 0.4 * s1)) p2 = cand;\n}\n// graph_facts：問句包含的實體（正規化比對）之邊\nlet records = ((parse(input.tp_body) || {}).records) || [];\nif (!Array.isArray(records)) records = [];\nconst qn = norm(question);\nconst facts = [];\nconst seenFact = new Set();\nfor (const r of records) {\n  const v = (r && r.values && typeof r.values === 'object') ? r.values : r;\n  if (!v || v.status === 'deprecated' || !v.subject || !v.object) continue;\n  const sN = norm(v.subject), oN = norm(v.object);\n  const hit = (sN.length >= 2 && qn.indexOf(sN) !== -1) || (oN.length >= 2 && qn.indexOf(oN) !== -1);\n  if (!hit) continue;\n  const line = v.subject + ' ' + (v.predicate || '→') + ' ' + v.object;\n  if (seenFact.has(line)) continue;\n  seenFact.add(line);\n  facts.push(line);\n  if (facts.length >= 12) break;\n}\n// 聚合選中頁 blocks（主頁在前、各頁按 chunk 序），8000 字上限\nconst picked = [];\nfunction take(page, mode) {\n  if (!page) return;\n  const es = blocks.filter(function (e) { return e.page_name === page; });\n  es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });\n  for (const e of es) picked.push({ page: page, mode: mode, content: String(e.content), source: srcOf(e) });\n}\ntake(p1, '主命中頁');\nif (p2 && p2 !== p1) take(p2, '相關頁');\nlet budget = 8000;\nconst ctxBlocks = [];\nfor (const bk of picked) {\n  if (budget <= 0) break;\n  let c = bk.content;\n  if (c.length > budget) c = c.slice(0, budget);\n  budget -= c.length;\n  ctxBlocks.push({ page: bk.page, mode: bk.mode, content: c, source: bk.source });\n}\nconst sources = ctxBlocks.map(function (bk, i) { return { n: i + 1, mode: bk.mode, page: bk.page, source: bk.source }; });\nlet ctx = '';\nctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自《' + bk.page + '》）\\n' + bk.content + '\\n\\n'; });\nconst factsTxt = facts.length ? ('已知知識關聯（也是可引用的資料，可據此回答）：\\n' + facts.map(function (f) { return '- ' + f; }).join('\\n') + '\\n\\n') : '';\nconst prompt = '你是企業知識庫問答助手。只根據下面提供的資料回答，資料裡沒有的不要編造；' +\n  '引用時標注資料編號如 [1]、[2]。\\n\\n' +\n  factsTxt + '資料：\\n' + (ctx || '（沒有找到相關資料）\\n') +\n  '\\n問題：' + question + '\\n\\n' +\n  '輸出規則（嚴格遵守）：不要輸出思考過程或英文草稿，只輸出一行——' +\n  '以【答】開頭、用正體中文、一段話、帶 [n] 引用；資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';\nreturn { success: true, prompt: prompt, sources: sources, graph_facts: facts, p1: p1, p2: p2, has_ctx: ctxBlocks.length > 0 };\n",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nfunction norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }\nconst TOMB = '（舊管線產物';\nfunction usable(e) {\n  if (!e || typeof e !== 'object') return false;\n  if (!e.page_name) return false;\n  const c = String(e.content || '');\n  if (!c.trim() || c.indexOf(TOMB) === 0 || c.indexOf('（重複頁') === 0) return false;\n  if (e.metadata_json) {\n    try {\n      const m = JSON.parse(e.metadata_json);\n      if (m && m.status === 'deprecated') return false;\n      // 🔴 地圖自己產的摘要 block（kind=library_map）不是使用者的原文。\n      //   實測（2026-08-17，youlin 真資料）：不濾的話它們會**霸佔出處清單前段**\n      //   ——因為它們的內容就是庫名＋核心實體，字面重疊分數天生最高，\n      //   於是 `library-map:kb` 這種內部頁名會被當成「參照原文位置」印給使用者看，\n      //   而 leo 要的正是「**會看到他的參照原文位置檔名**」。印內部產物＝答非所問。\n      //   同一個口徑 kbdb 那側早就有了（liveEntryCountsByLibrary 註解：\n      //   「地圖不該把自己算進地圖裡」），只是 GET /entries 是通用列表端點不做這個排除\n      //   ⇒ 排除留在讀端。它們的內容並沒有消失：已經以「子庫目錄」的形式在 prompt 最前面。\n      if (m && m.kind === 'library_map') return false;\n    } catch (err) {}\n  }\n  return true;\n}\nfunction metaOf(e) { if (e && e.metadata_json) { try { return JSON.parse(e.metadata_json) || {}; } catch (err) {} } return {}; }\nfunction srcOf(e) { return String(metaOf(e).source || ''); }\nfunction libOf(e) { return String(metaOf(e).library || 'general'); }\nfunction chunkIdx(src) { const m = /#(\\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }\nfunction toksOf(text) {\n  const t = norm(text);\n  const out = new Set();\n  for (const w of (t.match(/[a-z0-9]{2,}/g) || [])) out.add(w);\n  const cjk = t.replace(/[^一-鿿]/g, ' ');\n  for (const seg of cjk.split(/\\s+/)) { for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2)); }\n  return out;\n}\n\nconst question = String(input.question || '');\nconst sel = parse(input.sel_body) || {};\nconst route = String(sel.route || 'all');\nconst selLibs = Array.isArray(sel.libraries) ? sel.libraries : [];\nconst indexes = Array.isArray(sel.indexes) ? sel.indexes : [];\n\n// ── 館藏目錄：一律進 prompt（「有哪些子庫、各自談什麼」的答案在這裡）──\nlet catalog = '';\nif (indexes.length) {\n  catalog = '本知識庫的子庫目錄（共 ' + indexes.length + ' 個）：\\n';\n  for (const ix of indexes) {\n    const bits = [];\n    if (typeof ix.entry_count === 'number') bits.push(ix.entry_count + ' 筆內容');\n    if (typeof ix.triplet_count === 'number') bits.push(ix.triplet_count + ' 條關聯');\n    // narrative 還沒寫進來的庫，用重點實體代替——不編造，也不留白\n    const desc = (ix.narrative && String(ix.narrative).trim())\n      ? String(ix.narrative).trim()\n      : ((Array.isArray(ix.top_entities) && ix.top_entities.length)\n          ? ('主要談：' + ix.top_entities.join('、'))\n          : '（這個子庫還沒有內容摘要）');\n    catalog += '- ' + ix.library + '（' + bits.join('・') + '）：' + desc + '\\n';\n  }\n  catalog += '\\n';\n}\n\n// ── 命中子庫與命中實體（graph 的話語）──\nlet hitTxt = '';\nconst facts = [];\nif (selLibs.length) {\n  hitTxt = '這個問題從知識圖譜比對到下列子庫（' +\n    (route === 'graph' ? '依三元組實體命中' : '依子庫索引比對') + '）：\\n';\n  for (const l of selLibs) {\n    const ents = Array.isArray(l.matched_entities) ? l.matched_entities : [];\n    hitTxt += '- ' + l.library + (ents.length ? '（命中實體：' + ents.join('、') + '）' : '') + '\\n';\n    for (const e of ents) { const line = e + ' 出現在子庫 ' + l.library; if (facts.indexOf(line) === -1) facts.push(line); }\n  }\n  hitTxt += '\\n';\n}\n\n// ── 選中子庫的原文 ──\nconst raw = ((parse(input.pages_body) || {}).entries) || [];\nconst seenKey = new Set();\nconst blocks = [];\nfor (const e of raw) {\n  if (!usable(e)) continue;\n  const k = e.page_name + '|' + String(e.content).trim();\n  if (seenKey.has(k)) continue;\n  seenKey.add(k);\n  blocks.push(e);\n}\n// 庫內排序（不是檢索）：IDF 字面重疊決定哪幾頁先進預算\nconst qToks = toksOf(question);\nconst N = blocks.length || 1;\nconst df = new Map();\nconst bToks = [];\nfor (const e of blocks) { const ts = toksOf(e.content); bToks.push(ts); for (const t of ts) df.set(t, (df.get(t) || 0) + 1); }\nconst pageScore = new Map();\nblocks.forEach(function (e, i) {\n  let sc = 0;\n  for (const t of qToks) if (bToks[i].has(t)) sc += Math.log(1 + N / (df.get(t) || 1));\n  pageScore.set(e.page_name, Math.max(pageScore.get(e.page_name) || 0, sc));\n});\nconst pages = Array.from(new Set(blocks.map(function (e) { return e.page_name; })))\n  .sort(function (a, b) { return (pageScore.get(b) || 0) - (pageScore.get(a) || 0); });\n\n// 預算 8000 字，範圍已收斂 ⇒ 可以收下多頁（v3 只敢收 1～2 頁，因為它是從全庫挑）\nlet budget = 8000;\nconst ctxBlocks = [];\nconst pagesRead = [];\nfor (const page of pages) {\n  if (budget <= 0) break;\n  const es = blocks.filter(function (e) { return e.page_name === page; });\n  es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });\n  let chars = 0;\n  for (const e of es) {\n    if (budget <= 0) break;\n    let c = String(e.content);\n    if (c.length > budget) c = c.slice(0, budget);\n    budget -= c.length; chars += c.length;\n    ctxBlocks.push({ page: page, content: c, source: srcOf(e), library: libOf(e) });\n  }\n  if (chars > 0) pagesRead.push({ page: page, library: libOf(es[0]), chars: chars, source: srcOf(es[0]) });\n}\n\nconst sources = ctxBlocks.map(function (bk, i) {\n  return { n: i + 1, mode: bk.library, page: bk.page, source: bk.source };\n});\nlet ctx = '';\nctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自子庫《' + bk.library + '》的《' + bk.page + '》）\\n' + bk.content + '\\n\\n'; });\n\nconst prompt = '你是企業知識庫問答助手。只根據下面提供的資料回答，資料裡沒有的不要編造；' +\n  '引用原文時標注資料編號如 [1]、[2]。\\n\\n' +\n  catalog + hitTxt +\n  '原文片段：\\n' + (ctx || '（這次沒有讀入原文片段——若問題可由上面的子庫目錄回答，就用目錄回答）\\n') +\n  '\\n問題：' + question + '\\n\\n' +\n  '輸出規則（嚴格遵守）：不要輸出思考過程或英文草稿，只輸出一行——' +\n  '以【答】開頭、用正體中文、一段話；引用原文時帶 [n]，只用子庫目錄回答時不必帶編號；' +\n  '資料不足就寫【答】後接「知識庫裡沒有這方面資料」。';\n\n// 前端契約（console-ui/public/portal/index.html retrievalTraceHtml，b48f02b）\nconst retrieval = {\n  route: route,\n  vector_used: false,\n  libraries_considered: typeof sel.libraries_considered === 'number' ? sel.libraries_considered : indexes.length,\n  libraries: selLibs.map(function (l) {\n    return { library: l.library, score: l.score, via: l.via, matched_entities: Array.isArray(l.matched_entities) ? l.matched_entities : [] };\n  }),\n  indexes_read: indexes.map(function (ix) {\n    return {\n      library: ix.library, narrative: ix.narrative || '', selected: !!ix.selected,\n      top_entities: Array.isArray(ix.top_entities) ? ix.top_entities : [],\n      triplet_count: ix.triplet_count, entry_count: ix.entry_count\n    };\n  }),\n  pages_read: pagesRead\n};\n\nreturn { success: true, prompt: prompt, sources: sources, graph_facts: facts, retrieval: retrieval, has_ctx: ctxBlocks.length > 0 };\n",
         "input": {
-          "kw_body": "{{kw_search.data.body}}",
-          "sem_body": "{{sem_search.data.body}}",
-          "tp_body": "{{fetch_triplets.data.body}}",
-          "blocks_a": "{{fetch_blocks_a.data.body}}",
-          "blocks_b": "{{fetch_blocks_b.data.body}}",
-          "blocks_c": "{{fetch_blocks_c.data.body}}",
+          "sel_body": "{{select_libraries.data.body}}",
+          "pages_body": "{{fetch_pages.data.body}}",
           "question": "{{prep.data.question}}"
         },
         "limits": {
@@ -178,11 +146,12 @@
       },
       "finalize": {
         "component": "__CODE_URL__",
-        "code": "const answer = String(input.answer == null ? '' : input.answer).trim();\nconst sources = Array.isArray(input.sources) ? input.sources : [];\nconst facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];\nreturn {\n  success: true,\n  answer: answer || '（知識庫裡沒有找到足以回答的資料。）',\n  sources: answer ? sources : [],\n  graph_facts: facts\n};\n",
+        "code": "const answer = String(input.answer == null ? '' : input.answer).trim();\nconst sources = Array.isArray(input.sources) ? input.sources : [];\nconst facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];\nreturn {\n  success: true,\n  answer: answer || '（知識庫裡沒有找到足以回答的資料。）',\n  sources: answer ? sources : [],\n  graph_facts: facts,\n  retrieval: input.retrieval || null\n};\n",
         "input": {
           "answer": "{{ask_llm.text}}",
           "sources": "{{assemble.data.sources}}",
-          "graph_facts": "{{assemble.data.graph_facts}}"
+          "graph_facts": "{{assemble.data.graph_facts}}",
+          "retrieval": "{{assemble.data.retrieval}}"
         },
         "limits": {
           "timeout_ms": 3000,
@@ -194,7 +163,6 @@
       "__CODE_URL__",
       "__HTTP_REQ_URL__",
       "__KBDB_BASE__",
-      "__KBDB_TOKEN__",
       "__NAMESPACE__"
     ],
     "graph": {
@@ -212,40 +180,22 @@
           "label": "prep"
         },
         {
-          "id": "kw_search",
+          "id": "select_libraries",
           "type": "Component",
-          "componentId": "kw_search",
-          "label": "kw_search"
+          "componentId": "select_libraries",
+          "label": "select_libraries"
         },
         {
-          "id": "sem_search",
+          "id": "pick_libs",
           "type": "Component",
-          "componentId": "sem_search",
-          "label": "sem_search"
+          "componentId": "pick_libs",
+          "label": "pick_libs"
         },
         {
-          "id": "fetch_triplets",
+          "id": "fetch_pages",
           "type": "Component",
-          "componentId": "fetch_triplets",
-          "label": "fetch_triplets"
-        },
-        {
-          "id": "fetch_blocks_a",
-          "type": "Component",
-          "componentId": "fetch_blocks_a",
-          "label": "fetch_blocks_a"
-        },
-        {
-          "id": "fetch_blocks_b",
-          "type": "Component",
-          "componentId": "fetch_blocks_b",
-          "label": "fetch_blocks_b"
-        },
-        {
-          "id": "fetch_blocks_c",
-          "type": "Component",
-          "componentId": "fetch_blocks_c",
-          "label": "fetch_blocks_c"
+          "componentId": "fetch_pages",
+          "label": "fetch_pages"
         },
         {
           "id": "assemble",
@@ -274,36 +224,21 @@
         },
         {
           "from": "prep",
-          "to": "kw_search",
+          "to": "select_libraries",
           "type": "ON_SUCCESS"
         },
         {
-          "from": "kw_search",
-          "to": "sem_search",
+          "from": "select_libraries",
+          "to": "pick_libs",
           "type": "ON_SUCCESS"
         },
         {
-          "from": "sem_search",
-          "to": "fetch_triplets",
+          "from": "pick_libs",
+          "to": "fetch_pages",
           "type": "ON_SUCCESS"
         },
         {
-          "from": "fetch_triplets",
-          "to": "fetch_blocks_a",
-          "type": "ON_SUCCESS"
-        },
-        {
-          "from": "fetch_blocks_a",
-          "to": "fetch_blocks_b",
-          "type": "ON_SUCCESS"
-        },
-        {
-          "from": "fetch_blocks_b",
-          "to": "fetch_blocks_c",
-          "type": "ON_SUCCESS"
-        },
-        {
-          "from": "fetch_blocks_c",
+          "from": "fetch_pages",
           "to": "assemble",
           "type": "ON_SUCCESS"
         },
@@ -558,10 +493,11 @@
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "const page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };\nconst path = String(input.path || (page + '.md'));\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, source_uri: 'kb://' + path };\n",
+        "code": "const page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };\nconst path = String(input.path || (page + '.md'));\n// library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。\nconst library = String(input.library == null ? '' : input.library).trim();\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, source_uri: 'kb://' + path, library: library };\n",
         "input": {
           "page_name": "{{input.page_name}}",
-          "path": "{{input.path}}"
+          "path": "{{input.path}}",
+          "library": "{{input.library}}"
         },
         "limits": {
           "timeout_ms": 2000,
@@ -579,10 +515,11 @@
       },
       "build_deprecations": {
         "component": "__CODE_URL__",
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst a = parse(input.blocks_body);\nconst entries = (a && a.entries) || [];\nconst path = String(input.path || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst dead_entries = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，\n  // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else {\n    hit = true;\n  }\n  if (!hit) continue;\n  dead_entries.push({ id: e.id });   // 真刪只需要 id\n}\nreturn { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };\n",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst a = parse(input.blocks_body);\nconst entries = (a && a.entries) || [];\nconst path = String(input.path || '');\nconst lib = String(input.library || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst dead_entries = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，\n  // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else {\n    hit = true;\n  }\n  // arcrun-rag#46：library 兩邊都有才比；不一致＝別的資料夾的同名檔，不准動。\n  const mLib = String(meta.library || '');\n  if (hit && lib !== '' && mLib !== '' && mLib !== lib) hit = false;\n  if (!hit) continue;\n  dead_entries.push({ id: e.id });   // 真刪只需要 id\n}\nreturn { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };\n",
         "input": {
           "blocks_body": "{{list_dead_blocks.data.body}}",
-          "path": "{{prep.data.path}}"
+          "path": "{{prep.data.path}}",
+          "library": "{{prep.data.library}}"
         },
         "limits": {
           "timeout_ms": 5000,
@@ -608,11 +545,12 @@
       },
       "pick_dead_triplets": {
         "component": "__CODE_URL__",
-        "code": "let body = input.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nlet records = (body && Array.isArray(body.records)) ? body.records : [];\nconst page = String(input.page_name || '');\nconst srcUri = String(input.source_uri || '');\nconst dead_records = [];\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;\n  // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。\n  if (!v || !r.record_id) continue;\n  const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';\n  const hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);\n  if (!hit) continue;\n  dead_records.push({ record_id: r.record_id });\n}\nreturn { success: true, dead_records: dead_records, count: dead_records.length };\n",
+        "code": "let body = input.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nlet records = (body && Array.isArray(body.records)) ? body.records : [];\nconst page = String(input.page_name || '');\nconst srcUri = String(input.source_uri || '');\nconst lib = String(input.library || '');\nconst dead_records = [];\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;\n  // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。\n  if (!v || !r.record_id) continue;\n  const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';\n  let hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);\n  // arcrun-rag#46：與 build_deprecations 同一條規則——兩個資料夾各有同名同相對\n  // 路徑的檔時，source_uri 也會完全相同，library 是唯一分得開它們的那一維。\n  const vLib = typeof v.library === 'string' ? v.library : '';\n  if (hit && lib !== '' && vLib !== '' && vLib !== lib) hit = false;\n  if (!hit) continue;\n  dead_records.push({ record_id: r.record_id });\n}\nreturn { success: true, dead_records: dead_records, count: dead_records.length };\n",
         "input": {
           "body": "{{list_triplets.data.body}}",
           "page_name": "{{prep.data.page_name}}",
-          "source_uri": "{{prep.data.source_uri}}"
+          "source_uri": "{{prep.data.source_uri}}",
+          "library": "{{prep.data.library}}"
         },
         "limits": {
           "timeout_ms": 3000,

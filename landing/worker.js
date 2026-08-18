@@ -167,7 +167,7 @@ const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" 
  * 現在 `.ico` 回真 ICO、`.svg` 回 SVG，各自名實相符。
  *
  * 內容與 LOGO_SVG 同一個 mark（墨底＋paper 雙 chevron），由 CIS 產出；
- * 要換品牌就改 `InkStoneCo/arcrun-cis/` 再重產（見 collector/cmd/arcrun-tray/assets/store/）。
+ * 要換品牌就改 `InkStoneCo/arcrun-cis/` 再重產（見 collector/cmd/arcrun-app/assets/store/）。
  */
 const FAVICON_ICO_B64 = [
   "AAABAAMAEBAAAAEAIAA2AQAANgAAACAgAAABACAAMQIAAGwBAAAwMAAAAQAgAIgCAACdAwAAiVBORw0KGgoAAAANSUhEUgAAABAA",
@@ -934,7 +934,7 @@ body{margin-top:0 !important}
           </p>
           <p class="soft" style="margin:6px 0 0">
             同步器版本：<b>__DAEMON_VERSION__</b>　·
-            <a href="__DOCS_BASE__/help/changelog/" style="color:#241804;font-weight:600">這一版改了什麼</a>
+            <a href="https://github.com/youlinhsieh/arcrun-rag/releases" target="_blank" rel="noopener" style="color:#241804;font-weight:600">這一版改了什麼</a>
           </p>
           <p style="margin:8px 0 0">
             <a href="__DOCS_BASE__/start/install-mac/" style="color:#241804;font-weight:600">🍎 Mac 安裝步驟</a>

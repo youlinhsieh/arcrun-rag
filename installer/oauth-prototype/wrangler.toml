@@ -111,7 +111,7 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/957371f"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/1aa8230"
 BUNDLE_BUILT = "2026-08-15"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
@@ -134,7 +134,7 @@ DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
 # 實測見本次交付回報（curl /auth/start?code=<真碼> 直接拿到 CF OAuth 302，
 # 而不是 error=code_unreachable）。
 
-INSTALLER_SRC_SHA = "eb3f3bd237a873a379b94910be01dda55b16e342ce430e78a5602fa57d5cae39"
+INSTALLER_SRC_SHA = "43e8f04e70d66e45e218fca978e9bf52f2415af7666921c92f9e37b5a3eb6034"
 [env.staging.observability]
 enabled = true
 

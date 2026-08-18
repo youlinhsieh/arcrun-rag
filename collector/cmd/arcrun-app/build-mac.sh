@@ -14,7 +14,8 @@ VERSION="${VERSION:-$(./daemon-version.py --stamp)}"
 
 # 🔴 2026-08-06 機械閘：這一版的「更新內容」沒寫進 changelog ⇒ 不准打包。
 #   leo：「給版本號、本版更新內容、打包產品、顯示在前端，這一整串都應該是機械化」。
-#   單一真相源＝docs-site/.../help/changelog.md；manifest.notes 與前端全部投影自它。
+#   單一真相源＝collector/CHANGELOG.md；manifest.notes 與前端全部投影自它。
+#   （2026-08-18 D95 第一輪：從 docs-site 搬進 collector/，daemon 才算得出自己的版本。）
 #   理由與格式見 changelog-section.sh。
 ./changelog-section.sh "$VERSION" --check
 

@@ -16,7 +16,7 @@ description: 把你的檔案變成 AI 查得到的知識庫——安裝、更新
 | **讓我的 AI 查得到我的資料** | [接到你自己的 AI](use/mcp/) |
 | **更新到最新版** | [怎麼更新版本](use/update/) |
 | **遇到問題了** | [常見問題](help/faq/) |
-| **想知道這版改了什麼** | [版本說明](help/changelog/) |
+| **想知道這版改了什麼** | [版本說明（GitHub）](https://github.com/youlinhsieh/arcrun-rag/releases) |
 
 ## 三句話講完
 

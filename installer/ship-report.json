@@ -2238,7 +2238,7 @@
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
      "status": "skip",
-     "note": "bundle 已是 changelog 最新已發佈版：v0.18.28"
+     "note": "bundle 已是 changelog 最新已發佈版：v0.18.29"
     },
     {
      "id": "daemon-check",
@@ -2273,8 +2273,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "已是最新：「移除資料夾」現在真的會收回・不會再把別人的套件當成你的知識・有沒有用 git 不再影響收哪些檔・不影響你已經同步的資料"
     },
     {
      "id": "version",
@@ -2343,15 +2343,15 @@
      "note": null
     },
     {
-     "id": "github-release",
-     "title": "在 GitHub 公開鏡像留一份使用者點得到的發佈紀錄",
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈",
      "status": "skip",
-     "note": "本目標沒有 githubRelease（登錄簿宣告，非發佈目標屬正常）"
+     "note": "Gitea 已有 v1.4.46：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/v1.4.46"
     }
    ],
    "sourceCommit": "Arcrun@cacaa33f7d4e",
    "machine": "9f06f3113188",
-   "ts": 1786868163232
+   "ts": 1786896204997
   },
   "prod": {
    "results": [

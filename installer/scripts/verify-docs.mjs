@@ -1,28 +1,33 @@
 /**
- * verify-docs.mjs — 「使用者更新完想知道這版改了什麼，他真的查得到嗎？」
+ * verify-docs.mjs — 「文件站真的重建並部署出去了嗎？」
  *
  * ── 為什麼要有這支（2026-08-09，Gitea Leo/arcrun-rag#27）────────────────────
  * leo 推完 1.4.29 prod 後問：「你推完 prod 以後有去檢查上架的東西是否正確嗎？
  *   比如說版本有沒有版本說明？有沒有上 docs？」
- * 一查就漏了：`rag.arcrun.dev/docs/help/changelog/` 線上最新只到 v0.18.24，
- * 而封測者當天按更新拿到的是 v0.18.25 ⇒ **他更新完，查不到自己拿到的是什麼。**
- *
- * 而當時管線裡**已經有**一道「文件站部署後驗一下」——它只問 `GET /docs/ → 200`。
+ * 當時管線裡**已經有**一道「文件站部署後驗一下」——它只問 `GET /docs/ → 200`。
  * 一個從沒重建過、內容停在三天前的站，那道閘一樣是綠的。
- * ⇒ 「部署成功」不是驗收，**「使用者查得到這一版」才是**（CRITICAL-PATH 使用規則 6：
- *   HTTP 200 不算驗過）。
+ * ⇒ 「部署成功」不是驗收（CRITICAL-PATH 使用規則 6：HTTP 200 不算驗過）。
  *
- * ── 這支斷言什麼 ──────────────────────────────────────────────────────────
- *   ① 文件站首頁活著（`GET <docsBase>` → 2xx）
- *   ② **版本說明頁上真的有這一版**：bundle release（例 `1.4.29`）與
- *      daemon 版本（例 `v0.18.25`）兩個字串都要出現在線上那一頁
- *      ——這兩個號碼正是使用者在 portal 版本卡／小幫手更新畫面看到的號碼，
- *        他會拿著它們來這一頁對照。缺任一個＝這次出貨對他而言沒有說明。
+ * ── 🔴 2026-08-17（leo「這個頁面刪除」，inkstone/arcrun-rag#41）：本支斷言換了對象 ──
+ * 原本的第二條斷言是「**版本說明頁上真的有這一版**」（release 與 daemon 兩個版號都要
+ * 出現在 `<docsBase>/help/changelog/` 上）。**那一頁已經不存在了**——
+ * leo 2026-08-09 就講過「不要同步，docs 的版本說明直接連回 github 的版本發佈」，
+ * 08-17 收口成三個字。文件站不再自己維護一份版本內容。
  *
- * 三件事被同一個斷言一起夾住，都不必靠人記得：
- *   · 文件根本沒寫這一版         → 頁面上找不到 → ❌
- *   · 寫了但沒重新建（astro）    → 舊 HTML 上沒有 → ❌
- *   · 建了但沒部署／部署到別顆   → 線上那顆沒有 → ❌
+ * 🔴 **「使用者查得到這一版」這道閘沒有消失，它換了地方**：
+ *    現在由 `ship.mjs` 的 `release-record` 站保證——每條版本線都要在 GitHub／Gitea
+ *    上有一筆版本發佈，內文由 `github-release.mjs` 的 `releaseSectionFor()`
+ *    從兩份 changelog 原稿抽出來，抽不到就當場中止（不是「先跳過、之後再補」）。
+ *    那一站有牙齒且**早於**本支存在，所以刪掉舊斷言不會留下無人看守的缺口。
+ *
+ * ⇒ 本支現在斷言的是**這次部署真的發生了**，方法是查那條轉址還在不在：
+ *    ① 文件站首頁活著（`GET <docsBase>` → 2xx）
+ *    ② `<docsBase>/help/changelog/` 仍然把人送去 GitHub 版本發佈
+ *       ——這條轉址宣告在 `docs-site/astro.config.mjs`，是**這份原始碼建出來的產物**。
+ *       它不在線上 ⇒ 這顆 worker 上的站是舊的（或根本沒部署到這顆）。
+ *
+ * ⚠️ 這比舊斷言弱：舊的能抓到「內容停在上一版」，新的只抓得到「站不是這份原始碼建的」。
+ *    這是頁面刪除的代價，不是疏忽——被拿掉的那件事已由 `release-record` 承接。
  *
  * ── 為什麼是獨立模組 ──────────────────────────────────────────────────────
  * 與 `verify-download.mjs` 同理：ship.mjs 是一支會 push、會 deploy 的管線，
@@ -30,56 +35,66 @@
  * 同一份實作既被真出貨用、也被 `verify-docs.test.mjs` 用假頁面反覆演練。
  */
 
-/** 版本說明頁的網址。docsBase 例：`https://…/docs/` ⇒ `https://…/docs/help/changelog/` */
+/**
+ * 版本說明的**唯一對外紀錄**。`docs-site/astro.config.mjs` 的 `redirects` 指向它，
+ * repo 根與 `collector/` 兩份 changelog 原稿的檔頭也都指向它。
+ * 🔴 改網址時三處要一起改——這裡是出貨閘會實際去線上比對的那一份。
+ */
+export const RELEASES_URL = 'https://github.com/youlinhsieh/arcrun-rag/releases';
+
+/** 舊版本說明頁的網址（現在是一條轉址）。docsBase 例：`https://…/docs/`。 */
 export function changelogUrl(docsBase) {
   return `${String(docsBase).replace(/\/+$/, '')}/help/changelog/`;
 }
 
-/** HTML → 純文字（只為了找版本號；標籤內的屬性值不算數，避免 id="…" 誤判成有寫）。 */
-export function htmlText(html) {
-  return String(html)
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ');
-}
-
 /**
- * 線上文件站是不是這一版的。
+ * 線上這個文件站，是不是**這份原始碼**建出來並部署上去的？
+ *
  * @param {object} o
  * @param {string} o.docsBase        文件站根（登錄簿 docsSite.verifyUrl）
- * @param {string[]} o.versions      必須出現在版本說明頁上的版本號（release／daemon）
  * @param {function} [o.fetchImpl]   注入用（測試）
  * @returns {Promise<{lines:string[], fails:string[]}>}
  */
-export async function checkDocsLive({ docsBase, versions, fetchImpl = fetch }) {
+export async function checkDocsLive({ docsBase, fetchImpl = fetch }) {
   const lines = [];
   const fails = [];
   const bust = () => `cb=${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
-  const want = [...new Set((versions || []).filter(Boolean).map(String))];
+  const noCache = { headers: { 'cache-control': 'no-cache' } };
 
-  const home = await fetchImpl(`${String(docsBase).replace(/\/+$/, '')}/?${bust()}`,
-    { headers: { 'cache-control': 'no-cache' } }).catch(() => null);
+  const home = await fetchImpl(`${String(docsBase).replace(/\/+$/, '')}/?${bust()}`, noCache).catch(() => null);
   if (!home || !home.ok) {
     fails.push(`文件站首頁讀不到：${docsBase} → ${home ? 'HTTP ' + home.status : '(fetch 失敗)'}`);
     return { lines, fails };
   }
   lines.push(`文件站首頁 ${docsBase} → HTTP ${home.status}`);
 
+  // 舊的版本說明網址現在是一條轉去 GitHub 版本發佈的靜態轉址頁
+  // （Astro 對外部目標產出的是 `<meta http-equiv="refresh">` ＋ canonical 連結的 HTML）。
+  // 🔴 因此**不能只看 HTTP 狀態**：一頁 200 但沒有那個網址，代表這顆 worker 上的站
+  //    不是這份原始碼建的。要看的是內容裡有沒有 releases 網址。
   const url = changelogUrl(docsBase);
-  const page = await fetchImpl(`${url}?${bust()}`, { headers: { 'cache-control': 'no-cache' } }).catch(() => null);
-  if (!page || !page.ok) {
-    fails.push(`版本說明頁讀不到：${url} → ${page ? 'HTTP ' + page.status : '(fetch 失敗)'}`);
+  const page = await fetchImpl(`${url}?${bust()}`, { ...noCache, redirect: 'manual' }).catch(() => null);
+  if (!page) {
+    fails.push(`舊版本說明網址讀不到：${url} →（fetch 失敗）`);
     return { lines, fails };
   }
-  const text = htmlText(await page.text());
-  const missing = want.filter((v) => !text.includes(v));
-  lines.push(`版本說明頁 ${url} → HTTP ${page.status}｜找 ${want.join('／')}｜${missing.length ? '缺：' + missing.join('／') : '都在'}`);
-  if (missing.length) {
+  // 比對用**原始 HTML**，不剝標籤：Astro 產出的轉址頁把網址放在 `<meta http-equiv=refresh>`
+  // 的 content、`<link rel=canonical>` 的 href 與 `<a href>` 裡——那些都是屬性。
+  // （舊版這裡先剝成純文字，是因為當時找的是**裸版號**，`id="v0.18.25"` 會誤判成
+  //   「頁面寫了這一版」。現在找的是一整條網址，出現在屬性裡就是真的有指過去。）
+  const location = page.headers?.get?.('location') || '';
+  const body = page.status >= 200 && page.status < 300 ? await page.text().catch(() => '') : '';
+  const pointsToReleases = location.startsWith(RELEASES_URL) || String(body).includes(RELEASES_URL);
+
+  lines.push(`舊版本說明網址 ${url} → HTTP ${page.status}`
+    + (location ? `｜Location ${location}` : '')
+    + `｜${pointsToReleases ? '有送去 GitHub 版本發佈' : '沒有指向 GitHub 版本發佈'}`);
+
+  if (!pointsToReleases) {
     fails.push(
-      `版本說明頁上沒有 ${missing.join('／')}——使用者更新完查不到這版改了什麼（${url}）。` +
-      `可能是：changelog 沒寫這一版／寫了沒重建 astro／建了沒部署到這顆 worker`);
+      `${url} 沒有把人送去 ${RELEASES_URL}——線上這個站不是這份原始碼建出來的。` +
+      `可能是：astro 沒重建／建了沒 rsync 進 deploy/docs／部署到別顆 worker。` +
+      `（這個網址是公開過的，掛在 landing「這一版改了什麼」旁邊，撲空＝使用者查不到版本紀錄）`);
   }
   return { lines, fails };
 }

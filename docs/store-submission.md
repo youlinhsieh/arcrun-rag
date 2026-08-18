@@ -81,7 +81,7 @@ $ bash build-msix.sh
 
 ### 產生方式（已寫成腳本，可重跑）
 
-`collector/cmd/arcrun-tray/build-msix.sh`
+`collector/cmd/arcrun-app/build-msix.sh`（舊 fyne 版 `arcrun-tray/` 已於 2026-08-18 D95 第一輪下架）
 
 ```bash
 brew install mingw-w64 cmake icu4c    # 前置，一次就好
@@ -352,7 +352,7 @@ support@arcrun.dev and we will provide credentials.
 > 判別法與教訓見 `system-dev/wiki/decisions-summary.md`「installer 有兩個 worker，改錯＝白做」。
 > ⇒ 要補這顆 favicon，得先確認哪個分支是線上版，另立一筆做。
 
-### msix 包內圖示（`collector/cmd/arcrun-tray/assets/store/`）
+### msix 包內圖示（`collector/cmd/arcrun-app/assets/store/`）
 
 | 檔案 | 尺寸 | 用途 |
 |---|---|---|
@@ -370,7 +370,7 @@ support@arcrun.dev and we will provide credentials.
 ### 要重新產生時
 
 ```bash
-cd collector/cmd/arcrun-tray/assets/store && python3 gen-store-assets.py
+cd collector/cmd/arcrun-app/assets/store && python3 gen-store-assets.py
 ```
 
 素材真身在 `InkStoneCo/arcrun-cis/`（leo 的 CIS）。**不要直接編修產出的 PNG**——

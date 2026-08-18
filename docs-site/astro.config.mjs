@@ -14,6 +14,25 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   site: 'https://rag.arcrun.dev',
   base: '/docs',
+
+  // ── 版本說明頁：**已刪除**，轉去 GitHub 版本發佈（leo 2026-08-17「這個頁面刪除」）──
+  //
+  // leo 2026-08-09 就講過「不要同步，docs 的版本說明直接連回 github 的版本發佈」，
+  // 08-17 收口成三個字。文件站從此**不自己維護一份版本內容**：
+  //   · 雲端引擎 `1.4.x` 的原稿 → repo 根的 `CHANGELOG.md`（出貨用，不是網頁）
+  //   · 桌面版　 `v0.18.x` 的原稿 → `collector/CHANGELOG.md`
+  //   · 使用者讀的 → https://github.com/youlinhsieh/arcrun-rag/releases（唯一對外紀錄）
+  //
+  // 🔴 為什麼是轉址而不是直接 404：這個網址是**公開過的**——它掛在側欄上，也印在
+  //   `landing/worker.js` 那句「這一版改了什麼」旁邊，已經跟著 landing 部署到使用者
+  //   瀏覽器裡了。repo 內的連結本輪都已改成直接指 GitHub，所以這條轉址不服務任何
+  //   內部連結，它只接**書籤與舊 HTML**。一行宣告、沒有程式、沒有真相源可以漂，
+  //   而且 `installer/scripts/verify-docs.mjs` 每次出貨會驗它真的還在轉
+  //   ⇒ 它不是「留下來要維護的機制」，是一個被閘夾住的宣告。
+  redirects: {
+    '/help/changelog': 'https://github.com/youlinhsieh/arcrun-rag/releases',
+  },
+
   integrations: [
     starlight({
       title: 'Arcrun RAG 使用說明',
@@ -50,7 +69,8 @@ export default defineConfig({
           items: [
             { label: '常見問題', slug: 'help/faq' },
             { label: 'Gemini 金鑰被擋（403）', slug: 'help/gemini-403' },
-            { label: '版本說明', slug: 'help/changelog' },
+            // 「版本說明」不再是本站的一頁（見上面 redirects 那段）——側欄直接送去 GitHub。
+            { label: '版本說明（GitHub）', link: 'https://github.com/youlinhsieh/arcrun-rag/releases', attrs: { target: '_blank' } },
           ],
         },
       ],

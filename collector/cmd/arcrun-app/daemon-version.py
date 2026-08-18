@@ -15,8 +15,24 @@
   但**每個 commit 都變成一版**（一天 5 個 commit 就跳 5 版），
   而且每跳一版就要補一段 changelog——把機械化變成新的手工活。
 
+── 🔴 2026-08-18（D95 第一輪）：所有輸入都搬進 collector/ 了 ────────────
+  leo 08-17：「身為管理者，你要從頭到尾**不要有很多扭曲**，因為你根本不記得
+  你做的這些扭曲，**每次都要查**，很直接，源碼、產出物，從 stage 到 prod。」
+
+  本腳本原本往 **repo 根**伸手拿三樣東西：
+    ① docs-site/src/content/docs/help/changelog.md（版本與更新說明）
+    ② ROOT/DAEMON_LINE（版本線）
+    ③ `git ls-files collector`（原始碼指紋，從 repo 根算）
+  ⇒ `collector/` 算不出自己的版本，也**沒有資格被搬成獨立 repo**。
+
+  現在三樣全在 `collector/` 底下：`CHANGELOG.md`／`DAEMON_LINE`／指紋以 collector 為根。
+  本檔一律以**自己的位置**定位（`__file__` 往上兩層＝collector/），
+  **不再呼叫 `git rev-parse --show-toplevel`**——那是往上伸手的入口。
+  （三道既有修補全部原樣保留：指紋演算法版本作廢重記、帳本自我參照排除、
+    沒有產物的版號可重戳。只有「以什麼為根」變了。）
+
 ── 現在的做法：版本由 changelog 決定，且不用手打數字 ──────────────
-  單一真相源＝ docs-site/src/content/docs/help/changelog.md（用戶語言那份）。
+  單一真相源＝ collector/CHANGELOG.md（用戶語言那份）。
 
     · 要出新版 ⇒ 在檔案最上面加一段標題 `## 下一版（未發佈）`，底下寫白話更新內容。
     · 打包時本腳本把它**戳成正式版號**（上一版 patch + 1）並補上今天日期。
@@ -40,17 +56,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = Path(subprocess.check_output(
-    ["git", "rev-parse", "--show-toplevel"], cwd=HERE, text=True).strip())
-CHANGELOG = ROOT / "docs-site/src/content/docs/help/changelog.md"
-LINE_FILE = ROOT / "DAEMON_LINE"
+HERE = Path(__file__).resolve().parent          # collector/cmd/arcrun-app
+# 🔴 daemon 的根＝`collector/`，用**自己的位置**推出來，不問 git 也不問 repo 根。
+#    這一行就是「臍帶剪掉了」的本體：往上兩層剛好是 collector/，再往上一步都不走。
+COLLECTOR = HERE.parents[1]
+CHANGELOG = COLLECTOR / "CHANGELOG.md"
+LINE_FILE = COLLECTOR / "DAEMON_LINE"
 
 UNRELEASED = "## 下一版（未發佈）"
 # 版本 → 當時原始碼指紋。用來擋「同一個版號、不同的執行檔」。
 SOURCE_LOCK = HERE / ".version-source.json"
 # 指紋演算法版本：改算法時 +1，帳本會自動作廢重記（見 check_or_record）。
-FINGERPRINT_ALGO = 3
+# 🔴 3 → 4（2026-08-18）：指紋的**根**從 repo 根換成 collector/，被雜湊的相對路徑
+#    因此全部改變（`collector/cmd/…` → `cmd/…`）⇒ 舊帳本是「用不同單位量出來的數字」，
+#    比對沒有意義。照既有設計改號讓它自動整本作廢重記，不要手改 JSON。
+FINGERPRINT_ALGO = 4
 RELEASED_RE = re.compile(r"^## v(\d+)\.(\d+)\.(\d+)（", re.M)
 
 
@@ -72,11 +92,17 @@ def source_fingerprint():
         會給出不同指紋、即使內容一模一樣——戳版號時檔案還沒提交（在 diff 裡），
         提交後樹變了、diff 空了。結果只改 wiki 也被判「版號已對應另一份原始碼」。
         改成對工作區檔案內容取值，與有沒有提交無關。
+
+    四修（2026-08-18，D95 第一輪）：
+        改成**以 `collector/` 為根**列檔（cwd=COLLECTOR、pathspec `.`），
+        不再從 repo 根列 `collector` 這個子目錄。涵蓋的檔案集合完全相同，
+        差別只有相對路徑前綴——而路徑有進雜湊，所以 FINGERPRINT_ALGO 跟著 +1。
+        這樣 collector/ 搬成獨立 repo 之後，同一段程式碼算出的仍是同一個值。
     """
     try:
         files = subprocess.check_output(
-            ["git", "ls-files", "-co", "--exclude-standard", "collector"],
-            cwd=ROOT, text=True).split("\n")
+            ["git", "ls-files", "-co", "--exclude-standard", "."],
+            cwd=COLLECTOR, text=True).split("\n")
     except subprocess.CalledProcessError:
         return ""  # 不在 git 裡就不擋（例如從 tarball 解出來 build）
     # 🔴 2026-08-06 三修：**帳本自己不能算進指紋**（經典的自我參照）。
@@ -86,11 +112,11 @@ def source_fingerprint():
     #      dist/ 也早就 gitignore，不在名單裡。真兇只有帳本。）
     #    只排除帳本一個檔——**不要順手把 build/ 整個排掉**，
     #    那會讓「換 app icon」不算原始碼變更，等於把閘挖個洞。
-    skip = {str(SOURCE_LOCK.relative_to(ROOT))}
+    skip = {str(SOURCE_LOCK.relative_to(COLLECTOR))}
 
     h = hashlib.sha256()
     for rel in sorted(f for f in files if f.strip() and f not in skip):
-        fp = ROOT / rel
+        fp = COLLECTOR / rel
         if not fp.is_file():
             continue  # 已刪除的檔案
         h.update(rel.encode())

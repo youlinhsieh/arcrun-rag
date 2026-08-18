@@ -110,13 +110,13 @@
       prod 的封測者看 GitHub 版本發佈；stage 的內部封測者看 Gitea 版本發佈。
       leo 2026-08-16：「changelog 直接看 github，**如果在 stage 直接看 gitea**，
       不要花力氣維護兩個地方。」兩份的內容同源（docs-site 的 changelog），不各自維護。
-    由誰處理: [release-record]
+    由誰處理: [release-record, release-check]
     註: |
       2026-08-16 以前這一項叫「公開發佈紀錄」、只指 GitHub 那一份 ⇒ 於是 stage
       根本不在這個產出物的涵蓋範圍內，**而它一樣有真的使用者**（封測者）。
       名字綁死主機，漏掉的那一半就不會現形——同 `landing` 那次的形狀（arcrun-rag#88）。
 
-# ── 站表：21 站，兩邊都走（2026-08-15 新增 daemon-source-check）─────────────
+# ── 站表：22 站，兩邊都走（2026-08-18 新增 release-check，arcrun-rag#88）────
 站:
 
   - id: preflight
@@ -160,14 +160,30 @@
     驗法: bundle/daemon/ 底下的檔＝本機 dist 最新已發佈那一版，逐位元相同
 
   - id: daemon-check
-    名字: 核對 bundle 的 daemon 版本＝changelog 最新已出版本（不是瞎推）
+    名字: 查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）
+    由來: |
+      🔴 2026-08-18 改寫（D95 第二輪，inkstone/InkStoneCo#40）。舊名字是
+      「核對 bundle 的 daemon 版本＝changelog 最新已出版本」，而它有兩個病：
+        ① **問錯檔案**：D95 第一輪把桌面版那條線搬進 collector/CHANGELOG.md 之後，
+           這站讀的還是 docs-site（只剩雲端 1.4.x，沒有 v 前綴）⇒ 正則不中
+           ⇒ 整站 status:'skip' ⇒ 出貨線照印 ✅ 而新 daemon 從不進 bundle。
+        ② **只比版號字串**：wiki/trees/2026-08-17-today.md 記著
+           「ship.mjs:797 只比版號字串就跳過整站，**msix 停在上一版卻報全綠**」。
+           版號相同不代表內容相同——manifest 的平台欄位是「只加不刪」保留下來的。
+      ⇒ 改成問磁碟上量得到的量。**這一站沒有「跳過」這個結果**：問不出來就是斷。
     用什麼: 本機
     為什麼不搬: 還沒交貨
     要搬需要: |
       bundle manifest 那半 Arcrun **已經讀得到**（實測 200，見票上輸出）；
             卡的是 changelog 在 private repo。給 Arcrun 一把 Gitea 讀取憑證，這站就能整個搬。
-    理由: 比對的兩邊（本機 changelog、本機 bundle 目錄）都是本機檔案。
-    驗法: 兩邊版本字串一致
+    理由: 比對的兩邊（本機 collector/CHANGELOG.md、本機 bundle 目錄的實體檔案）都是本機檔案。
+    驗法: |
+      九項事實逐項查，全過才放行（installer/scripts/daemon-in-bundle-gate.mjs）：
+      說明檔在宣告位置找得到／它宣告了一個已發佈版本／manifest 存在／manifest 委任了 daemon／
+      委任版本＝說明檔版本／必要平台（mac・win）齊／每個委任的檔案真的在 bundle 裡／
+      每個檔案的 sha256 由**磁碟實檔重算**且等於 manifest 宣告值／每個檔案不是 0 位元組。
+      擋下與放行都附一行到 installer/daemon-in-bundle-gate-log.md（InkStoneCo#48）。
+      閘自己的演練：installer/scripts/daemon-in-bundle-gate.test.mjs（該擋 10 種、不該擋 8 種）。
 
   - id: daemon-source-check
     名字: 核對 changelog 宣告的 daemon 版本＝collector/ 源碼現況（不是瞎推）
@@ -341,7 +357,7 @@
     驗法: 從使用者端網址讀到的版本＝這一版
 
   - id: docs
-    名字: 建＋部署說明文件站，並驗「使用者查得到這一版」
+    名字: 建＋部署說明文件站（並驗它真的是這份原始碼建的）
     用什麼: 本機
     為什麼不搬: 缺零件
     要搬需要: |
@@ -353,9 +369,34 @@
       （`verify-docs.mjs` 的 `checkDocsLive`），還沒接上 `ship_check_live`。
       不是做不到——`ship_check_live` 的 `contains` 模式就是為這種 HTML 頁面查證設計的——
       是本張票先把 verify／purge 兩站接完並實測，這兩站沒接完之前不動它。
-      ⚠️ 同一件事在 verify 那站**已經由 Arcrun 查過一次**（版本說明頁找得到這一版），
+      ⚠️ 同一件事在 verify 那站**已經由 Arcrun 查過一次**（文件站是不是這份原始碼建的），
       所以現在不是沒人查，是查了兩次、其中一次還在本機。
-    驗法: 版本說明頁的內容裡找得到這一版與這版 daemon 版本
+    版本說明頁已經沒有了: |
+      🔴 2026-08-17（leo「**這個頁面刪除**」，inkstone/arcrun-rag#41）：文件站
+      **不再自己維護一份版本內容**。leo 2026-08-09 就講過「不要同步，docs 的版本說明
+      直接連回 github 的版本發佈」，08-17 收口成三個字。
+
+      現在的形狀：
+        · 使用者讀的　　→ https://github.com/youlinhsieh/arcrun-rag/releases（唯一對外紀錄）
+        · 雲端引擎 `1.4.x` 原稿 → repo 根的 `CHANGELOG.md`（**出貨用，不是網頁**）
+        · 桌面版　 `v0.18.x` 原稿 → `collector/CHANGELOG.md`
+        · `/docs/help/changelog/` → 一條轉去 GitHub 版本發佈的靜態轉址
+          （`docs-site/astro.config.mjs` 的 `redirects`；接書籤與已部署的舊 HTML，
+           repo 內的連結都已改成直接指 GitHub）
+
+      🔴 **「使用者查得到這一版」那道閘沒有消失，它搬去 `release-record` 站**：
+      每條版本線都要在 GitHub／Gitea 上有一筆版本發佈，內文由
+      `installer/scripts/github-release.mjs` 的 `releaseSectionFor()` 從上面兩份原稿抽出來，
+      抽不到就當場中止。⇒ 這一站的線上查證因此**變弱了**（只證明站是新的，
+      不再證明內容含這一版）——那是頁面刪除的代價，差額由 release-record 承接，不是漏掉。
+
+      ⚠️ 這一站的驗法變紅時，**不要為了讓它變綠而把版本說明頁加回 docs-site**。
+    驗法: |
+      `/docs/help/changelog/` 線上仍然把人送去 GitHub 版本發佈
+      （meta refresh／canonical／Location 任一條指過去都算）——那條轉址是**這份原始碼的產物**，
+      線上沒有它就代表這顆 worker 上的站不是這次建的（沒重建／沒 rsync／部署到別顆）。
+      演練：`node --test installer/scripts/verify-docs.test.mjs`（6 支，含「轉址掉了」
+      「轉去別的地方」「還是那一頁舊的版本說明」三種該紅的）。
 
   - id: mail-relay
     名字: 部署郵差（忘記密碼代寄），並驗證它真的接得起來
@@ -436,6 +477,106 @@
       （stage 那一半打的是 Gitea API，本身搬得動；但兩半是同一站、同一段程式碼，
       而這一站的去留由其中不可搬的那一半決定——拆成兩站才是這次要修掉的病。）
     驗法: 那一版的發佈頁點得開，且內文就是 changelog 裡這一版的段落
+
+  - id: release-check
+    名字: 回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）
+    為什麼有這一站: |
+      🔴 2026-08-18（inkstone/arcrun-rag#88）。leo：「檢查為什麼會斷，建立下次無法斷的強制機制」。
+
+      病況：daemon 做到 `v0.18.29`，對外點得到的最新 daemon 版本卻是 **`v0.18.25`（08-09）**
+      ——`v0.18.26`／`27`／`28`／`29` 四版公開端一筆都沒有。連續四次，沒有一站發現。
+
+      真因是兩件事疊起來，兩件都不是「忘了」：
+        ① **發佈不是以版本線為單位**：`release-record` 寫死 `tag = v${ctx.release}`
+           （零件包版本 1.4.x）⇒ 一趟出貨只產一筆 release，不管送了幾條線。
+           daemon 那條線有三站管**內容**（daemon-sync／check／source-check），
+           **零站管它有沒有被發佈**。
+           實證：`github-contact-log.md` 同一個任務三行，2026-08-16 18:53–18:55
+           「推 prod：**daemon v0.18.28**（三平台）＋對應零件包」→ 唯一一筆是 `v1.4.46`。
+        ② **僅有的那筆 daemon 發佈，發在沒人會看的地方**：`v0.18.25` 住在
+           `youlinhsieh/arcrun-rag-bundles`（自我描述「Prebuilt worker bundles …
+           served via jsDelivr」＝**CDN 倉庫，不是產品頁**），0 個附件。
+           而它會落在那裡不是選擇——`github-contact-log.md` 第 68 行留著原始指令：
+           任務名稱是「補上文件站與建置日」（跟發佈無關），指令是
+           `R=youlinhsieh/arcrun-rag-bundles` … `gh release create 1.4.29 --repo "$R"`
+           ——`$R` 早被同一個 shell 前面推 bundle 的動作設好了，release 就跟著去了。
+           🔴 **發在沒人看的地方，斷不斷都不會有人察覺。** 這才是四版無聲的原因。
+
+      ⇒ 判準必須有**兩半**：**每條線都有發佈**（治①）＋**發在產品 repo 不是產物倉庫**（治②）。
+        只驗前半的話，把 release 丟回 bundles repo 一樣全綠——那正是 08-09 發生的事。
+    與 release-record 的分工: |
+      同 `daemon-sync`→`daemon-check` 的形狀：上一站負責「做」，這一站**不聽它說**，
+      重新向 host 查一次現況。光有逐條發還不夠——斷更四版期間出貨線**每趟都跑到了**
+      `release-record`，它只是發錯東西。所以要一個只看事實的判準。
+    判準看事實不看字串: |
+      🔴 「有哪幾條線」讀的是**使用者端真的會讀到的那份回應**（`GET /api/latest`
+      的欄位投影），不是檔名、不是命令列裡有沒有出現某個詞。
+      （由來：`stage-before-prod-guard` 第七次關鍵字誤攔——wiki 內文出現
+      `arcrun-rag-bundles` 這個字串就被判成出貨而擋下 commit。）
+      「發到對的地方」比的是「這個 repo 是不是登錄簿自己宣告的 `bundles.remote`」，
+      不是猜名字裡有沒有 `bundles`。
+    留痕: |
+      🔴 擋下與放行**都記**一行到 `installer/release-line-gate-log.md`。
+      由來 InkStoneCo#48：36 支閘只有 2 支會記錄自己擋了什麼 ⇒ 沒有成效紀錄，
+      就無法知道這道閘到底有沒有在運作。只記擋下的話分母是未知的。
+    用什麼: 本機
+    為什麼不搬: 缺零件
+    要搬需要: |
+      一個能「查 GitHub／Gitea 的 release 清單並比對交付面版本線」的 Arcrun 零件。
+      查詢本身是匿名唯讀（D20：讀一律放行），沒有憑證問題，純粹是還沒有那顆零件。
+    理由: |
+      比對的一邊（bundle manifest 的版本線）目前讀的是本機出貨工作區裡那份
+      `~/.arcrun-ship/<目標>/manifest.json`——它就是這一趟**正要送出去**的那份，
+      在 push 之前只有這台機器看得到。另一邊（release 清單）是公開端點，本來就搬得動。
+      ⇒ 這一站是「一半本機、一半線上」，不是物理限制，是還沒有那顆零件（見「要搬需要」）。
+    驗法: |
+      `node installer/scripts/release-line-gate.mjs --target prod` ⇒ 不過就 exit 1。
+      演練：`node --test installer/scripts/release-line-gate.test.mjs`（該擋／不該擋各數種）。
+    拆分後這一站怎麼辦: |
+      ⚠️ D95（leo 2026-08-18）：「`arcrun rag/collector` 改成 **`arcrun-collector` 獨立 repo，
+      源碼和產出物放在一起**」「**bundle 也是屬於 arcrun 的 bundle，不是 RAG**」
+      「你要從頭到尾**不要有很多扭曲**，因為你根本不記得你做的這些扭曲，**每次都要查**」。
+
+      🔴 **先把「桌面小幫手這一個東西，現在散在幾個地方」列出來**
+      （總管實查，2026-08-18；**這是 D95 動工「之前」的快照＝這件事的動機**，
+       ②④ 已經被 D95 修掉，標在各該項底下。留著原文是因為拿掉它就看不出當初為什麼要拆）：
+        ① 源碼　　　　`products/arcrun-rag/collector/`
+        ② 版本真相源　`docs-site/src/content/docs/help/changelog.md`
+           ——**跟零件包共用同一個檔**：49 個版本段裡 26 段是 daemon（`## v0.18.x`）、
+             23 段是零件包（`## 1.4.x`），兩套編號交錯排在一起
+           ✅ **已修（D95 第一輪＋2026-08-17 頁面刪除）**：daemon 那條搬去
+             `collector/CHANGELOG.md`、零件包那條搬去 repo 根的 `CHANGELOG.md`，
+             **那一頁本身已經刪掉**（leo「這個頁面刪除」，inkstone/arcrun-rag#41）——
+             使用者改讀 GitHub 版本發佈。⇒ 這個落點消失了，不是搬到別處。
+        ③ 建置產物　　`collector/cmd/arcrun-app/dist/`（gitignored，**且每個 worktree 各一份**）
+           ——這個扭曲已經咬過一次：`daemon-dist.mjs` 這支模組**存在的唯一理由**
+             就是「打包在 worktree A、出貨在 worktree B ⇒ 找不到 ⇒ 安靜跳過」
+        ④ 一顆化石　　`collector/cmd/arcrun-app/dist/Arcrun-v0.18.3.dmg` **真的進了版控**
+           （11.3 MB）——③ 的 gitignore 規則本身已經在漏
+           ◐ **一半（D95 第三輪）**：同批漏進來的 `__pycache__/*.pyc` 已移出追蹤並補 ignore；
+             那些 dmg／執行檔**還在**（`6b44784`／`e09f866`／`c6d7b2c` 的舊帳）——
+             拿掉它們＝改寫歷史，屬「歷史要不要洗」那題，要 leo 拍板，沒人可以順手做。
+        ⑤ 交付產物　　複製進 bundle repo 的 `daemon/` → `youlinhsieh/arcrun-rag-bundles`
+        ⑥ 下載來源　　`raw.githubusercontent.com/…/arcrun-rag-bundles/<sha>/daemon/…`
+           （不走 jsDelivr——它擋 `.exe`）
+        ⑦ 對外發佈　　**現在等於沒有**；歷史上唯一那筆跑到 ⑤ 那個 CDN 倉庫
+      ⇒ **一個桌面 App，七個落點、四個 repo。** leo 說的「每次都要查」就是這個。
+
+      **拆成 `arcrun-collector` 之後，這一站的三項各自會怎樣：**
+        · 「發到對的地方」對 **daemon 線失效**（好事）：源碼與產出物同處 ⇒
+          「daemon 要發到哪」只剩一個答案。2026-08-09 那種意外
+          （`$R` 還指著前一個推 bundle 的動作）**在結構上不可能再發生**。
+          但這一項對**零件包線仍然有效**——零件包還是會經過 bundle repo。
+        · 「每條線都有發佈」**完全不失效**：拆完之後 arcrun-rag 這條線仍然
+          **advertise** 一個 daemon 版本（`/api/latest` 照樣吐 `daemon.version`，
+          安裝器照樣把 dmg/exe 送給使用者）⇒ 仍然要問「我廣告的這一版，
+          在 `arcrun-collector` 上有沒有對應的發佈」。
+          🔴 差別只在**查哪個 repo**：`release-lines.mjs` 屆時要讓**每條線各自帶 repo**，
+          而不是所有線共用 `releaseRecord.repoSlug`。那是拆分那張票要做的事。
+        · 「留痕」與拆不拆無關。
+
+      ⇒ **這一站不是純過渡品，拆完不要整支刪掉**：改的是「查哪個 repo」，不是「要不要查」。
+      理由寫在這裡，免得日後留下一道沒人知道為什麼存在的閘（那本身也是一種扭曲）。
 
 # ── 失敗處理 ────────────────────────────────────────────────────────────────
 失敗處理:

@@ -5,7 +5,11 @@
 #
 # 答：改的是「**寫在哪**」，不是「誰來寫」。
 #   文字一定得人寫（機器編不出「語意搜尋什麼都搜不到」這種人話），
-#   但**只准寫一個地方**＝ docs-site/src/content/docs/help/changelog.md（用戶語言那份）。
+#   但**只准寫一個地方**＝ collector/CHANGELOG.md（用戶語言那份）。
+#   🔴 2026-08-18（D95 第一輪）：這份檔案原本住在 repo 根的
+#     `docs-site/src/content/docs/help/changelog.md`，而且**同時裝著兩條版本線**
+#     （桌面版 v0.18.x ＋ 雲端引擎 1.4.x）。已拆開：桌面版的搬進 `collector/`，
+#     雲端那條原地不動。理由：daemon 得往上伸手才拿得到自己的版本號＝搬不成獨立 repo。
 #   其餘全是投影、不准手改（＝頂層 principles「投影不可手改，要改去改源頭」）：
 #     · manifest.daemon.notes ← 打包時由本腳本抽出
 #     · docs-site 的「版本說明」頁 ← 本來就是它自己
@@ -20,8 +24,10 @@
 #   ./changelog-section.sh v0.18.7 --check    # 只檢查存不存在
 set -euo pipefail
 cd "$(dirname "$0")"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-FILE="$REPO_ROOT/docs-site/src/content/docs/help/changelog.md"
+# 🔴 一律以**自己的位置**定位（往上兩層＝collector/），不問 git、不問 repo 根——
+#    `git rev-parse --show-toplevel` 就是往上伸手的入口，剪掉它才搬得成獨立 repo。
+COLLECTOR="$(cd ../.. && pwd)"
+FILE="$COLLECTOR/CHANGELOG.md"
 
 VERSION="${1:?用法：changelog-section.sh <版本，例 v0.18.7> [--check]}"
 CHECK_ONLY="${2:-}"
@@ -39,7 +45,7 @@ if [ -z "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
   cat >&2 <<MSG
 ❌ changelog 裡沒有 ${VERSION} 的段落，不准打包。
 
-   請在 docs-site/src/content/docs/help/changelog.md 最上面加一段：
+   請在 collector/CHANGELOG.md 最上面加一段：
 
      ## ${VERSION}（$(date '+%Y-%m-%d')）
 
@@ -55,7 +61,8 @@ fi
 
 [ "$CHECK_ONLY" = "--check" ] && { echo "  ✅ changelog 有 ${VERSION} 的段落"; exit 0; }
 
-# 給 manifest.daemon.notes 用的投影——**只有一個投影器**：installer/scripts/daemon-notes.mjs
+# 給 manifest.daemon.notes 用的投影——**只有一個投影器**：同目錄的 daemon-notes.mjs
+# （2026-08-18 從 installer/scripts/ 搬來；那邊只剩一層薄殼轉呼叫本目錄這支。）
 #
 # 🔴 2026-08-08 修（leo 真機看到 v0.18.24 的更新畫面）：
 #   leo 原話「**不要這麼長的散文，簡短講改了什麼，細節去 docs 讀。**」
@@ -71,4 +78,4 @@ fi
 #   現在改成委派給那唯一的投影器（只取每條的粗體標題、串成一行、超長就截並導去 docs），
 #   而 `installer/scripts/ship.mjs` 的 notes 步驟會在每次出貨時自動套用它。
 #   ⇒ 兩邊同一份規則，不會漂移。上面的 --check 閘原樣保留（build-*.sh 仍靠它）。
-exec node "$REPO_ROOT/installer/scripts/daemon-notes.mjs" "$VERSION"
+exec node ./daemon-notes.mjs "$VERSION"

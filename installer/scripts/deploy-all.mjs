@@ -119,26 +119,45 @@ export function injectMultiTenant(toml) {
 
 /**
  * 移除 self-hosted fork 帳號沒有、會導致 wrangler deploy 失敗的官方專屬 TOML 區塊：
- *   [[routes]]（無 arcrun.dev zone）、[[r2_buckets]]（dead storage + 綁卡）、[ai]（免費帳號未必啟用）。
+ *   [[routes]]（無 arcrun.dev zone）、[[r2_buckets]]（dead storage + 綁卡）。
  * 回傳 { toml, stripped:[...] }（stripped 供 dry-run 摘要）。
  *
- * 🔴 2026-08-07：`[ai]` 加上 keepAi 開關。
- *   病：strip `[ai]` 的理由是「免費帳號未必啟用」——保守預設對**首裝**是合理的，
- *   但對**已經有 AI binding 的既有實例**是**降級**：重部一次就把雲端萃取
- *   （`/portal/daemon/extract` 走 `env.AI`）拔掉，而那正是「免金鑰」那條主線。
- *   實測：youlin 實例線上確實有 AI binding（CF API 查 bindings），
- *   照舊行為重部就會弄壞它。
- *   ⇒ 呼叫端傳 `keepAi:true`（env `KEEP_AI=true`）時不 strip。
- *   ⚠️ 仍是 opt-in：帳號沒開 Workers AI 卻硬留 `[ai]` 會讓 deploy 失敗，
- *      所以預設維持 strip，由「知道自己帳號有 AI」的人明確開啟。
+ * 🔴 **`[ai]` 一律保留，而且不准再加回剝除清單**（2026-08-17，Arcrun#106）。
+ *
+ * 同一個根因咬了兩次，第二次是因為第一次只修了一半：
+ *   - **08-07**：本檔無條件剝 `[ai]` ⇒ 重部把 youlin 的雲端萃取
+ *     （`/portal/daemon/extract` 走 `env.AI`）打成 501。當時的修法是加
+ *     `keepAi` **opt-in 開關**（env `KEEP_AI=true`），**預設仍然剝**。
+ *   - **08-17**：同一個根因從**另一份實作**（`arcrun/cli/src/lib/deploy.ts`）再犯一次，
+ *     這次拔掉的是 cypher 的 `AI` binding ⇒ 免金鑰 AI 問答（recipe `workers_ai_chat`）
+ *     整個死掉，錯誤訊息還叫使用者「自己去 wrangler.toml 補 binding 再重新部署」
+ *     ——一句他既看不懂、也沒有 wrangler.toml 可以改的話。
+ *
+ * ⇒ 兩個教訓，寫在這裡免得再被當成「保守預設」重新引入：
+ *   ① **opt-in 修法沒有修好任何事**。預設值才是絕大多數人拿到的行為；
+ *      把正解藏在一個沒人知道的 env 後面，等於留著那個 bug 並多發一把鑰匙。
+ *      （當時的配套是在 wiki 寫「重部一律記得帶 `KEEP_AI=true`」——
+ *      靠人記得的閘，就是還沒修好的閘。）
+ *   ② 舊註解那句「帳號沒開 Workers AI 卻硬留 `[ai]` 會讓 deploy 失敗」
+ *      **從來沒有被實測過**。反證很好拿：youlin 的 `arcrun-kbdb` 一直帶著 `AI`
+ *      binding 部署成功。Workers AI 在自架帳號上綁得起來，它不是部署阻斷項。
+ *      就算真有帳號綁不起來，`wrangler deploy` 會**當場大聲失敗**，
+ *      那遠好過招牌功能靜默死掉。
+ *
+ * ⚠️ 剝除清單的判準是「**這個帳號結構上不可能有**」（zone、綁卡資源），
+ * 不是「預設用不到」。後者請讓 toml 自己註解掉（見 kbdb 的 `# [ai]`，
+ * 由 `ctx.kbdbEmbed` 決定要不要取消註解），不要在這裡剝。
+ *
+ * 📌 這份與 `arcrun/cli/src/lib/deploy.ts` 的 `stripOfficialOnlyBindings()`
+ * 是**兩份實作**（CLI 走 `acr update`、安裝器走 install.arcrun.dev，真實用戶多半走後者）。
+ * 兩份必須同進退——08-07 只修了這份、08-17 只有那份被咬，就是漏同步的代價。
+ * 動其中一份時**一定要同時檢查另一份**。
  */
-export function stripOfficialOnlyBindings(toml, opts = {}) {
-  const keepAi = opts.keepAi === true;
+export function stripOfficialOnlyBindings(toml) {
   const lines = toml.split('\n');
   const out = [];
   const stripped = [];
-  const blocks = keepAi ? '(routes|r2_buckets)' : '(routes|r2_buckets|ai)';
-  const isBlockHeader = (l) => new RegExp(`^\\s*\\[\\[?${blocks}\\]?\\]\\s*$`).test(l);
+  const isBlockHeader = (l) => /^\s*\[\[?(routes|r2_buckets)\]?\]\s*$/.test(l);
   let skipping = false;
   for (const line of lines) {
     if (isBlockHeader(line)) {
@@ -251,7 +270,10 @@ export function injectWranglerConfig(rawToml, ctx) {
   }
 
   // strip 官方專屬綁定（必須在注入 embed 之前）
-  const s = stripOfficialOnlyBindings(toml, { keepAi: process.env.KEEP_AI === "true" });
+  // 註（Arcrun#106）：這裡曾經讀 `process.env.KEEP_AI` 決定要不要保住 `[ai]`。
+  // 已移除——`[ai]` 現在無條件保留，見 stripOfficialOnlyBindings 的註解。
+  // 舊的 `KEEP_AI=true` 呼叫端不會壞，只是變成沒有作用的環境變數。
+  const s = stripOfficialOnlyBindings(toml);
   toml = s.toml;
   summary.stripped = s.stripped;
 

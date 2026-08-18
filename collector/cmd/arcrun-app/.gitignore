@@ -12,3 +12,7 @@ dist-msix/root/
 # 進版控只會讓 repo 膨脹，且每次重編都變動、每次都來吵未推警察。
 dist/
 dist-msix/
+
+# Python 匯入快取（daemon-version.py 被 import 時產生）。可重現的產物，且綁 Python 版本
+# （檔名帶 cpython-314）⇒ 不進版控。2026-08-18 D95 第三輪：第一輪搬檔時誤把一顆帶了進來。
+__pycache__/
