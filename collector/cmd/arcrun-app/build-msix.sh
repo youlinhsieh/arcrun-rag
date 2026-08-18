@@ -172,6 +172,15 @@ EOF
 echo "④ 打包 msix"
 "$MAKEMSIX" pack -d "$OUT/root" -p "$OUT/Arcrun.msix" >/dev/null
 
+# 🔴 2026-08-18：把成品放進 `dist/` 並帶上版號——與 build-dmg.sh／build-win.sh 一致。
+#   以前只留在 dist-msix/Arcrun.msix，而出貨線的 daemon-sync 找的是
+#   `dist/Arcrun-<版本>.msix`；因為 msix 標 required:false，**它會安靜地少一個檔**，
+#   出貨線照樣印綠。上一版的 msix 是人手搬進去的——那正是 daemon-sync 要根治的
+#   「只活在人的記憶裡的步驟」。
+DIST_MSIX="dist/Arcrun-$(echo "$VERSION_RAW" | sed 's/^v//').msix"
+mkdir -p dist && cp "$OUT/Arcrun.msix" "$DIST_MSIX"
+echo "📦 已放進出貨線會找的位置：$DIST_MSIX"
+
 SIZE=$(ls -lh "$OUT/Arcrun.msix" | awk '{print $5}')
 echo "✅ 完成：$OUT/Arcrun.msix（${SIZE}，未簽章＝送 Store 的正確狀態）"
 echo

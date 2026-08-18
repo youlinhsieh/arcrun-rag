@@ -15,7 +15,11 @@
 # 觸發（daemon direct 模式，一卡一 POST）：
 #   POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest_card/trigger
 #     -H "X-Arcrun-API-Key: __NAMESPACE__"
-#     -d '{"page_name":"報銷政策","card_content":"# 報銷政策\n## 一句話定義\n…","path":"system-dev/wiki/cards/報銷政策.md","library":"kb"}'
+#     -d '{"page_name":"報銷政策","card_content":"# 報銷政策\n## 一句話定義\n…","path":"system-dev/wiki/cards/報銷政策.md","library":"kb","machine":"youlinhsieh@Leo-MBA","machine_label":"教育部 Leo 的 Mac"}'
+#   machine／machine_label 選填（`inkstone/mira#6`，leo 2026-08-18）：
+#     machine＝原稿在**哪一台機器**上（比對鍵，daemon 的 machine.json 鑄好就不變）；
+#     machine_label＝人看的稱呼（使用者可改，只影響顯示）。
+#     舊版 daemon 不帶 ⇒ 卡上這兩格是空字串，portal 顯示「未知來源」，行為與從前一致。
 #
 # 佔位參數（push-demo-workflow.sh sed 代入）：__NAMESPACE__ / __KBDB_BASE__ / __CODE_URL__ / __HTTP_REQ_URL__
 # blocks/triplets 寫法與 rag_ingest / rag_ingest_direct 逐欄一致 → 檢索/圖譜一視同仁。
@@ -68,11 +72,22 @@ config:
       triplets_body: "{{list_old_triplets.data.body}}"
       path: "{{input.path}}"
       page_name: "{{input.page_name}}"
+      machine: "{{input.machine}}"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const path = String(input.path || '');
       const page = String(input.page_name || '');
+      const machine = String(input.machine || '');
       const kbPrefix = 'kb://' + path + '#';
+      // 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，
+      //   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把
+      //   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。
+      //   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：
+      //   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的
+      //   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。
+      function machineBlocks(theirs) {
+        return machine !== '' && theirs !== '' && theirs !== machine;
+      }
       const ab = parse(input.blocks_body);
       const entries = (ab && ab.entries) || [];
       const dead_entry = [];
@@ -87,6 +102,7 @@ config:
         if (hasPath || hasKbSrc) {
           hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);
         } else { hit = true; }
+        if (hit && machineBlocks(String(meta.machine || ''))) hit = false;
         if (hit && e.id) dead_entry.push({ id: e.id });
       }
       const ar = parse(input.triplets_body);
@@ -98,7 +114,13 @@ config:
         const subj = String(v.subject || '');
         const rid = r.record_id || r.id;
         if (!rid) continue;
-        const hit = (path && src.indexOf('kb://' + path) === 0) || (!src && page && subj === page);
+        let hit = (path && src.indexOf('kb://' + path) === 0) || (!src && page && subj === page);
+        // 同一條規則用在三元組上（比照 rag_takedown_direct 的 pick_dead_triplets 對 library 的處置）。
+        // ⚠️ 這一格要真的生效，triplet template 必須有 machine slot——沒有時 KBDB 會
+        //    **靜默丟掉**這個值（record-crud.ts createRecord：writtenSlots 只取 template 有的 slot），
+        //    於是三元組永遠讀不到 machine、退回舊行為。補 slot 的正路＝ cypher-executor
+        //    的 PORTAL_TEMPLATE_SEEDS（ensurePortalTemplates 會 PATCH 補上，library 當初就是這樣加的）。
+        if (hit && machineBlocks(String(v.machine || ''))) hit = false;
         if (hit) dead_record.push({ record_id: rid });
       }
       return { dead_entry: dead_entry, dead_record: dead_record,
@@ -128,6 +150,14 @@ config:
       const srcPath = String(input.path || (pageName + '.md'));
       const srcUri = 'kb://' + srcPath;
       const lib = String(input.library || 'kb');
+      // 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。
+      //   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()
+      //   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——
+      //   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，
+      //   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。
+      //   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。
+      const machine = String(input.machine || '');
+      const machineLabel = String(input.machine_label || '') || machine;
       if (!md.trim()) return { success: false, error: 'card_content 為空' };
       const chunks = [];
       let cur = [];
@@ -137,7 +167,8 @@ config:
       }
       if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
       const blocks = chunks.map(function (content, i) {
-        return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath, library: lib };
+        return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,
+                 library: lib, machine: machine, machine_label: machineLabel };
       });
       const rels = [];
       // InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」
@@ -153,16 +184,18 @@ config:
         for (const line of relSec[1].split('\n')) {
           const m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
           if (!m) continue;
-          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib });
+          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });
         }
       }
-      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib });
+      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });
       return { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };
     input:
       card: "{{input.card_content}}"
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
       library: "{{input.library}}"
+      machine: "{{input.machine}}"
+      machine_label: "{{input.machine_label}}"
     limits:
       timeout_ms: 5000
       max_output_bytes: 4194304
@@ -180,7 +213,10 @@ config:
       content: "{{block.content}}"
       owner_id: "__NAMESPACE__"
       page_name: "{{block.page_name}}"
-      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"embed\":true}"
+      # machine／machine_label（`inkstone/mira#6`）與 source／source_path／library 並排：
+      # 這四格合起來就是「這則知識的原稿在哪」——哪台機器、哪個庫、哪個相對路徑、第幾段。
+      # 空字串＝舊版 daemon 沒送 ⇒ portal 顯示「未知來源」，**不猜、不填假名**。
+      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"embed\":true}"
 
   # 寫 KBDB triplets（與 rag_ingest_direct post_triplet 一致；library 從 rel 帶入）
   post_triplet:
@@ -200,3 +236,8 @@ config:
         source_uri: "{{rel.source_uri}}"
         status: "{{rel.status}}"
         library: "{{rel.library}}"
+        # machine（`inkstone/mira#6`）：template 還沒有這個 slot 的實例會**靜默丟掉**它
+        # （KBDB createRecord 只寫 template 宣告過的 slot），行為與改版前一字不差；
+        # 補上 slot 之後同一份定義自動開始生效。補 slot 的正路＝ cypher-executor
+        # PORTAL_TEMPLATE_SEEDS（library 當初就是這樣加的）。
+        machine: "{{rel.machine}}"

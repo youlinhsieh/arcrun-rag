@@ -193,6 +193,23 @@ config:
       function metaOf(e) { if (e && e.metadata_json) { try { return JSON.parse(e.metadata_json) || {}; } catch (err) {} } return {}; }
       function srcOf(e) { return String(metaOf(e).source || ''); }
       function libOf(e) { return String(metaOf(e).library || 'general'); }
+      // machineOf（`inkstone/mira#6`）：這則知識的原稿在**哪一台機器**上。
+      // 回一個「要不要放這兩個 key」的物件：**缺值就一個 key 都不放**，不塞空字串——
+      // 前端的判準是「有沒有值」，空字串會讓「未知來源」變成一個看起來有名字的東西。
+      // 舊資料（改版前灌的）本來就沒有這一格，那就是誠實的「未知來源」。
+      function machineOf(e) {
+        const m = metaOf(e);
+        const id = String(m.machine || '');
+        if (!id) return {};
+        const label = String(m.machine_label || '') || id;
+        return { machine: id, machine_label: label };
+      }
+      // 把 machineOf 的結果併進一個既有物件（三處投影共用一份，不要各寫各的）。
+      function withMachine(obj, e) {
+        const mm = machineOf(e);
+        if (mm.machine) { obj.machine = mm.machine; obj.machine_label = mm.machine_label; }
+        return obj;
+      }
       function chunkIdx(src) { const m = /#(\d+)$/.exec(src); return m ? parseInt(m[1], 10) : 999; }
       function toksOf(text) {
         const t = norm(text);
@@ -276,19 +293,33 @@ config:
         if (budget <= 0) break;
         const es = blocks.filter(function (e) { return e.page_name === page; });
         es.sort(function (x, y) { return chunkIdx(srcOf(x)) - chunkIdx(srcOf(y)); });
-        let chars = 0;
+        // 🔴 `inkstone/mira#6`（retrieval-tree-and-breadcrumb 2026-08-18 在 stage 實測抓到）：
+        //   這裡原本是「一個 page_name 一筆」、而且拿 es[0] 的 source ⇒ 同一頁同時存在於
+        //   兩台機器時，pages_read **只會留下先到的那一台**，另一台的原稿位置就此消失。
+        //   那正好抵銷掉本票要做的事（答得出原稿在哪台機器）。
+        //   ⇒ 分組鍵改成 (頁, 機器)。沒有 machine 的舊資料一律落在同一組（鍵＝空字串），
+        //   行為與改版前一字不差。
+        const perMachine = new Map();
         for (const e of es) {
           if (budget <= 0) break;
           let c = String(e.content);
           if (c.length > budget) c = c.slice(0, budget);
-          budget -= c.length; chars += c.length;
-          ctxBlocks.push({ page: page, content: c, source: srcOf(e), library: libOf(e) });
+          budget -= c.length;
+          ctxBlocks.push(withMachine({ page: page, content: c, source: srcOf(e), library: libOf(e) }, e));
+          const mk = String(metaOf(e).machine || '');
+          const g = perMachine.get(mk);
+          if (g) { g.chars += c.length; } else { perMachine.set(mk, { chars: c.length, first: e }); }
         }
-        if (chars > 0) pagesRead.push({ page: page, library: libOf(es[0]), chars: chars, source: srcOf(es[0]) });
+        for (const g of perMachine.values()) {
+          if (g.chars > 0) pagesRead.push(withMachine({ page: page, library: libOf(g.first), chars: g.chars, source: srcOf(g.first) }, g.first));
+        }
       }
 
       const sources = ctxBlocks.map(function (bk, i) {
-        return { n: i + 1, mode: bk.library, page: bk.page, source: bk.source };
+        // machine 從 ctxBlocks 帶過來（它上面已經 withMachine 過），不重解一次 metadata。
+        const out = { n: i + 1, mode: bk.library, page: bk.page, source: bk.source };
+        if (bk.machine) { out.machine = bk.machine; out.machine_label = bk.machine_label; }
+        return out;
       });
       let ctx = '';
       ctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自子庫《' + bk.library + '》的《' + bk.page + '》）\n' + bk.content + '\n\n'; });

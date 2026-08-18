@@ -17,6 +17,8 @@
 #     -d '{"page_name":"加班規定","path":"加班規定.md","library":"hr_docs"}'
 #   library 選填（arcrun-rag#46）：帶了就只殺同一個庫的，避免兩個被監看資料夾裡
 #   同名同相對路徑的檔互相連坐；舊版 daemon 不帶，行為與從前一致。
+#   machine 選填（`inkstone/mira#6`）：同一條規則再上一層——帶了就只殺同一台機器的，
+#   避免「A 電腦刪掉 notes.md」把 B 電腦上還活著的 notes.md 一起殺掉。
 #
 # 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
 
@@ -45,12 +47,17 @@ config:
       const path = String(input.path || (page + '.md'));
       // library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。
       const library = String(input.library == null ? '' : input.library).trim();
+      // machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，
+      // 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。
+      // 選填：舊版 daemon 不送，此時行為與從前一字不差。
+      const machine = String(input.machine == null ? '' : input.machine).trim();
       return { success: true, page_name: page, page_enc: encodeURIComponent(page),
-               path: path, source_uri: 'kb://' + path, library: library };
+               path: path, source_uri: 'kb://' + path, library: library, machine: machine };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
       library: "{{input.library}}"
+      machine: "{{input.machine}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -83,6 +90,7 @@ config:
       const entries = (a && a.entries) || [];
       const path = String(input.path || '');
       const lib = String(input.library || '');
+      const mach = String(input.machine || '');
       const kbPrefix = 'kb://' + path + '#';
       const dead_entries = [];
       for (const e of entries) {
@@ -103,6 +111,10 @@ config:
         // arcrun-rag#46：library 兩邊都有才比；不一致＝別的資料夾的同名檔，不准動。
         const mLib = String(meta.library || '');
         if (hit && lib !== '' && mLib !== '' && mLib !== lib) hit = false;
+        // `inkstone/mira#6`：machine 同一條規則（兩邊都有才收緊）。少了這一維，
+        // 「A 機器刪掉 notes.md」會把 B 機器上還活著的 notes.md 一起殺掉。
+        const mMachine = String(meta.machine || '');
+        if (hit && mach !== '' && mMachine !== '' && mMachine !== mach) hit = false;
         if (!hit) continue;
         dead_entries.push({ id: e.id });   // 真刪只需要 id
       }
@@ -111,6 +123,7 @@ config:
       blocks_body: "{{list_dead_blocks.data.body}}"
       path: "{{prep.data.path}}"
       library: "{{prep.data.library}}"
+      machine: "{{prep.data.machine}}"
     limits:
       timeout_ms: 5000
       max_output_bytes: 4194304
@@ -152,6 +165,7 @@ config:
       const page = String(input.page_name || '');
       const srcUri = String(input.source_uri || '');
       const lib = String(input.library || '');
+      const mach = String(input.machine || '');
       const dead_records = [];
       for (const r of records) {
         const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
@@ -163,6 +177,11 @@ config:
         // 路徑的檔時，source_uri 也會完全相同，library 是唯一分得開它們的那一維。
         const vLib = typeof v.library === 'string' ? v.library : '';
         if (hit && lib !== '' && vLib !== '' && vLib !== lib) hit = false;
+        // `inkstone/mira#6`：machine 同一條規則。⚠️ triplet template 沒有 machine slot 的
+        // 實例，這一格永遠是空字串（KBDB 靜默丟掉未宣告的 slot）⇒ 退回舊行為，不會誤殺，
+        // 但也擋不住跨機器連坐。補 slot 走 PORTAL_TEMPLATE_SEEDS（library 當初的那條路）。
+        const vMachine = typeof v.machine === 'string' ? v.machine : '';
+        if (hit && mach !== '' && vMachine !== '' && vMachine !== mach) hit = false;
         if (!hit) continue;
         dead_records.push({ record_id: r.record_id });
       }
@@ -172,6 +191,7 @@ config:
       page_name: "{{prep.data.page_name}}"
       source_uri: "{{prep.data.source_uri}}"
       library: "{{prep.data.library}}"
+      machine: "{{prep.data.machine}}"
     limits:
       timeout_ms: 3000
       max_output_bytes: 2097152

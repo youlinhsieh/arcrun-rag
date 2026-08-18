@@ -107,6 +107,34 @@ type DirectConfig struct {
 	// LintStrict＝軟項也擋（測試/CI）；預設 false＝硬缺拒收、軟項照送標 quality:low。
 	// CLI `--strict` 會覆蓋成 true。
 	LintStrict bool `json:"lint_strict,omitempty"`
+
+	// MachineLabel＝這台機器要在雲端顯示成什麼名字（`inkstone/mira#6`，leo 2026-08-18）。
+	// 空＝用 machine.json 鑄好的可讀 ID（`youlinhsieh@Leo-MBA`）。
+	// leo：「他再自己去改『教育部 Leo 的 Mac』」——改的是**這一格**，機器 ID 不動，
+	// 所以改名不會讓庫裡憑空多出一台機器。
+	MachineLabel string `json:"machine_label,omitempty"`
+
+	// machine＝解析好的機器身分快取（不落 config 檔：ID 的家是 machine.json，
+	// 這裡只是這一輪的記憶體副本。makeAccountSubConfig 的 `sub := *c` 會一起複製，
+	// 所以多帳號同一輪只解析一次、每個帳號送出的值必然一致）。
+	machine *MachineIdentity
+}
+
+// machineIdentity 回這台機器的身分（第一次呼叫時解析並鑄檔，之後讀快取）。
+//
+// 身分檔跟著 manifest 放（實務上＝~/.arcrun-rag/）：那是本 daemon 既有的狀態目錄，
+// 不另立第二個狀態位置。
+func (c *DirectConfig) machineIdentity() MachineIdentity {
+	if c.machine != nil {
+		return *c.machine
+	}
+	stateDir := "" // 空＝不落檔（沒設 manifest 的臨時 config 不該把身分檔亂寫進工作目錄）
+	if strings.TrimSpace(c.Manifest) != "" {
+		stateDir = filepath.Dir(expandHome(c.Manifest))
+	}
+	id := ResolveMachine(stateDir, c.MachineLabel)
+	c.machine = &id
+	return id
 }
 
 // librarySlug 把資料夾名轉成合法庫名（A-Za-z0-9_-；中文等非 ASCII 轉為底線分段）。
@@ -1002,10 +1030,13 @@ func drainPendingTakedowns(
 	for oldPath, pageName := range m.PendingTakedowns {
 		pace()
 		res := DirectResult{Type: resultType, Path: oldPath}
+		mach := cfg.machineIdentity()
 		status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
-			"page_name": pageName,
-			"path":      oldPath,
-			"library":   cfg.libraryFor(absRoot),
+			"page_name":     pageName,
+			"path":          oldPath,
+			"library":       cfg.libraryFor(absRoot),
+			"machine":       mach.ID,
+			"machine_label": mach.Label,
 		})
 		res.HTTPStatus = status
 		if perr != nil {
@@ -1457,11 +1488,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					if cardIdx > 0 {
 						continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
 					}
+					// machine／machine_label（`inkstone/mira#6`）：與 library 同一個位置、
+					// 同一個理由——library 分得開「同一台機器的兩個資料夾」，machine 分得開
+					// 「兩台機器的同一個相對路徑」。少送這一維，雲端就只能把兩台的同名檔
+					// 當成同一份（先到的被後到的蓋掉，而且是無聲的）。
+					mach := cfg.machineIdentity()
 					cardBody := map[string]any{
-						"page_name":    pageNameOf(ev.Path),
-						"path":         ev.Path,
-						"card_content": string(cardData),
-						"library":      cfg.libraryFor(absRoot),
+						"page_name":     pageNameOf(ev.Path),
+						"path":          ev.Path,
+						"card_content":  string(cardData),
+						"library":       cfg.libraryFor(absRoot),
+						"machine":       mach.ID,
+						"machine_label": mach.Label,
 					}
 					if warns := lr.SoftMessages(); len(warns) > 0 {
 						cardBody["quality"] = "low"
@@ -1499,11 +1537,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				exit = 1
 				continue
 			}
+			// 舊的「原文直送雲端萃取」路（rag_ingest_direct）。它與收卡路送同一組欄位，
+			// 免得日後有人比對兩條路時看到「一條有 machine 一條沒有」而以為是 bug。
+			// ⚠️ 雲端這支 workflow 本輪**沒有跟著改**（youlin stage 上根本沒部署它，
+			// 現役是 rag_ingest_card）——它會忽略這兩個欄位，行為與從前一字不差。
+			machDirect := cfg.machineIdentity()
 			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.IngestWF), map[string]any{
-				"page_name": pageNameOf(ev.Path),
-				"path":      ev.Path,
-				"content":   string(content),
-				"library":   cfg.libraryFor(absRoot),
+				"page_name":     pageNameOf(ev.Path),
+				"path":          ev.Path,
+				"content":       string(content),
+				"library":       cfg.libraryFor(absRoot),
+				"machine":       machDirect.ID,
+				"machine_label": machDirect.Label,
 			})
 			res.HTTPStatus = status
 			if perr != nil {
@@ -1528,9 +1573,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			// 下架＝POST {page_name, path} 進 rag_takedown_direct（按 page_name 讀 kbdb blocks
 			// 標 deprecated，不碰 R2；獨立於 rag_ingest 的 __CARDS_PREFIX__ 閘——direct 模式檔在
 			// 資料夾根，會被 rag_ingest 的前綴閘擋掉，故自帶不含前綴閘的下架 workflow）。
+			// machine（`inkstone/mira#6`）：這條分支歷來只送 {page_name, path}
+			// （library 是 arcrun-rag#46 只補在 drainPendingTakedowns 那條路上的）。
+			// 這裡只補 machine、**不順手補 library**：machine 已足以擋住「A 機器刪檔
+			// 連坐殺掉 B 機器同名檔」，而多補一維會改變既有的撤除命中範圍——
+			// 那是另一件事，要另外驗（本輪不驗的不做）。
+			machRm := cfg.machineIdentity()
 			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
-				"page_name": pageNameOf(ev.Path),
-				"path":      ev.Path,
+				"page_name":     pageNameOf(ev.Path),
+				"path":          ev.Path,
+				"machine":       machRm.ID,
+				"machine_label": machRm.Label,
 			})
 			res.HTTPStatus = status
 			if perr != nil {
