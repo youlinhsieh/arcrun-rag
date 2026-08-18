@@ -31,6 +31,10 @@ self-hosted：裝在你自己的 Cloudflare 帳號或你自己的電腦，資料
 
 📌 封測期：卡住直接把跑到哪一步／完整錯誤訊息丟回給邀請你的人（或到 [rag.arcrun.dev/support](https://rag.arcrun.dev/support)），我們陪裝、通常當天修。
 
+📦 **版本發佈分兩個地方**：雲端引擎（`1.4.x`）在本 repo 的版本發佈頁；
+桌面小幫手／同步器（`0.18.x`）在 **[`arcrun-collector`](https://git.uncle6.me/inkstone/arcrun-collector/releases)**——
+源碼與成品放在一起，兩個產品不共用一條版本歷史（D95）。
+
 <details>
 <summary>進階：不想等辨識碼、想自己從原始碼部署到自己的 Cloudflare 帳號</summary>
 

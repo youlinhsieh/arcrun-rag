@@ -57,17 +57,57 @@ const PRODUCT_TAGS_REAL = [
   'v1.4.46', 'v1.4.45', 'v1.4.44', 'v1.4.43', 'v1.4.42', 'v1.4.41', 'v1.4.36', 'v1.4.35', 'v1.4.33',
 ];
 
-/** 產品 repo 的目標（正確落點）。 */
+/**
+ * 產品 repo 的目標（正確落點）。
+ * 🔴 D95（2026-08-18）：**每條線各自一個 repo**——桌面小幫手不再疊進雲端引擎的歷史。
+ */
 const T_PRODUCT = {
   bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
-  releaseRecord: { host: 'github', repoSlug: 'youlinhsieh/arcrun-rag' },
+  releaseRecord: {
+    host: 'github',
+    repoSlug: 'youlinhsieh/arcrun-rag',
+    lineRepos: {
+      bundle: { repoSlug: 'youlinhsieh/arcrun-rag' },
+      daemon: { repoSlug: 'youlinhsieh/arcrun-collector', sourceDir: 'collector' },
+    },
+  },
 };
 
 /** 🔴 2026-08-09 真的發生的落點：release 建在產物倉庫上。 */
 const T_CDN = {
   bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
-  releaseRecord: { host: 'github', repoSlug: 'youlinhsieh/arcrun-rag-bundles' },
+  releaseRecord: {
+    host: 'github',
+    repoSlug: 'youlinhsieh/arcrun-rag-bundles',
+    lineRepos: {
+      bundle: { repoSlug: 'youlinhsieh/arcrun-rag-bundles' },
+      daemon: { repoSlug: 'youlinhsieh/arcrun-rag-bundles' },
+    },
+  },
 };
+
+/**
+ * 🔴 2026-08-18 leo 實際看到的那個狀態：**兩條線疊在同一個 repo 的歷史上**。
+ * leo：「我強調了不要扭曲，這就是扭曲，把一個差很多的東西塞進去別人的歷史裡。」
+ * 落點都不是產物倉庫（舊判準下這是綠的）——本輪新增的那一項才抓得到它。
+ */
+const T_MIXED = {
+  bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
+  releaseRecord: {
+    host: 'github',
+    repoSlug: 'youlinhsieh/arcrun-rag',
+    lineRepos: {
+      bundle: { repoSlug: 'youlinhsieh/arcrun-rag' },
+      daemon: { repoSlug: 'youlinhsieh/arcrun-rag' },
+    },
+  },
+};
+
+/** 把「一個 repo 的 tag 清單」攤成本閘要的 `{ repoSlug: tags[] }`（測試可讀性用）。 */
+const tagsOn = (pairs) => Object.fromEntries(pairs);
+const RAG = 'youlinhsieh/arcrun-rag';
+const COLLECTOR = 'youlinhsieh/arcrun-collector';
+const BUNDLES = 'youlinhsieh/arcrun-rag-bundles';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ① 2026-08-16 的實況：daemon 送出去了，產品頁沒有它
@@ -76,7 +116,8 @@ const T_CDN = {
 test('① 實況重演：daemon v0.18.28 已送到使用者手上，產品頁只有 v1.4.46 ⇒ 擋', () => {
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: LIVE_LATEST, publishedTags: PRODUCT_TAGS_REAL,
+    latestPayload: LIVE_LATEST,
+    publishedTags: tagsOn([[RAG, PRODUCT_TAGS_REAL], [COLLECTOR, []]]),
   });
   assert.equal(r.ok, false, '這正是 2026-08-16 那趟 21 站全綠的出貨，本閘必須擋下它');
   const msg = r.sections.flatMap((s) => s.problems).join('\n');
@@ -89,7 +130,8 @@ test('① 實況重演：daemon v0.18.28 已送到使用者手上，產品頁只
 test('①b 同一份輸入，補上 daemon 的 release 之後 ⇒ 放行（閘有出路，不是永遠擋著）', () => {
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: LIVE_LATEST, publishedTags: [...PRODUCT_TAGS_REAL, '0.18.28'],
+    latestPayload: LIVE_LATEST,
+    publishedTags: tagsOn([[RAG, PRODUCT_TAGS_REAL], [COLLECTOR, ['0.18.28']]]),
   });
   assert.equal(r.ok, true, r.sections.flatMap((s) => s.problems).join('\n'));
 });
@@ -102,7 +144,7 @@ test('② 實況重演：版本發佈落在產物倉庫 ⇒ 擋（就算兩條�
   const r = runGate({
     targetName: 'prod', target: T_CDN,
     latestPayload: LIVE_LATEST,
-    publishedTags: ['1.4.46', 'v0.18.28'],  // 兩條線都發了——只驗「有沒有發」會是綠的
+    publishedTags: tagsOn([[BUNDLES, ['1.4.46', 'v0.18.28']]]),  // 兩條線都發了——只驗「有沒有發」會是綠的
   });
   assert.equal(r.ok, false, '「有發」不等於「發到對的地方」——這是四版無聲的真因');
   const msg = r.sections.flatMap((s) => s.problems).join('\n');
@@ -116,6 +158,49 @@ test('②b 落點對了就不吭聲（不是看到 bundles 這個字就叫）', 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ②-D95 leo 2026-08-18 指著版本發布頁看到的那個狀態：兩個產品疊在同一條歷史上
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('②c 【D95】兩條版本線發到同一個 repo ⇒ 擋（就算落點都不是產物倉庫、就算兩條都有發）', () => {
+  const r = runGate({
+    targetName: 'prod', target: T_MIXED,
+    latestPayload: LIVE_LATEST,
+    // 🔴 兩條線都發了，而且都發在產品 repo ⇒ **舊的兩項判準全綠**。
+    //   這正是 leo 看到的畫面：0.18.33／0.18.30 與 1.4.49／1.4.48 並排在同一頁。
+    publishedTags: tagsOn([[RAG, ['1.4.46', '0.18.28']]]),
+  });
+  assert.equal(r.ok, false, '舊判準會放行這個狀態——那就是本輪要補的那道缺口');
+  const msg = r.sections.flatMap((s) => s.problems).join('\n');
+  assert.match(msg, /同一個 repo/);
+  assert.match(msg, /bundle/);
+  assert.match(msg, /daemon/);
+});
+
+test('②d 【D95】沒宣告 lineRepos ⇒ 擋，且**不准退回 repoSlug**（退回＝安靜地重演那個扭曲）', () => {
+  const noDecl = {
+    bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
+    releaseRecord: { host: 'github', repoSlug: 'youlinhsieh/arcrun-rag' },
+  };
+  const d = checkDestination('prod', noDecl);
+  assert.equal(d.ok, false, '沒宣告就沒有人負責「發到哪」——「檢查了 0 條卻通過」是假綠');
+  assert.match(d.problems.join('\n'), /lineRepos/);
+});
+
+test('②e 【D95】少宣告一條線 ⇒ 那條線的「發了沒」要擋，不是靜靜跳過', () => {
+  const halfDecl = {
+    bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
+    releaseRecord: {
+      host: 'github', repoSlug: RAG,
+      lineRepos: { bundle: { repoSlug: RAG } },   // daemon 那條漏了
+    },
+  };
+  const pub = checkPublished(linesFrom(LIVE_LATEST, 'latest'), tagsOn([[RAG, ['1.4.46', '0.18.28']]]),
+    halfDecl.releaseRecord);
+  assert.equal(pub.ok, false);
+  assert.match(pub.problems.join('\n'), /沒宣告落點/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ③ 未來的破口：多一條沒人負責發佈的版本線
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -123,7 +208,8 @@ test('③ 交付面多一條版本線（例：MCP 外掛）而沒人宣告要發
   const payload = { ...LIVE_LATEST, mcp_plugin: { version: '2.0.1' } };
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: payload, publishedTags: [...PRODUCT_TAGS_REAL, '0.18.28'],
+    latestPayload: payload,
+    publishedTags: tagsOn([[RAG, PRODUCT_TAGS_REAL], [COLLECTOR, ['0.18.28']]]),
   });
   assert.equal(r.ok, false);
   assert.match(r.sections.flatMap((s) => s.problems).join('\n'), /mcp_plugin\.version = 2\.0\.1/);
@@ -132,7 +218,7 @@ test('③ 交付面多一條版本線（例：MCP 外掛）而沒人宣告要發
 test('④ 兩條線都沒發 ⇒ 兩條都要點名（不是報一條就閉嘴）', () => {
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: LIVE_LATEST, publishedTags: [],
+    latestPayload: LIVE_LATEST, publishedTags: tagsOn([[RAG, []], [COLLECTOR, []]]),
   });
   assert.equal(r.ok, false);
   const msg = r.sections.flatMap((s) => s.problems).join('\n');
@@ -147,7 +233,8 @@ test('④ 兩條線都沒發 ⇒ 兩條都要點名（不是報一條就閉嘴�
 test('⑤ 兩條線都發了 ⇒ 放行', () => {
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: LIVE_LATEST, publishedTags: ['1.4.46', '0.18.28'],
+    latestPayload: LIVE_LATEST,
+    publishedTags: tagsOn([[RAG, ['1.4.46']], [COLLECTOR, ['0.18.28']]]),
   });
   assert.equal(r.ok, true, r.sections.flatMap((s) => s.problems).join('\n'));
 });
@@ -161,7 +248,8 @@ test('⑥ 過渡期兩種 tag 寫法並存（舊的帶 v、新的裸號）⇒ �
   assert.equal(tagMatches('', ''), false, '空的不准互相對上（否則「沒版本」會變成「有發」）');
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: LIVE_LATEST, publishedTags: ['v1.4.46', 'v0.18.28'],
+    latestPayload: LIVE_LATEST,
+    publishedTags: tagsOn([[RAG, ['v1.4.46']], [COLLECTOR, ['v0.18.28']]]),
   });
   assert.equal(r.ok, true);
 });
@@ -198,6 +286,18 @@ test('⑧ 真的 ship.targets.json：stage／prod 的版本發佈都不落在自
   }
 });
 
+test('⑧c 【D95】真的 ship.targets.json：桌面小幫手那條線指向 arcrun-collector，不是 arcrun-rag', () => {
+  const cfg = loadTargets();
+  for (const name of ['stage', 'prod']) {
+    const m = cfg.targets[name].releaseRecord.lineRepos;
+    assert.ok(m.daemon && m.daemon.repoSlug, `${name} 沒宣告 daemon 的落點`);
+    assert.match(m.daemon.repoSlug, /arcrun-collector$/,
+      `${name}：桌面小幫手還發在 ${m.daemon.repoSlug}——那就是 leo 說的「塞進別人的歷史裡」`);
+    assert.notEqual(m.daemon.repoSlug, m.bundle.repoSlug, `${name}：兩條線不准共用同一個 repo`);
+    assert.equal(m.daemon.sourceDir, 'collector', `${name}：源碼要跟著版本走（leo：原始碼和產出物放在一起）`);
+  }
+});
+
 test('⑧b remote → slug 的擷取（含 Gitea 自架網域與沒有主機名的 selftest）', () => {
   assert.equal(slugOfRemote('github.com/youlinhsieh/arcrun-rag-bundles'), 'youlinhsieh/arcrun-rag-bundles');
   assert.equal(slugOfRemote('https://github.com/youlinhsieh/arcrun-rag-bundles.git'), 'youlinhsieh/arcrun-rag-bundles');
@@ -228,7 +328,8 @@ test('⑩ 擋下與放行都會留下一行紀錄，且擋下的那行寫得出�
   try {
     const blocked = runGate({
       targetName: 'prod', target: T_PRODUCT,
-      latestPayload: LIVE_LATEST, publishedTags: PRODUCT_TAGS_REAL,
+      latestPayload: LIVE_LATEST,
+      publishedTags: tagsOn([[RAG, PRODUCT_TAGS_REAL], [COLLECTOR, []]]),
     });
     const rowB = appendGateLog(logPath, { ts: '2026-08-18 12:00:00', targetName: 'prod', result: blocked });
     assert.match(rowB, /⛔ 擋下/);
@@ -237,7 +338,8 @@ test('⑩ 擋下與放行都會留下一行紀錄，且擋下的那行寫得出�
 
     const passed = runGate({
       targetName: 'prod', target: T_PRODUCT,
-      latestPayload: LIVE_LATEST, publishedTags: ['1.4.46', '0.18.28'],
+      latestPayload: LIVE_LATEST,
+      publishedTags: tagsOn([[RAG, ['1.4.46']], [COLLECTOR, ['0.18.28']]]),
     });
     const rowP = appendGateLog(logPath, { ts: '2026-08-18 12:05:00', targetName: 'prod', result: passed });
     assert.match(rowP, /✅ 放行/);
@@ -256,7 +358,8 @@ test('⑩ 擋下與放行都會留下一行紀錄，且擋下的那行寫得出�
 test('⑪ 交付面一條版本線都讀不到 ⇒ 不准當成「全過」', () => {
   const r = runGate({
     targetName: 'prod', target: T_PRODUCT,
-    latestPayload: { install_url: 'https://install.arcrun.dev/' }, publishedTags: [],
+    latestPayload: { install_url: 'https://install.arcrun.dev/' },
+    publishedTags: tagsOn([[RAG, []], [COLLECTOR, []]]),
   });
   // 沒有線可查 ⇒ checkPublished 不會有 problem，但 detail 必須誠實說「一條都沒對上」，
   // 且 lines 為空這件事要看得見（呼叫端 ship.mjs 據此中止，見該站註解）。

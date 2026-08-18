@@ -597,6 +597,19 @@
           在 `arcrun-collector` 上有沒有對應的發佈」。
           🔴 差別只在**查哪個 repo**：`release-lines.mjs` 屆時要讓**每條線各自帶 repo**，
           而不是所有線共用 `releaseRecord.repoSlug`。那是拆分那張票要做的事。
+
+      ✅ **已做（2026-08-18，`inkstone/InkStoneCo#40`）**——上面那段預告的事，這一輪做完了：
+        · 落點宣告搬到 `ship.targets.json` 的 `releaseRecord.lineRepos`（一條線一個 repo），
+          由 `installer/scripts/line-source-repo.mjs` 讀。**沒有退回 `repoSlug` 的路**：
+          缺宣告 ⇒ 登錄簿驗證階段 exit 2；宣告的 repo 不存在 ⇒ preflight（第一站）就斷。
+        · 本站的第一項從「一個目標一個落點」改成**逐條線各查各的**，
+          並多一項「兩條線不准擠同一個 repo」——那正是 leo 指出的扭曲本身。
+        · daemon 線的 release 要指到一顆 **`arcrun-collector` 看得到的** commit
+          ⇒ 出貨時把 `collector/` 同步過去，用**那邊的** sha 當 target。
+          🔴 同步只搬「版控裡有、且**目的 repo 自己的 `.gitignore` 沒排除**」的檔案：
+            `collector/` 版控裡躺著 4 個建置產物化石（共 43 MB，見上面 ④），
+            照「版控裡有的就搬」會把它們每趟出貨再搬一次進新 repo。
+            判準交給目的 repo 自己宣告，我們不持有第二份會漂的清單；擋下的檔案**印在出貨報告上**。
         · 「留痕」與拆不拆無關。
 
       ⇒ **這一站不是純過渡品，拆完不要整支刪掉**：改的是「查哪個 repo」，不是「要不要查」。

@@ -1,5 +1,16 @@
 # collector
 
+> 📦 **桌面小幫手（`0.18.x`）的版本發佈住在 [`inkstone/arcrun-collector`](https://git.uncle6.me/inkstone/arcrun-collector/releases)，不在本 repo 的版本發佈頁**（D95，2026-08-18，`inkstone/InkStoneCo#40`）。
+>
+> 本 repo（`arcrun-rag`）的版本發佈頁只放**雲端引擎 `1.4.x`**。兩條線是兩個產品，
+> 疊在同一條歷史上就答不出「最新版是哪一個」——leo：「**把一個差很多的東西塞進去別人的歷史裡**」。
+> 出貨線由 `installer/ship.targets.json` 的 `releaseRecord.lineRepos` 決定每條線發到哪，
+> **宣告缺一條就不准開跑**（`installer/scripts/line-source-repo.mjs`）。
+>
+> ⚠️ 源碼此刻**兩邊都有**：這個目錄仍是編輯的地方，出貨時同步到 `arcrun-collector`。
+> 把本目錄整個下架是另一輪的事（要動 20 幾支讀 `collector/` 的腳本）。
+> 舊的 `0.18.30`／`0.18.33` 兩筆還留在本 repo 的版本發佈頁，等新位置站穩後再由總管決定何時拆。
+
 > ✂️ **legacy Node 版（Gitea push 鏈）已於 2026-07-19 刪除**（SDD `ingest-hash-trigger` task 4：
 > 「Gitea webhook 接收端程式碼與路由已刪除（git 記錄可查）」）。`index.js`/`transform.js`/
 > `git-sync.js`/`config.js` 那套 watch → git commit/push → Gitea webhook 鏈要考古請看 git 歷史

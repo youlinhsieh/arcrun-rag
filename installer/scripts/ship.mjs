@@ -133,14 +133,18 @@ import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedE
 import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
 // 版本印記閘（Arcrun#106 另一半）：凡烙版號的部署路徑，必須一起烙 commit。
 import { runGate as runVersionStampGate } from './version-stamp-gate.mjs';
-import { linesFrom, assetsFor } from './release-lines.mjs';
+import { LINES, linesFrom, assetsFor } from './release-lines.mjs';
+// D95：每條版本線發到**自己的 repo**（桌面小幫手不再疊進雲端引擎的歷史）。
+import {
+  declarationProblems, repoForLine, livesInOwnRepo, syncSourceRepo, repoExists,
+} from './line-source-repo.mjs';
 import {
   formatInternalVersion, nextSequence, shortCodeFor, dateStamp,
   mappingSection, withMappingSection,
 } from './internal-version.mjs';
 import {
   runGate as runReleaseLineGate, appendGateLog as appendReleaseLineGateLog, localStamp as releaseLineGateStamp,
-  fetchPublishedTags, GATE_LOG_REL as RELEASE_LINE_GATE_LOG_REL,
+  fetchPublishedTags, GATE_LOG_REL as RELEASE_LINE_GATE_LOG_REL, destinationsOf as releaseDestinations,
 } from './release-line-gate.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
 
@@ -253,6 +257,20 @@ for (const [name, t] of Object.entries(cfg.targets)) {
   const lack = RELEASE_HOSTS[host].filter((k) => !t.releaseRecord[k]);
   if (lack.length) {
     console.error(`❌ 登錄簿不完整：目標 \`${name}\` 的 releaseRecord（host=${host}）缺欄位：${lack.join('、')}`);
+    process.exit(2);
+  }
+  // 🔴 不變式 Ⅵ.b：**每一條版本線都要宣告自己的 repo**（D95，2026-08-18，InkStoneCo#40）
+  //   leo 指著 inkstone/arcrun-rag 的版本發布頁：「**我強調了不要扭曲，這就是扭曲，
+  //   把一個差很多的東西塞進去別人的歷史裡。**」——桌面小幫手（0.18.x）與雲端引擎（1.4.x）
+  //   兩個產品的 release 疊在同一條歷史上，而且出貨線每跑一次就多疊一筆。
+  //   病根與上一輪同源：a3934c6 修好了「**發幾筆**」（一線一筆），這一輪修「**發到哪**」。
+  //   ⇒ 宣告缺一條就在這裡 exit 2；**沒有退回 `repoSlug` 這條路**——退回會變綠，
+  //     而綠的東西沒有人會去查（daemon 斷更四版就是這樣過了四次全綠）。
+  const declProblems = declarationProblems(LINES, t.releaseRecord);
+  if (declProblems.length) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 的 releaseRecord.lineRepos 有問題：`);
+    for (const p of declProblems) console.error(`   - ${p}`);
+    console.error(`   版本線清單來自 installer/scripts/release-lines.mjs 的 LINES（目前 ${LINES.length} 條：${LINES.map((l) => l.id).join('、')}）。`);
     process.exit(2);
   }
 }
@@ -549,6 +567,52 @@ const STEPS = [
           `     這個 clone 的 gitea remote 不存在，或網址沒有帶帳密。`);
       }
       lines.push(`發佈紀錄目的地：Gitea ${R.repoSlug}（寫入權杖已就位：${redactToken(cred)}）`);
+    }
+
+    // (a3) 🔴 **每條版本線宣告的 repo，此刻真的存在嗎**（D95，2026-08-18，InkStoneCo#40）
+    //
+    //   為什麼要在 preflight 問、而不是等 release-record 站去撞：
+    //   宣告寫錯（打錯字、repo 還沒建、org 搞混）的症狀會出現在**第 21 站**，
+    //   而那時候 bundle 已經推出去、worker 已經部署完了 ⇒ 「部分成功」，
+    //   而這條管線的站表第一行就寫著「一次出貨是一個版本，不接受部分成功」。
+    //
+    //   🔴 更要緊的是**它不准安靜地退而求其次**。這個 repo 反覆犯的病就是那個形狀：
+    //     daemon 斷更四版（發在沒人看的 bundles repo）、landing 從沒出貨過、
+    //     docsSite=null 被印成「本目標沒有文件站」——**每一次都是綠的**。
+    //   ⇒ 位置寫錯 ⇒ 當場斷，訊息直接說是哪一條線、哪個 repo、去哪裡改。
+    //
+    //   讀取一律匿名／唯讀（D20 2026-08-10：讀放行、不計次）；Gitea 私有 repo 才帶權杖。
+    if (R) {
+      const cred = R.host === 'gitea' ? giteaWriteCredentialsFromRemote(REPO_ROOT) : null;
+      for (const line of LINES) {
+        const entry = repoForLine(line.id, R);
+        let ok;
+        try {
+          ok = await repoExists(R.host, entry.repoSlug, { token: cred && cred.token, baseUrl: R.baseUrl });
+        } catch (e) {
+          // 🔴 分清楚兩件事：**「這個 repo 不存在」與「我連不到那台主機」不是同一個結論。**
+          //   2026-08-18 實測撞到一次 `UND_ERR_CONNECT_TIMEOUT`（同一個指令重跑兩次都過），
+          //   而當時的訊息只寫「fetch failed」⇒ 看起來像宣告寫錯，其實是網路抖了一下。
+          //   照樣中止（不猜是這條線的規矩），但要讓人一眼知道該去改宣告還是該重跑。
+          const code = e.cause && e.cause.code;
+          throw new Error(
+            `查不到版本線 \`${line.id}\`（${line.product}）宣告的 repo \`${entry.repoSlug}\` 是否存在：${e.message}`
+            + `${code ? `（${code}）` : ''}\n` +
+            `     不猜、不跳過——查不到就不知道等一下那筆 release 會發到哪裡去。\n` +
+            `     ${code ? '看起來是連不到主機（不是宣告錯）⇒ 重跑同一個指令即可，管線是冪等的。'
+              : '若確定主機是通的，就是宣告寫錯了 ⇒ 改 installer/ship.targets.json。'}`);
+        }
+        if (!ok) {
+          throw new Error(
+            `版本線 \`${line.id}\`（${line.product}）宣告要發到 \`${entry.repoSlug}\`，但${R.host}上**沒有這個 repo**。\n` +
+            `     宣告在 installer/ship.targets.json → targets.${TARGET_NAME}.releaseRecord.lineRepos.${line.id}.repoSlug\n` +
+            `     🔴 **不會自動退回 ${R.repoSlug}**：那樣做會把「${line.product}」的版本又疊進別人的歷史裡，\n` +
+            `        而且是安靜地疊——那正是 D95 leo 指出的那個扭曲（「把一個差很多的東西塞進去別人的歷史裡」）。\n` +
+            `     → 要嘛把這個 repo 建起來（GitHub 側屬 D20 管制寫入，需 leo 開閘），要嘛改宣告。`);
+        }
+        lines.push(`版本線 ${line.id}（${line.product}）→ ${entry.repoSlug}`
+          + (livesInOwnRepo(entry) ? `（源碼住那邊：本 repo 的 ${entry.sourceDir}/ 每次出貨同步過去）` : ''));
+      }
     }
   }
 
@@ -1839,23 +1903,31 @@ const STEPS = [
   // 序號從**該主機既有 release 的內文**算出來（不養一本會漂的帳，見 internal-version.mjs）。
   const headShaFull = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
   const today = dateStamp();
-  const shortCode = shortCodeFor('arcrun-rag');
-  // 同一趟出貨可能發好幾條線 ⇒ 序號要在這一趟內遞增，不能每條都算到同一個號。
-  const seqOf = (() => {
-    let n = null;
-    return (existingBodies) => {
-      if (n === null) n = nextSequence(existingBodies, shortCode, today);
-      return n++;
-    };
-  })();
-  /** 把 changelog 段落 + 機器產生的內外對應，組成最終要送上去的內文。 */
-  const bodyWithMapping = (line, changelogBody, assets, existingBodies) => withMappingSection(
+  // 🔴 D95：序號**按 repo 各算各的**。以前只有一個 repo，一個計數器就夠；
+  //   現在兩條線住在兩個 repo，共用一個計數器會讓兩邊的號碼互相跳號
+  //   ——而內部號的用途正是「在那個 repo 裡指認這一次出貨」。
+  const seqCounters = new Map();
+  const seqOf = (repoSlug, shortCode, existingBodies) => {
+    if (!seqCounters.has(repoSlug)) seqCounters.set(repoSlug, nextSequence(existingBodies, shortCode, today));
+    const n = seqCounters.get(repoSlug);
+    seqCounters.set(repoSlug, n + 1);
+    return n;
+  };
+  /**
+   * 把 changelog 段落 + 機器產生的內外對應，組成最終要送上去的內文。
+   * 🔴 `repoName`／`commit` 指的是**這條線的源碼住在哪個 repo、哪一顆**——D95 之後
+   *   桌面小幫手那條是 arcrun-collector 與它自己的 sha，不是 arcrun-rag 的。
+   *   內部號要能在它所在的那個 repo 裡被查回去，指到別的 repo 的 sha 等於指到虛空。
+   */
+  const bodyWithMapping = (line, changelogBody, assets, existingBodies, home) => withMappingSection(
     changelogBody,
     mappingSection({
       product: line.product,
       external: line.tag,                       // 對外號＝裸號（leo 2026-08-17「不要 v」）
       internal: formatInternalVersion({
-        repoName: 'arcrun-rag', commit: headShaFull, sequence: seqOf(existingBodies),
+        repoName: home.repoName,
+        commit: home.commit,
+        sequence: seqOf(home.repoSlug, shortCodeFor(home.repoName), existingBodies),
         // 🔴 傳成品進去不是裝飾：formatInternalVersion 收到空陣列會丟例外
         //   ⇒ **算不出一個沒有成品的內部號**（leo：「內部每次就要出貨 bundle 的版本」）。
         artifacts: assets.map((a) => a.name),
@@ -1864,6 +1936,9 @@ const STEPS = [
       artifacts: assets.map((a) => a.name),
     }),
   );
+
+  /** `inkstone/arcrun-collector` → `arcrun-collector`（短碼表用的是 repo 名，不是 slug）。 */
+  const repoNameOf = (slug) => String(slug).split('/').pop();
 
   // ── host=gitea（stage）：內部封測者要看的那一份 ────────────────────────────
   if (R.host === 'gitea') {
@@ -1875,21 +1950,33 @@ const STEPS = [
     // 🔴 tag 與內文**都要餵**：2026-08-17 那兩筆內部號（`RAG-20260817-001/002-…`）
     //   是總管手動建的，號碼寫在 **tag_name** 上而不是內文裡。只掃內文的話今天會從 1 重編，
     //   撞號撞得無聲無息。判準照舊是「從看得到的事實算」，那就得把看得到的兩處都算進去。
-    const existingBodies = (await giteaListReleases(R.repoSlug, opts).catch(() => []))
-      .map((r) => `${r.tag_name || ''}\n${r.body || ''}`);
+    //
+    // 🔴 D95（2026-08-18，InkStoneCo#40）：**逐條線各撈各的 repo。**
+    //   以前這裡只撈 `R.repoSlug` 一個，因為「一個目標一個 repo」是寫死的前提。
+    //   那個前提就是 leo 指出的扭曲本身：桌面小幫手的版本被疊進雲端引擎的歷史。
+    const bodiesOf = new Map();
+    const listBodies = async (slug) => {
+      if (!bodiesOf.has(slug)) {
+        bodiesOf.set(slug, (await giteaListReleases(slug, opts).catch(() => []))
+          .map((r) => `${r.tag_name || ''}\n${r.body || ''}`));
+      }
+      return bodiesOf.get(slug);
+    };
 
-    // 逐條線先算好「這條要不要建、內文是什麼、要掛哪些檔」——**全部算完才動手**，
+    // 逐條線先算好「這條要不要建、發到哪、內文是什麼、要掛哪些檔」——**全部算完才動手**，
     // 免得第一條建好、第二條才發現 changelog 缺段或成品不在，留下半套狀態。
     const todo = [];
     for (const line of lines) {
+      const entry = repoForLine(line.id, R);   // 缺宣告就丟——不退回 R.repoSlug（見 line-source-repo.mjs）
+      const slug = entry.repoSlug;
       let existing = null;
       for (const cand of tagCandidates(line)) {
-        existing = await giteaReleaseExists(R.repoSlug, cand, opts).catch((e) => {
-          throw new Error(`查詢 ${R.repoSlug} 是否已有 release ${cand} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
+        existing = await giteaReleaseExists(slug, cand, opts).catch((e) => {
+          throw new Error(`查詢 ${slug} 是否已有 release ${cand} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
         });
         if (existing) break;
       }
-      if (existing) { todo.push({ line, existing }); continue; }
+      if (existing) { todo.push({ line, entry, slug, existing }); continue; }
       const changelogBody = releaseSectionFor(REPO_ROOT, line.version);
       if (!changelogBody) {
         throw new Error(
@@ -1897,58 +1984,105 @@ const STEPS = [
           `     這不是「先跳過、之後再補」——少了它，封測者點進版本發佈頁看到的是空白。\n` +
           `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
       }
-      const assets = assetsOf(line);
-      todo.push({ line, assets, body: bodyWithMapping(line, changelogBody, assets, existingBodies) });
+      todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
     }
     if (todo.every((t) => t.existing)) {
       return { status: 'skip', detail: todo.map((t) => `Gitea 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
     }
 
-    // ① 讓這一版的原始碼 commit 在 Gitea 上看得到（＝交貨，D73）。
-    //   看不到就把**目前這個分支**推上去——這與 github 那一半先推公開鏡像是同一個動作。
-    //   🔴 但絕不代推 main／master：那道閘（總管看過才併）是人的同意，
-    //     不能因為「出貨腳本順手做了」就被繞過（InkStoneCo 頂層規則二之一）。
+    const detail = fromDisk ? [fromDisk] : [];
+
+    // ① 讓這一版的原始碼 commit **在它自己那個 repo 上**看得到（＝交貨，D73）。
+    //   一筆 release 要指到一顆 commit；指到一顆那個 repo 看不到的 sha，
+    //   「票→PR→commit→version」那條鏈就是斷的，而頁面看起來完全正常。
+    //
+    //   兩種形狀，靠**宣告**分（不是猜名字）：
+    //     · 沒有 sourceDir ＝ 源碼就在本 repo ⇒ 沿用既有動作：推出貨分支，用 HEAD sha
+    //     · 有   sourceDir ＝ 源碼住在它自己的 repo ⇒ 把那個目錄同步過去，用**那邊的** sha
+    //       （leo D95：「原始碼和產出物放在一起」）
     const headSha = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
     const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD'], REPO_ROOT);
-    const detail = fromDisk ? [fromDisk] : [];
-    let onServer = await giteaCommitExists(R.repoSlug, headSha, opts);
-    if (!onServer) {
-      if (/^(main|master|HEAD)$/.test(branch)) {
-        throw new Error(
-          `這一版的原始碼 commit（${headSha.slice(0, 7)}）在 ${R.repoSlug} 上找不到，而目前分支是 \`${branch}\`。\n` +
-          `     出貨線**不代推 main**（那道閘是人的同意，不能被腳本繞過）⇒ 請先把它併上去再出貨。\n` +
-          `     為什麼不放行：指到一顆別人看不到的 commit 的版本發佈，「票→PR→commit→version」那條鏈是斷的。`);
+    const targetOf = new Map();     // repoSlug → 這一版在那個 repo 裡的 target sha
+    const homeOf = new Map();       // repoSlug → { repoName, repoSlug, commit }（內部號要用）
+
+    for (const t of todo) {
+      if (t.existing || targetOf.has(t.slug)) continue;
+      if (livesInOwnRepo(t.entry)) {
+        // 同步過去。**權杖只在這裡組進網址，不落地、不印出**（D36）——
+        // remote 宣告在登錄簿是不帶帳密的乾淨網址，帳密從本機 gitea remote 取。
+        const authed = t.entry.remote.replace(/^https:\/\//, `https://${cred.login}:${cred.token}@`);
+        const sync = syncSourceRepo({
+          srcRoot: REPO_ROOT,
+          sourceDir: t.entry.sourceDir,
+          workDir: t.entry.workDir,
+          remoteUrl: authed,
+          branch: t.entry.branch || 'main',
+          destOwned: t.entry.destOwned || [],
+          message: `sync: ${t.entry.sourceDir}/ 同步自 ${R.repoSlug}@${headSha.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
+        });
+        const onServer = await giteaCommitExists(t.slug, sync.sha, opts);
+        if (!onServer) {
+          throw new Error(
+            `同步完了，但 ${t.slug} 還是查不到 commit ${sync.sha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
+        }
+        targetOf.set(t.slug, sync.sha);
+        homeOf.set(t.slug, { repoName: repoNameOf(t.slug), repoSlug: t.slug, commit: sync.sha });
+        detail.push(sync.changed
+          ? `已把 ${t.entry.sourceDir}/（${sync.files} 個版控檔）同步到 ${t.slug} → ${sync.sha.slice(0, 7)}`
+          : `${t.slug} 內容已是最新（${sync.files} 個版控檔）→ ${sync.sha.slice(0, 7)}`);
+        // 🔴 沒搬的要**說出來**：`git add` 本來就會擋下目的 repo 忽略的檔案，
+        //   但那是碰巧擋住，報告上不會有任何一行講它——「安靜地做對」與「安靜地做錯」
+        //   在紀錄上長得一模一樣。這幾個是 collector/ 裡的建置產物化石（實測 4 個共 43 MB）。
+        if (sync.skipped && sync.skipped.length) {
+          detail.push(`　└ ${t.slug} 的 .gitignore 擋下 ${sync.skipped.length} 個建置產物，沒搬：${sync.skipped.join('、')}`);
+        }
+        continue;
       }
-      pushGiteaQuietly(branch);  // 不用 sh：git 會把內嵌帳密的網址回聲出來（D36）
-      detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
-      onServer = await giteaCommitExists(R.repoSlug, headSha, opts);
-      if (!onServer) throw new Error(`推完了，但 ${R.repoSlug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
-    } else {
-      detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}`);
+      // 源碼就在本 repo：沿用 2026-08-16 起的既有動作，一字未改。
+      //   🔴 絕不代推 main／master：那道閘（總管看過才併）是人的同意，
+      //     不能因為「出貨腳本順手做了」就被繞過（InkStoneCo 頂層規則二之一）。
+      let onServer = await giteaCommitExists(t.slug, headSha, opts);
+      if (!onServer) {
+        if (/^(main|master|HEAD)$/.test(branch)) {
+          throw new Error(
+            `這一版的原始碼 commit（${headSha.slice(0, 7)}）在 ${t.slug} 上找不到，而目前分支是 \`${branch}\`。\n` +
+            `     出貨線**不代推 main**（那道閘是人的同意，不能被腳本繞過）⇒ 請先把它併上去再出貨。\n` +
+            `     為什麼不放行：指到一顆別人看不到的 commit 的版本發佈，「票→PR→commit→version」那條鏈是斷的。`);
+        }
+        pushGiteaQuietly(branch);  // 不用 sh：git 會把內嵌帳密的網址回聲出來（D36）
+        detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
+        onServer = await giteaCommitExists(t.slug, headSha, opts);
+        if (!onServer) throw new Error(`推完了，但 ${t.slug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
+      } else {
+        detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}（${t.slug}）`);
+      }
+      targetOf.set(t.slug, headSha);
+      homeOf.set(t.slug, { repoName: repoNameOf(t.slug), repoSlug: t.slug, commit: headShaFull });
     }
 
     // ② 逐條線建 release（tag 裸號、標題＝產品名＋裸號）＋**把這一版的成品掛上去**
     const made = [];
     for (const t of todo) {
       if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
+      const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await listBodies(t.slug), homeOf.get(t.slug));
       const rel = await giteaCreateRelease({
-        repoSlug: R.repoSlug, tag: t.line.tag, name: t.line.title, body: t.body,
-        target: headSha, token: cred.token, baseUrl: R.baseUrl,
+        repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body,
+        target: targetOf.get(t.slug), token: cred.token, baseUrl: R.baseUrl,
       });
       for (const a of t.assets) {
-        await giteaUploadAsset({ repoSlug: R.repoSlug, id: rel.id, name: a.name, data: readFileSync(a.abs), ...opts });
+        await giteaUploadAsset({ repoSlug: t.slug, id: rel.id, name: a.name, data: readFileSync(a.abs), ...opts });
       }
       // 🔴 回頭查證，不聽上傳步驟說「我成功了」（同 release-check 站的形狀）。
       //   掛檔失敗而頁面已經建好，是本輪最該擋的狀態：那就是 leo 看到的那種
       //   「有版本頁、附檔卻是原始碼快照」——只是換成「附檔根本沒上去」。
-      const onPage = await giteaListAssets(R.repoSlug, rel.id, opts);
+      const onPage = await giteaListAssets(t.slug, rel.id, opts);
       const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
       if (missing.length) {
         throw new Error(
           `${t.line.title} 的版本頁建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
           `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去沒東西的版本頁。`);
       }
-      made.push(`版本發佈｜${t.line.title}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
+      made.push(`版本發佈｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
     }
     detail.unshift(...made);
     return { status: 'done', detail };
@@ -1960,18 +2094,27 @@ const STEPS = [
   // 逐條線先算好再動手（理由同 gitea 那半：不留半套狀態）。
   // 查詢是**匿名唯讀**——D20 2026-08-10 簡化：讀一律放行、沒有頻率閘。
   // tag 與內文都要餵——理由同 gitea 那半（內部號可能寫在 tag_name 上）。
-  const ghExistingBodies = (await ghListReleases(G.repoSlug).catch(() => []))
-    .map((r) => `${r.tag_name || ''}\n${r.body || ''}`);
+  // 🔴 D95：這一半同樣改成**逐條線各發各的 repo**（形狀與 gitea 那半刻意一模一樣）。
+  const ghBodiesOf = new Map();
+  const ghListBodies = async (slug) => {
+    if (!ghBodiesOf.has(slug)) {
+      ghBodiesOf.set(slug, (await ghListReleases(slug).catch(() => []))
+        .map((r) => `${r.tag_name || ''}\n${r.body || ''}`));
+    }
+    return ghBodiesOf.get(slug);
+  };
   const todo = [];
   for (const line of lines) {
+    const entry = repoForLine(line.id, G);   // 缺宣告就丟——不退回 G.repoSlug
+    const slug = entry.repoSlug;
     let existing = null;
     for (const cand of tagCandidates(line)) {
-      existing = await releaseExists(G.repoSlug, cand).catch((e) => {
-        throw new Error(`查詢 ${G.repoSlug} 是否已有 release ${cand} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
+      existing = await releaseExists(slug, cand).catch((e) => {
+        throw new Error(`查詢 ${slug} 是否已有 release ${cand} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
       });
       if (existing) break;
     }
-    if (existing) { todo.push({ line, existing }); continue; }
+    if (existing) { todo.push({ line, entry, slug, existing }); continue; }
     const changelogBody = releaseSectionFor(REPO_ROOT, line.version);
     if (!changelogBody) {
       throw new Error(
@@ -1979,8 +2122,7 @@ const STEPS = [
         `     這不是「先跳過、之後再補」——少了這一步，使用者點「完整發佈紀錄」永遠是空白。\n` +
         `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
     }
-    const assets = assetsOf(line);
-    todo.push({ line, assets, body: bodyWithMapping(line, changelogBody, assets, ghExistingBodies) });
+    todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
   }
   if (todo.every((t) => t.existing)) {
     return { status: 'skip', detail: todo.map((t) => `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
@@ -2009,12 +2151,49 @@ const STEPS = [
     console.error(`❌❌❌ push 成功了，但寫入 github-contact-log.md 失敗：${e.message}`);
   }
 
+  // ②.5 🔴 D95：源碼住在自己 repo 的那些線，把源碼同步過去，並用**那邊的** sha 當 target。
+  //   形狀與 gitea 那半一模一樣（刻意），只有認證方式不同：
+  //   GitHub 這側用 GITHUB_MIRROR_TOKEN 組網址（D36：只在這裡組，不落地不印出）。
+  //   D20：這是寫入 GitHub ⇒ 走上面同一次保險（checkArmed 已過），且逐筆留痕。
+  const targetOf = new Map();
+  const homeOf = new Map();
+  for (const t of todo) {
+    if (t.existing || targetOf.has(t.slug)) continue;
+    if (!livesInOwnRepo(t.entry)) {
+      targetOf.set(t.slug, mirrorSha);
+      homeOf.set(t.slug, { repoName: repoNameOf(t.slug), repoSlug: t.slug, commit: headShaFull });
+      continue;
+    }
+    const authed = t.entry.remote.replace(/^https:\/\//,
+      `https://${process.env.GITHUB_ACCOUNT_NAME || 'git'}:${token}@`);
+    const sync = syncSourceRepo({
+      srcRoot: REPO_ROOT,
+      sourceDir: t.entry.sourceDir,
+      workDir: t.entry.workDir,
+      remoteUrl: authed,
+      branch: t.entry.branch || 'main',
+      destOwned: t.entry.destOwned || [],
+      message: `sync: ${t.entry.sourceDir}/ 同步自 ${G.repoSlug}@${headShaFull.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
+    });
+    try {
+      logGithubContact(INKSTONE_ROOT, mission,
+        `同步 ${t.entry.sourceDir}/ → ${t.slug}（${sync.changed ? '有變更' : '無變更'}，${sync.files} 個檔`
+        + `${sync.skipped && sync.skipped.length ? `，${sync.skipped.length} 個建置產物被目的 repo 的 .gitignore 擋下` : ''}`
+        + `，HEAD ${sync.sha.slice(0, 7)}）`);
+    } catch (e) {
+      console.error(`❌❌❌ 同步成功了，但寫入 github-contact-log.md 失敗：${e.message}`);
+    }
+    targetOf.set(t.slug, sync.sha);
+    homeOf.set(t.slug, { repoName: repoNameOf(t.slug), repoSlug: t.slug, commit: sync.sha });
+  }
+
   // ③ 逐條線建 release（target_commitish 指到剛推上去的那個 sha，tag 不存在時 GitHub 會自動建出來）
   const made = [];
   for (const t of todo) {
     if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
+    const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await ghListBodies(t.slug), homeOf.get(t.slug));
     const rel = await createRelease({
-      repoSlug: G.repoSlug, tag: t.line.tag, name: t.line.title, body: t.body, targetCommitish: mirrorSha, token,
+      repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body, targetCommitish: targetOf.get(t.slug), token,
     });
     try {
       logGithubContact(INKSTONE_ROOT, mission, `建立 release ${t.line.tag}（${t.line.product}） → ${rel.html_url}`);
@@ -2032,14 +2211,14 @@ const STEPS = [
       }
     }
     // 回頭查證（匿名唯讀），不聽上傳步驟說「我成功了」。
-    const onPage = await ghListAssets(G.repoSlug, rel.id);
+    const onPage = await ghListAssets(t.slug, rel.id);
     const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
     if (missing.length) {
       throw new Error(
         `${t.line.title} 的 release 建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
         `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去只有原始碼快照的版本頁。`);
     }
-    made.push(`release｜${t.line.title}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
+    made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
   }
 
   return { status: 'done', detail: [...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
@@ -2087,7 +2266,7 @@ const STEPS = [
 
   if (!result.ok) {
     throw new Error(
-      `版本線與版本發佈對不上（${R.repoSlug}）：\n`
+      `版本線與版本發佈對不上（${releaseDestinations(R).map(([id, s]) => `${id}→${s}`).join('、') || '未宣告落點'}）：\n`
       + result.sections.filter((s) => !s.ok).flatMap((s) => s.problems).map((p) => `     - ${p}`).join('\n'));
   }
   return { status: 'done', detail: result.sections.map((s) => `${s.skipped ? '⏭' : '✔'} ${s.name}：${s.detail}`) };

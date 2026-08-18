@@ -101,20 +101,66 @@ export function checkDestination(targetName, target) {
     problems.push(`目標 \`${targetName}\` 沒宣告 releaseRecord.repoSlug——沒有落點就談不上「發到對的地方」。`);
     return { ok: false, problems, detail: '' };
   }
-  if (bundleSlug && norm(R.repoSlug) === norm(bundleSlug)) {
+
+  // 🔴 D95（2026-08-18，InkStoneCo#40）：落點是**每條線各自的**，不是一個目標一個。
+  //   在此之前這裡只看 `R.repoSlug` ⇒ 兩條線的落點對不對，總共只被檢查了一次
+  //   ⇒ 桌面小幫手被發進雲端引擎的 repo，這道閘一路綠燈（它根本沒在看那件事）。
+  //   判準一樣是**事實比對**：拿登錄簿自己宣告的 `bundles.remote` 去比，不猜名字。
+  const dests = destinationsOf(R);
+  if (dests.length === 0) {
     problems.push(
-      `目標 \`${targetName}\` 的版本發佈落在**產物倉庫**（${R.repoSlug}），那不是產品頁。\n`
-      + `         ⇒ 登錄簿自己宣告 bundles.remote＝${target.bundles.remote}（＝編譯產物推去給 CDN 取用的地方），\n`
-      + `           跟 releaseRecord.repoSlug 是同一個 repo。使用者要看「這版改了什麼」不會去那裡翻，\n`
-      + `           **於是斷更幾版都沒有人會察覺**——2026-08-09 的 daemon v0.18.25 就是這樣消失的\n`
-      + `           （github-contact-log.md 第 68 行：\`R=…-bundles\` 是前一個推 bundle 的動作留下的變數）。\n`
-      + `         → 把 releaseRecord.repoSlug 改成**原始碼／產品 repo**（票→PR→commit→version 那條鏈住的地方）。`);
+      `目標 \`${targetName}\` 沒宣告 releaseRecord.lineRepos——「每條版本線發到哪」沒有人負責。\n`
+      + `         「檢查了 0 條卻通過」是假綠的經典形狀 ⇒ 不放行。`);
   }
+  for (const [lineId, slug] of dests) {
+    if (bundleSlug && norm(slug) === norm(bundleSlug)) {
+      problems.push(
+        `版本線 \`${lineId}\` 的版本發佈落在**產物倉庫**（${slug}），那不是產品頁。\n`
+        + `         ⇒ 登錄簿自己宣告 bundles.remote＝${target.bundles.remote}（＝編譯產物推去給 CDN 取用的地方）。\n`
+        + `           使用者要看「這版改了什麼」不會去那裡翻，**於是斷更幾版都沒有人會察覺**\n`
+        + `           ——2026-08-09 的 daemon v0.18.25 就是這樣消失的\n`
+        + `           （github-contact-log.md 第 68 行：\`R=…-bundles\` 是前一個推 bundle 的動作留下的變數）。\n`
+        + `         → 改成**原始碼／產品 repo**（票→PR→commit→version 那條鏈住的地方）。`);
+    }
+  }
+
+  // 🔴 兩條線發到同一個 repo ＝ leo D95 指出的那個扭曲本身。
+  //   實況（2026-08-18 總管實測 inkstone/arcrun-rag 的版本發布頁）：
+  //     桌面小幫手 0.18.33／0.18.30 與雲端引擎 1.4.49／1.4.48 並排，且每出一次貨就多疊一筆。
+  //   ⇒ 這一項不是風格潔癖：**兩個產品共用一條版本歷史，「最新版是哪一個」就沒有答案。**
+  const bySlug = new Map();
+  for (const [lineId, slug] of dests) {
+    const k = norm(slug);
+    bySlug.set(k, [...(bySlug.get(k) || []), lineId]);
+  }
+  for (const [slug, ids] of bySlug) {
+    if (ids.length > 1) {
+      problems.push(
+        `版本線 ${ids.map((i) => `\`${i}\``).join('、')} 全部發到同一個 repo（${slug}）。\n`
+        + `         ⇒ 兩個產品的版本疊在同一條歷史上，那正是 leo 2026-08-18 指著版本發布頁說的\n`
+        + `           「**我強調了不要扭曲，這就是扭曲，把一個差很多的東西塞進去別人的歷史裡**」。\n`
+        + `         → 在 installer/ship.targets.json 的 releaseRecord.lineRepos 給每條線各自的 repo。`);
+    }
+  }
+
   return {
     ok: problems.length === 0,
     problems,
-    detail: `版本發佈落點 ${R.repoSlug}（產物倉庫 ${bundleSlug || '(無)'}）`,
+    detail: `落點：${dests.map(([id, s]) => `${id}→${s}`).join('、') || '(無宣告)'}（產物倉庫 ${bundleSlug || '(無)'}）`,
   };
+}
+
+/**
+ * 這個目標**每條版本線各自的落點**。
+ * 🔴 沒有 `lineRepos` 就回空陣列，**不退回 `repoSlug`**——退回會讓「兩條線擠同一個 repo」
+ *   這件事在這道閘裡看起來像「只有一條線」，於是永遠不會被抓到。
+ * @returns {[string,string][]} [lineId, repoSlug]
+ */
+export function destinationsOf(releaseRecord) {
+  const map = (releaseRecord && releaseRecord.lineRepos) || {};
+  return LINES
+    .map((l) => [l.id, map[l.id] && map[l.id].repoSlug])
+    .filter(([, slug]) => Boolean(slug));
 }
 
 // ── 2. 覆蓋：交付面露出的版本號，不准有沒人負責發佈的（治「將來多一條線」）──────
@@ -145,20 +191,37 @@ export function checkCoverage(latestPayload) {
 // ── 3. 已發佈：每一條線都要找得到對應的版本發佈 ──────────────────────────────
 
 /**
+ * 🔴 D95：**每條線去問自己那個 repo**，不是全部去問同一個。
+ *   以前 `tags` 是一個陣列（一個 repo 的 tag）；桌面小幫手改發到 arcrun-collector 之後，
+ *   拿 arcrun-rag 的 tag 去對它，會得到「沒發佈」的假紅（或更糟：舊的疊在那裡 ⇒ 假綠）。
+ *
  * @param {object[]} lines linesFrom() 的產物
- * @param {string[]} tags 產品 repo 目前所有 release 的 tag
- * @param {string} repoSlug 只用在錯誤訊息裡
+ * @param {Record<string,string[]>} tagsByRepo repoSlug → 該 repo 目前所有 release 的 tag
+ * @param {object} releaseRecord 用來查每條線的落點
  */
-export function checkPublished(lines, tags, repoSlug) {
+export function checkPublished(lines, tagsByRepo, releaseRecord) {
   const problems = [];
   const hit = [];
+  const map = (releaseRecord && releaseRecord.lineRepos) || {};
   for (const line of lines) {
+    const slug = map[line.id] && map[line.id].repoSlug;
+    if (!slug) {
+      problems.push(
+        `版本線 \`${line.id}\`（${line.product}）沒宣告落點（releaseRecord.lineRepos.${line.id}）。\n`
+        + `         沒有落點就無從查證「有沒有發佈」⇒ 不放行（不退回別條線的 repo）。`);
+      continue;
+    }
+    const tags = tagsByRepo[slug];
+    if (!Array.isArray(tags)) {
+      problems.push(`查不到 ${slug} 的 release 清單 ⇒ 無從判斷 ${line.product} ${line.version} 發了沒。不猜，直接擋。`);
+      continue;
+    }
     const found = tags.find((t) => tagMatches(t, line.version));
-    if (found) { hit.push(`${line.id} ${line.version} → ${found}`); continue; }
+    if (found) { hit.push(`${line.id} ${line.version} → ${slug}:${found}`); continue; }
     problems.push(
-      `「${line.product}」這條線送出了 ${line.version}，但 ${repoSlug} 上沒有對應的版本發佈。\n`
+      `「${line.product}」這條線送出了 ${line.version}，但 ${slug} 上沒有對應的版本發佈。\n`
       + `         ⇒ 使用者拿到這一版，卻查不到「這版改了什麼」——${line.label}\n`
-      + `         → 這一版要嘛跟著出貨線發佈（release-record 站會照 LINES 逐條發），\n`
+      + `         → 這一版要嘛跟著出貨線發佈（release-record 站會照 LINES 逐條發到各自的 repo），\n`
       + `           要嘛就不該送出去。不准「先出貨、之後再補」——那正是斷四版的走法。`);
   }
   return {
@@ -176,24 +239,26 @@ export function checkPublished(lines, tags, repoSlug) {
  * @param {string} o.targetName
  * @param {object} o.target             ship.targets.json 裡那個目標
  * @param {object} o.latestPayload      使用者端會讀到的那份回應（/api/latest 或等價的 manifest 投影）
- * @param {string[]|null} o.publishedTags 產品 repo 現有的 release tag；null＝離線模式，跳過第三項
+ * @param {Record<string,string[]>|null} o.publishedTags repoSlug → 該 repo 現有的 release tag；
+ *        null＝離線模式，跳過第三項
  */
 export function runGate({ targetName, target, latestPayload, publishedTags }) {
+  const R = target && target.releaseRecord;
   const dest = checkDestination(targetName, target);
   const cov = checkCoverage(latestPayload);
   const lines = linesFrom(latestPayload, 'latest');
-  const repoSlug = (target && target.releaseRecord && target.releaseRecord.repoSlug) || '(未宣告)';
+  const where = destinationsOf(R).map(([id, s]) => `${id}→${s}`).join('、') || '(未宣告)';
 
   const sections = [
-    { name: '版本發佈落在產品 repo，不是產物倉庫', ok: dest.ok, problems: dest.problems, detail: dest.detail },
+    { name: '每條版本線各自發在自己的產品 repo', ok: dest.ok, problems: dest.problems, detail: dest.detail },
     { name: '交付面每個版本號都有人負責發佈', ok: cov.ok, problems: cov.problems, detail: cov.detail },
   ];
 
   if (publishedTags === null) {
-    sections.push({ name: `每條版本線都已發佈到 ${repoSlug}`, ok: true, problems: [], detail: '⏭ 離線模式，本項未檢查', skipped: true });
+    sections.push({ name: `每條版本線都已發佈（${where}）`, ok: true, problems: [], detail: '⏭ 離線模式，本項未檢查', skipped: true });
   } else {
-    const pub = checkPublished(lines, publishedTags, repoSlug);
-    sections.push({ name: `每條版本線都已發佈到 ${repoSlug}`, ok: pub.ok, problems: pub.problems, detail: pub.detail });
+    const pub = checkPublished(lines, publishedTags, R);
+    sections.push({ name: `每條版本線都已發佈（${where}）`, ok: pub.ok, problems: pub.problems, detail: pub.detail });
   }
 
   return { ok: sections.every((s) => s.ok), sections, lines };
@@ -275,25 +340,39 @@ function expandHome(p) {
   return p && p.startsWith('~/') ? join(process.env.HOME || '', p.slice(2)) : p;
 }
 
-/** 抓產品 repo 目前所有 release 的 tag。GitHub 走匿名唯讀（D20：讀一律放行）。 */
+/**
+ * 抓**每條版本線各自那個 repo** 目前所有 release 的 tag。
+ * GitHub 走匿名唯讀（D20：讀一律放行）。
+ *
+ * 🔴 D95：回傳的是一個物件（key＝repoSlug、value＝該 repo 的 tag 陣列）。
+ *   以前只回一個陣列，因為前提是「一個目標一個 repo」——而那個前提正是本輪拆掉的東西。
+ */
 export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl = fetch } = {}) {
   const R = target.releaseRecord;
-  if (R.host === 'github') {
-    const r = await fetchImpl(`https://api.github.com/repos/${R.repoSlug}/releases?per_page=100`,
-      { headers: { 'user-agent': 'release-line-gate', accept: 'application/vnd.github+json' } });
-    if (!r.ok) throw new Error(`列 ${R.repoSlug} 的 release 失敗：HTTP ${r.status}`);
-    return (await r.json()).map((x) => x.tag_name);
+  const slugs = [...new Set(destinationsOf(R).map(([, s]) => s))];
+  if (slugs.length === 0) {
+    throw new Error('登錄簿沒宣告任何版本線的落點（releaseRecord.lineRepos）⇒ 沒有東西可查。不猜，直接停。');
   }
-  if (R.host === 'gitea') {
-    const cred = giteaWriteCredentialsFromRemote(root);
-    const headers = { accept: 'application/json' };
-    if (cred) headers.authorization = `token ${cred.token}`;
-    const base = (R.baseUrl || 'https://git.uncle6.me').replace(/\/$/, '');
-    const r = await fetchImpl(`${base}/api/v1/repos/${R.repoSlug}/releases?limit=100`, { headers });
-    if (!r.ok) throw new Error(`列 ${R.repoSlug} 的 release 失敗：HTTP ${r.status}`);
-    return (await r.json()).map((x) => x.tag_name);
+  const out = {};
+  for (const slug of slugs) {
+    if (R.host === 'github') {
+      const r = await fetchImpl(`https://api.github.com/repos/${slug}/releases?per_page=100`,
+        { headers: { 'user-agent': 'release-line-gate', accept: 'application/vnd.github+json' } });
+      if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
+      out[slug] = (await r.json()).map((x) => x.tag_name);
+    } else if (R.host === 'gitea') {
+      const cred = giteaWriteCredentialsFromRemote(root);
+      const headers = { accept: 'application/json' };
+      if (cred) headers.authorization = `token ${cred.token}`;
+      const base = (R.baseUrl || 'https://git.uncle6.me').replace(/\/$/, '');
+      const r = await fetchImpl(`${base}/api/v1/repos/${slug}/releases?limit=100`, { headers });
+      if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
+      out[slug] = (await r.json()).map((x) => x.tag_name);
+    } else {
+      throw new Error(`不認得的 releaseRecord.host：${R.host}`);
+    }
   }
-  throw new Error(`不認得的 releaseRecord.host：${R.host}`);
+  return out;
 }
 
 // ── 7. CLI ──────────────────────────────────────────────────────────────────

@@ -43,6 +43,9 @@ export const INTERNAL_VERSION_SCAN_RE = /\b[A-Z]{2,5}-\d{8}-\d{3}-[0-9a-f]{7}\b/
 export const REPO_SHORT_CODES = {
   'arcrun-rag': 'RAG',
   arcrun: 'ARC',
+  // D95（2026-08-18，InkStoneCo#40）：桌面小幫手搬進自己的 repo，
+  // 它的內部號要指得回**它自己那個 repo 的 commit**，不是 arcrun-rag 的。
+  'arcrun-collector': 'ACO',
 };
 
 /** @returns {string} 例 'RAG'。查不到就丟——短碼漂掉之後兩個號碼會被當成兩個 repo。 */

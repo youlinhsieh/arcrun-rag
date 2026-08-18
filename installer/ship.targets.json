@@ -146,11 +146,58 @@
           "  不落地、不印真身）。`GITEA_TOKEN` 環境變數只有 read:repository，開 release 會 403。",
           "",
           "repoSlug 是**原始碼 repo**（票與 PR 住的地方），不是 bundle repo——leo 要的那條鏈",
-          "（票 → PR → commit → version）只有在這裡才串得起來。"
+          "（票 → PR → commit → version）只有在這裡才串得起來。",
+          "",
+          "🔴 2026-08-18 加 `lineRepos`（D95，inkstone/InkStoneCo#40）：",
+          "  `repoSlug` 一個目標只有一個 ⇒ 兩條版本線的 release 疊在同一條歷史上。",
+          "  leo 指著 inkstone/arcrun-rag 的版本發布頁：「**我強調了不要扭曲，這就是扭曲，",
+          "  把一個差很多的東西塞進去別人的歷史裡。**」（桌面小幫手 0.18.33／0.18.30 與",
+          "  雲端引擎 1.4.49／1.4.48 並排，而且出貨線每跑一次就多疊一筆。）",
+          "  ⇒ 「發到哪個 repo」是**版本線**的屬性，不是**出貨目標**的屬性。",
+          "  每條線各自宣告，缺一條就在登錄簿驗證階段 exit 2——**不准退回 repoSlug**。"
         ],
         "host": "gitea",
         "repoSlug": "inkstone/arcrun-rag",
-        "baseUrl": "https://git.uncle6.me"
+        "baseUrl": "https://git.uncle6.me",
+        "lineRepos": {
+          "_": [
+            "每條版本線的家。key ＝ release-lines.mjs 的 LINES[].id。",
+            "宣告了 sourceDir ＝ 這條線的源碼**住在它自己的 repo**：出貨時先把那個目錄同步過去，",
+            "release 才有一顆該 repo 看得到的 commit 可以指（見 line-source-repo.mjs）。"
+          ],
+          "bundle": {
+            "_": "雲端引擎（1.4.x）。源碼就在本 repo，沿用既有動作（推出貨分支 → 用 HEAD sha 當 target）。",
+            "repoSlug": "inkstone/arcrun-rag"
+          },
+          "daemon": {
+            "_": [
+              "桌面小幫手（0.18.x）。leo D95：「原始碼和產出物放在一起」。",
+              "repo 由 leo 於 2026-08-18 開權限後建立（公開、空的）。sourceDir 底下**版控裡有的**",
+              "檔案會在每次出貨同步過去，release 與三平台成品都掛在那邊。",
+              "🔴 arcrun-rag 的 collector/ 這一輪還沒拆掉（拆它要動 20 幾支讀 collector/ 的腳本，",
+              "  另立一輪）——但**發佈的落點今天就搬過去了**，「桌面版住哪」不再有兩個答案。"
+            ],
+            "repoSlug": "inkstone/arcrun-collector",
+            "sourceDir": "collector",
+            "remote": "https://git.uncle6.me/inkstone/arcrun-collector.git",
+            "workDir": "~/.arcrun-ship/arcrun-collector",
+            "branch": "main",
+            "_destOwned": [
+              "🔴 2026-08-18 第一次真的同步之後補的——**它炸掉的就是這道閘自己**。",
+              "",
+              "`arcrun-collector` 的 `.gitignore` 是拆分時專門寫的 21 行清單，內文白紙黑字：",
+              "「這一份清單是『不要再長回來』的那道閘」（擋 46 個編譯產物／626 MB 再長回來）。",
+              "而 `arcrun-rag` 的 `collector/.gitignore` **只有一行 `node_modules/`**",
+              "⇒ 盲目鏡射把那道閘覆蓋成一行 ⇒ 下一趟同步就會把 43 MB 產物搬進新 repo。",
+              "同一次也把 `README.md`（拆分時寫來介紹這個獨立 repo 的）換成了子目錄的 README。",
+              "",
+              "⇒ **這兩個檔兩邊都有，但內容本來就該不一樣**——那不是「同步沒做好」，",
+              "  是「它們根本不該被同步」。列在這裡的路徑：不覆蓋、不刪除，",
+              "  而且同步前會檢查它們還在不在（不見了＝先前某次同步蓋掉了，當場停）。"
+            ],
+            "destOwned": ["README.md", ".gitignore"]
+          }
+        }
       },
 
       "docsSite": {
@@ -263,7 +310,33 @@
         "host": "github",
         "repoSlug": "youlinhsieh/arcrun-rag",
         "mirrorDir": ".github-public",
-        "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git"
+        "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git",
+        "lineRepos": {
+          "_": [
+            "🔴 2026-08-18（D95，inkstone/InkStoneCo#40）：對外那一側同樣一線一個 repo。",
+            "",
+            "⚠️ **`youlinhsieh/arcrun-collector` 此刻不存在**（2026-08-18 匿名查 GitHub API → 404）。",
+            "  建 GitHub repo 是 D20 管制的寫入動作，要 leo 親手開閘 ⇒ 這裡照實宣告，",
+            "  由 preflight 的『宣告的 repo 存不存在』那道檢查在**第一站**擋下 prod 出貨，",
+            "  訊息直接說「這個 repo 不存在，去建它」。",
+            "",
+            "  🔴 為什麼不寫成「prod 的 daemon 暫時發回 arcrun-rag」：那就是**安靜地退而求其次**——",
+            "  它會變綠，而綠的東西沒有人會去查。leo D95 要拔掉的正是這種扭曲。",
+            "  ⇒ 寧可 prod 在第一站就斷，也不要它悄悄把桌面版又疊進雲端的歷史裡。"
+          ],
+          "bundle": {
+            "repoSlug": "youlinhsieh/arcrun-rag"
+          },
+          "daemon": {
+            "repoSlug": "youlinhsieh/arcrun-collector",
+            "sourceDir": "collector",
+            "remote": "https://github.com/youlinhsieh/arcrun-collector.git",
+            "workDir": "~/.arcrun-ship/arcrun-collector-prod",
+            "branch": "main",
+            "_destOwned": "同 stage：目的 repo 自己的門面檔不覆蓋、不刪除（理由見 stage 那一欄）。",
+            "destOwned": ["README.md", ".gitignore"]
+          }
+        }
       },
       "mailRelay": {
         "_": [

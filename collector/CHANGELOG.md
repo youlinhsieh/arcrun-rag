@@ -11,8 +11,19 @@
 > （2026-08-17 從 docs-site 搬去，同一天 leo 說「這個頁面刪除」）——
 > 兩條版本線本來就是兩個產品，混在一個檔裡是 D95 要拆掉的那種扭曲。
 >
-> 📌 **兩份都不是網頁，是出貨原稿。** 使用者讀的是
-> [GitHub 版本發佈](https://github.com/youlinhsieh/arcrun-rag/releases)，由 `installer/scripts/github-release.mjs` 拿這兩份檔的段落產生。
+> 📌 **兩份都不是網頁，是出貨原稿。** 使用者讀的是版本發佈頁，由出貨線的 `release-record` 站拿這兩份檔的段落產生。
+>
+> 🔴 **兩條線發到兩個 repo**（D95，2026-08-18，`inkstone/InkStoneCo#40`）——
+> 這份（桌面版 `0.18.x`）發到 **`arcrun-collector`**，
+> 雲端引擎 `1.4.x` 那份發到 `arcrun-rag`：
+>
+> | | 內部（Gitea，stage） | 對外（GitHub，prod） |
+> |---|---|---|
+> | 桌面版 `0.18.x` | [`inkstone/arcrun-collector`](https://git.uncle6.me/inkstone/arcrun-collector/releases) | `youlinhsieh/arcrun-collector` ⚠️ **repo 還沒建**，建它是 D20 人閘 |
+> | 雲端 `1.4.x` | `inkstone/arcrun-rag` | [`youlinhsieh/arcrun-rag`](https://github.com/youlinhsieh/arcrun-rag/releases) |
+>
+> 落點宣告在 `installer/ship.targets.json` 的 `releaseRecord.lineRepos`，
+> 缺一條就在登錄簿驗證階段 exit 2——**沒有「退回去發到 arcrun-rag」這條路**。
 
 ## 怎麼出新版（不要手打版本號）
 
