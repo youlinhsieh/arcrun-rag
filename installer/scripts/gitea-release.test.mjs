@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   releaseExists, createRelease, deleteRelease, listReleases, commitExists,
-  giteaWriteCredentialsFromRemote, redactToken,
+  giteaWriteCredentialsFromRemote, redactToken, uploadReleaseAsset, listReleaseAssets,
 } from './gitea-release.mjs';
 
 function fakeFetch(routes) {
@@ -137,4 +137,56 @@ test('commitExists：200 回 true', async () => {
 test('commitExists：非 404 非 2xx 丟例外——**讀不到不等於不存在**，不准靜默當成「還沒交貨」', async () => {
   const fetchImpl = fakeFetch([[/\/git\/commits\//, () => ({ status: 500, ok: false })]]);
   await assert.rejects(() => commitExists('acme/widget', 'deadbeef', { token: 't', fetchImpl }), /HTTP 500/);
+});
+
+// ── 附件（inkstone/arcrun-rag#88，2026-08-18）────────────────────────────
+// leo：「assets 都寫 source code，這兩個附檔實際是什麼？是 dmg 還是 go？」
+// ⇒ 那兩個是 Gitea 自動產生的原始碼快照。以下釘住「掛真的成品」這條路。
+
+test('uploadReleaseAsset：缺 token 當場拒絕，不打網路（D36）', async () => {
+  let called = false;
+  const fetchImpl = async () => { called = true; return { ok: true, json: async () => ({}) }; };
+  await assert.rejects(
+    () => uploadReleaseAsset({ repoSlug: 'acme/widget', id: 7, name: 'a.dmg', data: new Uint8Array([1]), fetchImpl }),
+    /缺寫入權杖/,
+  );
+  assert.equal(called, false);
+});
+
+test('uploadReleaseAsset：缺檔名當場拒絕（沒名字的附件是點不下去的連結）', async () => {
+  await assert.rejects(
+    () => uploadReleaseAsset({ repoSlug: 'acme/widget', id: 7, data: new Uint8Array([1]), token: 't' }),
+    /缺附件檔名/,
+  );
+});
+
+test('uploadReleaseAsset：走 multipart，檔名進 query，內容原樣送出', async () => {
+  let seen = null;
+  const fetchImpl = async (url, opts) => {
+    seen = { url, opts };
+    return { ok: true, status: 201, json: async () => ({ id: 3, name: 'Arcrun-0.18.29.dmg' }) };
+  };
+  const r = await uploadReleaseAsset({
+    repoSlug: 'acme/widget', id: 7, name: 'Arcrun-0.18.29.dmg',
+    data: new Uint8Array([1, 2, 3]), token: 'tok', baseUrl: 'https://git.example.test', fetchImpl,
+  });
+  assert.equal(r.id, 3);
+  assert.match(seen.url, /\/repos\/acme\/widget\/releases\/7\/assets\?name=Arcrun-0\.18\.29\.dmg$/);
+  assert.equal(seen.opts.method, 'POST');
+  assert.ok(seen.opts.body instanceof FormData);
+  assert.equal(seen.opts.body.get('attachment').size, 3, '送出去的位元數要跟檔案一樣');
+  assert.equal(seen.opts.headers.authorization, 'token tok');
+});
+
+test('uploadReleaseAsset：HTTP 失敗要丟，不准靜默當成掛好了', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 413, text: async () => 'too big' });
+  await assert.rejects(
+    () => uploadReleaseAsset({ repoSlug: 'acme/widget', id: 7, name: 'a.dmg', data: new Uint8Array([1]), token: 't', fetchImpl }),
+    /HTTP 413/,
+  );
+});
+
+test('listReleaseAssets：回空陣列＝**這筆 release 上沒有人掛過東西**（自動快照不算附件）', async () => {
+  const fetchImpl = fakeFetch([[/\/releases\/7\/assets$/, () => ({ ok: true, status: 200, json: async () => [] })]]);
+  assert.deepEqual(await listReleaseAssets('acme/widget', 7, { token: 't', fetchImpl }), []);
 });

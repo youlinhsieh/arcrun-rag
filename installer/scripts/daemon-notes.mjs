@@ -34,14 +34,66 @@ import { join, resolve } from 'node:path';
 import {
   CHANGELOG_PATH as DAEMON_CHANGELOG_PATH,
   NOTES_MAX, stripMarkdown, headlinesFor, checkNotes, notesForVersion,
+  DAEMON_LINE_RE, readDaemonLine, daemonReleasedRe, ANY_RELEASED_RE, lineOfVersion,
 } from '../../collector/cmd/arcrun-app/daemon-notes.mjs';
 
-export { NOTES_MAX, stripMarkdown, headlinesFor, checkNotes };
+export {
+  NOTES_MAX, stripMarkdown, headlinesFor, checkNotes,
+  // 版本線判別器（#88 第二輪）——判別的承載從「有沒有 v」換成「DAEMON_LINE 宣告的線」。
+  DAEMON_LINE_RE, readDaemonLine, daemonReleasedRe, ANY_RELEASED_RE, lineOfVersion,
+};
 
 /** 雲端引擎（`1.4.x`）的版本說明＝repo 根的 `CHANGELOG.md`（出貨原稿，不是網頁）。 */
 export const CHANGELOG_REL = 'CHANGELOG.md';
-/** 桌面版（`v0.18.x`）的版本說明——已搬進 collector/。 */
+/** 桌面版（`0.18.x`）的版本說明——已搬進 collector/。 */
 export const DAEMON_CHANGELOG_REL = 'collector/CHANGELOG.md';
+
+/** daemon 宣告自己走哪條版本線的檔案（相對 repo 根）。判別器的真相源。 */
+export const DAEMON_LINE_REL = 'collector/DAEMON_LINE';
+
+/**
+ * 「已發佈的 daemon 版本段」的**唯一判斷式**（inkstone/arcrun-rag#88）。
+ * 只認已發佈段，忽略 `## 下一版（未發佈）` 草稿——草稿只代表「先寫、還沒打包」。
+ *
+ * ── 為什麼是「一份」而不是四份（2026-08-18 第一輪）────────────────────────
+ * 在此之前這條 regex 有**四份各自為政的拷貝**——`daemon-freshness.mjs`、
+ * `daemon-in-bundle-gate.mjs`、`ship.mjs` 的 daemon-sync 站、以及
+ * `collector/cmd/arcrun-app/daemon-version.py`。三份的註解都寫著「與 XX 同一個判斷式」
+ * ——**它們知道該一致，卻靠人記得同時改四個地方。**
+ * 而 2026-08-18 把產生端改成吐裸號時，這件事立刻要人命：產生端戳出 `## 0.18.30（…）`，
+ * 其餘三份只認 `^## v` ⇒ **它們不報錯**，而是往下比對到更舊的 `## v0.18.29（…）`
+ * ⇒ **打包出 0.18.30 的執行檔，manifest 卻宣稱自己是 v0.18.29。** 靜默，21 站全綠。
+ *
+ * ── 為什麼不再是一個常數（2026-08-18 第二輪，就是本次）──────────────────
+ * 舊的形狀 `^## (v\d+\.\d+\.\d+)（` 把那個 `v` 當成**版本線標籤**在用
+ * （有 v ＝ daemon `v0.18.x`／沒 v ＝ 雲端引擎 `1.4.x`）。
+ * 兩個方向都走不通：釘死 `v` ⇒ 裸號被靜默略過；放寬成 `v?` ⇒ 雲端的 `## 1.4.47（…）`
+ * 被 daemon 的閘撈走。**外觀不是身分**，所以判別的承載換成
+ * `collector/DAEMON_LINE` 宣告的那條線（實作與完整理由見 collector 那一側的同名檔）。
+ *
+ * ⇒ 判斷式因此**依賴 repo**（要去讀那個檔），不可能再是一個匯出常數。
+ *   這是刻意的：常數會讓人以為「判別不需要任何前提」，而它需要——**線是宣告出來的**。
+ *
+ * ⚠️ 第四份（`daemon-version.py`）**是 Python、且住在 collector/**，不能 import 這裡
+ *   ——那會把 D95 第一輪剛剪掉的臍帶接回去。它由 `daemon-version.test.mjs` 各自釘住行為，
+ *   兩邊靠**測試**對齊，不靠註解對齊（本輪新增的 ⑥ 就是那道對齊閘）。
+ *
+ * @param {string} repoRoot arcrun-rag repo 根
+ * @returns {RegExp} 第 1 組＝版本號原樣（`v0.18.30` 或 `0.18.31`）
+ * @throws 讀不到／讀不懂 `DAEMON_LINE` 時丟例外——**沒有線就沒有判別器**，
+ *   此時「斷得很大聲」才對，塞一個預設值繼續走就是在重演本票要治的病。
+ */
+export function daemonReleasedReFor(repoRoot) {
+  const line = readDaemonLine(join(repoRoot, DAEMON_LINE_REL));
+  if (!line) {
+    throw new Error(
+      `讀不出 daemon 的版本線：${join(repoRoot, DAEMON_LINE_REL)}\n` +
+      `     ⇒ 那個檔是「哪一段 changelog 屬於桌面小幫手」的唯一判準（內容例：0.18）。\n` +
+      `       沒有它，出貨線分不出 daemon 的 \`0.18.x\` 與雲端引擎的 \`1.4.x\`\n` +
+      `       ——而分不出來的下場是安靜拿到別條線的版號（arcrun-rag#88）。`);
+  }
+  return daemonReleasedRe(line);
+}
 
 /**
  * 從說明文件取某一版的「一句話摘要」。**先問 daemon 的，再問雲端的。**
@@ -63,7 +115,11 @@ export function notesFromChangelog(repoRoot, version) {
 export function changelogRelFor(repoRoot, version) {
   const daemonPath = join(repoRoot, DAEMON_CHANGELOG_REL);
   if (existsSync(daemonPath) && notesForVersion(version, daemonPath)) return DAEMON_CHANGELOG_REL;
-  if (/^v/.test(String(version))) return DAEMON_CHANGELOG_REL;  // 帶 v ＝ daemon 線
+  // 🔴 判別依據是**版本線**，不是「有沒有 v」（#88 第二輪）。
+  //   舊版寫 `if (/^v/.test(version))`，那在裸號時代會把 daemon 的 `0.18.31`
+  //   指去雲端的 CHANGELOG.md——**叫人去錯的檔案補說明**，比不指還糟。
+  const line = readDaemonLine(join(repoRoot, DAEMON_LINE_REL));
+  if (line && lineOfVersion(version) === line) return DAEMON_CHANGELOG_REL;
   return CHANGELOG_REL;
 }
 

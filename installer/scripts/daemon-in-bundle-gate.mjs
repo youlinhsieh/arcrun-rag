@@ -66,8 +66,18 @@ export const GATE_LOG_REL = join('installer', 'daemon-in-bundle-gate-log.md');
  */
 export const REQUIRED_PLATFORMS = ['mac', 'win'];
 
-/** 只認「已發佈」段落，忽略「## 下一版（未發佈）」草稿——與 daemon-freshness／daemon-version.py 同一個判斷式。 */
-export const RELEASED_RE = /^## (v\d+\.\d+\.\d+)（/m;
+// 只認「已發佈」段落，忽略「## 下一版（未發佈）」草稿。
+//
+// 🔴 2026-08-18 第一輪（#88）：本來這裡自己有一份 regex 拷貝，註解寫著「與 daemon-freshness／
+//    daemon-version.py 同一個判斷式」——知道該一致卻靠人記得改四個地方。收成了同一份。
+//
+// 🔴 2026-08-18 第二輪（#88，就是本次）：那份共用的判斷式**釘死 `v` 前綴**，
+//    而那個 `v` 兼任「哪一條版本線」的判別器。leo 要的裸號一落到產生端，它就會
+//    **安靜地**略過新版、比對到更舊的一版 ⇒ manifest 說謊而全站亮綠。
+//    ⇒ 判別的承載換成 `collector/DAEMON_LINE` 宣告的那條線（見 daemon-notes.mjs）。
+//    ⇒ 判斷式因此要**先讀那個檔**才生得出來，不再是一個常數 ⇒ 這裡改成 re-export 產生器。
+export { daemonReleasedRe, readDaemonLine, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
+import { daemonReleasedRe, readDaemonLine, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. 取事實 —— 這一段碰磁碟，而且**只碰磁碟**（不碰網路、不跑任何指令）
@@ -87,12 +97,26 @@ export const RELEASED_RE = /^## (v\d+\.\d+\.\d+)（/m;
  * @param {string[]} [o.requiredPlatforms]
  */
 export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatforms = REQUIRED_PLATFORMS }) {
+  // 🔴 版本線是**宣告出來的事實**，所以它自己就是一項要量的事實（#88 第二輪）。
+  //   量不到就記 null——判不判得下去交給 judge()，這裡不代它決定，也不給預設值。
+  const daemonLinePath = join(repoRoot, DAEMON_LINE_REL);
+  const daemonLine = readDaemonLine(daemonLinePath);
+
   const changelogPath = join(repoRoot, changelogRel);
   const changelogFound = existsSync(changelogPath);
   let sourceVersion = null;
+  let changelogTopAny = null;
   if (changelogFound) {
-    const m = readFileSync(changelogPath, 'utf8').match(RELEASED_RE);
-    sourceVersion = m ? m[1] : null;
+    const text = readFileSync(changelogPath, 'utf8');
+    // ① 判斷用：只認**這條線**的版本段（裸號與舊的帶 v 都認）。
+    if (daemonLine) {
+      const m = text.match(daemonReleasedRe(daemonLine));
+      sourceVersion = m ? m[1] : null;
+    }
+    // ② 診斷用：這份檔案最上面實際寫的是哪一版。**永遠不參與判斷**——
+    //    它存在只為了讓「① 沒中」時的訊息說得出「你指到的是 1.4.47，那是雲端那條線」。
+    const any = text.match(ANY_RELEASED_RE);
+    changelogTopAny = any ? any[1] : null;
   }
 
   const manifestPath = join(bundlesDir, 'manifest.json');
@@ -127,8 +151,9 @@ export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatf
   }
 
   return {
+    daemonLineRel: DAEMON_LINE_REL, daemonLinePath, daemonLine,
     changelogRel, changelogPath, changelogFound,
-    sourceVersion,
+    sourceVersion, changelogTopAny,
     manifestPath, manifestFound, manifestReadError,
     bundleVersion: (daemon && daemon.version) || null,
     bundleDeclaresDaemon: !!daemon,
@@ -153,6 +178,22 @@ export function judge(facts) {
     return ok;
   };
 
+  // ── ⓪ daemon 宣告了自己走哪一條版本線嗎（#88 第二輪新增）───────────────
+  //    這一項排在最前面，因為**沒有線就沒有判別器**：底下「哪一段 changelog 是
+  //    daemon 的」全靠它。以前這件事由「版本號有沒有 `v` 前綴」暗中兼任，
+  //    於是 leo 要的裸號一落到產生端，判別就無聲失效（往下比對到更舊的一版）。
+  //    ⇒ 判別依據必須是**看得見、量得到、宣告出來**的東西，而且它缺席時要斷。
+  if (!add('daemon-line-declared', 'daemon 宣告了自己的版本線（DAEMON_LINE）',
+    !!facts.daemonLine, facts.daemonLine || `(讀不出 ${facts.daemonLineRel})`,
+    `讀不出 daemon 的版本線：${facts.daemonLinePath}\n` +
+    `         ⇒ 那個檔（內容例：\`0.18\`）是「哪一段 changelog 屬於桌面小幫手」的唯一判準。\n` +
+    `           沒有它，出貨線分不出 daemon 的 \`0.18.x\` 與雲端引擎的 \`1.4.x\`。\n` +
+    `         🔴 以前這件事是靠「版本號有沒有 \`v\`」暗中兼任的——那正是 arcrun-rag#88\n` +
+    `           那個「打包出新版、manifest 卻宣稱舊版」的靜默病根。**判別依據不能是外觀。**\n` +
+    `         → 補上 ${facts.daemonLineRel}，內容是 MAJOR.MINOR（daemon-version.py 也讀它）。`)) {
+    return verdict(checks, facts);
+  }
+
   // ── ① 源碼那棵樹的說明檔，在出貨線以為的位置嗎 ─────────────────────────
   //    不在 ＝ 出貨線與 daemon 源碼樹對「東西在哪」有分歧。這是 D95 那一類搬家
   //    造成的斷點，而它**以前的症狀是安靜跳過**，所以這裡話要講死。
@@ -168,14 +209,25 @@ export function judge(facts) {
   }
 
   // ── ② 說明檔裡有一個「已發佈」的版本 ───────────────────────────────────
-  if (!add('source-version', '說明檔宣告了一個已發佈的 daemon 版本',
-    !!facts.sourceVersion, facts.sourceVersion || '(找不到 `## vX.Y.Z（…）` 段)',
-    `\`${facts.changelogRel}\` 裡沒有任何**已發佈**的 daemon 版本段（\`## vX.Y.Z（日期）\`）。\n` +
+  const wrongLine = !facts.sourceVersion && facts.changelogTopAny;
+  if (!add('source-version', `說明檔宣告了一個 ${facts.daemonLine} 這條線上的已發佈版本`,
+    !!facts.sourceVersion,
+    facts.sourceVersion || (wrongLine
+      ? `最上面那一段是 ${facts.changelogTopAny}，不在 ${facts.daemonLine} 這條線上`
+      : `(找不到 \`## ${facts.daemonLine}.Z（…）\` 段)`),
+    `\`${facts.changelogRel}\` 裡沒有任何屬於 **${facts.daemonLine}** 這條線的已發佈版本段。\n` +
+    (wrongLine
+      ? `         量到的事實：這份檔案最上面的版本段是 \`## ${facts.changelogTopAny}（…）\`，\n` +
+        `           而 ${facts.daemonLineRel} 宣告 daemon 走 \`${facts.daemonLine}\` 這條線 ⇒ **兩者不是同一條線**。\n` +
+        `         → 常見成因①：路徑指錯了。雲端引擎那條（\`1.4.x\`）住在 repo 根的 \`CHANGELOG.md\`，\n` +
+        `           daemon 那條住在 \`collector/CHANGELOG.md\`。\n` +
+        `         → 常見成因②：${facts.daemonLineRel} 換線了（例 0.18 → 0.19）但還沒戳出新線的第一版\n` +
+        `           ⇒ 跑 \`collector/cmd/arcrun-app/daemon-version.py --stamp\`。\n`
+      : `         → 若確實還沒戳版：跑 \`collector/cmd/arcrun-app/daemon-version.py --stamp\`。\n`) +
     `         ⇒ 出貨線問不出「這次該送哪一版 daemon」，而問不出來**不等於沒事**——\n` +
     `           它等於「這次出貨不知道自己在送什麼」。\n` +
-    `         → 若確實還沒戳版：跑 \`collector/cmd/arcrun-app/daemon-version.py --stamp\`。\n` +
-    `         → 若這份檔案裝的其實是**另一條版本線**（雲端引擎 \`1.4.x\` 沒有 \`v\` 前綴），\n` +
-    `           那就是路徑指錯了——daemon 那條線住在 \`collector/CHANGELOG.md\`。`)) {
+    `         🔴 這一項認得**兩種寫法**：新的裸號 \`0.18.31\` 與既有的 \`v0.18.30\`。\n` +
+    `           （leo 2026-08-17「對外號就是三個數字」＋「既有 tag 不回頭改」⇒ 過渡期必然並存。）`)) {
     return verdict(checks, facts);
   }
   const want = facts.sourceVersion;
@@ -260,6 +312,9 @@ export function judge(facts) {
 function verdict(checks, facts) {
   return {
     ok: checks.every((c) => c.ok),
+    // 判別器本身是判決的一部分：報告要說得出「這次是拿哪條線在分辨」，
+    // 否則「版本讀錯了」這種事又會變成只能靠人回頭猜（#88 第二輪）。
+    daemonLine: facts.daemonLine,
     version: facts.sourceVersion,
     bundleVersion: facts.bundleVersion,
     checks,
@@ -305,6 +360,7 @@ export function appendGateLog(logPath, { ts, targetName, result }) {
 export function formatProblem(result) {
   const lines = [];
   lines.push('daemon 沒有進到這次的成品裡（daemon-in-bundle-gate）\n');
+  lines.push(`     daemon 宣告的版本線　　：${result.daemonLine || '(讀不出 DAEMON_LINE)'}`);
   lines.push(`     源碼樹宣告的已發佈版本：${result.version || '(問不出來)'}`);
   lines.push(`     這個 bundle 委任的版本　：${result.bundleVersion || '(無)'}`);
   lines.push('');
@@ -365,6 +421,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const result = judge(facts);
   const row = appendGateLog(join(REPO_ROOT, GATE_LOG_REL), { ts: localStamp(), targetName, result });
   console.log(`bundle　${bundlesDir}`);
+  console.log(`版本線　${DAEMON_LINE_REL} → ${result.daemonLine || '(讀不出來)'}`);
   console.log(`源碼樹　${DAEMON_CHANGELOG_REL} → ${result.version || '(問不出來)'}`);
   for (const c of result.checks) console.log(`${c.ok ? '  ✅' : '  ⛔'} ${c.name}　—　${c.fact}`);
   if (!result.ok) {

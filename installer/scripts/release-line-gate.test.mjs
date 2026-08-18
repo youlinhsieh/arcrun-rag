@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 
 import {
   linesFrom, versionFieldsIn, undeclaredVersionFields, tagMatches, bareVersion,
-  releaseTagFor, releaseTitleFor,
+  releaseTagFor, releaseTitleFor, assetsFor,
 } from './release-lines.mjs';
 import {
   slugOfRemote, checkDestination, checkCoverage, checkPublished, runGate,
@@ -262,4 +262,45 @@ test('⑪ 交付面一條版本線都讀不到 ⇒ 不准當成「全過」', ()
   // 且 lines 為空這件事要看得見（呼叫端 ship.mjs 據此中止，見該站註解）。
   assert.equal(r.lines.length, 0);
   assert.match(r.sections.map((s) => s.detail).join('\n'), /一條都沒對上|交付面版本線 0 條/);
+});
+
+// ── 每條線該掛哪些成品（inkstone/arcrun-rag#88，2026-08-18）────────────────
+// leo 指著 release 頁問「assets 都寫 source code，這兩個附檔實際是什麼？是 dmg 還是 go？」
+// ⇒ 「這一版的成品是什麼」要是每條線各自宣告的事實，不是猜的。
+
+// 真的 manifest 的形狀（取自 2026-08-18 線上那份，含兩筆歷史遺留鍵）
+const REAL_ISH = {
+  release: '1.4.46',
+  daemon: {
+    version: '0.18.29',
+    mac: { file: 'daemon/Arcrun-0.18.29.dmg' },
+    win: { file: 'daemon/Arcrun-win-0.18.29.exe' },
+    msix: { file: 'daemon/Arcrun-0.18.29.msix' },
+    // 🔴 這兩筆釘在 0.15.7，是歷史遺留，**不該被掛到新版頁面上**
+    mac_dmg: { file: 'daemon/ArcrunRAG-mac.dmg' },
+    win_msix: { file: 'daemon/ArcrunRAG-v0.15.7.msix' },
+  },
+};
+
+test('assetsFor：daemon 線掛三個當版成品，**不掛兩筆歷史遺留**', () => {
+  const [, daemon] = linesFrom(REAL_ISH, 'manifest');
+  assert.deepEqual(assetsFor(daemon, REAL_ISH), [
+    'daemon/Arcrun-0.18.29.dmg',
+    'daemon/Arcrun-win-0.18.29.exe',
+    'daemon/Arcrun-0.18.29.msix',
+  ]);
+  const got = assetsFor(daemon, REAL_ISH).join('|');
+  assert.ok(!got.includes('ArcrunRAG-mac.dmg'), '把 0.15.7 的舊檔掛上新版頁面＝點下去給錯東西');
+  assert.ok(!got.includes('ArcrunRAG-v0.15.7.msix'));
+});
+
+test('assetsFor：零件包線掛 manifest（那就是「這一版裝了什麼」的定義）', () => {
+  const [bundle] = linesFrom(REAL_ISH, 'manifest');
+  assert.deepEqual(assetsFor(bundle, REAL_ISH), ['manifest.json']);
+});
+
+test('assetsFor：daemon 區塊缺檔案欄 → 回空陣列（呼叫端該擋，不是默默發空頁）', () => {
+  const m = { release: '1.4.46', daemon: { version: '0.18.29' } };
+  const [, daemon] = linesFrom(m, 'manifest');
+  assert.deepEqual(assetsFor(daemon, m), []);
 });

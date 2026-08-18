@@ -69,6 +69,26 @@ test('🔴 舊網址還是那一頁舊的版本說明（站沒重建）⇒ 一�
   assert.ok(r.fails[0].includes(RELEASES_URL), r.fails[0]);
 });
 
+test('🔴 舊版本說明頁本身也連了 GitHub releases（08-09～dcd0132 之間的舊 build）⇒ 不准被 includes() 唬過', async () => {
+  // 這是實際的歷史內容（`git show dcd0132~1:docs-site/src/content/docs/help/changelog.md`
+  // 的開頭），不是杜撰的邊界案例：那時本頁最上方已經有一行「完整發佈紀錄在 GitHub」的
+  // 連結，但底下仍自己維護逐版內容——而那份內容可能早就停在舊版了。
+  // 2026-08-18 複驗（arcrun-rag#88）實測抓到：拿掉 meta-refresh／canonical 判斷前，
+  // 這個案例 fails.length 會是 0（假綠）。
+  const staleButLinked = `<html><body>
+    <h1>版本說明</h1>
+    <p>📦 每一版的完整發佈紀錄在這裡：<a href="${RELEASES_URL}">GitHub 版本發佈</a></p>
+    <h2>1.4.24（很舊的一版，這站根本沒重建）</h2>
+    <p>使用者現在拿到的其實是 1.4.47，這頁完全沒提到。</p>
+  </body></html>`;
+  const r = await checkDocsLive({
+    docsBase: BASE,
+    fetchImpl: fakeFetch(routes('<html>首頁</html>', staleButLinked)),
+  });
+  assert.equal(r.fails.length, 1, r.lines.join('\n'));
+  assert.ok(r.fails[0].includes(RELEASES_URL), r.fails[0]);
+});
+
 test('🔴 轉址整個掉了（404）⇒ 報出來，不當成「已經刪乾淨了所以沒事」', async () => {
   const r = await checkDocsLive({
     docsBase: BASE,

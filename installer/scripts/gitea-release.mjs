@@ -145,6 +145,67 @@ export async function deleteRelease({ repoSlug, id, token, baseUrl = GITEA_API_B
 }
 
 /**
+ * 把一個**真的檔案**掛到 release 上（inkstone/arcrun-rag#88，2026-08-18）。
+ *
+ * ── 為什麼這支是硬前置，不是加分項 ──────────────────────────────────────
+ * leo 2026-08-18 看著 release 頁問：「**assets 都寫 source code，這兩個附檔實際是什麼？
+ * 是 dmg 還是 go？**」
+ * 實查：那兩個附檔是 **Gitea／GitHub 自動產生的整包 repo 快照**（`.zip`／`.tar.gz`），
+ * 不是任何人裝得起來的東西。而 daemon 那條線斷更四版，補發佈的誘惑正是「先把頁面建出來」
+ * ⇒ **沒有這支，補發佈只會多出幾個「看起來能下載、點下去給錯東西」的頁面。**
+ * 那比沒有頁面更糟：它讓 `release-check` 那道閘變綠，而使用者拿到的是原始碼壓縮檔。
+ *
+ * ⇒ 一筆 release 要能被 leo 拿去測（規則三點七「交貨就是版本，因為這就是可測的」），
+ *   它身上就得掛著**那一版真的打出來的成品**。
+ *
+ * Gitea 的附件端點吃 multipart/form-data，欄位名固定是 `attachment`，
+ * 檔名走 query string 的 `name`（與 GitHub 那半刻意不同——那邊是 raw body + content-type，
+ * 見 github-release.mjs 的同名函式。兩邊差異來自 API 本身，不是我們選的）。
+ *
+ * @param {object} o
+ * @param {string} o.repoSlug   例 "inkstone/arcrun-rag"
+ * @param {number} o.id         release id（createRelease／releaseExists 回傳物件裡的 `id`）
+ * @param {string} o.name       附件檔名（使用者下載時看到的就是它）
+ * @param {Uint8Array|Buffer} o.data 檔案內容
+ * @param {string} o.token      寫入權杖
+ * @returns {Promise<object>} Gitea 的 attachment 物件（含 `browser_download_url`）
+ */
+export async function uploadReleaseAsset({
+  repoSlug, id, name, data, token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch,
+}) {
+  if (!token) throw new Error('缺寫入權杖——掛附件是寫入動作（D36：只碰名字，不碰真身）');
+  if (!name) throw new Error('缺附件檔名——沒有名字的附件在頁面上是一條沒人點得下去的連結');
+  const form = new FormData();
+  form.append('attachment', new Blob([data]), name);
+  const r = await fetchImpl(
+    `${baseUrl}/api/v1/repos/${repoSlug}/releases/${id}/assets?name=${encodeURIComponent(name)}`,
+    { method: 'POST', headers: { authorization: `token ${token}`, accept: 'application/json' }, body: form },
+  );
+  if (!r.ok) {
+    const errText = await r.text().catch(() => '');
+    throw new Error(`把 ${name} 掛上 release ${id} 失敗：HTTP ${r.status} ${errText.slice(0, 300)}`);
+  }
+  return r.json();
+}
+
+/**
+ * 列出一筆 release 身上**現在真的掛著什麼**（唯讀）。
+ *
+ * 用途是回頭查證，不是列表：`uploadReleaseAsset` 說它成功了不算數，
+ * 要能重新問一次「那個檔在不在、下載得回來嗎」——同 `release-check` 站的形狀。
+ * 🔴 Gitea 自動產生的原始碼快照**不會出現在這裡**（那是 release 物件上的
+ * `zipball_url`／`tarball_url`，不是 attachment）⇒ 這支回空陣列就是字面意思：
+ * **這筆 release 上沒有任何人掛過東西**，頁面上那兩個附檔全是自動快照。
+ */
+export async function listReleaseAssets(repoSlug, id, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch } = {}) {
+  const headers = { accept: 'application/json' };
+  if (token) headers.authorization = `token ${token}`;
+  const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/releases/${id}/assets`, { headers });
+  if (!r.ok) throw new Error(`列出 release ${id} 的附件失敗：HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
  * 列出一個 repo 目前的 release 數（供驗收用：「現在是 0 個」→「建完是 N 個」）。
  */
 export async function listReleases(repoSlug, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch, limit = 50 } = {}) {

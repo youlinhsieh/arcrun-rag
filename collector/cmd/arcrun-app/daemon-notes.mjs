@@ -36,9 +36,86 @@ import { join, resolve } from 'node:path';
 
 /** daemon 的 changelog＝`collector/CHANGELOG.md`。由本檔位置往上兩層推出來，不問 git、不問 repo 根。 */
 export const CHANGELOG_PATH = join(import.meta.dirname, '..', '..', 'CHANGELOG.md');
+/** daemon 宣告「我這個產品現在走哪一條版本線」的地方（例 `0.18`）。與 changelog 同一棵樹。 */
+export const DAEMON_LINE_PATH = join(import.meta.dirname, '..', '..', 'DAEMON_LINE');
 /** 畫面上一行讀得完的上限。超過就截，並改叫使用者去看說明文件。 */
 export const NOTES_MAX = 100;
 const TAIL = '（細節見說明文件）';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 版本線判別器（inkstone/arcrun-rag#88，2026-08-18 第二輪）
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * 🔴 **本節取代「用 `v` 前綴分辨版本線」的舊做法。**
+ *
+ * 舊做法的形狀：`^## (v\d+\.\d+\.\d+)（` ——「有 v ＝ daemon 那條線（`v0.18.x`）、
+ * 沒 v ＝ 雲端引擎那條線（`1.4.x`）」。它**能動**，但它把「這個字串長什麼樣」
+ * 當成「這個字串是誰的」在用，於是：
+ *
+ *   · leo 2026-08-17 定「對外號就是三個數字，不要 v」⇒ 產生端一改裸號，
+ *     那條判斷式**不報錯**，而是往下比對到更舊的 `## v0.18.29（…）`
+ *     ⇒ **打包出 0.18.30 的執行檔，manifest 卻宣稱是 v0.18.29。** 靜默、21 站全綠。
+ *   · 反過來把它放寬成 `v?` 也不行：daemon 的閘會把雲端的 `## 1.4.47（…）`
+ *     當成 daemon 版本撈走（2026-08-18 實撞，`daemon-in-bundle-gate.test.mjs` ①⑮⑯ 轉紅）。
+ *
+ * ⇒ 兩個方向都壞，是因為判別的承載選錯了。**外觀不是身分。**
+ *
+ * ── 新的承載：`collector/DAEMON_LINE` 宣告的那條線 ─────────────────────────
+ * 那個檔案本來就存在（`daemon-version.py` 靠它決定升版／換線），內容是 `MAJOR.MINOR`。
+ * 判斷式因此變成 `^## (v?0\.18\.\d+)（`——
+ *   · 它**同時**擋掉「錯的檔」（雲端 `1.4.47` 不在 `0.18` 這條線上）
+ *     與「錯的線」（DAEMON_LINE 已換成 `0.19`，卻還在拿 `0.18.x` 出貨）
+ *   · 它**不依賴外觀** ⇒ 新的裸號 `0.18.31` 與既有的 `v0.18.30` 都認得
+ *     （leo 2026-08-17：既有 tag／檔名不回頭改 ⇒ 過渡期兩種寫法必然並存）
+ *   · 它是**宣告出來的事實**，不是猜的：DAEMON_LINE 說了算，改線就改那個檔
+ */
+
+/** `DAEMON_LINE` 的合法形狀。不是 `MAJOR.MINOR` 就不是一條線，別猜。 */
+export const DAEMON_LINE_RE = /^\d+\.\d+$/;
+
+/**
+ * 讀出 daemon 宣告的版本線。**讀不到就回 null，不給預設值。**
+ * 給預設值等於「猜一條線」，而猜錯的下場正是本節要治的病（靜默拿到別條線的版號）。
+ * @returns {string|null} 例 `'0.18'`
+ */
+export function readDaemonLine(linePath = DAEMON_LINE_PATH) {
+  if (!existsSync(linePath)) return null;
+  const raw = readFileSync(linePath, 'utf8').trim();
+  return DAEMON_LINE_RE.test(raw) ? raw : null;
+}
+
+/**
+ * 「這份 changelog 最上面那個**已發佈**的 daemon 版本段」的判斷式。
+ *
+ * @param {string} line `DAEMON_LINE` 的內容（例 `'0.18'`）。**必填**——沒有線就沒有判別器，
+ *   呼叫端該把「問不出線」當成斷，不是當成「用預設值繼續」。
+ * @returns {RegExp} 第 1 組＝版本號**原樣**（`v0.18.30` 或 `0.18.31`，怎麼寫就怎麼回）
+ */
+export function daemonReleasedRe(line) {
+  if (!DAEMON_LINE_RE.test(String(line ?? ''))) {
+    throw new Error(
+      `daemonReleasedRe 需要一條版本線（MAJOR.MINOR，例 0.18），拿到的是 ${JSON.stringify(line)}。\n` +
+      `  ⇒ 版本線的真相源是 collector/DAEMON_LINE。讀不到它就沒有判別器，\n` +
+      `    此時該讓呼叫端「斷得很大聲」，不是塞一個預設值繼續往下走。`);
+  }
+  return new RegExp(`^## (v?${line.replace(/\./g, '\\.')}\\.\\d+)（`, 'm');
+}
+
+/**
+ * 「任何長得像版本段的標題」——🔴 **只給錯誤訊息用，永遠不准拿來做判斷。**
+ *
+ * 存在的理由：`daemonReleasedRe` 不中的時候，光說「找不到」幫不上忙。
+ * 拿這支撈出檔案最上面那一段實際寫的是什麼（例 `1.4.47`），訊息就能說
+ * 「你指到的是雲端那條線」而不是含糊的「沒有東西」。
+ * **判斷與診斷分開**，正是舊的 `v` 判別器把兩件事混在一起才會出事的地方。
+ */
+export const ANY_RELEASED_RE = /^## (v?\d+\.\d+\.\d+)（/m;
+
+/** 版本號屬於哪一條線（`v0.18.30` → `0.18`）。回 null＝這根本不是版本號。 */
+export function lineOfVersion(version) {
+  const m = /^v?(\d+\.\d+)\.\d+$/.exec(String(version ?? '').trim());
+  return m ? m[1] : null;
+}
 
 /** 把 markdown 行內語法剝成純文字——畫面不渲染 markdown，留著就是雜訊。 */
 export function stripMarkdown(s) {

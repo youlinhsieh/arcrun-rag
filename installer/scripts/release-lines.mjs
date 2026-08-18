@@ -58,6 +58,10 @@ export const LINES = [
     label: '零件包（使用者的 Cloudflare 帳號上跑的那些 worker）',
     latestPath: ['release'],
     manifestPath: ['release'],
+    // 零件包沒有「一個檔」——它是幾十顆 worker。**manifest 就是那一版的定義**
+    // （安裝器照它逐顆部署），所以掛它：點下去拿到的是「這一版到底裝了什麼」，
+    // 不是一包誰也用不到的原始碼快照。
+    assetKeys: null,
   },
   {
     id: 'daemon',
@@ -65,8 +69,50 @@ export const LINES = [
     label: '桌面小幫手（使用者電腦上那支 App，按「檢查更新」拿到的就是它）',
     latestPath: ['daemon', 'version'],
     manifestPath: ['daemon', 'version'],
+    // 🔴 明列三個鍵，**不掃整個 daemon 區塊**：manifest.daemon 底下還躺著
+    // `mac_dmg`（ArcrunRAG-mac.dmg）與 `win_msix`（ArcrunRAG-v0.15.7.msix）兩筆歷史遺留，
+    // 它們釘在 0.15.7，跟這一版無關。照「有 file 欄就掛」會把兩個舊檔掛到新版頁面上
+    // ——那正是本輪要治的病（「看起來能下載、點下去給錯東西」）的另一種長法。
+    // 加平台就在這裡加一個鍵，跟 REPO_SHORT_CODES 同一種明列哲學。
+    assetKeys: ['mac', 'win', 'msix'],
   },
 ];
+
+/**
+ * 這條版本線這一趟**該掛哪些檔**（路徑相對於 bundle 工作區）。
+ *
+ * ── 為什麼這件事要宣告在版本線上 ────────────────────────────────────────
+ * leo 2026-08-18 指著 release 頁問：「**assets 都寫 source code，這兩個附檔實際是什麼？
+ * 是 dmg 還是 go？**」——那兩個是 Gitea／GitHub 自動產生的整包 repo 快照。
+ * ⇒ 「這一版的成品是什麼」必須是**每條線各自宣告的事實**，
+ *   否則補發佈只會補出一頁一頁點下去給錯東西的版本頁。
+ *
+ * 回傳空陣列＝這份 manifest 裡這條線沒有可掛的成品 ⇒ 呼叫端該擋，不該默默發一個空頁。
+ * @returns {string[]} 例 ['daemon/Arcrun-0.18.29.dmg', 'daemon/Arcrun-win-0.18.29.exe']
+ */
+export function assetsFor(line, manifest, { manifestFileName = 'manifest.json' } = {}) {
+  const decl = LINES.find((l) => l.id === line.id);
+  if (!decl) return [];
+  if (!decl.assetKeys) return [manifestFileName];
+  const block = at2(manifest, decl.manifestPath.slice(0, -1));
+  if (!block) return [];
+  const out = [];
+  for (const k of decl.assetKeys) {
+    const f = block[k] && typeof block[k].file === 'string' ? block[k].file : null;
+    if (f) out.push(f);
+  }
+  return out;
+}
+
+/** 同 `at`，但回物件（`at` 只回字串——它是給版本號用的）。 */
+function at2(obj, path) {
+  let cur = obj;
+  for (const k of path) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = cur[k];
+  }
+  return cur && typeof cur === 'object' ? cur : undefined;
+}
 
 /** 依路徑取值，中途缺任何一層就回 undefined（不丟例外——「這個 payload 沒有這條線」是合法狀態）。 */
 export function at(obj, path) {

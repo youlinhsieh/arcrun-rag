@@ -29,6 +29,15 @@
  * ⚠️ 這比舊斷言弱：舊的能抓到「內容停在上一版」，新的只抓得到「站不是這份原始碼建的」。
  *    這是頁面刪除的代價，不是疏忽——被拿掉的那件事已由 `release-record` 承接。
  *
+ * 🔴 2026-08-18（arcrun-rag#88 複驗①）：上面那句「只抓得到站不是這份原始碼建的」
+ *    當時被高估了——第一版拿 `body.includes(RELEASES_URL)` 判「有指過去」，
+ *    但「每一版的完整發佈紀錄在這裡：GitHub 版本發佈」這行連結，早在 08-09（本頁還
+ *    自己維護版本內容的年代）就已經長在頁面最上方，一路留到 dcd0132 才整頁換成轉址。
+ *    ⇒ 任何一顆卡在 08-09～dcd0132 之間舊 build 的 worker，內文一樣含這串網址，
+ *    `includes()` 一樣判「有指過去」——**假綠**，抓不到「這站沒重建、還是舊版」。
+ *    已改成只認轉址頁的具名產物（`<meta refresh>` / `<link canonical>`），
+ *    見下方 `checkDocsLive()` 內的註解與 `verify-docs.test.mjs` 對應案例。
+ *
  * ── 為什麼是獨立模組 ──────────────────────────────────────────────────────
  * 與 `verify-download.mjs` 同理：ship.mjs 是一支會 push、會 deploy 的管線，
  * 沒辦法拿它來演練「文件站是舊的，閘會不會抓到」。判斷邏輯抽成純函式＋可注入 fetch，
@@ -82,9 +91,30 @@ export async function checkDocsLive({ docsBase, fetchImpl = fetch }) {
   // 的 content、`<link rel=canonical>` 的 href 與 `<a href>` 裡——那些都是屬性。
   // （舊版這裡先剝成純文字，是因為當時找的是**裸版號**，`id="v0.18.25"` 會誤判成
   //   「頁面寫了這一版」。現在找的是一整條網址，出現在屬性裡就是真的有指過去。）
+  //
+  // 🔴 2026-08-18（arcrun-rag#88 複驗①，實測抓到的假綠）：原本這裡是
+  //   `body.includes(RELEASES_URL)`——只要頁面**任何地方**出現這串網址就算數。
+  //   問題是「每一版的完整發佈紀錄在這裡：GitHub 版本發佈」這行連結，早在
+  //   2026-08-09 就長在**舊版**（尚未刪除、仍自己維護版本內容）的 changelog 頁最上方，
+  //   一路留到 dcd0132 才被整頁換成轉址。⇒ 任何一顆卡在 08-09～dcd0132 之間舊 build
+  //   的 worker（例如這次 rsync／deploy 沒跑，線上還是昨天的頁），內文一樣含這串網址，
+  //   `includes()` 一樣判定「有指過去」——**假綠**：這站明明沒有換成轉址頁、版本內容
+  //   停在舊的，這道閘卻是綠的。
+  //   實測見 `verify-docs.test.mjs`「🔴 舊版本說明頁本身也連了 GitHub releases」。
+  //   修法：不再認「內文含這串網址」，只認**轉址頁的兩個具名產物**——
+  //   `<meta http-equiv=refresh content="...url=RELEASES_URL">` 或
+  //   `<link rel=canonical href="RELEASES_URL">`（HTTP 3xx 的 Location 已經另外比對）。
+  //   這兩個屬性只有 Astro 真的把這頁編譯成外部轉址時才會出現，舊版有版本內容的頁面
+  //   不會有——用 `npm run build` 的實際產物核對過（見上）。
   const location = page.headers?.get?.('location') || '';
   const body = page.status >= 200 && page.status < 300 ? await page.text().catch(() => '') : '';
-  const pointsToReleases = location.startsWith(RELEASES_URL) || String(body).includes(RELEASES_URL);
+  const metaRefreshMatch = String(body).match(/<meta[^>]*http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"'>]+)["']/i);
+  const canonicalMatch = String(body).match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i);
+  const metaRefreshTo = metaRefreshMatch ? metaRefreshMatch[1] : '';
+  const canonicalHref = canonicalMatch ? canonicalMatch[1] : '';
+  const pointsToReleases = location.startsWith(RELEASES_URL)
+    || metaRefreshTo.startsWith(RELEASES_URL)
+    || canonicalHref.startsWith(RELEASES_URL);
 
   lines.push(`舊版本說明網址 ${url} → HTTP ${page.status}`
     + (location ? `｜Location ${location}` : '')

@@ -32,10 +32,11 @@ import { createHash } from 'node:crypto';
 
 import {
   collectFacts, judge, appendGateLog, localStamp, formatProblem,
-  requireDaemonInBundle, REQUIRED_PLATFORMS, RELEASED_RE,
+  requireDaemonInBundle, REQUIRED_PLATFORMS, daemonReleasedRe,
 } from './daemon-in-bundle-gate.mjs';
 
 const CHANGELOG_REL = 'collector/CHANGELOG.md';
+const DAEMON_LINE_REL = 'collector/DAEMON_LINE';
 
 /** 真的一份 daemon changelog（格式與 collector/CHANGELOG.md 一致）。 */
 const CHANGELOG = [
@@ -64,14 +65,17 @@ const CLOUD_CHANGELOG = [
  * @param {object|null} o.daemon          manifest.daemon 的內容；null＝manifest 沒有 daemon
  * @param {boolean} [o.manifest=true]     要不要建 manifest.json
  * @param {object} [o.files]              { 檔名: 內容字串 } —— 真的寫進 bundle/daemon/
+ * @param {string|null} [o.line='0.18']    寫進 collector/DAEMON_LINE 的版本線；null＝不建這個檔
  */
-function scene({ changelog = CHANGELOG, daemon, manifest = true, files = {} }) {
+function scene({ changelog = CHANGELOG, daemon, manifest = true, files = {}, line = '0.18' }) {
   const root = mkdtempSync(join(tmpdir(), 'dgate-'));
   const repo = join(root, 'repo');
   const bundles = join(root, 'bundles');
   mkdirSync(join(repo, 'collector'), { recursive: true });
   mkdirSync(join(bundles, 'daemon'), { recursive: true });
   if (changelog !== null) writeFileSync(join(repo, CHANGELOG_REL), changelog);
+  // 🔴 判別器的真相源（#88 第二輪）：「哪一段 changelog 是 daemon 的」靠它，不靠有沒有 `v`。
+  if (line !== null) writeFileSync(join(repo, DAEMON_LINE_REL), `${line}\n`);
   for (const [name, content] of Object.entries(files)) writeFileSync(join(bundles, 'daemon', name), content);
   if (manifest) writeFileSync(join(bundles, 'manifest.json'), JSON.stringify({ release: '1.4.47', daemon }, null, 1));
   return { root, repo, bundles, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -261,10 +265,114 @@ test('⑭ changelog 有「下一版（未發佈）」草稿 → 不影響判定�
   } finally { s.cleanup(); }
 });
 
-test('⑮ 判斷式與 daemon-version.py／daemon-freshness 同一個（只認 `## vX.Y.Z（`）', () => {
-  assert.equal('## v0.18.29（2026-08-16）'.match(RELEASED_RE)[1], 'v0.18.29');
-  assert.equal('## 1.4.47（2026-08-15）'.match(RELEASED_RE), null);      // 雲端那條線不會被撈到
-  assert.equal('## 下一版（未發佈）'.match(RELEASED_RE), null);           // 草稿不算
+test('⑮ 判斷式由 DAEMON_LINE 產生，而不是「有沒有 v」（#88 第二輪換掉的那個承載）', () => {
+  const re = daemonReleasedRe('0.18');
+  assert.equal('## v0.18.29（2026-08-16）'.match(re)[1], 'v0.18.29');   // 舊寫法照樣認得
+  assert.equal('## 0.18.31（2026-08-19）'.match(re)[1], '0.18.31');     // 新的裸號也認得
+  assert.equal('## 1.4.47（2026-08-15）'.match(re), null);              // 雲端那條線撈不到
+  assert.equal('## 下一版（未發佈）'.match(re), null);                    // 草稿不算
+  assert.equal('## v0.18.29（2026-08-16）'.match(daemonReleasedRe('0.19')), null);  // 換線後舊線不算
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 故意製造「版本線判別會出錯」的情境（inkstone/arcrun-rag#88 驗收條件 1）
+//
+// 上一輪把 `v` 拿掉之後，錯誤之所以能穿過 21 個站，就是因為**沒有這一組測試**。
+// 所以這裡每一支都做兩件事：
+//   ① 把錯誤真的製造出來，證明這道閘會**擋**（而不是安靜讀到別的東西）
+//   ② 附一行**反向對照**：同一份輸入交給舊做法會怎樣
+// 沒有②的話，這些就只是把新實作抄一遍的回音（wiki：「測試複製了實作邏輯就不再是閘」）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 舊的判別式（釘死 `v`）。只在測試裡出現，用來量「新的到底強在哪」。 */
+const OLD_STRICT = /^## (v\d+\.\d+\.\d+)（/m;
+
+/** 產生端改吐裸號之後的 changelog：最上面是裸的 0.18.31，底下還躺著帶 v 的舊版。 */
+const BARE_CHANGELOG = [
+  '# 版本與更新', '',
+  '## 0.18.31（2026-08-19）', '', '- **新的那一版**：說明。', '',
+  '## v0.18.30（2026-08-18）', '', '- **帶 v 的舊版**：不回頭改。', '',
+].join('\n');
+
+test('⑯ 🔴 產生端吐裸號：閘讀到的是**最新那一版**，不是往下比對到更舊的一版', () => {
+  const BM = 'MAC-0.18.31', BW = 'WIN-0.18.31';
+  const s = scene({
+    changelog: BARE_CHANGELOG,
+    daemon: {
+      version: '0.18.31', built: '20260819-1000', notes: '一句話',
+      mac: { file: 'daemon/Arcrun-0.18.31.dmg', sha256: sha(BM) },
+      win: { file: 'daemon/Arcrun-win-0.18.31.exe', sha256: sha(BW) },
+    },
+    files: { 'Arcrun-0.18.31.dmg': BM, 'Arcrun-win-0.18.31.exe': BW },
+  });
+  try {
+    const r = run(s);
+    assert.equal(r.version, '0.18.31', '閘要讀到源碼樹真正宣告的那一版');
+    assert.equal(r.ok, true, formatProblem(r));
+
+    // ── 反向對照：舊做法在同一份 changelog 上做了什麼 ──
+    assert.equal(BARE_CHANGELOG.match(OLD_STRICT)[1], 'v0.18.30',
+      '舊判別式不報錯，而是靜默讀到**更舊的一版** ⇒ 打包 0.18.31、manifest 宣稱 v0.18.30');
+  } finally { s.cleanup(); }
+});
+
+test('⑰ 🔴 判別出錯的實況重演：源碼樹是裸的 0.18.31，bundle 還停在 v0.18.30 → 擋', () => {
+  // 這就是上一輪「靜默」的完整形狀：舊判別式會讀到 v0.18.30，於是與 bundle 相符 ⇒ 放行。
+  // 新判別式讀到 0.18.31 ⇒ 與 bundle 不符 ⇒ 擋。**同一份輸入，兩種結局。**
+  const OLD = 'MAC-v0.18.30';
+  const s = scene({
+    changelog: BARE_CHANGELOG,
+    daemon: {
+      version: 'v0.18.30', built: '20260818-1000', notes: '一句話',
+      mac: { file: 'daemon/Arcrun-v0.18.30.dmg', sha256: sha(OLD) },
+      win: { file: 'daemon/Arcrun-win-v0.18.30.exe', sha256: sha(OLD) },
+    },
+    files: { 'Arcrun-v0.18.30.dmg': OLD, 'Arcrun-win-v0.18.30.exe': OLD },
+  });
+  try {
+    const r = run(s);
+    blockedBy(r, 'version-match');
+    assert.match(formatProblem(r), /0\.18\.31/);
+
+    // 反向對照：舊判別式在這裡會判「相符」⇒ 這一站當年就是這樣安靜放行的。
+    assert.equal(BARE_CHANGELOG.match(OLD_STRICT)[1], 'v0.18.30');
+  } finally { s.cleanup(); }
+});
+
+test('⑱ 🔴 版本線換了卻沒戳新線的第一版（DAEMON_LINE=0.19，changelog 還是 0.18.x）→ 擋', () => {
+  const s = scene({ ...GOOD(), line: '0.19' });
+  try {
+    const r = run(s);
+    blockedBy(r, 'source-version');
+    // 訊息要講得出「量到什麼」，不是含糊的「找不到」——診斷用的 ANY_RELEASED_RE 就為這件事存在。
+    assert.match(formatProblem(r), /最上面那一段是 v0\.18\.29/);
+    assert.match(formatProblem(r), /0\.19/);
+
+    // 反向對照：舊做法只看有沒有 `v`，看不出線換了 ⇒ 照樣把 0.18 的版本當成 daemon 最新版。
+    assert.equal(CHANGELOG.match(OLD_STRICT)[1], 'v0.18.29');
+  } finally { s.cleanup(); }
+});
+
+test('⑲ 🔴 判別器本身不見（DAEMON_LINE 缺席／寫壞）→ 擋，而且擋在最前面', () => {
+  for (const line of [null, '亂寫', '0.18.3']) {
+    const s = scene({ ...GOOD(), line });
+    try {
+      const r = run(s);
+      blockedBy(r, 'daemon-line-declared');
+      assert.equal(r.checks[0].id, 'daemon-line-declared', '沒有線就沒有判別器 ⇒ 這一項要排在最前面');
+      assert.match(formatProblem(r), /判別依據不能是外觀/);
+    } finally { s.cleanup(); }
+  }
+});
+
+test('⑳ 🔴 指到雲端那份 changelog：訊息要指名量到的是 1.4.47（不是含糊的「找不到」）', () => {
+  const s = scene({ ...GOOD(), changelog: CLOUD_CHANGELOG });
+  try {
+    const r = run(s);
+    blockedBy(r, 'source-version');
+    assert.match(formatProblem(r), /最上面那一段是 1\.4\.47/);
+    assert.match(formatProblem(r), /雲端引擎那條/);
+  } finally { s.cleanup(); }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

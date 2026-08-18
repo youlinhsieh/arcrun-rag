@@ -103,7 +103,7 @@ import { syncManifest, verifyManifest } from './release.mjs';
 // CHANGELOG_REL＝雲端引擎（`1.4.x`）那條線；DAEMON_CHANGELOG_REL＝桌面版（`v0.18.x`）那條。
 // 🔴 兩條線 2026-08-18（D95 第一輪）拆開之後**不可以再混用**：daemon 的三站問的是後者，
 //   問錯那份檔案的症狀不是報錯，是「找不到已發佈版本段 ⇒ 安靜跳過」（見 daemon-in-bundle-gate.mjs 檔頭）。
-import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL } from './daemon-notes.mjs';
+import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 import { requireDaemonInBundle } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, logGithubContact } from './d20-guard.mjs';
 import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
@@ -116,10 +116,15 @@ import { resolveDaemonDist } from './daemon-dist.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
-import { releaseSectionFor, releaseExists, createRelease } from './github-release.mjs';
+import {
+  releaseSectionFor, releaseExists, createRelease,
+  uploadReleaseAsset as ghUploadAsset, listReleaseAssets as ghListAssets,
+  listReleases as ghListReleases,
+} from './github-release.mjs';
 import {
   giteaWriteCredentialsFromRemote, redactToken,
   releaseExists as giteaReleaseExists, createRelease as giteaCreateRelease, commitExists as giteaCommitExists,
+  uploadReleaseAsset as giteaUploadAsset, listReleaseAssets as giteaListAssets, listReleases as giteaListReleases,
 } from './gitea-release.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
@@ -128,7 +133,11 @@ import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedE
 import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
 // 版本印記閘（Arcrun#106 另一半）：凡烙版號的部署路徑，必須一起烙 commit。
 import { runGate as runVersionStampGate } from './version-stamp-gate.mjs';
-import { linesFrom } from './release-lines.mjs';
+import { linesFrom, assetsFor } from './release-lines.mjs';
+import {
+  formatInternalVersion, nextSequence, shortCodeFor, dateStamp,
+  mappingSection, withMappingSection,
+} from './internal-version.mjs';
 import {
   runGate as runReleaseLineGate, appendGateLog as appendReleaseLineGateLog, localStamp as releaseLineGateStamp,
   fetchPublishedTags, GATE_LOG_REL as RELEASE_LINE_GATE_LOG_REL,
@@ -829,10 +838,24 @@ const STEPS = [
       `       而安靜跳過的下場就是 arcrun-rag#88 的「斷更四版」。\n` +
       `     → 唯一真相源＝installer/scripts/daemon-notes.mjs 的 DAEMON_CHANGELOG_REL。`);
   }
-  const top = readFileSync(clPath, 'utf8').match(/^## (v\d+\.\d+\.\d+)（/m);
+  // 判斷式來自 daemon-notes.mjs（唯一一份），且**由 collector/DAEMON_LINE 產生**。
+  //
+  // 🔴 2026-08-18 第二輪（#88）：原本這裡認的是 `^## v\d+\.\d+\.\d+（`——那個 `v`
+  //   兼任版本線判別器。leo 要的裸號一落到產生端，它就**靜默**跳過新版、比對到更舊的
+  //   `## v0.18.29（`，打包出新版執行檔卻讓 manifest 宣稱是舊版——版本號說謊，21 站全綠。
+  //   現在改問「這一段在不在 DAEMON_LINE 宣告的那條線上」：裸號與舊的帶 v 都認得，
+  //   雲端那條 `1.4.x` 一樣進不來，而且 DAEMON_LINE 讀不出來時**這一站直接斷**。
+  const clText = readFileSync(clPath, 'utf8');
+  const top = clText.match(daemonReleasedReFor(REPO_ROOT));
   if (!top) {
+    const any = clText.match(ANY_RELEASED_RE);
     throw new Error(
-      `${DAEMON_CHANGELOG_REL} 裡沒有任何**已發佈**的 daemon 版本段（\`## vX.Y.Z（日期）\`）。\n` +
+      `${DAEMON_CHANGELOG_REL} 裡沒有任何屬於 daemon 版本線的已發佈版本段。\n` +
+      (any
+        ? `     量到的事實：最上面那一段是 \`## ${any[1]}（…）\`，不在 ${DAEMON_LINE_REL} 宣告的那條線上。\n` +
+          `     → 要嘛路徑指錯了（雲端引擎 \`1.4.x\` 住在 repo 根的 CHANGELOG.md），\n` +
+          `       要嘛 ${DAEMON_LINE_REL} 換線了卻還沒戳出新線的第一版。\n`
+        : '') +
       `     ⇒ 這次出貨問不出「該送哪一版 daemon」——而問不出來不等於沒事，\n` +
       `       它等於「這次出貨不知道自己在送什麼」。\n` +
       `     → 還沒戳版就跑 collector/cmd/arcrun-app/daemon-version.py --stamp。`);
@@ -912,7 +935,8 @@ const STEPS = [
 // 它從來沒有問過「這是不是我現在能打出來的最新版」。
 //
 // ⇒ 這裡補上唯一真正缺的比對：changelog（daemon-version.py 的單一真相源，見該檔
-// 檔頭）最上面那個 `## vX.Y.Z（…）` 版本 vs 這個 bundle 現在委任的 manifest.daemon.version。
+// 檔頭）最上面那個屬於 **DAEMON_LINE 宣告那條線**的版本段（`## 0.18.31（…）`，
+// 舊的 `## v0.18.30（…）` 同樣認得）vs 這個 bundle 現在委任的 manifest.daemon.version。
 // 不符＝新打的 daemon 沒被送進來，出貨中止，不准印「✅ 出貨完成」。
 //
 // 為什麼不用 daemon-version.py（不 --stamp）當比對源：那支在 changelog 有「下一版
@@ -971,22 +995,38 @@ const STEPS = [
 // 觸發；本站直接比對**源碼本身**，不管 bundle 現況如何，任何一次預演都能看到「源碼動了」。
 //
 // mutates:false ⇒ 預演（不加 --confirm）也會跑，且跑在任何會送出東西的動作之前。
-{ id: 'daemon-source-check', title: '核對 changelog 宣告的 daemon 版本＝collector/ 源碼現況（不是瞎推）', mutates: false, async run() {
+//
+// ── 🔴 2026-08-18 改判法（inkstone/arcrun-rag#88）：從「查 git 歷史」改成「量指紋」──
+//
+// 舊判法是 `git log <宣告那顆>..HEAD -- collector` 非空就擋。D95 第一輪把
+// `CHANGELOG.md` 搬進 `collector/`（為了讓 collector/ 自足）之後，**「宣告新版本」
+// 這個動作本身就是在改 `collector/`** ⇒ 一顆只改宣告的 commit 也被算成「源碼又動過」
+// ⇒ **這一站擋自己**，push／deploy／verify／release-record 四站一次都沒跑過。
+// 兩件事都對，疊起來變成死結——衝突在**範圍重疊**，不在任何一方做錯。
+//
+// ⇒ 改問同一件事實：`daemon-version.py` 每次戳版都會把「當下的原始碼指紋」記進帳本。
+//   帳本裡這一版的指紋 == 現在算出來的 ⇒ 成品確實是照這份源碼打的。
+//   宣告那一步改到的檔案，戳版當下就已經算進指紋 ⇒ **結構上不可能擋自己**。
+//   判法與由來全文見 daemon-freshness.mjs 檔頭。
+{ id: 'daemon-source-check', title: '核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）', mutates: false, async run() {
   const r = requireFreshDaemonSource({
     repo: REPO_ROOT,
     // 🔴 2026-08-18（D95 第二輪）：這裡本來是 `CHANGELOG_REL`（docs-site，雲端引擎那條線）。
-    //   D95 第一輪搬家之後那份檔案裡再也沒有 `## vX.Y.Z（` ⇒ checkDaemonFreshness 回
-    //   `status:'unknown'` ⇒ 這一站雖然**會擋**（unknown 一律停，這點是對的），
-    //   但擋下來的理由是錯的（會叫人去戳一個根本不在那份檔裡的版號）。
+    //   D95 第一輪搬家之後那份檔案裡再也沒有版本段 ⇒ 這一站雖然**會擋**（unknown 一律停，
+    //   這點是對的），但擋下來的理由是錯的（會叫人去戳一個根本不在那份檔裡的版號）。
     //   訊息指錯地方比不指還糟——改讀 daemon 自己那份。
+    //   現在這個值還多一個作用：與源碼樹自己認定的路徑**對帳**，不一致就判 unknown。
     changelogRel: DAEMON_CHANGELOG_REL,
-    // selftest（不推、不部署、沒有任何人會拿到東西）才允許工作區髒；
-    // 「已經 commit 了卻沒重打包」不受這個旗標影響，一律擋（同 artifact-freshness 的規矩）。
+    // 留痕要看得出是哪個目標觸發的（InkStoneCo#48）。
+    targetName: TARGET_NAME,
+    // selftest（不推、不部署、沒有任何人會拿到東西）才允許指紋對不上仍跑完——
+    // 而且照樣把差異印出來、照樣留痕（標「明知故犯放行」）。理由見 daemon-freshness.mjs。
     allowDirty: !!T.allowDirtySource,
   });
   return { status: 'done', detail: [
-    `changelog 已發佈的 daemon 版本（${r.version}）與 collector/ 源碼現況一致 ✓` +
+    `${r.version} 的成品就是照現在這份源碼打的 ✓` +
     (r.hasDraft ? '（changelog 另有「下一版（未發佈）」草稿，尚未戳版，不影響本項判定）' : ''),
+    ...r.checks.map((c) => `✅ ${c.name}　—　${c.fact}`),
   ] };
 }},
 
@@ -1109,7 +1149,7 @@ const STEPS = [
   const line = notesFromChangelog(REPO_ROOT, m.daemon.version);
   if (!line) {
     throw new Error(
-      // 指錯地方比不指還糟：daemon 版（帶 v）要指 collector/CHANGELOG.md，雲端版才是 docs-site。
+      // 指錯地方比不指還糟：changelogRelFor 用**版本線**分（DAEMON_LINE），不是用有沒有 `v`。
       `changelog 沒有 ${m.daemon.version} 這一版（該補在 ${changelogRelFor(REPO_ROOT, m.daemon.version)}）。\n` +
       `     使用者按「檢查更新」會看不到這版改了什麼 ⇒ 先寫 changelog 再出貨。`);
   }
@@ -1758,7 +1798,8 @@ const STEPS = [
 
   // 這趟出貨送了哪幾條版本線——讀**真的要送出去的那份 bundle manifest**，不是憑 ctx 推。
   const manifestPath = join(ctx.bundlesDir, 'manifest.json');
-  const lines = linesFrom(JSON.parse(readFileSync(manifestPath, 'utf8')), 'manifest');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const lines = linesFrom(manifest, 'manifest');
   if (lines.length === 0) {
     throw new Error(
       `${manifestPath} 裡讀不到任何版本線（release／daemon.version 都沒有）。\n` +
@@ -1768,14 +1809,77 @@ const STEPS = [
   // ⇒ 查的時候兩種都查，不然同一版會被建第二筆。
   const tagCandidates = (line) => [line.tag, `v${line.tag}`];
 
+  // ── 這一版要掛哪些檔（inkstone/arcrun-rag#88，2026-08-18）────────────────────
+  // 🔴 leo 2026-08-18 指著 release 頁問：「**assets 都寫 source code，這兩個附檔實際是什麼？
+  //   是 dmg 還是 go？**」——實查是 Gitea／GitHub **自動產生的整包 repo 快照**，
+  //   不是任何人裝得起來的東西（本輪演練實測：掛之前 attachment 數是 0）。
+  //   ⇒ 沒有這一段，補發佈只會多出幾個「看起來能下載、點下去給錯東西」的頁面，
+  //     而且 release-check 那道閘會照樣變綠 ⇒ 比沒有頁面更糟。
+  const assetsOf = (line) => {
+    const rels = assetsFor(line, manifest);
+    if (rels.length === 0) {
+      throw new Error(
+        `${line.product} ${line.tag} 這條線在 manifest 裡找不到任何成品可以掛。\n` +
+        `     不發一個沒有成品的版本頁——那正是「看起來能下載、點下去給錯東西」的長法。\n` +
+        `     （宣告在 release-lines.mjs 的 assetKeys；daemon 線要 mac／win／msix 三個鍵。）`);
+    }
+    return rels.map((rel) => {
+      const abs = join(ctx.bundlesDir, rel);
+      if (!existsSync(abs)) {
+        throw new Error(
+          `manifest 說這一版有 ${rel}，但 ${ctx.bundlesDir} 裡沒有這個檔。\n` +
+          `     manifest 與磁碟對不上時**不掛半套**——寧可擋下，也不要發一個附件缺一半的版本頁。`);
+      }
+      return { rel, abs, name: rel.split('/').pop() };
+    });
+  };
+
+  // ── 內外版本號的對應（leo 2026-08-18：「對應關係記在該次發佈的 release note」）──
+  // 在此之前這張表是**總管手寫**在 note 裡的 ⇒ 會漏、會寫錯、格式不一。
+  // 序號從**該主機既有 release 的內文**算出來（不養一本會漂的帳，見 internal-version.mjs）。
+  const headShaFull = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
+  const today = dateStamp();
+  const shortCode = shortCodeFor('arcrun-rag');
+  // 同一趟出貨可能發好幾條線 ⇒ 序號要在這一趟內遞增，不能每條都算到同一個號。
+  const seqOf = (() => {
+    let n = null;
+    return (existingBodies) => {
+      if (n === null) n = nextSequence(existingBodies, shortCode, today);
+      return n++;
+    };
+  })();
+  /** 把 changelog 段落 + 機器產生的內外對應，組成最終要送上去的內文。 */
+  const bodyWithMapping = (line, changelogBody, assets, existingBodies) => withMappingSection(
+    changelogBody,
+    mappingSection({
+      product: line.product,
+      external: line.tag,                       // 對外號＝裸號（leo 2026-08-17「不要 v」）
+      internal: formatInternalVersion({
+        repoName: 'arcrun-rag', commit: headShaFull, sequence: seqOf(existingBodies),
+        // 🔴 傳成品進去不是裝飾：formatInternalVersion 收到空陣列會丟例外
+        //   ⇒ **算不出一個沒有成品的內部號**（leo：「內部每次就要出貨 bundle 的版本」）。
+        artifacts: assets.map((a) => a.name),
+      }),
+      upstream: typeof manifest.source === 'string' ? manifest.source : undefined,
+      artifacts: assets.map((a) => a.name),
+    }),
+  );
+
   // ── host=gitea（stage）：內部封測者要看的那一份 ────────────────────────────
   if (R.host === 'gitea') {
     const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
     if (!cred) throw new Error('讀不到 Gitea 寫入權杖（preflight 已經查過一次，走到這裡還沒有＝remote 在兩步之間被改動過）');
     const opts = { token: cred.token, baseUrl: R.baseUrl };
 
-    // 逐條線先算好「這條要不要建、內文是什麼」——**全部算完才動手**，
-    // 免得第一條建好、第二條才發現 changelog 缺段，留下半套狀態。
+    // 內部號的序號要從「這個 repo 上已經有的 release」算 ⇒ 先撈一次（唯讀）。
+    // 🔴 tag 與內文**都要餵**：2026-08-17 那兩筆內部號（`RAG-20260817-001/002-…`）
+    //   是總管手動建的，號碼寫在 **tag_name** 上而不是內文裡。只掃內文的話今天會從 1 重編，
+    //   撞號撞得無聲無息。判準照舊是「從看得到的事實算」，那就得把看得到的兩處都算進去。
+    const existingBodies = (await giteaListReleases(R.repoSlug, opts).catch(() => []))
+      .map((r) => `${r.tag_name || ''}\n${r.body || ''}`);
+
+    // 逐條線先算好「這條要不要建、內文是什麼、要掛哪些檔」——**全部算完才動手**，
+    // 免得第一條建好、第二條才發現 changelog 缺段或成品不在，留下半套狀態。
     const todo = [];
     for (const line of lines) {
       let existing = null;
@@ -1786,14 +1890,15 @@ const STEPS = [
         if (existing) break;
       }
       if (existing) { todo.push({ line, existing }); continue; }
-      const body = releaseSectionFor(REPO_ROOT, line.version);
-      if (!body) {
+      const changelogBody = releaseSectionFor(REPO_ROOT, line.version);
+      if (!changelogBody) {
         throw new Error(
           `說明文件裡沒有 ${line.version}（${line.product}）這一版可以當作版本發佈的內容（該補在 ${changelogRelFor(REPO_ROOT, line.version)}）。\n` +
           `     這不是「先跳過、之後再補」——少了它，封測者點進版本發佈頁看到的是空白。\n` +
           `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
       }
-      todo.push({ line, body });
+      const assets = assetsOf(line);
+      todo.push({ line, assets, body: bodyWithMapping(line, changelogBody, assets, existingBodies) });
     }
     if (todo.every((t) => t.existing)) {
       return { status: 'skip', detail: todo.map((t) => `Gitea 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
@@ -1822,7 +1927,7 @@ const STEPS = [
       detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}`);
     }
 
-    // ② 逐條線建 release（tag 裸號、標題＝產品名＋裸號）
+    // ② 逐條線建 release（tag 裸號、標題＝產品名＋裸號）＋**把這一版的成品掛上去**
     const made = [];
     for (const t of todo) {
       if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
@@ -1830,7 +1935,20 @@ const STEPS = [
         repoSlug: R.repoSlug, tag: t.line.tag, name: t.line.title, body: t.body,
         target: headSha, token: cred.token, baseUrl: R.baseUrl,
       });
-      made.push(`版本發佈｜${t.line.title}：${rel.html_url}`);
+      for (const a of t.assets) {
+        await giteaUploadAsset({ repoSlug: R.repoSlug, id: rel.id, name: a.name, data: readFileSync(a.abs), ...opts });
+      }
+      // 🔴 回頭查證，不聽上傳步驟說「我成功了」（同 release-check 站的形狀）。
+      //   掛檔失敗而頁面已經建好，是本輪最該擋的狀態：那就是 leo 看到的那種
+      //   「有版本頁、附檔卻是原始碼快照」——只是換成「附檔根本沒上去」。
+      const onPage = await giteaListAssets(R.repoSlug, rel.id, opts);
+      const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
+      if (missing.length) {
+        throw new Error(
+          `${t.line.title} 的版本頁建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
+          `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去沒東西的版本頁。`);
+      }
+      made.push(`版本發佈｜${t.line.title}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
     }
     detail.unshift(...made);
     return { status: 'done', detail };
@@ -1841,6 +1959,9 @@ const STEPS = [
 
   // 逐條線先算好再動手（理由同 gitea 那半：不留半套狀態）。
   // 查詢是**匿名唯讀**——D20 2026-08-10 簡化：讀一律放行、沒有頻率閘。
+  // tag 與內文都要餵——理由同 gitea 那半（內部號可能寫在 tag_name 上）。
+  const ghExistingBodies = (await ghListReleases(G.repoSlug).catch(() => []))
+    .map((r) => `${r.tag_name || ''}\n${r.body || ''}`);
   const todo = [];
   for (const line of lines) {
     let existing = null;
@@ -1851,14 +1972,15 @@ const STEPS = [
       if (existing) break;
     }
     if (existing) { todo.push({ line, existing }); continue; }
-    const body = releaseSectionFor(REPO_ROOT, line.version);
-    if (!body) {
+    const changelogBody = releaseSectionFor(REPO_ROOT, line.version);
+    if (!changelogBody) {
       throw new Error(
         `說明文件裡沒有 ${line.version}（${line.product}）這一版可以當作 release 內容（該補在 ${changelogRelFor(REPO_ROOT, line.version)}）。\n` +
         `     這不是「先跳過、之後再補」——少了這一步，使用者點「完整發佈紀錄」永遠是空白。\n` +
         `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
     }
-    todo.push({ line, body });
+    const assets = assetsOf(line);
+    todo.push({ line, assets, body: bodyWithMapping(line, changelogBody, assets, ghExistingBodies) });
   }
   if (todo.every((t) => t.existing)) {
     return { status: 'skip', detail: todo.map((t) => `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
@@ -1899,7 +2021,25 @@ const STEPS = [
     } catch (e) {
       console.error(`❌❌❌ release 建立成功了，但寫入 github-contact-log.md 失敗：${e.message}`);
     }
-    made.push(`release｜${t.line.title}：${rel.html_url}`);
+    // 把這一版的成品掛上去（理由與 gitea 那半一字不差：不留「點下去給錯東西」的版本頁）。
+    // D20：這是寫入 GitHub ⇒ 與建 release 同一次保險（上面 checkArmed 已過）、同樣逐筆留痕。
+    for (const a of t.assets) {
+      await ghUploadAsset({ uploadUrl: rel.upload_url, name: a.name, data: readFileSync(a.abs), token });
+      try {
+        logGithubContact(INKSTONE_ROOT, mission, `掛成品 ${a.name} → release ${t.line.tag}`);
+      } catch (e) {
+        console.error(`❌❌❌ 附件掛上去了，但寫入 github-contact-log.md 失敗：${e.message}`);
+      }
+    }
+    // 回頭查證（匿名唯讀），不聽上傳步驟說「我成功了」。
+    const onPage = await ghListAssets(G.repoSlug, rel.id);
+    const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
+    if (missing.length) {
+      throw new Error(
+        `${t.line.title} 的 release 建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
+        `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去只有原始碼快照的版本頁。`);
+    }
+    made.push(`release｜${t.line.title}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
   }
 
   return { status: 'done', detail: [...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
@@ -2158,7 +2298,9 @@ if (DELIVERY_ONLY) {
 }
 
 if (RELEASE_RECORD_ONLY) {
-  console.log(`\n✅ 發佈紀錄就位｜${TARGET_NAME} 的 ${T.releaseRecord.host} ${T.releaseRecord.repoSlug} 上有 v${ctx.release} 這一版`);
+  // 裸號（leo 2026-08-17「不要 v」）——這行印的是**出貨線自己對 leo 的回報**，
+  // 帶著 v 就是在他的驗收介面上重新製造那個他剛要求拿掉的東西。
+  console.log(`\n✅ 發佈紀錄就位｜${TARGET_NAME} 的 ${T.releaseRecord.host} ${T.releaseRecord.repoSlug} 上有 ${ctx.release} 這一版`);
   console.log(`   （只留紀錄，沒有出貨、沒有建 bundle、沒有部署任何東西）`);
   process.exit(0);
 }

@@ -122,3 +122,63 @@ export async function createRelease({ repoSlug, tag, name, body, targetCommitish
   }
   return r.json();
 }
+
+/**
+ * 把一個**真的檔案**掛到 release 上（inkstone/arcrun-rag#88，2026-08-18）。
+ * 理由與 gitea-release.mjs 的同名函式一字不差（leo：「assets 都寫 source code，
+ * 這兩個附檔實際是什麼？是 dmg 還是 go？」——那兩個是自動產生的原始碼快照）。
+ *
+ * 🔴 **兩邊 API 的形狀不同，這不是我們選的**：
+ *   · Gitea  → multipart/form-data，欄位名 `attachment`
+ *   · GitHub → **raw body ＋ content-type**，而且要打 `uploads.github.com`（不是 api.）
+ *   把兩邊硬寫成同一種形狀只會多一層轉接，兩支各自照自己 API 的規矩走。
+ *
+ * ⚠️ D20：這是**寫入 GitHub**，呼叫端必須自己先過 `checkArmed()` 並留痕，
+ *   與 `createRelease`／push 完全同一套規矩（本函式一如既往不做保險判斷）。
+ *
+ * @param {string} o.uploadUrl createRelease 回傳的 `upload_url`（含 `{?name,label}` 樣板，會被剝掉）
+ */
+export async function uploadReleaseAsset({ uploadUrl, name, data, token, contentType = 'application/octet-stream', fetchImpl = fetch }) {
+  if (!token) throw new Error('缺寫入權杖——掛附件是寫入動作（D36：只碰名字，不碰真身）');
+  if (!name) throw new Error('缺附件檔名——沒有名字的附件在頁面上是一條沒人點得下去的連結');
+  const base = String(uploadUrl || '').replace(/\{[^}]*\}$/, '');
+  if (!base) throw new Error('缺 upload_url——它來自 createRelease 的回傳，不要自己拼網址');
+  const r = await fetchImpl(`${base}?name=${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/vnd.github+json',
+      'user-agent': 'arcrun-rag-ship',
+      'content-type': contentType,
+    },
+    body: data,
+  });
+  if (!r.ok) {
+    const errText = await r.text().catch(() => '');
+    throw new Error(`把 ${name} 掛上 release 失敗：HTTP ${r.status} ${errText.slice(0, 300)}`);
+  }
+  return r.json();
+}
+
+/**
+ * 列出這個 repo 現有的 release（**匿名唯讀**，D20 2026-08-10 簡化後讀一律放行、不計次）。
+ * 用途是算「今天已經出到第幾版」——內部號的序號從**既有 release 的內文**算，
+ * 不自己養一本會漂的帳（理由見 internal-version.mjs 的 nextSequence）。
+ */
+export async function listReleases(repoSlug, { fetchImpl = fetch, limit = 50 } = {}) {
+  const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases?per_page=${limit}`,
+    { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error(`列出 ${repoSlug} 的 release 失敗：HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * 列出一筆 release 身上現在真的掛著什麼（**匿名唯讀**，公開 repo 不需 token）。
+ * 同 gitea 那半：用來回頭查證，不聽上傳步驟說「我成功了」。
+ */
+export async function listReleaseAssets(repoSlug, id, { fetchImpl = fetch } = {}) {
+  const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases/${id}/assets`,
+    { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error(`列出 release ${id} 的附件失敗：HTTP ${r.status}`);
+  return r.json();
+}
