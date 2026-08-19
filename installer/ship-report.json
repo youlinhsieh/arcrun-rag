@@ -2754,8 +2754,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "Gitea 已有 1.4.49（Arcrun RAG）：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/1.4.49"
     },
     {
      "id": "release-check",
@@ -2766,7 +2766,7 @@
    ],
    "sourceCommit": "Arcrun@1246d92ce791",
    "machine": "9f06f3113188",
-   "ts": 1787047206980
+   "ts": 1787065112248
   }
  }
 }
