@@ -12,34 +12,13 @@
 // 測的是兩支 workflow 裡 code 節點的比對規則本身（做法照抄 takedown-scope.test.mjs），
 // 不打任何雲端。
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+// codeOf 已搬到 _yaml-code.mjs 共用（機器上只准有一份「怎麼從 YAML 抽 code」的知識）。
+import { codeOf } from './_yaml-code.mjs';
 
 const ingestYaml = fs.readFileSync(new URL('../rag-ingest-card.local.yaml', import.meta.url).pathname, 'utf8');
 const takedownYaml = fs.readFileSync(new URL('../rag-takedown-direct.local.yaml', import.meta.url).pathname, 'utf8');
 
-// 從 YAML 抽出某節點的 `code: |` 區塊。
-// ⚠️ 不能照抄 takedown-scope.test.mjs 那條「code: | 到下一個 input:」的正則——
-//    pick_stale 的 `input:` 寫在 `code:` **前面**，那條正則會一路吃到下一個節點去
-//    （實撞：抽出來的字串含 YAML 註解，new Function 直接 SyntaxError）。
-//    改成逐行掃：進到該節點後看到 `code: |`，就一直收 6 空格縮排（或空白）的行。
-function codeOf(yaml, node) {
-  const lines = yaml.split('\n');
-  let inNode = false, inCode = false;
-  const out = [];
-  for (const line of lines) {
-    if (/^  [A-Za-z_][A-Za-z0-9_]*:\s*$/.test(line)) {
-      if (inCode) break;
-      inNode = line.trim() === node + ':';
-      continue;
-    }
-    if (!inNode) continue;
-    if (!inCode) { if (/^    code: \|\s*$/.test(line)) inCode = true; continue; }
-    if (line.trim() === '') { out.push(''); continue; }
-    if (!line.startsWith('      ')) break;
-    out.push(line.slice(6));
-  }
-  if (!out.length) throw new Error(`抽不到 ${node} 的 code`);
-  return out.join('\n');
-}
 const pickStale = new Function('input', codeOf(ingestYaml, 'pick_stale'));
 const parseCard = new Function('input', codeOf(ingestYaml, 'parse_card'));
 const buildDeprecations = new Function('input', codeOf(takedownYaml, 'build_deprecations'));
@@ -266,13 +245,12 @@ const chatEntry = (page, path, opts = {}) => ({
   t('問答 pages_read：兩筆各自指向自己那台的原稿位置',
     pr.every((x) => typeof x.source === 'string' && x.source.indexOf('kb://RFP/same.md') === 0), JSON.stringify(pr));
 }
+// ── ⑤ 同一份檔同步到兩台、**內容一模一樣**：內容留一份、出處記多台 ──────────
+// 總管 2026-08-18 對 `inkstone/mira#6` 的裁定，判準是 leo 的原話：
+//   「知識全在總庫」        → 餵給 LLM 的內容去重是對的，留一份
+//   「告訴我原稿去哪裡找」  → 出處不能去重，所有持有該原稿的機器都要看得見
+// 這一格以前是「已知邊界」（釘住舊行為、等裁定），現在裁定下來了，翻成真正的驗收條件。
 {
-  // ⚠️ 已知邊界，**故意記在這裡**：同一頁、兩台機器、**內容一模一樣**（同步過去的副本）時，
-  // 更上游有一道「page_name + 內容」去重（assemble 的 seenKey），第二台在進到這裡之前
-  // 就被丟掉了 ⇒ pages_read 只會有一筆。
-  // 那道去重本身是對的（同樣的文字餵給 LLM 兩次只是浪費 8000 字預算），
-  // 所以正解**不是**把 machine 加進它的鍵，而是「內容留一份、出處記多台」——
-  // 那是呈現方式的取捨（總管／leo 的層級），不是我可以自己裁的，故先把現況釘成測試。
   const r = assemble({
     question: 'dup',
     sel_body: JSON.stringify({ route: 'all', libraries: [], indexes: [] }),
@@ -284,8 +262,80 @@ const chatEntry = (page, path, opts = {}) => ({
     }),
   });
   const pr = r.retrieval.pages_read.filter((x) => x.page === '同步過去的頁');
-  t('問答 pages_read（已知邊界）：內容一模一樣時上游去重只留一台——現況釘住，等總管裁',
-    pr.length === 1 && pr[0].machine === 'youlinhsieh@Leo-MBA', JSON.stringify(pr));
+  t('問答 pages_read：內容一模一樣的兩台 ⇒ 出處兩筆都在（本題的核心）',
+    pr.length === 2 && JSON.stringify(pr.map((x) => x.machine).sort())
+      === '["youlinhsieh@Leo-MBA","youlinhsieh@Leo-iMac"]', JSON.stringify(pr));
+
+  const srcs = r.sources.filter((x) => x.page === '同步過去的頁');
+  t('問答 sources：內容一模一樣的兩台 ⇒ 出處兩列（前端一列一條麵包屑）',
+    srcs.length === 2 && JSON.stringify(srcs.map((x) => x.machine).sort())
+      === '["youlinhsieh@Leo-MBA","youlinhsieh@Leo-iMac"]', JSON.stringify(srcs));
+  t('問答 sources：兩列共用同一個引用編號 n（prompt 裡只有一段 [n]，換號會讓引用對不上）',
+    srcs.length === 2 && srcs[0].n === srcs[1].n, JSON.stringify(srcs.map((x) => x.n)));
+  t('問答 sources：兩列都帶得出顯示名（畫面上是兩台，不是一台加一個「未知來源」）',
+    srcs.every((x) => typeof x.machine_label === 'string' && x.machine_label), JSON.stringify(srcs));
+
+  // 🔴 內容那一層**不准**跟著變兩份：prompt 只准出現一次，否則就是拿 8000 字預算餵重複的字。
+  // 要找的字串從 chatEntry 自己取（不要在測試裡再抄一份樣本文字，抄了就會漂）
+  const body = chatEntry('同步過去的頁', 'x').content.split('\n')[1];
+  const hits = r.prompt.split(body).length - 1;
+  t('問答 prompt：同一份內容只餵 LLM 一次（出處變多不等於內容變多）', hits === 1, '出現 ' + hits + ' 次');
+  t('問答 prompt：引用編號只生成一個（沒有多出一個指向同一段文字的 [2]）',
+    (r.prompt.match(/^\[\d+\] （出自子庫/gm) || []).length === 1,
+    JSON.stringify(r.prompt.match(/^\[\d+\] （出自子庫/gm)));
+}
+{
+  // 同一台機器上，同一頁被切成好幾個 block、其中兩塊內容剛好一模一樣：
+  // 那是**同一台**的重複片段，不是第二個出處 ⇒ 不准因為這次改動長出第二列。
+  const r = assemble({
+    question: 'dup-same-machine',
+    sel_body: JSON.stringify({ route: 'all', libraries: [], indexes: [] }),
+    pages_body: JSON.stringify({
+      entries: [
+        chatEntry('重複片段的頁', 'RFP/rep.md', { machine: 'youlinhsieh@Leo-MBA', machine_label: '教育部 Leo 的 Mac' }),
+        chatEntry('重複片段的頁', 'RFP/rep.md', { machine: 'youlinhsieh@Leo-MBA', machine_label: '教育部 Leo 的 Mac' }),
+      ],
+    }),
+  });
+  const pr = r.retrieval.pages_read.filter((x) => x.page === '重複片段的頁');
+  const srcs = r.sources.filter((x) => x.page === '重複片段的頁');
+  t('問答：同一台機器的重複內容仍然只算一個出處（沒有自我複製）',
+    pr.length === 1 && srcs.length === 1, JSON.stringify([pr, srcs]));
+}
+{
+  // 舊資料（沒有 machine 那一格）＋內容一模一樣：說不出第二個出處 ⇒ 照舊只留一份，
+  // 行為與改版前一字不差。這一格就是「不會因為新增這條路而多長出東西」的機械證據。
+  const r = assemble({
+    question: 'dup-legacy',
+    sel_body: JSON.stringify({ route: 'all', libraries: [], indexes: [] }),
+    pages_body: JSON.stringify({
+      entries: [chatEntry('舊的同步頁', 'RFP/oldsync.md'), chatEntry('舊的同步頁', 'RFP/oldsync.md')],
+    }),
+  });
+  const pr = r.retrieval.pages_read.filter((x) => x.page === '舊的同步頁');
+  const srcs = r.sources.filter((x) => x.page === '舊的同步頁');
+  t('問答：舊資料內容重複 ⇒ 仍是一筆一列（改版前後一字不差）',
+    pr.length === 1 && !('machine' in pr[0]) && srcs.length === 1 && !('machine' in srcs[0]),
+    JSON.stringify([pr, srcs]));
+}
+{
+  // 混合：一台有 machine、另一筆是舊資料（沒有那一格）。
+  // 舊資料那筆說不出是哪台 ⇒ 不生第二列（生了就是憑空造一個看起來像出處的東西）。
+  // 🔴 **兩種到達順序都測**：「先到的那一台贏」正是本票在修的病，
+  //   修它的時候不可以又引進一個新的順序相依。
+  const withMachine = chatEntry('混合頁', 'RFP/mix.md', { machine: 'youlinhsieh@Leo-MBA', machine_label: '教育部 Leo 的 Mac' });
+  const legacy = chatEntry('混合頁', 'RFP/mix.md');
+  const run = (entries) => assemble({
+    question: 'dup-mixed',
+    sel_body: JSON.stringify({ route: 'all', libraries: [], indexes: [] }),
+    pages_body: JSON.stringify({ entries }),
+  }).sources.filter((x) => x.page === '混合頁');
+  const a = run([withMachine, legacy]);
+  const b = run([legacy, withMachine]);
+  t('問答：重複的那筆沒有機器那一格 ⇒ 不憑空生第二個出處',
+    a.length === 1 && a[0].machine === 'youlinhsieh@Leo-MBA', JSON.stringify(a));
+  t('問答：舊資料先到也一樣 ⇒ 說得出機器的那筆當代表（結果與到達順序無關）',
+    JSON.stringify(a) === JSON.stringify(b), JSON.stringify([a, b]));
 }
 {
   // 舊資料（都沒有 machine）：仍然是一頁一筆，行為與改版前一字不差。
@@ -299,6 +349,68 @@ const chatEntry = (page, path, opts = {}) => ({
   const pr = r.retrieval.pages_read.filter((x) => x.page === '舊頁');
   t('問答 pages_read：舊資料仍是一頁一筆（沒有因為分組鍵而變多）',
     pr.length === 1 && !('machine' in pr[0]), JSON.stringify(pr));
+}
+
+// ── ⑥ 隨機性質測試：舉例測不到的組合，交給亂數鋪 ──────────────────────────
+// 為什麼加這一段：本票的病是「某個組合下第二台被靜默丟掉」，而**舉例測試只能蓋到想得到的組合**。
+// 兩條性質涵蓋整個需求，兩條都不依賴任何舊版程式碼：
+//   ① 出處要齊：某一頁在輸入裡出現過的每一台機器，都要在那一頁的出處裡說得出來
+//   ② 內容要省：每一個相異的（頁, 內容）只准餵給 LLM 一次
+//
+// ⚠️ 亂數用「雜湊計數器」而不是自己寫的線性同餘：
+//   · 線性同餘（rng * 1103515245 那種）在 JS 會超過 2^53 掉精度 ⇒ 序列退化、樣本沒鋪開
+//     （實撞：2000 組裡只跑出 7 種情況，看起來很綠其實幾乎沒測到東西）。
+//   · 位元位移寫法會被 arcrun-intent-guard 誤判成意圖工作流的邊（實撞，本檔會被它掃）。
+//   雜湊計數器兩個坑都沒有，而且固定種子 ⇒ 每次跑的樣本完全一樣，紅了可以重現。
+{
+  let ctr = 0;
+  const rnd = (n) => crypto.createHash('sha256').update('mira6:' + (ctr++)).digest().readUInt32BE(0) % n;
+  const MACHINES = ['youlinhsieh@Leo-MBA', 'youlinhsieh@Leo-iMac', 'youlinhsieh@Leo-NAS', null];
+  const BODIES = ['同步過去的那一份', '各自改過的那一份', '第三種內容'];
+  const PAGES = ['設計', 'notes'];
+  let badOrigins = 0, badContent = 0, sawTwoMachines = 0, rounds = 0;
+  for (let it = 0; it < 3000; it++) {
+    const entries = [];
+    const n = 2 + rnd(7);
+    for (let i = 0; i < n; i++) {
+      const p = PAGES[rnd(PAGES.length)], mk = MACHINES[rnd(MACHINES.length)];
+      entries.push({
+        page_name: p,
+        content: '# ' + p + '\n' + BODIES[rnd(BODIES.length)],
+        metadata_json: JSON.stringify({
+          source: 'kb://d/' + p + '.md#' + rnd(2), library: 'kb',
+          ...(mk ? { machine: mk, machine_label: '機器 ' + mk.slice(-3) } : {}),
+        }),
+      });
+    }
+    const r = assemble({
+      question: '同步 設計 內容',
+      sel_body: JSON.stringify({ route: 'all', libraries: [], indexes: [] }),
+      pages_body: JSON.stringify({ entries }),
+    });
+    rounds++;
+    // ① 出處要齊
+    for (const p of PAGES) {
+      const want = new Set(entries.filter((e) => e.page_name === p)
+        .map((e) => JSON.parse(e.metadata_json).machine).filter(Boolean));
+      const got = new Set(r.sources.filter((x) => x.page === p).map((x) => x.machine).filter(Boolean));
+      if (want.size >= 2) sawTwoMachines++;
+      for (const w of want) {
+        if (!got.has(w)) { badOrigins++; if (badOrigins <= 2) console.log('  少了機器', w, '@', it, JSON.stringify(entries)); break; }
+      }
+    }
+    // ② 內容要省
+    const a = r.prompt.indexOf('原文片段：\n'), b = r.prompt.indexOf('\n問題：');
+    const fed = r.prompt.slice(a + '原文片段：\n'.length, b).split(/\n\n(?=\[\d+\] )/)
+      .map((x) => x.replace(/^\[\d+\] /, '').trim()).filter(Boolean);
+    const uniq = new Set(entries.map((e) => e.page_name + ' ' + e.content));
+    if (fed.length !== uniq.size || new Set(fed).size !== fed.length) {
+      badContent++; if (badContent <= 2) console.log('  內容筆數不對 @', it, fed.length, uniq.size);
+    }
+  }
+  t(`隨機 ${rounds} 組：每一頁出現過的每一台機器都說得出來（其中 ${sawTwoMachines} 次該頁有 ≥2 台）`,
+    badOrigins === 0, '漏掉 ' + badOrigins + ' 次');
+  t(`隨機 ${rounds} 組：每個相異的（頁, 內容）只餵 LLM 一次`, badContent === 0, '不符 ' + badContent + ' 次');
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

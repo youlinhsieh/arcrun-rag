@@ -1323,6 +1323,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		}
 	}
 
+	// 碎形目錄索引（`inkstone/Arcrun#146`，leo 2026-08-19「每個巢狀資料夾都要有 index，
+	// 且每一層指向子層次目錄」）：接在總覽卡後面，同一個理由放在萃取迴圈之前——
+	// 目錄結構是本機掃一遍就有的答案，不該跟 LLM 排同一條隊、不該被額度牆擋住。
+	// 一卡一關聯（見 folderindex.go 檔頭）⇒ 單一請求恆定 1 條 rel，不受資料夾數量影響。
+	if fcRes := syncFolderCards(cfg, absRoot, m, len(payload.Events) > 0, dryRun, runNow); len(fcRes) > 0 {
+		results = append(results, fcRes...)
+		if fcRes[0].Status != "planned" {
+			saveManifest() // 同上：folder_card_hashes 當下就落盤，斷點續傳才接得上
+		}
+	}
+
 	// 承上：把本輪偵測到的 removed 路徑暫時放回 m.Entries，直到迴圈裡真的處理到它、
 	// POST 成功才由「removed」分支明確刪除。失敗或本輪還沒輪到（單輪上限）都維持放回的狀態，
 	// 下一輪自然重新偵測、重新嘗試下架——不會因為別的事件先存檔而被誤永久跳過。

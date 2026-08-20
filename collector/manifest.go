@@ -70,6 +70,11 @@ const MaxFailBeforeSkip = 8
 // Manifest 對應一個被勾選的資料夾。
 type Manifest struct {
 	FolderID string                    `json:"folder_id"`
+	// FolderCardHashes＝每個子資料夾索引卡的內容雜湊（鍵＝相對監看根的目錄路徑）。
+	// 冪等用：內容沒變就不重送（同 InventoryHash 的角色，只是一層變多層）。
+	// 資料夾消失時由 syncFolderCards 清掉對應的鍵，不讓這張表無限長大。
+	// （`inkstone/Arcrun#146` 碎形目錄索引）
+	FolderCardHashes map[string]string `json:"folder_card_hashes,omitempty"`
 	Root     string                    `json:"root"`
 	Entries  map[string]*ManifestEntry `json:"entries"`
 	// InventoryHash＝最後一次**成功送達雲端**的資料夾總覽卡內容雜湊（結構先行，

@@ -260,16 +260,61 @@ config:
       }
 
       // ── 選中子庫的原文 ──
+      //
+      // 🔴 `inkstone/mira#6`（總管 2026-08-18 裁定）：**內容留一份、出處記多台**。
+      //   leo 的原話就是判準——「就算是我一個人的，我有 2 台電腦、1 台 NAS，
+      //   **它會告訴我原稿去哪裡找，但知識全在總庫**」：
+      //     「知識全在總庫」        → 餵給 LLM 的內容去重是對的，留一份
+      //     「告訴我原稿去哪裡找」  → 出處不能去重，所有持有該原稿的機器都要看得見
+      //   這本來就是分開的兩層，以前被綁在同一個去重動作上才會互相打架。
+      //
+      //   這道去重的鍵是「頁名＋內容」。同一份檔同步到兩台、內容一模一樣時，
+      //   第二台**整筆**在這裡就被丟掉 ⇒ 它的原稿位置在下游（sources／pages_read）
+      //   再也長不回來。這是本題三處去重裡最上游的一處，所以下游那兩處各自修好了，
+      //   送到前端的仍然只有一台——它們拿不到一個已經不存在的東西。
+      //
+      //   ⇒ 內容照舊只留一份（同樣的文字餵兩次只是燒掉 8000 字預算），
+      //     但把「還有哪幾台也持有這一份」記在被留下的那一筆身上，供出處投影使用。
+      //
+      //   三條收斂規則（**刻意做成與到達順序無關**——「先到的那一台贏」正是本票在修的病，
+      //   不可以在修它的時候又引進一個新的順序相依）：
+      //     ① 說不出機器的那一筆（舊資料）**不會**變成第二個出處——不知道就是不知道，
+      //        編一個「未知來源」列出來只是製造一列沒有資訊的東西。
+      //     ② 同一台機器的重複片段不是第二個出處（同一把 machine 只算一次）。
+      //     ③ 代表那一筆若說不出機器、而後來的說得出 ⇒ **換它當代表**。
+      //        否則同一份資料會因為 KBDB 回傳順序不同而時而一列、時而兩列。
+      //   ⇒ **`blocks` 的筆數與改版前完全相同**（一個內容群仍然只留一筆），
+      //     所以下面的 IDF 統計與頁面排序一個數字都不會變；變的只有出處投影。
       const raw = ((parse(input.pages_body) || {}).entries) || [];
-      const seenKey = new Set();
-      const blocks = [];
+      const groups = new Map();
+      const order = [];
       for (const e of raw) {
         if (!usable(e)) continue;
         const k = e.page_name + '|' + String(e.content).trim();
-        if (seenKey.has(k)) continue;
-        seenKey.add(k);
-        blocks.push(e);
+        const mk = String(metaOf(e).machine || '');
+        const g = groups.get(k);
+        if (!g) {
+          groups.set(k, { rep: e, extras: [], machines: mk ? [mk] : [] });
+          order.push(k);
+          continue;
+        }
+        if (!mk) continue;                                  // ① 說不出是哪一台
+        if (g.machines.indexOf(mk) !== -1) continue;        // ② 同一台的重複片段
+        if (!g.machines.length) { g.rep = e; g.machines.push(mk); continue; }   // ③ 換代表
+        g.machines.push(mk);
+        g.extras.push(e);
       }
+      const blocks = [];
+      const alsoOn = new Map();
+      for (const k of order) {
+        const g = groups.get(k);
+        blocks.push(g.rep);
+        if (g.extras.length) alsoOn.set(g.rep, g.extras);
+      }
+      // 一筆 block 的所有出處＝自己 ＋ 內容一模一樣、被上面併掉的其他機器。
+      // 回的是**原始 entry**，所以 srcOf／libOf／withMachine 三個既有函式照用，
+      // 不為了這件事另立第二套投影寫法。
+      function originsOf(e) { return [e].concat(alsoOn.get(e) || []); }
       // 庫內排序（不是檢索）：IDF 字面重疊決定哪幾頁先進預算
       const qToks = toksOf(question);
       const N = blocks.length || 1;
@@ -305,21 +350,34 @@ config:
           let c = String(e.content);
           if (c.length > budget) c = c.slice(0, budget);
           budget -= c.length;
-          ctxBlocks.push(withMachine({ page: page, content: c, source: srcOf(e), library: libOf(e) }, e));
-          const mk = String(metaOf(e).machine || '');
-          const g = perMachine.get(mk);
-          if (g) { g.chars += c.length; } else { perMachine.set(mk, { chars: c.length, first: e }); }
+          // `entry` 只在本函式內部用來回查「這份內容還在哪幾台上」（sources 投影要用），
+          // 它不會出現在回應裡：ctxBlocks 只被拿來組 ctx 字串與 sources。
+          ctxBlocks.push(withMachine({ page: page, content: c, source: srcOf(e), library: libOf(e), entry: e }, e));
+          // 內容只算一次預算（上面 budget 已扣），出處則每台各記一筆。
+          for (const o of originsOf(e)) {
+            const mk = String(metaOf(o).machine || '');
+            const g = perMachine.get(mk);
+            if (g) { g.chars += c.length; } else { perMachine.set(mk, { chars: c.length, first: o }); }
+          }
         }
         for (const g of perMachine.values()) {
           if (g.chars > 0) pagesRead.push(withMachine({ page: page, library: libOf(g.first), chars: g.chars, source: srcOf(g.first) }, g.first));
         }
       }
 
-      const sources = ctxBlocks.map(function (bk, i) {
+      const sources = [];
+      ctxBlocks.forEach(function (bk, i) {
         // machine 從 ctxBlocks 帶過來（它上面已經 withMachine 過），不重解一次 metadata。
         const out = { n: i + 1, mode: bk.library, page: bk.page, source: bk.source };
         if (bk.machine) { out.machine = bk.machine; out.machine_label = bk.machine_label; }
-        return out;
+        sources.push(out);
+        // 內容一模一樣、在上游被併掉的其他機器：出處各給一列。
+        // 🔴 `n` 沿用同一個編號，**不是漏寫**：它們指的是同一段文字，prompt 裡只出現一次 [n]，
+        //   換一個編號會讓 LLM 的引用對不上。前端列出處時不看 n（看 page／source／machine），
+        //   引擎那側 `dedupeSourcesByPage` 的鍵是「頁 × 機器」⇒ 這幾列不會被併掉。
+        for (const o of (alsoOn.get(bk.entry) || [])) {
+          sources.push(withMachine({ n: i + 1, mode: bk.library, page: bk.page, source: srcOf(o) }, o));
+        }
       });
       let ctx = '';
       ctxBlocks.forEach(function (bk, i) { ctx += '[' + (i + 1) + '] （出自子庫《' + bk.library + '》的《' + bk.page + '》）\n' + bk.content + '\n\n'; });
