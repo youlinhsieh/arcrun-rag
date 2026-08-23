@@ -38,10 +38,23 @@
  * YAML 解析法照 `ship-stations.mjs` 既有做法：python3+pyyaml（本 repo node_modules
  * 沒裝 yaml 套件，不再引第三種做法）。
  *
- * ── 實例位置可覆寫，但預設指到 leo 那台 ────────────────────────────────────
- * 預設 `https://arcrun-cypher-executor.leo21c.workers.dev`，
- * 因為 D70 的判準是「**leo** 打開工作流頁看得到嗎」——工作流要住在他自己那台，
- * 不是住在某個測試實例上（住錯地方＝他看不到＝等於沒做）。
+ * ── 實例位置與 namespace 同源（2026-08-20 訂正）─────────────────────────────
+ * 🔴 舊寫法把 `https://arcrun-cypher-executor.leo21c.workers.dev` **寫死成預設**，
+ * 理由是「D70 的判準是 leo 打開工作流頁看得到嗎，所以工作流要住他那台」。
+ * **那個前提 leo 2026-08-20 推翻了**：
+ *   「出貨跟 leo21c 無關，**它只是一個普通用戶**。」
+ *   「leo21c 就是我這個普通用戶，**不應該讓你去操控**，我只用公開的更新。」
+ *   「youlin ＝ stage，geek6688 ＝ 測試 prod ＆ 出貨機，uncle6 ＝ 中心服務⋯⋯
+ *     你要實驗當然是放在 youlin。」
+ * ⇒ 出貨線的輔助工作流屬於 **AI 的 stage（youlin）**，不是使用者的個人實例。
+ *
+ * 🔴 更根本的：**網址與 namespace 本來就該來自同一個地方。**
+ * 舊寫法網址寫死、namespace 現讀 `~/.arcrun/config.yaml` ⇒ 使用者一改設定，
+ * 兩個值就分家，而症狀是「這個 namespace 下一支工作流都沒有」——
+ * 看起來像實例是空的，其實是**在 A 實例上問 B 的 namespace**。
+ * （2026-08-20 實撞：把預設切到 youlin 後，出貨線立刻炸在這裡。）
+ * ⇒ 現在兩者都現讀同一個檔，**沒有寫死的預設值可以頂**——
+ *   與本檔對 namespace 已經採用的原則一致：「不再猜一個值頂著」。
  * 換實例走環境變數 `ARCRUN_SHIP_BASE`，不改程式碼。
  */
 import { execFileSync } from 'node:child_process';
@@ -49,7 +62,45 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export const ARCRUN_BASE = process.env.ARCRUN_SHIP_BASE || 'https://arcrun-cypher-executor.leo21c.workers.dev';
+/**
+ * 讀 `~/.arcrun/config.yaml`（`ARCRUN_SHIP_CONFIG` 可覆寫路徑）。
+ * `resolveArcrunBase()` 與 `resolveNamespace()` 共用這一支——**同源才不會分家**。
+ * 不快取：路徑本身也現讀，測試才能在同一個 process 裡切不同的假設定檔。
+ */
+function readArcrunConfig() {
+  const path = process.env.ARCRUN_SHIP_CONFIG || join(homedir(), '.arcrun', 'config.yaml');
+  if (!existsSync(path)) return { path, value: null };
+  try {
+    const raw = readFileSync(path, 'utf8');
+    const out = execFileSync('python3', ['-c', 'import sys,yaml,json; json.dump(yaml.safe_load(sys.stdin.read()), sys.stdout, ensure_ascii=False)'], {
+      input: raw, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+    });
+    return { path, value: JSON.parse(out) };
+  } catch (e) {
+    throw new Error(`${path} 讀不動：${(e.stderr || e.message || '').toString().trim().split('\n').slice(-3).join(' / ')}`);
+  }
+}
+
+/**
+ * 實例網址：`ARCRUN_SHIP_BASE` > `~/.arcrun/config.yaml` 的 `cypher_executor_url` > 丟例外。
+ * 與 `resolveNamespace()` 讀同一個檔、同一套規則 ⇒ 兩個值不可能分家。
+ * 不快取（理由同 resolveNamespace）。
+ */
+export function resolveArcrunBase() {
+  if (process.env.ARCRUN_SHIP_BASE) {
+    return { base: process.env.ARCRUN_SHIP_BASE.replace(/\/+$/, ''), source: '環境變數 ARCRUN_SHIP_BASE' };
+  }
+  const cfg = readArcrunConfig();
+  const url = cfg.value?.cypher_executor_url;
+  if (!url) {
+    throw new Error(
+      `不知道要打哪台實例：沒有設 ARCRUN_SHIP_BASE，${cfg.path} 裡也沒有 cypher_executor_url\n` +
+      `     → 這裡**刻意沒有寫死的預設值**：舊版寫死 leo21c，而 leo 2026-08-20 訂正\n` +
+      `       「出貨跟 leo21c 無關，它只是一個普通用戶」⇒ 猜一個值頂著就是這次的病根。\n` +
+      `     → AI 的 stage 是 youlin：https://arcrun-cypher-executor.youlin-hsieh-dev.workers.dev`);
+  }
+  return { base: String(url).replace(/\/+$/, ''), source: cfg.path };
+}
 
 /**
  * namespace 從哪裡來：`ARCRUN_SHIP_NS` 環境變數 > `~/.arcrun/config.yaml` 的
@@ -65,23 +116,13 @@ export function resolveNamespace() {
   if (process.env.ARCRUN_SHIP_NS) {
     return { ns: process.env.ARCRUN_SHIP_NS, source: '環境變數 ARCRUN_SHIP_NS' };
   }
-  const ARCRUN_CONFIG_PATH = process.env.ARCRUN_SHIP_CONFIG || join(homedir(), '.arcrun', 'config.yaml');
-  if (!existsSync(ARCRUN_CONFIG_PATH)) {
+  const { path: ARCRUN_CONFIG_PATH, value: cfg } = readArcrunConfig();
+  if (!cfg) {
     throw new Error(
       `不知道要問哪個 namespace：沒有設 ARCRUN_SHIP_NS，也讀不到 ${ARCRUN_CONFIG_PATH}\n` +
       `     → namespace 沒有安全的寫死預設值可以頂（上一版寫死 'leo'，使用者換過 namespace 後\n` +
       `       整條出貨管線就打不通，這正是這次要修的事故）。\n` +
       `     → 裝 acr 並登入過一次會產生這個檔案；或用 ARCRUN_SHIP_NS=<namespace> 覆寫。`);
-  }
-  let cfg;
-  try {
-    const raw = readFileSync(ARCRUN_CONFIG_PATH, 'utf8');
-    const out = execFileSync('python3', ['-c', 'import sys,yaml,json; json.dump(yaml.safe_load(sys.stdin.read()), sys.stdout, ensure_ascii=False)'], {
-      input: raw, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
-    });
-    cfg = JSON.parse(out);
-  } catch (e) {
-    throw new Error(`${ARCRUN_CONFIG_PATH} 讀不動：${(e.stderr || e.message || '').toString().trim().split('\n').slice(-3).join(' / ')}`);
   }
   const ns = cfg && cfg.api_key ? String(cfg.api_key) : '';
   if (!ns) {
@@ -96,6 +137,7 @@ const headers = () => ({ 'content-type': 'application/json', 'X-Arcrun-API-Key':
 /** 這台實例上這個 namespace 有哪些工作流（名字陣列）。 */
 export async function listWorkflows({ timeoutMs = 20000 } = {}) {
   const { ns } = resolveNamespace();
+  const { base: ARCRUN_BASE } = resolveArcrunBase();
   const res = await fetch(`${ARCRUN_BASE}/webhooks/named`, {
     headers: headers(), signal: AbortSignal.timeout(timeoutMs),
   });
@@ -110,7 +152,7 @@ export async function listWorkflows({ timeoutMs = 20000 } = {}) {
  * 缺了就丟例外——訊息要直接說「這一站的活現在沒人做」，不是「找不到 workflow」。
  */
 export async function assertWorkflowsExist(names) {
-  if (!names || !names.length) return { checked: [], base: ARCRUN_BASE, ns: null };
+  if (!names || !names.length) return { checked: [], base: resolveArcrunBase().base, ns: null };
   const { ns, source } = resolveNamespace();
   let live;
   try {
@@ -136,11 +178,11 @@ export async function assertWorkflowsExist(names) {
       : '';
     throw new Error(
       `站表把這幾站的活派給 Arcrun 工作流，但那台實例上**沒有這些工作流**：${missing.join('、')}\n` +
-      `       實例 ${ARCRUN_BASE}（namespace ${ns}，來源：${source}）現有：${live.join('、') || '（一個都沒有）'}\n` +
+      `       實例 ${resolveArcrunBase().base}（namespace ${ns}，來源：${source}）現有：${live.join('、') || '（一個都沒有）'}\n` +
       `     ⇒ 這一站的活現在沒有任何人做，而站表宣告它有人做。這正是 D70 要擋的「宣告與現實脫節」。${emptyHint}\n` +
       `     → 把工作流部署上去，或把那一站改回 \`用什麼: 本機\` 並寫明本機理由（站表閘會要求）。`);
   }
-  return { checked: names, base: ARCRUN_BASE, ns };
+  return { checked: names, base: resolveArcrunBase().base, ns };
 }
 
 /**
@@ -154,12 +196,13 @@ export async function runWorkflow(name, input, { timeoutMs = 120000 } = {}) {
   const { ns } = resolveNamespace();
   let res;
   try {
+    const { base: ARCRUN_BASE } = resolveArcrunBase();
     res = await fetch(`${ARCRUN_BASE}/webhooks/named/${ns}/${name}/trigger`, {
       method: 'POST', headers: headers(), body: JSON.stringify(input || {}),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
-    throw new Error(`工作流 ${name} 打不通（${ARCRUN_BASE}）：${e.message}`);
+    throw new Error(`工作流 ${name} 打不通（${resolveArcrunBase().base}）：${e.message}`);
   }
   const text = await res.text();
   let body;
