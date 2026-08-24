@@ -38,7 +38,7 @@ func TestRemoveFolderWithTakedownQueuesRetirement(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	newTestCfgWithFolder(t, "/kb/logseq-plugin")
 
-	if err := (&App{}).RemoveFolder(0, "/kb/logseq-plugin", true); err != nil {
+	if err := (&App{}).RemoveFolder(0, "/kb/logseq-plugin", true, false); err != nil {
 		t.Fatalf("移除失敗：%v", err)
 	}
 	cfg, err := loadCfg()
@@ -90,7 +90,7 @@ func TestRemoveFolderWithoutTakedownKeepsCloudData(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	newTestCfgWithFolder(t, "/kb/keep-cloud")
 
-	if err := (&App{}).RemoveFolder(0, "/kb/keep-cloud", false); err != nil {
+	if err := (&App{}).RemoveFolder(0, "/kb/keep-cloud", false, false); err != nil {
 		t.Fatalf("移除失敗：%v", err)
 	}
 	cfg, _ := loadCfg()

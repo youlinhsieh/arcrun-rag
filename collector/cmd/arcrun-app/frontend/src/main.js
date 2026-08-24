@@ -636,8 +636,9 @@ function pageApp(accIdx, id) {
 // 🔴 為什麼一定要 iframe（這是桌面端與 Portal 的關鍵差異，不是潔癖）：
 //    Portal 是網頁，把 App 的 HTML 直接 innerHTML 進去，那段 script 最多拿到
 //    同一頁的 fetch 與 session token。**桌面這半不一樣**——這裡的 window 上掛著
-//    `window.go.main.App`：`Connect`／`SetAI`／`RemoveFolder(…, takedown=true)`
-//    全都在上面。直接 innerHTML ＝ 任何一個 App 的作者都能刪掉使用者雲端的知識。
+//    `window.go.main.App`：`Connect`／`SetAI`／`RemoveFolder(…, takedown=true, cleanupLocal=true)`
+//    全都在上面。直接 innerHTML ＝ 任何一個 App 的作者都能刪掉使用者雲端的知識
+//    ——#138 之後**連他硬碟上的整理稿也刪得掉**，這道窄門只會越來越重要。
 //    ⇒ `sandbox="allow-scripts"`（**不給** allow-same-origin ⇒ 不同源，
 //      碰不到 parent 的任何東西），只留一條 postMessage 的窄門。
 //
@@ -868,26 +869,68 @@ async function addFolder(accIdx) {
 //    那句話**在技術上是對的**，但它預設使用者要的是「只停止同步」，
 //    而他要的是「我不要這份資料了」。⇒ 病不在少一句說明，在**替他決定了**。
 //    現在兩個選擇都擺出來、後果各寫一行，由他挑。
+// 🔴 arcrun-rag#138（leo 2026-08-24）：「碎型會在每個資料夾安裝隱藏資料夾，人工刪除不容易，
+//    所以當它斷連，應該要可以幫它把 Arcrun RAG 建立的資料夾刪掉」
+//    ⇒ 多一個**獨立的勾選框**，不是第三顆單選：雲端怎麼處理、硬碟怎麼處理是兩件事，
+//      合成一個選項就又是替他決定（#46 修掉的正是那個病）。
+//    🔴 預設不勾——刪檔不可逆，預設值往「什麼都不動」倒。
+//    🔴 勾了才去問清單，並且把**每一筆路徑攤出來**：#138 的驗收條件白紙黑字寫著
+//      「使用者要能在動手前看到將要刪掉哪些東西」，按下去就無聲刪光不算做完。
 function confirmRemove(accIdx, path) {
   openSheet(`
     <h2>移除這個資料夾？</h2>
-    <p>「${esc(path)}」要怎麼處理？<b>你電腦裡的原始檔案不會被動到</b>，兩個選擇的差別只在雲端。</p>
+    <p>「${esc(path)}」要怎麼處理？<b>你自己的檔案不會被動到</b>——下面兩個選擇差在雲端，最後那個勾選框差在你的硬碟。</p>
     <label class="radio"><input type="radio" name="rmMode" value="takedown" checked/>
       <span><b>連同雲端的知識一起收回</b><br/>
       <span class="d">這個資料夾整理出來的知識會從知識庫刪除，之後搜尋找不到、AI 也不會再拿它回答。<b>刪掉就要不回來</b>。</span></span></label>
     <label class="radio"><input type="radio" name="rmMode" value="unwatch"/>
       <span><b>只停止同步，雲端的知識保留</b><br/>
       <span class="d">以後這個資料夾有變動不會再上傳，但之前整理好的知識留在知識庫裡，搜尋和 AI 照樣找得到。</span></span></label>
+    <label class="radio"><input type="checkbox" id="rmClean"/>
+      <span><b>順便把 Arcrun RAG 放在這個資料夾裡的檔案清掉</b><br/>
+      <span class="d">我們會在每一層資料夾放一個隱藏的整理稿目錄（<code>.wiki</code>／<code>.arcrun-rag</code>），
+      散在各層、你自己很難刪乾淨。勾起來會先列出<b>確切要刪哪些</b>給你看過再動手；認不出是我們建的一律留著。</span></span></label>
+    <div id="rmPlan" class="d" style="display:none;margin:8px 0 4px"></div>
     <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">確定</button></div>`,
     () => {
       $('c1').onclick = closeSheet;
+      const box = $('rmClean'), out = $('rmPlan');
+      box.onchange = async () => {
+        if (!box.checked) { out.style.display = 'none'; out.innerHTML = ''; return; }
+        out.style.display = ''; out.textContent = '正在看這個資料夾裡有哪些是我們建的…';
+        try {
+          out.innerHTML = renderCleanupPlan(await go.PlanFolderCleanup(accIdx, path));
+        } catch (e) {
+          out.textContent = '看不到清單（' + e + '）——沒把握就先別勾這一項。';
+        }
+      };
       $('c2').onclick = async () => {
         const mode = document.querySelector('input[name="rmMode"]:checked');
         const takedown = !mode || mode.value === 'takedown';
-        await go.RemoveFolder(accIdx, path, takedown); closeSheet();
+        await go.RemoveFolder(accIdx, path, takedown, box.checked); closeSheet();
         state = await go.GetState(); renderNav(); renderPage();
       };
     });
+}
+
+// renderCleanupPlan 把「將要刪掉什麼／刻意留下什麼」攤成使用者看得懂的清單。
+// 🔴 留下的那一半一樣要顯示：沉默地留下殘渣，跟沉默地刪掉一樣糟——他要的是
+//    「這個資料夾乾淨了」，那就得讓他看得到還有什麼沒清、為什麼沒清。
+function renderCleanupPlan(plan) {
+  const rm = (plan && plan.remove) || [], keep = (plan && plan.keep) || [];
+  if (!rm.length && !keep.length) return '這個資料夾裡沒有找到任何 Arcrun RAG 建立的檔案，不需要清理。';
+  let h = '';
+  if (rm.length) {
+    h += `<b>會刪掉這 ${rm.length} 項（共 ${plan.files} 個檔）：</b><ul style="margin:4px 0 0 16px">`;
+    for (const it of rm) h += `<li>${esc(it.rel)}${it.is_dir ? '／' : ''}（${it.files} 個檔）</li>`;
+    h += '</ul>';
+  }
+  if (keep.length) {
+    h += `<b style="display:block;margin-top:8px">這 ${keep.length} 項我不會動：</b><ul style="margin:4px 0 0 16px">`;
+    for (const k of keep) h += `<li>${esc(k.rel)} — ${esc(k.reason)}</li>`;
+    h += '</ul>';
+  }
+  return h;
 }
 
 function showConnect() {

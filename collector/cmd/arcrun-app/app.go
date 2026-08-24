@@ -728,7 +728,18 @@ func (a *App) AddFolder(accIdx int, path string) error {
 // vs 我不要這份資料了），而**猜錯任何一邊都是不可逆的**——猜「保留」則產品承諾的
 // 「資料所有權完全屬於使用者」是假的；猜「收回」則整理好的知識被誤刪。
 // ⇒ 在動作的當下把兩個後果講清楚、讓他自己挑（見前端 confirmRemove 的文案）。
-func (a *App) RemoveFolder(accIdx int, path string, takedown bool) error {
+//
+// cleanupLocal＝第三個獨立選擇（arcrun-rag#138，leo 2026-08-24：「碎型會在每個資料夾
+// 安裝隱藏資料夾，人工刪除不容易，所以當它斷連，應該要可以幫它把 Arcrun RAG 建立的
+// 資料夾刪掉」）：連同硬碟上那些隱藏資料夾一起收掉。
+//
+// 與 takedown **正交，不合成一個開關**：takedown 管**雲端**的知識（搜尋還找不找得到），
+// cleanupLocal 管**他硬碟上**的產物（資料夾乾不乾淨）。兩個後果不一樣，合起來就是替他決定
+// ——這正是 #46 那次修掉的病，別再犯一次。
+//
+// 🔴 順序不可顛倒：**先把資料夾從 WatchFolders 拿掉並重啟看守，再刪本地產物。**
+// 反過來的話 collector 還看著那個根，剛刪掉的 `.wiki/` 下一輪就長回來。
+func (a *App) RemoveFolder(accIdx int, path string, takedown, cleanupLocal bool) error {
 	cfg, err := loadCfg()
 	if err != nil {
 		return err
@@ -762,12 +773,60 @@ func (a *App) RemoveFolder(accIdx int, path string, takedown bool) error {
 		return err
 	}
 	restartWatch()
+	if cleanupLocal && found {
+		// 看守已經停掉了（restartWatch 讀的是剛存下去的設定），現在刪才不會被重建。
+		// 刪不掉的那幾筆不讓整個移除失敗——資料夾已經從清單拿掉了，那是使用者要的主要結果；
+		// 清理是附帶的善後，回一個講得出「哪幾筆沒刪掉、為什麼」的錯誤就好。
+		if _, res, cerr := collector.ApplyCleanup(path, cfg.otherWatchedRoots(accIdx, path)); cerr != nil {
+			return fmt.Errorf("資料夾已經移除，但清理 Arcrun RAG 建立的檔案時出錯：%w", cerr)
+		} else if len(res.Failed) > 0 {
+			return fmt.Errorf("資料夾已經移除，但有 %d 個項目刪不掉（第一個：%s——%s）",
+				len(res.Failed), res.Failed[0].Rel, res.Failed[0].Error)
+		}
+	}
 	if takedown {
 		// 不必等下一輪輪詢——使用者剛按下按鈕，他期待「現在就開始」。
 		// 沿用既有的 sync-now 訊號檔，不新發明一套 IPC。
 		_ = a.SyncNow()
 	}
 	return nil
+}
+
+// PlanFolderCleanup 回答「按下『連同這個資料夾裡的檔案一起清掉』會刪到哪些東西」。
+//
+// 🔴 #138 的驗收條件之一：「使用者要能在動手前看到將要刪掉哪些東西」——不是按下去就無聲刪光。
+// 這支**只讀不寫**（collector.PlanCleanup 保證），前端在確認對話框裡先叫它、把清單攤出來。
+// 真的動手時 ApplyCleanup 會**重算一次**，所以這裡拿到的清單過期也不會刪錯東西。
+func (a *App) PlanFolderCleanup(accIdx int, path string) (*collector.CleanupPlan, error) {
+	cfg, err := loadCfg()
+	if err != nil {
+		return nil, err
+	}
+	if accIdx < 0 || accIdx >= len(cfg.Accounts) {
+		return nil, fmt.Errorf("找不到這個知識庫帳號")
+	}
+	return collector.PlanCleanup(path, cfg.otherWatchedRoots(accIdx, path))
+}
+
+// otherWatchedRoots＝除了 path 以外、**所有帳號**還在看守（或還在收回中）的資料夾。
+//
+// 🔴 為什麼要跨帳號收集：巢狀擺法是真的（2026-08-24 現場，`pms` 與 `pms/pms_v1_legacy`
+// 同時在同一個帳號的看守清單裡）。移除外層時把內層的工作區刪掉＝把一個還在跑的同步弄壞，
+// 而且不同帳號可以看守同一棵樹底下的不同層——判準是「這條路徑還有沒有人在用」，
+// 跟它掛在哪個帳號無關。
+func (c *directConfig) otherWatchedRoots(accIdx int, path string) []string {
+	var out []string
+	for i := range c.Accounts {
+		for _, f := range c.Accounts[i].WatchFolders {
+			if i == accIdx && f == path {
+				continue
+			}
+			out = append(out, f)
+		}
+		// 還在收回中的資料夾同樣還沒結束——它的帳本正在被逐筆撤除，別去動它的檔。
+		out = append(out, c.Accounts[i].RetiringFolders...)
+	}
+	return out
 }
 
 // pruneFinishedRetirements 把「collector 已回報收乾淨」的資料夾從設定裡清掉。

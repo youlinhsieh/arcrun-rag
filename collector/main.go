@@ -89,6 +89,8 @@ func Run(args []string) int {
 		return runTemplateInstall(args[1:])
 	case "tidy":
 		return runTidy(args[1:])
+	case "cleanup":
+		return runCleanup(args[1:])
 	default:
 		usage()
 		return 2
@@ -107,7 +109,9 @@ func usage() {
   collector sync   --root <dir> --manifest <file> [--max-removed-ratio 0.4] [--dry-run]
   collector direct --config <config.json> [--once] [--dry-run]
   collector tidy   --folder <dir> [--apply] [--json]
+  collector cleanup --folder <dir> [--keep <還在看守的別的資料夾>]… [--apply] [--json]
 tidy: 找出以前寫進資料夾、還沒帶 arcrun- 標記的舊產物並改名/搬走（預設只列出不動手，加 --apply 才執行；從不刪檔）
+cleanup: 斷連時把 daemon 建立的 .arcrun-rag/ 與各層 .wiki/ 收掉（預設只列清單，加 --apply 才真的刪；認不出來的一律留著）
 upload 需環境變數: CF_ACCOUNT_ID / CF_API_TOKEN / R2_BUCKET
 sync   另需:      ARCRUN_TRIGGER_URL（named-webhook 觸發完整 URL）
 direct（無 R2）:  監看資料夾 → 讀檔內容直送實例 rag_ingest_direct workflow；設定走 --config JSON`)
