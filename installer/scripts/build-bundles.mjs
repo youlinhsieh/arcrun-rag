@@ -248,6 +248,37 @@ async function main() {
   // 🔴 2026-08-05（leo 出貨時實撞）：先讀既有 manifest，只覆寫本次重建的欄位，其餘原樣保留
   //    （`daemon` 欄＝桌面 App 版本，不是本腳本產的，被吃掉會讓所有人的「檢查更新」失效）。
   const merged = { ...prevManifest, ...manifest };
+
+  // 🔴 2026-08-24（leo 推 1.4.53 到 prod 時實撞）：**棘輪的第二個入口，在 daemon 區塊裡。**
+  //    `ce3faae`（arcrun-rag#27）拆掉的是 `core` 條目那一支，立的哲學是
+  //    「清單上沒有的，一律不進 manifest」——但它沒碰 daemon 區塊，
+  //    而上面那個 `...prevManifest` 對 daemon 底下的**平台條目**同樣是單向棘輪：
+  //    只會加、永遠不會減。prod 的 manifest 因此躺著兩筆 0.15.7 時代的東西：
+  //        mac_dmg   → daemon/ArcrunRAG-mac.dmg
+  //        win_msix  → daemon/ArcrunRAG-v0.15.7.msix
+  //    而同一份 manifest 的 `daemon.version` 寫著 0.18.36。
+  //    ⇒ **manifest 自己在說謊**：宣告這是 0.18.36，卻掛著 0.15.7 的檔。
+  //    （stage 的 bundle repo 是後來新開的，從沒有過這兩筆 ⇒ **只有 prod 中招**——
+  //      「只在單邊執行的路徑是共同盲區」的又一個實例，同 ship.mjs 檔頭 D65 那段。）
+  //
+  //    `daemon-in-bundle-gate` 掃**整個** daemon 區塊逐檔比檔名，所以它抓到了——很好，
+  //    但它只能擋、清不掉。⇒ 清理要長在製造端，不是每次靠人手動刪。
+  //
+  //    判準沿用 #27 那條：**這一版的清單上沒有的，一律不進 manifest**。
+  //    對 daemon 而言＝每個平台條目的檔名必須帶著這一版的版本號；帶不到就是上個時代的殘留。
+  //    version／built／notes 不是平台條目（沒有 `file` 欄），不受影響。
+  if (merged.daemon && typeof merged.daemon === 'object' && merged.daemon.version) {
+    const ver = String(merged.daemon.version);
+    const stale = [];
+    for (const [key, val] of Object.entries(merged.daemon)) {
+      if (!val || typeof val !== 'object' || typeof val.file !== 'string') continue;
+      if (!val.file.includes(ver)) { stale.push(`${key} → ${val.file}`); delete merged.daemon[key]; }
+    }
+    if (stale.length) {
+      console.log(`🧹 daemon 區塊裡不屬於 ${ver} 的殘留條目已移除 ${stale.length} 筆（棘輪殘留）：`);
+      for (const s of stale) console.log(`    · ${s}`);
+    }
+  }
   // 🔴 棘輪拆掉（arcrun-rag#27／D48）：manifest 的內容**完全**由本次計畫決定，
   //    不再從舊 manifest 沿用任何零件條目。以前需要「沿用非本腳本產的那幾顆」，
   //    是因為 portal 前端由另一支腳本產；現在它跟其他零件走同一條路（D91），
