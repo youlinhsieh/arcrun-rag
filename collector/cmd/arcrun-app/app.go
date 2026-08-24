@@ -68,6 +68,15 @@ type accountCfg struct {
 	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	Extractor       string   `json:"extractor,omitempty"`
 	GeminiAPIKey    string   `json:"gemini_api_key,omitempty"`
+	// PortalSession／PortalSessionExp＝這台電腦對這個知識庫的 portal 登入憑證
+	// （arcrun-rag#137 App 啟動器用；App 詳情與動作只有 portal session 那條路有，
+	// 見 apps.go 檔頭）。**這是 session token 不是密碼**——密碼仍然零落地。
+	//
+	// 🔴 這兩欄是 App 端獨有的（collector 的 AccountConfig 沒有）：collector 讀 config
+	//    時會忽略不認得的欄位，所以加在這裡是安全的；反過來（collector 有而這裡沒有）
+	//    才是上面那條註解講的、會靜默掉欄位的方向。
+	PortalSession    string `json:"portal_session,omitempty"`
+	PortalSessionExp int64  `json:"portal_session_exp,omitempty"`
 }
 
 type directConfig struct {

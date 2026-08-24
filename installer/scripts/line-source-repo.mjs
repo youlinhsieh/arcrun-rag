@@ -47,6 +47,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+// 🔴 這支模組的 push 推的是**目的 repo 的 main**——2026-08-18 就是這一行把
+//   `inkstone/arcrun-collector` 的 main 推壞的（刪掉 main.go、把 22 行的 .gitignore 洗成 1 行），
+//   而殼層的 PreToolUse hook 看不見 node 子行程 ⇒ 當時沒有任何閘反應（InkStoneCo#56）。
+import { assertPushAllowed } from './main-push-guard.mjs';
 
 /** `~/x` → `$HOME/x`。與 ship.mjs 的 expandHome 同一個理由：不准寫死 `/Users/<誰>/`。 */
 export function expandHome(p) {
@@ -169,6 +173,7 @@ export function defaultRunner(args, cwd, { allowFail = false } = {}) {
 export function syncSourceRepo({
   srcRoot, sourceDir, workDir, remoteUrl, branch = 'main', message, destOwned = [],
   runner = defaultRunner, copyTracked = copyTrackedFiles,
+  guard = assertPushAllowed, guardOpts = {},
 }) {
   const dir = expandHome(workDir);
 
@@ -229,7 +234,14 @@ export function syncSourceRepo({
     return { sha: runner(['rev-parse', 'HEAD'], dir).out, changed: false, files, skipped };
   }
   runner(['commit', '-m', message], dir);
-  runner(['push', remoteUrl, `HEAD:refs/heads/${branch}`], dir);
+  // 🔴 人閘（InkStoneCo#56）：這一行推的是**別人 repo 的 main**。
+  //   2026-08-18 它推過一筆會刪檔的 commit 上去，而殼層那道 `PreToolUse:Bash` hook
+  //   看不見 node 子行程 ⇒ 一個閘都沒響。判斷搬到真的在推的這一行自己身上，
+  //   放行的憑證與殼層閘同一枚戳記（綁目的地、單次、15 分鐘失效）。
+  //   commit 先建好沒關係：**被擋下時遠端一個 commit 都不會動**，本機這一筆下次重跑照用。
+  const pushArgs = ['push', remoteUrl, `HEAD:refs/heads/${branch}`];
+  guard({ args: pushArgs, cwd: dir, remoteUrl, who: 'ship 出貨線／line-source-repo 同步', ...guardOpts });
+  runner(pushArgs, dir);
   return { sha: runner(['rev-parse', 'HEAD'], dir).out, changed: true, files, skipped };
 }
 

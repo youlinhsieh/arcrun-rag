@@ -27,9 +27,27 @@ $('themeBtn').onclick = () =>
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 
 let state = null;
-let page = 'home';        // 'home' | 'ai' | 'update' | 'lib:<idx>'
+// page：'apps'（App 啟動器）| 'app:<accIdx>:<id>' | 'home' | 'ai' | 'update' | 'lib:<idx>'
+//
+// 🔴 arcrun-rag#137：預設落在 App 啟動器，不是首頁——leo 2026-08-24 的原話是
+//    「**打開桌面小幫手就看到**跟 Portal 同一套的 App 啟動器」。
+//    同步狀態沒有因此消失：它在**全站頁首**（statusBig/statusSub＋「立刻同步」），
+//    每一頁都看得到；首頁那些卡片仍在側欄的「首頁」裡，一鍵可達。
+//    還沒連任何知識庫時 render() 會把它改回 'home'（那裡才是連線精靈）。
+let page = 'apps';
 let updateInfo = null;
 let obStep = 1;           // 首次啟動精靈目前在第幾步（issue #23，見 onboarding()）
+
+// ── App 啟動器的暫存（arcrun-rag#137）──
+//
+// 🔴 這是**畫面暫存，不是本機清單**：只活在這個視窗的記憶體裡，關掉就沒了，
+//    永遠不寫檔。上游 inkstone/Arcrun#82 已定「安裝態只有一份真相源」＝實例上那一份，
+//    桌面端不准另存一份（本票紅線）。存在這裡只是為了不要每次換頁都重打一次網路。
+let appsAccIdx = 0;       // 啟動器現在在看哪一個知識庫
+let appsCache = {};       // accIdx -> ListApps() 的回傳（undefined＝還沒問，null＝正在問）
+let appDetail = null;     // 目前打開的那個 App 的詳情（GetApp() 的回傳）
+let appDetailKey = '';    // 'accIdx:id'，避免慢回應蓋掉已經換過去的另一個 App
+let appFrameBridge = null; // App 自帶畫面那個 iframe 的 postMessage 監聽器（換頁時要拆掉）
 
 // ── 覆蓋層（只給必須打斷的確認）──
 function openSheet(html, wire) { $('sheet').innerHTML = html; $('overlay').classList.add('on'); if (wire) wire(); }
@@ -50,7 +68,21 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet
 // 之後若那個提案 confirm，是在這層之上疊總覽 pill，不是重做這裡。
 function renderNav() {
   const accs = (state && state.accounts) || [];
+  // arcrun-rag#137：「App」這一段在最上面，且**只有連了知識庫才出現**——
+  // 沒有實例就沒有 App，把一個必定空的入口擺在第一項只會讓人以為壞了。
+  // 目前打開的那個 App 以子項的形式掛在「App 界面」下面（同 Portal 的做法：
+  // 已安裝的 App 是側欄的一格），這樣使用者知道自己在哪、也回得去。
+  const appNav = !accs.length ? '' : `
+    <div class="sec">App</div>
+    <div class="nav" data-p="apps"><span class="ic">▦</span><span class="nm">App 界面</span></div>
+    ${page.startsWith('app:') && appDetail && !appDetail.error ? `
+      <div class="nav" data-p="${esc(page)}" style="padding-left:44px">
+        <span class="ic">${esc(appDetail.icon || '▢')}</span>
+        <span class="nm">${esc(appDetail.name || appDetail.id)}</span>
+      </div>` : ''}
+    <div class="sec">小幫手</div>`;
   $('nav').innerHTML = `
+    ${appNav}
     <div class="nav" data-p="home"><span class="ic">◫</span><span class="nm">首頁</span></div>
     ${accs.length ? `<div class="sec">知識庫</div>` : ''}
     ${accs.map((a, i) => `
@@ -64,7 +96,17 @@ function renderNav() {
     <div class="nav" data-p="update"><span class="ic">↧</span><span class="nm">版本與更新</span></div>`;
   $('nav').querySelectorAll('.nav').forEach((el) => {
     el.classList.toggle('on', el.dataset.p === page);
-    el.onclick = () => { page = el.dataset.p; renderNav(); renderPage(); };
+    el.onclick = () => {
+      const p = el.dataset.p;
+      if (p === page) return;
+      // 離開 App 頁時把 iframe 的橋拆掉（見 goToApp 同一段理由）。
+      if (page.startsWith('app:') && appFrameBridge) {
+        window.removeEventListener('message', appFrameBridge); appFrameBridge = null;
+      }
+      page = p;
+      renderNav(); renderPage();
+      if (p === 'apps') loadApps(appsAccIdx);
+    };
   });
 }
 
@@ -411,10 +453,259 @@ function onboarding() {
     </div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// App 啟動器（arcrun-rag#137）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// leo 2026-08-24：「所有的 App 需要有一個類似 Android/iOS 的九宮格啟動界面，
+// 每個 App 有一個 icon，**這會運行在 portal 及 daemon**。」
+//
+// 🔴 清單一律問實例，桌面端沒有任何寫死或存檔的 App 名單（本票紅線；
+//    上游 inkstone/Arcrun#82「安裝態只有一份真相源」）。後端兩條取得路徑
+//    與為什麼是兩條，全寫在 collector/cmd/arcrun-app/apps.go 的檔頭。
+//
+// 🔴 **不掛在每秒的 tick 上**：只有「打開啟動器」「按重新整理」「切知識庫」
+//    這三個使用者動作會真的去問實例一次。把它塞進 tick 等於自造輪詢器。
+
+// loadApps 去問某個知識庫裝了哪些 App；問完只在「使用者還停在啟動器」時重畫。
+async function loadApps(accIdx, force) {
+  if (!force && appsCache[accIdx] !== undefined) return;
+  appsCache[accIdx] = null;                      // null＝問中（畫面顯示「查詢中」）
+  if (page === 'apps') renderPage();
+  let res;
+  try {
+    res = await go.ListApps(accIdx);
+  } catch (ex) {
+    res = { accIdx, apps: [], error: String(ex) };
+  }
+  appsCache[accIdx] = res;
+  if (page === 'apps') renderPage();
+}
+
+function pageApps(s) {
+  const accs = s.accounts || [];
+  if (!accs.length) {
+    // 「沒連任何實例時要說人話」（驗收條件 1）——不是空白，也不是壞掉的樣子。
+    return `<div class="empty">
+      <div class="t">還沒有連上知識庫</div>
+      <div class="d">App 住在你的知識庫上，連上之後這裡就會列出它裝了哪些 App。</div>
+      <button class="primary" id="apConnect">連上知識庫</button>
+    </div>`;
+  }
+  if (appsAccIdx >= accs.length) appsAccIdx = 0;
+  const acc = accs[appsAccIdx];
+  const r = appsCache[appsAccIdx];
+
+  // 知識庫切換器：只有一個庫時不畫（一顆永遠只能按自己的按鈕是純噪音）。
+  const switcher = accs.length > 1 ? `
+    <div class="appswitch">
+      ${accs.map((a, i) => `<span class="chip ${i === appsAccIdx ? 'on' : ''}" data-appacc="${i}">${esc(a.name)}</span>`).join('')}
+    </div>` : '';
+
+  let sub = '查詢中…';
+  let body = `<div class="card"><div class="d">正在問「${esc(acc.name)}」裝了哪些 App…</div></div>`;
+
+  if (r) {
+    if (r.error) {
+      // 🔴 「問不到」與「一個都沒裝」是兩件事，畫面上必須分得出來
+      //    （使用者該做的事完全相反：一個是修連線，一個是去裝 App）。
+      sub = '這次沒問到';
+      body = `<div class="card">
+        <h3>暫時看不到這個知識庫的 App</h3>
+        <div class="d">${esc(r.error)}</div>
+        <div class="acts"><button id="apRetry">再試一次</button></div>
+      </div>`;
+    } else {
+      const apps = r.apps || [];
+      sub = `${apps.length} 個 App 已安裝`;
+      body = `<div class="appgrid">
+        ${apps.map((a) => `
+          <div class="appcell">
+            <div class="apptile" data-appopen="${esc(a.id)}" title="${esc(a.name)}${a.version ? ' · v' + esc(a.version) : ''}">${esc(a.icon || '▢')}</div>
+            <div class="nm" title="${esc(a.name)}">${esc(a.name)}</div>
+          </div>`).join('')}
+        <div class="appcell">
+          <div class="apptile add" id="apAdd" title="怎麼加裝 App">＋</div>
+          <div class="nm dim">加裝 App</div>
+        </div>
+      </div>
+      ${apps.length ? '' : `<div class="card" style="margin-top:26px">
+        <h3>這個知識庫還沒有 App</h3>
+        <div class="d">App 是裝在知識庫上的：跟你的 AI 說一句「幫我裝一個 X」，
+        或用 <b>acr</b> 推一份 App 宣告上去。裝好之後回到這裡按「重新整理」就會出現。</div>
+      </div>`}`;
+    }
+  }
+
+  return `
+    <div class="apphead">
+      <div class="g">
+        <div class="t">App 界面</div>
+        <div class="s">${esc(acc.name)} · ${esc(sub)}</div>
+      </div>
+      <button id="apRefresh">重新整理</button>
+    </div>
+    ${switcher}
+    ${body}`;
+}
+
+// ── 單一 App 的頁 ─────────────────────────────────────────────────────────
+
+async function loadAppDetail(accIdx, id) {
+  const key = accIdx + ':' + id;
+  appDetailKey = key;
+  appDetail = null;
+  renderPage();
+  let d;
+  try {
+    d = await go.GetApp(accIdx, id);
+  } catch (ex) {
+    d = { id, error: String(ex) };
+  }
+  if (appDetailKey !== key) return;   // 使用者已經換去別的 App 了，這份回應作廢
+  appDetail = d;
+  renderNav();                        // 側欄的 App 子項要顯示名字與 icon
+  renderPage();
+}
+
+function pageApp(accIdx, id) {
+  const d = appDetail;
+  const head = (ico, nm, ver) => `
+    <div class="head">
+      <span class="ico">${esc(ico || '▢')}</span>
+      <span class="nm">${esc(nm || id)}</span>
+      ${ver ? `<span class="vr">v${esc(ver)}</span>` : ''}
+      <span class="sp"></span>
+      <button data-appback="1">‹ 回 App 界面</button>
+    </div>`;
+
+  if (!d) return `<div class="appview">${head('', id, '')}<div class="card"><div class="d">載入中…</div></div></div>`;
+
+  if (d.needsLogin) {
+    // session 過期／這台機器還沒換過 session。不是錯誤，是「還差一步」。
+    return `<div class="appview">${head(d.icon, d.name, d.version)}
+      <div class="card">
+        <h3>請先登入這個知識庫</h3>
+        <div class="d">要打開 App 的畫面、或執行它的動作，需要你在這個知識庫的帳號登入一次
+        （之後這台電腦會記住一段時間，同步不受影響）。</div>
+        <div class="field"><div class="lb">帳號</div>
+          <input type="text" id="apEmail" value="${esc(d.email || '')}" disabled/></div>
+        <div class="field"><div class="lb">密碼</div><input type="password" id="apPw"/></div>
+        <div class="err" id="apErr" style="display:none"></div>
+        <div class="acts"><button class="primary" id="apLogin">登入</button></div>
+      </div></div>`;
+  }
+
+  if (d.error) {
+    return `<div class="appview">${head(d.icon, d.name, d.version)}
+      <div class="card">
+        <h3>打不開這個 App</h3>
+        <div class="d">${esc(d.error)}</div>
+        <div class="acts"><button id="apReload">再試一次</button></div>
+      </div></div>`;
+  }
+
+  if (d.hasUi && d.uiHtml) {
+    // 自帶畫面 ⇒ 掛進 sandbox iframe（mountAppUI 會在 wire() 之後填內容）。
+    return `<div class="appview">${head(d.icon, d.name, d.version)}
+      <iframe class="appframe" id="appFrame" sandbox="allow-scripts"></iframe></div>`;
+  }
+
+  // 沒有自帶畫面 ⇒ 列出工作流，一條一顆「現在執行」
+  //（與 Portal 的系統預設畫面同一套，不另立第二種呈現）。
+  const wfs = d.workflows || [];
+  if (!wfs.length) {
+    return `<div class="appview">${head(d.icon, d.name, d.version)}
+      <div class="card"><h3>這個 App 沒有可以按的東西</h3>
+      <div class="d">它既沒有自己的畫面，也沒有登記任何工作流。</div></div></div>`;
+  }
+  return `<div class="appview">${head(d.icon, d.name, d.version)}
+    ${wfs.map((w) => `
+      <div class="wfitem" data-wf="${esc(w.name)}">
+        <div class="top">
+          <span class="nm">${esc(w.name)}</span>
+          <button data-apprun="${esc(w.name)}">現在執行</button>
+        </div>
+        ${w.description ? `<div class="d">${esc(w.description)}</div>` : ''}
+        <div class="out"></div>
+      </div>`).join('')}`;
+}
+
+// mountAppUI 把 App 自帶的 HTML 放進 **sandbox iframe**。
+//
+// 🔴 為什麼一定要 iframe（這是桌面端與 Portal 的關鍵差異，不是潔癖）：
+//    Portal 是網頁，把 App 的 HTML 直接 innerHTML 進去，那段 script 最多拿到
+//    同一頁的 fetch 與 session token。**桌面這半不一樣**——這裡的 window 上掛著
+//    `window.go.main.App`：`Connect`／`SetAI`／`RemoveFolder(…, takedown=true)`
+//    全都在上面。直接 innerHTML ＝ 任何一個 App 的作者都能刪掉使用者雲端的知識。
+//    ⇒ `sandbox="allow-scripts"`（**不給** allow-same-origin ⇒ 不同源，
+//      碰不到 parent 的任何東西），只留一條 postMessage 的窄門。
+//
+// 🔴 窄門的形狀刻意與 Portal 一致：App 作者一樣只認得
+//    `window.arcrunApp.action(action, payload)`，回一個 `{ok,status,d}`——
+//    這樣同一個 App 的畫面在 Portal 與桌面上都跑得起來，作者不必寫兩份。
+function mountAppUI(accIdx, d) {
+  const f = $('appFrame');
+  if (!f) return;
+  const bridge = `
+<script>
+(function () {
+  var seq = 0, pending = {};
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || m.__arcrun !== 'result') return;
+    var p = pending[m.id]; if (!p) return; delete pending[m.id];
+    p(m.payload);
+  });
+  window.arcrunApp = {
+    action: function (action, payload) {
+      return new Promise(function (resolve) {
+        var id = ++seq; pending[id] = resolve;
+        parent.postMessage({ __arcrun: 'action', id: id, action: action, payload: payload || {} }, '*');
+      });
+    }
+  };
+})();
+<\/script>`;
+  // 讓 App 的畫面跟本體同一套底色／字體（它是 Arcrun 的一部分，不是外站）。
+  const skin = `<style>
+    :root{color-scheme:${document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'}}
+    html,body{margin:0;padding:16px;background:transparent;
+      color:${getComputedStyle(document.documentElement).getPropertyValue('--ink').trim() || '#17181A'};
+      font-family:-apple-system,"IBM Plex Sans","PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+      font-size:15px}
+  </style>`;
+  f.srcdoc = '<!doctype html><meta charset="utf-8">' + skin + bridge + d.uiHtml;
+  f.onload = () => {
+    if (appFrameBridge) window.removeEventListener('message', appFrameBridge);
+    appFrameBridge = async (ev) => {
+      if (!f.contentWindow || ev.source !== f.contentWindow) return;   // 只認自己這個 iframe
+      const m = ev.data;
+      if (!m || m.__arcrun !== 'action') return;
+      const reply = (payload) =>
+        f.contentWindow && f.contentWindow.postMessage({ __arcrun: 'result', id: m.id, payload }, '*');
+      try {
+        const raw = await go.RunAppAction(accIdx, d.id, String(m.action || ''), JSON.stringify(m.payload || {}));
+        let parsed = null;
+        try { parsed = JSON.parse(raw); } catch (e) { parsed = { ok: true, result: raw }; }
+        reply({ ok: true, status: 200, d: parsed });
+      } catch (ex) {
+        reply({ ok: false, status: 0, d: { error: String(ex) } });
+      }
+    };
+    window.addEventListener('message', appFrameBridge);
+  };
+}
+
 function renderPage() {
   if (!state) return;
   let html;
-  if (page.startsWith('lib:')) html = pageLib(state, Number(page.slice(4)));
+  if (page === 'apps') html = pageApps(state);
+  else if (page.startsWith('app:')) {
+    const p = page.split(':');
+    html = pageApp(Number(p[1]), p.slice(2).join(':'));
+  }
+  else if (page.startsWith('lib:')) html = pageLib(state, Number(page.slice(4)));
   else if (page === 'ai') html = pageAI(state);
   else if (page === 'update') html = pageUpdate(state);
   else html = pageHome(state);
@@ -447,12 +738,105 @@ function wire() {
   document.querySelectorAll('[data-rm]').forEach((b) => {
     b.onclick = () => confirmRemove(Number(b.dataset.acc), b.dataset.rm);
   });
+
+  // ── App 啟動器（arcrun-rag#137）──
+  on('apConnect', showConnect);
+  on('apRefresh', () => loadApps(appsAccIdx, true));
+  on('apRetry', () => loadApps(appsAccIdx, true));
+  on('apAdd', showHowToInstallApp);
+  on('apReload', () => { const p = page.split(':'); loadAppDetail(Number(p[1]), p.slice(2).join(':')); });
+  on('apLogin', appLogin);
+  document.querySelectorAll('[data-appacc]').forEach((b) => {
+    b.onclick = () => { appsAccIdx = Number(b.dataset.appacc); renderPage(); loadApps(appsAccIdx); };
+  });
+  document.querySelectorAll('[data-appopen]').forEach((b) => {
+    b.onclick = () => goToApp(appsAccIdx, b.dataset.appopen);
+  });
+  document.querySelectorAll('[data-appback]').forEach((b) => {
+    b.onclick = () => { page = 'apps'; appDetail = null; appDetailKey = ''; renderNav(); renderPage(); };
+  });
+  document.querySelectorAll('[data-apprun]').forEach((b) => { b.onclick = () => runAppAction(b); });
+
+  // App 自帶畫面：DOM 換好之後才掛 iframe（srcdoc 要等元素真的在文件裡）
+  if (page.startsWith('app:') && appDetail && appDetail.hasUi && appDetail.uiHtml) {
+    mountAppUI(Number(page.split(':')[1]), appDetail);
+  }
+}
+
+// goToApp 換到某個 App 的頁。換頁前先把上一個 App 的 postMessage 監聽器拆掉——
+// 不拆的話每開一次 App 就多留一個死監聽器（而且它還綁著舊的 accIdx/appId）。
+function goToApp(accIdx, id) {
+  if (appFrameBridge) { window.removeEventListener('message', appFrameBridge); appFrameBridge = null; }
+  page = 'app:' + accIdx + ':' + id;
+  renderNav();
+  loadAppDetail(accIdx, id);
+}
+
+// 「加裝 App」：桌面端**不假裝自己能安裝**——安裝是實例上的動作
+// （跟 AI 說一句話，或 acr 推一份宣告）。這裡只把「東西從哪來」講清楚，
+// 順便給一個開知識庫網頁的出口。
+function showHowToInstallApp() {
+  const acc = (state.accounts || [])[appsAccIdx];
+  const portal = acc ? 'https://' + acc.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/' : '';
+  openSheet(`
+    <h2>怎麼加裝 App？</h2>
+    <p>App 是裝在<b>知識庫</b>上的，不是裝在這台電腦上——所以你在任何一台電腦、
+    或在知識庫網頁上，看到的都是同一批 App。</p>
+    <p>兩種裝法：跟你的 AI 說「幫我裝一個 ⋯⋯」，或用 <b>acr</b> 把一份 App 宣告推上去。
+    裝好之後回到這裡按「重新整理」就會出現。</p>
+    <div class="acts">
+      <button id="c1">知道了</button>
+      ${portal ? `<button class="primary" id="c2">開啟知識庫網頁</button>` : ''}
+    </div>`,
+    () => {
+      $('c1').onclick = closeSheet;
+      if ($('c2')) $('c2').onclick = () => { go.OpenURL(portal); closeSheet(); };
+    });
+}
+
+async function appLogin() {
+  const accIdx = Number(page.split(':')[1]);
+  const id = page.split(':').slice(2).join(':');
+  const err = $('apErr');
+  const btn = $('apLogin');
+  if (btn) btn.disabled = true;
+  try {
+    await go.PortalLogin(accIdx, $('apPw').value);
+    if (btn) btn.disabled = false;
+    loadAppDetail(accIdx, id);
+  } catch (ex) {
+    if (btn) btn.disabled = false;
+    if (err) { err.textContent = String(ex); err.style.display = 'block'; }
+  }
+}
+
+// runAppAction：沒有自帶畫面的 App，那顆「現在執行」。
+// 🔴 白名單是**實例**裁決的（K6）——這裡不認得任何動作名稱，只負責把按鈕送出去、
+//    把實例回的話原樣顯示。失敗就說失敗，不改寫成「可能成功」。
+async function runAppAction(btn) {
+  const accIdx = Number(page.split(':')[1]);
+  const id = page.split(':').slice(2).join(':');
+  const item = btn.closest('.wfitem');
+  const out = item && item.querySelector('.out');
+  btn.disabled = true;
+  if (out) { out.className = 'out'; out.textContent = '執行中…'; }
+  try {
+    const raw = await go.RunAppAction(accIdx, id, btn.dataset.apprun, '{}');
+    if (out) out.textContent = '完成：' + String(raw).slice(0, 600);
+  } catch (ex) {
+    if (out) { out.className = 'out bad'; out.textContent = '失敗：' + String(ex); }
+  }
+  btn.disabled = false;
 }
 
 function render(s) {
   const first = !state;
   const navChanged = state && JSON.stringify((state.accounts||[]).map(a=>[a.name,(a.folders||[]).length]))
                           !== JSON.stringify((s.accounts||[]).map(a=>[a.name,(a.folders||[]).length]));
+  // arcrun-rag#137：還沒連上任何知識庫時，第一眼要落在連線精靈（首頁），
+  // 不是一個註定空的 App 啟動器。連上之後（accounts 從 0 變成 1）也不要硬把
+  // 使用者拉走——他當下正在看剛連好的東西。
+  if (first && page === 'apps' && !(s.accounts || []).length) page = 'home';
   state = s;
   $('ver').textContent = s.version || '';
   $('statusBig').textContent = s.statusBig;
@@ -460,6 +844,9 @@ function render(s) {
   $('statusSub').textContent = s.statusSub;
   if (first || navChanged) { renderNav(); renderPage(); }
   else if (page === 'home') renderPage();   // 首頁的狀態時間軸要跟著跳
+  // 🔴 這是**唯一**一次自動去問實例：第一次拿到 state（＝知道有哪些知識庫）之後。
+  //    之後只有使用者按重新整理／切知識庫才會再問一次——**不掛在每秒的 tick 上**。
+  if (first && page === 'apps' && (s.accounts || []).length) loadApps(appsAccIdx);
 }
 
 async function tick() { try { render(await go.GetState()); } catch (e) {} }

@@ -106,6 +106,11 @@ import { syncManifest, verifyManifest } from './release.mjs';
 import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 import { requireDaemonInBundle } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, logGithubContact } from './d20-guard.mjs';
+// 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
+//   d20-guard 解的是「殼層 hook 看不見 node 子行程」的**GitHub 接觸**那一半；
+//   這一支解同一個形狀的另一半：**推 main**。2026-08-18 出貨線就是這樣把
+//   inkstone/arcrun-collector 的 main 推壞的，而一個閘都沒響。
+import { assertPushAllowed, unarmed as unarmedDestinations, claimGrants as claimMainPushGrants, armCommand, normRemote as normRemoteId } from './main-push-guard.mjs';
 import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
 import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
@@ -391,6 +396,13 @@ function shLive(cmd, args, cwd, env) {
  * ⇒ 成功時什麼都不印；失敗時才把訊息帶出來，且先把 `//帳號:權杖@` 遮掉再丟。
  */
 function pushGiteaQuietly(branch) {
+  // 🔴 人閘（InkStoneCo#56）：`branch` 是變數——它可以是 main。
+  //   推出貨分支時這一行不會有任何感覺（目標不是 main ⇒ 直接放行並留痕）；
+  //   哪天它變成 main，就需要一枚總管的戳記。
+  assertPushAllowed({
+    args: ['push', 'gitea', `HEAD:refs/heads/${branch}`],
+    cwd: REPO_ROOT, who: 'ship.mjs／推出貨分支到 Gitea', grants: ctx.mainPushGrants,
+  });
   const r = spawnSync('git', ['push', 'gitea', `HEAD:refs/heads/${branch}`], {
     cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
   });
@@ -399,6 +411,34 @@ function pushGiteaQuietly(branch) {
     throw new Error(`把出貨分支推上 Gitea 失敗（exit ${r.status}）：\n     `
       + msg.trim().split('\n').filter(Boolean).slice(-6).join('\n     '));
   }
+}
+
+/**
+ * 🔴 這一趟出貨會覆寫哪幾個 repo 的 `main`（InkStoneCo#56 的 preflight 用）。
+ *
+ * 全部**讀登錄簿**，不猜名字：產物倉庫（`bundles`）、GitHub 公開鏡像（`mirrorRemote`）、
+ * 以及每條「源碼住自己 repo」的版本線（`lineRepos.<線>.remote`）。
+ * 目標分支不是 main／master 的不算；`local-selftest` 不碰遠端，也不算。
+ */
+function mainPushDestinations() {
+  const out = [];
+  const add = (remote, branch) => {
+    if (!remote || !branch || String(remote) === 'local-selftest') return;
+    if (branch !== 'main' && branch !== 'master') return;
+    const id = normRemoteId(remote);
+    if (id && !out.includes(id)) out.push(id);
+  };
+  if (T.bundles) add(T.bundles.remote, T.bundles.branch);
+  const R = T.releaseRecord;
+  if (R) {
+    if (R.mirrorRemote) add(R.mirrorRemote, 'main');
+    for (const line of LINES) {
+      let entry = null;
+      try { entry = repoForLine(line.id, R); } catch { continue; }  // 宣告缺了自有 (a3) 去報
+      if (entry && livesInOwnRepo(entry)) add(entry.remote, entry.branch || 'main');
+    }
+  }
+  return out;
 }
 
 /** git remote 正規化：去掉協定、帳密、.git 結尾 ⇒ 只比「這是哪個 repo」。 */
@@ -435,6 +475,7 @@ const ctx = {
   liveBefore: null,
   pinChanged: false, pushed: false,
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
+  mainPushGrants: null, // 推 main 的授權（preflight 一次領走，每次推 main 用掉一格，InkStoneCo#56）
   sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
   arcrunHeadSha: null, // 來源 repo 的完整 40 碼 HEAD（見 preflight／source-pin）——釘子分支比對用全碼，不用前綴
 };
@@ -613,6 +654,39 @@ const STEPS = [
         lines.push(`版本線 ${line.id}（${line.product}）→ ${entry.repoSlug}`
           + (livesInOwnRepo(entry) ? `（源碼住那邊：本 repo 的 ${entry.sourceDir}/ 每次出貨同步過去）` : ''));
       }
+    }
+  }
+
+  // (a4) 🔴 **這一趟會覆寫哪幾個 repo 的 main**（InkStoneCo#56）
+  //
+  //   推 main 的人閘住在**真的在推的那一行**身上（main-push-guard.mjs），而那些行分散在
+  //   第 5 站（產物倉庫）、第 21 站（GitHub 鏡像）與各版本線的同步裡。等撞到才問人，
+  //   一趟出貨會停三次；而且會停在**中段**——bundle 已經推出去了，那就是「部分成功」。
+  //   ⇒ 開跑前把目的地一次列完；真的 `--confirm` 就在這裡把授權領走（形狀同 D20 的
+  //     `checkArmed()`：人的決定在 preflight 確認一次，之後由管線帶著走）。
+  {
+    const dests = mainPushDestinations();
+    if (!dests.length) {
+      lines.push('這一趟不會覆寫任何 repo 的 main');
+    } else if (!CONFIRM) {
+      lines.push(`這一趟會覆寫 main 的目的地（${dests.length}）：${dests.join('、')}`);
+      lines.push(`（預演不必先按閘。真的 --confirm 之前，總管逐筆看過那些 commit 再貼：${armCommand(dests)}）`);
+    } else {
+      const missing = unarmedDestinations(dests);
+      if (missing.length) {
+        throw new Error(
+          `這一趟會覆寫 ${dests.length} 個 repo 的 main，其中 ${missing.length} 個還沒有「總管決定了」的戳記：\n` +
+          missing.map((d) => `       - ${d}`).join('\n') + '\n' +
+          `     🔴 2026-08-18 出貨線就是在沒有任何閘的情況下推壞了 inkstone/arcrun-collector 的 main\n` +
+          `        （刪掉 cmd/collector/main.go、把 22 行的 .gitignore 洗成 1 行）——殼層那道 hook\n` +
+          `        看不見 node 子行程，所以閘搬進了管線自己身上（InkStoneCo#56）。\n` +
+          `     → 逐筆看過那些 commit，確定它們該進 main，再整行貼（一次把這趟要的都寫進去）：\n\n` +
+          `         ${armCommand(dests)}\n\n` +
+          `     戳記綁目的地、單次用完即丟、15 分鐘失效。**subagent 不要自己造它**，交回總管。`);
+      }
+      // 領走：之後每一次推 main 用掉一格（見 main-push-guard.mjs 的 claimGrants）
+      ctx.mainPushGrants = claimMainPushGrants(dests);
+      lines.push(`推 main 的授權已領（${[...ctx.mainPushGrants.keys()].join('、')}）——每個目的地一次，用完即丟`);
     }
   }
 
@@ -1367,6 +1441,14 @@ const STEPS = [
   }
   const ahead = sh('git', ['rev-list', '--count', `origin/${T.bundles.branch}..HEAD`], ctx.bundlesDir);
   if (Number(ahead) === 0) return { status: 'skip', detail: ['已與遠端同步，沒有要推的'] };
+  // 🔴 人閘（InkStoneCo#56）：產物倉庫的分支就是 `main`（登錄簿寫死）⇒ 這一行每次出貨
+  //   都在推 main，而殼層那道閘看不見它。這裡不做例外——**declared 的目的地也是目的地**，
+  //   總管照樣要為「這一次覆寫哪個 repo 的 main」按一次閘（preflight 會先把清單列出來）。
+  assertPushAllowed({
+    args: ['push', 'origin', T.bundles.branch], cwd: ctx.bundlesDir,
+    remoteUrl: T.bundles.remote, who: `ship.mjs／推產物倉庫（${TARGET_NAME}）`,
+    grants: ctx.mainPushGrants,
+  });
   // 大 zip 推 GitHub 會 remote hung up（wiki agent-memory:805）⇒ 一律帶 postBuffer
   sh('git', ['-c', 'http.postBuffer=157286400', 'push', 'origin', T.bundles.branch], ctx.bundlesDir);
   ctx.pushed = true;
@@ -2018,6 +2100,8 @@ const STEPS = [
           remoteUrl: authed,
           branch: t.entry.branch || 'main',
           destOwned: t.entry.destOwned || [],
+      // preflight 領到的推 main 授權（InkStoneCo#56）——沒有它這一步會當場被閘擋下
+      guardOpts: { grants: ctx.mainPushGrants },
           message: `sync: ${t.entry.sourceDir}/ 同步自 ${R.repoSlug}@${headSha.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
         });
         const onServer = await giteaCommitExists(t.slug, sync.sha, opts);
@@ -2143,6 +2227,16 @@ const STEPS = [
       `     真身要在啟動這支管線的 shell 裡先 export——查 system-dev/wiki/credentials-map.md 找這把鑰匙在哪。`);
   }
   const authB64 = Buffer.from(`${process.env.GITHUB_ACCOUNT_NAME || 'git'}:${token}`).toString('base64');
+  // 🔴 人閘（InkStoneCo#56）：這一行的目標寫死就是 `main`。D20 的保險（leo 開的）
+  //   管的是「可不可以碰 GitHub」，這一枚戳記管的是「可不可以覆寫這個 repo 的 main」
+  //   ——兩件事，兩道閘，不互相取代。
+  //   ⚠️ 交給閘的 argv 刻意**不帶** `-c …extraheader=…`：那串是權杖（D36 值不落地），
+  //   而閘會把 argv 寫進請求檔與留痕。少了它不影響判斷（目的地與分支都還在）。
+  assertPushAllowed({
+    args: ['push', G.mirrorRemote, 'HEAD:refs/heads/main'], cwd: mirrorDir,
+    remoteUrl: G.mirrorRemote, who: 'ship.mjs／推 GitHub 公開鏡像',
+    grants: ctx.mainPushGrants,
+  });
   sh('git', ['-c', `http.${G.mirrorRemote}.extraheader=Authorization: Basic ${authB64}`,
     'push', G.mirrorRemote, 'HEAD:refs/heads/main'], mirrorDir);
   try {
@@ -2173,6 +2267,8 @@ const STEPS = [
       remoteUrl: authed,
       branch: t.entry.branch || 'main',
       destOwned: t.entry.destOwned || [],
+      // preflight 領到的推 main 授權（InkStoneCo#56）——沒有它這一步會當場被閘擋下
+      guardOpts: { grants: ctx.mainPushGrants },
       message: `sync: ${t.entry.sourceDir}/ 同步自 ${G.repoSlug}@${headShaFull.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
     });
     try {

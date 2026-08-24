@@ -171,7 +171,7 @@ test('⑨ 內容沒變 ⇒ 不建 commit、不 push（同一版重跑不該在�
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('⑨b 有變更 ⇒ commit ＋ push，回新的 sha', () => {
+test('⑨b 有變更 ⇒ commit ＋ push，回新的 sha（但推 main 要先有授權，InkStoneCo#56）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'lsr-'));
   try {
     mkdirSync(join(dir, 'work', '.git'), { recursive: true });
@@ -184,15 +184,49 @@ test('⑨b 有變更 ⇒ commit ＋ push，回新的 sha', () => {
       if (args[0] === 'rev-parse') return { status: 0, out: 'cafebabecafebabe' };
       return { status: 0, out: '' };
     };
+    // 🔴 這一步推的是**目的 repo 的 main** ⇒ 要一張 preflight 領到的授權才推得動
+    //   （出貨線真的跑起來時，那張授權來自 ship.mjs 的 preflight：見 InkStoneCo#56）。
+    const guardOpts = {
+      grants: new Map([['git.uncle6.me/inkstone/arcrun-collector', 1]]),
+      logPath: join(dir, 'gate-log.md'), pendingDir: join(dir, 'pending'), stampPath: join(dir, 'stamp'),
+    };
     const r = syncSourceRepo({
       srcRoot: dir, sourceDir: 'collector', workDir: join(dir, 'work'),
       remoteUrl: 'https://git.uncle6.me/inkstone/arcrun-collector.git', message: 'sync: x',
-      runner, copyTracked: () => ({ copied: 228, skipped: [] }),
+      runner, copyTracked: () => ({ copied: 228, skipped: [] }), guardOpts,
     });
     assert.equal(r.changed, true);
     assert.equal(r.sha, 'cafebabecafebabe');
     assert.ok(calls.includes('commit'));
     assert.ok(calls.includes('push'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 🔴 ⑨c 是 InkStoneCo#56 的假陰性那一半，在**災難現場那一行**上的證明：
+//   2026-08-18 這一行把一筆會刪檔的 commit 推上了 inkstone/arcrun-collector 的 main，
+//   而殼層的 PreToolUse hook 看不見 node 子行程 ⇒ 一個閘都沒響。
+test('⑨c 沒有授權就推目的 repo 的 main ⇒ 當場擋下，且 push 根本沒被呼叫', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lsr-'));
+  try {
+    mkdirSync(join(dir, 'work', '.git'), { recursive: true });
+    const calls = [];
+    const runner = (args) => {
+      calls.push(args[0]);
+      if (args[0] === 'remote') return { status: 0, out: 'https://git.uncle6.me/inkstone/arcrun-collector.git' };
+      if (args[0] === 'status') return { status: 0, out: ' M a.go' };
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, out: 'abc' };
+      if (args[0] === 'rev-parse') return { status: 0, out: 'cafebabecafebabe' };
+      return { status: 0, out: '' };
+    };
+    const guardOpts = {
+      logPath: join(dir, 'gate-log.md'), pendingDir: join(dir, 'pending'), stampPath: join(dir, 'stamp'),
+    };
+    assert.throws(() => syncSourceRepo({
+      srcRoot: dir, sourceDir: 'collector', workDir: join(dir, 'work'),
+      remoteUrl: 'https://git.uncle6.me/inkstone/arcrun-collector.git', message: 'sync: x',
+      runner, copyTracked: () => ({ copied: 228, skipped: [] }), guardOpts,
+    }), /總管決定了/);
+    assert.ok(!calls.includes('push'), '被擋下就不准真的推出去');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

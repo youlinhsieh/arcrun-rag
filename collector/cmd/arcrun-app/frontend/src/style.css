@@ -304,3 +304,111 @@ input[type=text], input[type=password] {
   width: 7px; height: 7px; border-radius: 50%; flex: none;
   background: var(--err); margin-left: 4px;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   App 啟動器（arcrun-rag#137）
+   leo 2026-08-24：「所有的 App 需要有一個類似 Android/iOS 的**九宮格啟動界面**，
+   每個 App 有一個 icon，這會運行在 portal 及 daemon。」
+
+   🔴 尺寸／圓角／間距逐項照 leo 已核准的設計稿（Launcher-Desktop.dc.html）：
+      磁磚 88x88、圓角 22、格線 gap 32/24、hover 上浮 2px、標籤 14px 置中。
+   🔴 顏色**一個 hex 都不准出現**——全部走 arcrun-cis.css 的變數（本檔開頭那條規矩）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 頁首：知識庫名 ＋ 幾個 App ＋ 重新整理（同 .libhead 的結構，不另發明一種頁首） */
+.apphead {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 18px; margin-bottom: 26px;
+  border-bottom: 2px solid rgba(var(--amber-rgb), .35);   /* 設計稿的 accentSoft 分隔線 */
+}
+.apphead .g { flex: 1; min-width: 0; }
+.apphead .t { font-size: 22px; font-weight: 600; letter-spacing: .04em; }
+.apphead .s { margin-top: 5px; font-size: 13.5px; color: rgba(var(--ink-rgb), .55); }
+
+/* 多個知識庫時才出現的切換器（只有一個庫時畫面上不該有這排噪音） */
+.appswitch { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+/* 圓角用 10px（同 button），刻意**不用**膠囊——check-cis.sh 明文擋膠囊選中態
+   （leo 08-04 否決過），而且這排切換器與按鈕本來就該是同一種形狀語彙。 */
+.appswitch .chip {
+  padding: 6px 13px; font-size: 13px; border-radius: 10px;
+  border: 1px solid rgba(var(--ink-rgb), .18);
+  color: rgba(var(--ink-rgb), .6); cursor: pointer; user-select: none;
+}
+.appswitch .chip.on {
+  border-color: var(--amber); color: var(--amber);
+  background: rgba(var(--amber-rgb), .08); font-weight: 600;
+}
+
+/* 九宮格本體。auto-fill 而不是固定 4 欄：桌面視窗是可以被拉窄的（min 820px），
+   固定欄數會在窄視窗把磁磚擠變形。 */
+.appgrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 32px 24px;
+}
+.appcell { display: flex; flex-direction: column; align-items: center; gap: 11px; }
+.apptile {
+  width: 88px; height: 88px; border-radius: 22px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 38px; line-height: 1;
+  background: var(--well); border: 1px solid rgba(var(--ink-rgb), .1);
+  cursor: pointer; user-select: none;
+  transition: border-color .12s, background .12s, transform .12s;
+}
+.apptile:hover {
+  transform: translateY(-2px);
+  border-color: var(--amber);
+  background: rgba(var(--amber-rgb), .08);
+}
+/* 「加裝 App」——設計稿是虛線框＋加號，語意是「這一格還沒有東西」 */
+.apptile.add {
+  background: none; border: 1.5px dashed rgba(var(--ink-rgb), .22);
+  font-size: 28px; color: rgba(var(--ink-rgb), .45);
+}
+.appcell .nm {
+  font-size: 14px; text-align: center; line-height: 1.4;
+  max-width: 116px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.appcell .nm.dim { color: rgba(var(--ink-rgb), .55); }
+
+/* App 頁 */
+.appview { display: flex; flex-direction: column; }
+.appview .head {
+  display: flex; align-items: center; gap: 12px;
+  padding-bottom: 14px; margin-bottom: 16px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), .1);
+}
+.appview .head .ico { font-size: 24px; line-height: 1; }
+.appview .head .nm { font-size: 17px; font-weight: 600; }
+.appview .head .vr {
+  font-size: 12px; color: rgba(var(--ink-rgb), .4);
+  font-family: ui-monospace, Menlo, monospace;
+}
+.appview .head .sp { flex: 1; }
+
+/* App 自帶畫面：**關在 sandbox iframe 裡**（見 main.js mountAppUI 的理由）。
+   高度吃滿剩下的版面，讓 App 自己決定要怎麼排。 */
+/* 高度用 calc 而不是 flex:1／height:100%：#page 是 flex item ＋ 自帶 padding，
+   百分比高度在那裡會多算出一段 padding 而長出一條假捲軸。
+   250px＝頁首(約 90) + main padding(48) + App 頁首(約 60) + 呼吸。 */
+.appframe {
+  width: 100%; height: calc(100vh - 250px); min-height: 420px;
+  border: 1px solid rgba(var(--ink-rgb), .1); border-radius: 12px;
+  background: var(--paper-a);
+}
+
+/* 沒有自帶畫面的 App＝列出它的工作流，一條一顆「現在執行」
+   （與 Portal 的系統預設畫面同一套呈現，不另立第二種） */
+.wfitem {
+  background: var(--well); border-radius: 12px;
+  padding: 15px 18px; margin-bottom: 10px;
+}
+.wfitem .top { display: flex; align-items: baseline; gap: 12px; }
+.wfitem .nm { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+.wfitem .d { margin-top: 7px; font-size: 13.5px; color: rgba(var(--ink-rgb), .55); line-height: 1.7; }
+.wfitem .out {
+  margin-top: 8px; font-size: 12.5px; line-height: 1.6;
+  font-family: ui-monospace, Menlo, monospace;
+  color: rgba(var(--ink-rgb), .55);
+  word-break: break-all; white-space: pre-wrap;
+}
+.wfitem .out.bad { color: var(--err); }
