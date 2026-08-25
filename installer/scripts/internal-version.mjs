@@ -46,6 +46,13 @@ export const REPO_SHORT_CODES = {
   // D95（2026-08-18，InkStoneCo#40）：桌面小幫手搬進自己的 repo，
   // 它的內部號要指得回**它自己那個 repo 的 commit**，不是 arcrun-rag 的。
   'arcrun-collector': 'ACO',
+  // 2026-08-24：GitHub 對外那一側改名 `arcrun-port`（leo：「我不要叫它 collector，
+  // **它是 Arcrun 雲端和地端的接口，用途不只是收集器**」）。
+  // 🔴 **不共用 `ACO`**：Gitea 的 `arcrun-collector` 與 GitHub 的 `arcrun-port`
+  //   是同一個產品的兩個 host，但**兩條 commit 歷史**——同一趟出貨在兩邊落下的 sha 不同。
+  //   內部號的用途是「指回一顆 commit」，共用短碼就會產生指得到兩顆的號碼。
+  //   ⇒ 一個 host 一個碼；歷史上的 `ACO-*` 仍然只指 Gitea 那邊，不受影響。
+  'arcrun-port': 'APT',
 };
 
 /** @returns {string} 例 'RAG'。查不到就丟——短碼漂掉之後兩個號碼會被當成兩個 repo。 */

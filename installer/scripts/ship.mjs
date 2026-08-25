@@ -95,8 +95,8 @@
  *       --release-record-only（只跑發佈紀錄那一站；禁用在 publish 目標 ⇒ 碰不到 GitHub）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { syncManifest, verifyManifest } from './release.mjs';
@@ -1489,6 +1489,13 @@ const STEPS = [
   const built = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8')).built;
 
   const jsPath = join(REPO_ROOT, T.installer.cwd, 'worker.js');
+  // 🔴 先確認 migration 帶齊了才算指紋——少一支就當場中止（見 assertMigrationsComplete 檔頭）
+  const arcrunRoot = process.env.ARCRUN_REPO_ROOT
+    || [join(REPO_ROOT, '..', '..', 'matrix', 'arcrun'), join(REPO_ROOT, '..', 'Arcrun'), join(REPO_ROOT, '..', 'arcrun')]
+         .find((c) => existsSync(join(c, 'kbdb', 'migrations'))) || '';
+  const migLines = arcrunRoot
+    ? assertMigrationsComplete(join(REPO_ROOT, T.installer.cwd), arcrunRoot)
+    : ['⚠️ 找不到 Arcrun repo，這一趟沒能複驗 migration 帶齊了沒（設 ARCRUN_REPO_ROOT 可複驗）'];
   ctx.installerSrcHash = installerSourceHash(jsPath);
 
   const tomlPath = join(REPO_ROOT, T.installer.cwd, T.installer.config);
@@ -1518,6 +1525,7 @@ const STEPS = [
     `[${T.installer.varsSection}] BUNDLE_BUILT = ${built}`,
     `[${T.installer.varsSection}] INSTALLER_SRC_SHA = ${ctx.installerSrcHash.slice(0, 12)}…`,
     T.installer.mirrorConstants ? 'worker.js 的兩個常數同步寫入（不留第二份手抄本）' : 'worker.js 常數不鏡射（本目標靠 vars 覆蓋）',
+    ...migLines,
   ] };
 }},
 
@@ -2378,7 +2386,45 @@ function installerSourceHash(jsPath) {
   const src = readFileSync(jsPath, 'utf8')
     .replace(/const DEFAULT_BUNDLE_BASE = '[^']*'/, "const DEFAULT_BUNDLE_BASE = ''")
     .replace(/const BUNDLE_BUILT = '[^']*'/, "const BUNDLE_BUILT = ''");
-  return createHash('sha256').update(src).digest('hex');
+  const h = createHash('sha256').update(src);
+  // 🔴 2026-08-25（inkstone/Arcrun#159）：這裡原本**只雜湊 worker.js**。
+  //   但安裝器實際執行的 D1 schema 來自它 import 的 `migrations.json`
+  //   ⇒ migration 改了、指紋不變 ⇒ deploy 站判定「安裝器原始碼未變、不用重部」
+  //   ⇒ **新的 migration 永遠上不了線**。把它一起算進指紋。
+  const migPath = join(dirname(jsPath), 'migrations.json');
+  if (existsSync(migPath)) h.update(readFileSync(migPath, 'utf8'));
+  return h.digest('hex');
+}
+
+/**
+ * 出貨前確認：安裝器帶出去的 migration ＝ Arcrun kbdb `migrations/` 底下的**全部**。
+ *
+ * 🔴 為什麼要有這一站（2026-08-25 實錄，leo 的正式實例當場登不進去）：
+ *   `compile-migrations.mjs` 底下曾經寫死 `['0001_base.sql','0002_credentials.sql']`，
+ *   而且它的輸出寫到 `installer/src/migrations.json`——**worker.js 讀的卻是
+ *   `oauth-prototype/migrations.json`**，那是一份手抄的舊副本。
+ *   ⇒ 0003～0007 從來沒有被打進任何一次出貨；每個用一鍵安裝的人，資料層都停在 0002。
+ *   ⇒ worker 一路更新到最新，讀 v7 才有的 `src_id`／`rel_id`／`dst_id`
+ *     ⇒ `no such column` ⇒ 整個知識庫 500，而 `/health` 照回 `ok: true`。
+ *   leo 原話：「任何人安裝了下一版都要有前一版的遷移，這是非常大的失誤，一定不止我」
+ *            「更新沒有政策？根本亂搞」
+ *   ⇒ 三層都補了（動態收檔／輸出位置對上／指紋含它），這一站是第四層：**出貨前機械複驗**。
+ */
+function assertMigrationsComplete(installerCwd, arcrunRoot) {
+  const migDir = join(arcrunRoot, 'kbdb', 'migrations');
+  if (!existsSync(migDir)) return ['找不到 Arcrun kbdb/migrations（跳過複驗）'];
+  const onDisk = readdirSync(migDir).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
+  const shipped = JSON.parse(readFileSync(join(installerCwd, 'migrations.json'), 'utf8'));
+  const missing = onDisk.filter((f) => !(shipped.source || []).includes(f));
+  if (missing.length) {
+    throw new Error(
+      `安裝器帶出去的 migration 少了 ${missing.length} 支：${missing.join('、')}\n` +
+        `         → 跑一次 \`ARCRUN_REPO_ROOT=<Arcrun> node installer/scripts/compile-migrations.mjs\` 再出貨。\n` +
+        `         🔴 少一支＝用戶的資料層停在舊世代，而 worker 是新的——` +
+        `那正是 2026-08-25 讓 leo 登不進自己知識庫的病（inkstone/Arcrun#159）。`,
+    );
+  }
+  return [`安裝器帶了全部 ${onDisk.length} 支 migration（${onDisk[0]} … ${onDisk[onDisk.length - 1]}）`];
 }
 
 // ── wrangler.toml 的分段變數寫入（只在指定的 section 內動，不誤傷別段）──────

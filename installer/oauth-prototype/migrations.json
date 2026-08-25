@@ -1,7 +1,12 @@
 {
   "source": [
     "0001_base.sql",
-    "0002_credentials.sql"
+    "0002_credentials.sql",
+    "0003_library_map.sql",
+    "0004_execution_log_template.sql",
+    "0005_credential_template.sql",
+    "0006_drop_credentials_table.sql",
+    "0007_tree_record_model.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n\n  \n  parent_id TEXT,\n\n  \n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n\n  \n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n\n  \n  confidence REAL,\n  metadata_json TEXT,\n\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -18,7 +23,32 @@
     "CREATE INDEX IF NOT EXISTS idx_ev_template_slot ON entry_values(template_id, slot_name)",
     "CREATE INDEX IF NOT EXISTS idx_ev_entry ON entry_values(entry_id)",
     "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES\n  ('tpl-recipe-stat', 'recipe_stat', 'recipe success/failure counters', '[\"canonical_id\",\"success_count\",\"failure_count\",\"last_status\",\"last_at\"]', 'system')",
-    "CREATE TABLE IF NOT EXISTS credentials (\n  api_key      TEXT NOT NULL,           \n  name         TEXT NOT NULL,           \n  service      TEXT,                    \n  sensitivity  TEXT NOT NULL DEFAULT 'standard',  \n  secret_ref   TEXT NOT NULL,           \n  created_at   INTEGER NOT NULL,\n  last_used_at INTEGER,                 \n  PRIMARY KEY (api_key, name)\n)",
-    "CREATE INDEX IF NOT EXISTS idx_cred_apikey ON credentials(api_key)"
+    "CREATE TABLE IF NOT EXISTS credentials ( \n  api_key      TEXT NOT NULL,           \n  name         TEXT NOT NULL,           \n  service      TEXT,                    \n  sensitivity  TEXT NOT NULL DEFAULT 'standard',  \n  secret_ref   TEXT NOT NULL,           \n  created_at   INTEGER NOT NULL,\n  last_used_at INTEGER,                 \n  PRIMARY KEY (api_key, name)\n)",
+    "CREATE INDEX IF NOT EXISTS idx_cred_apikey ON credentials(api_key)",
+    "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-library-map',\n  'library_map',\n  'per-library map block（藏書地圖：top_entities／relation_profile／bridges／triplet_count 由 graph 機械導出；narrative 由 LLM 著作，算不出來、丟了回不來；Arcrun#39／#44）',\n  '[\"library\",\"narrative\",\"top_entities\",\"relation_profile\",\"bridges\",\"triplet_count\",\"commit_hash\",\"status\"]',\n  'system'\n)",
+    "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-execution-log',\n  'execution_log',\n  'workflow 執行紀錄（KV 額度事故修復；欄位收斂＝少記，成功記最少/失敗記多一點，見 execution-log.ts）',\n  '[\"workflow_id\",\"verdict\",\"duration_ms\",\"message\",\"target\",\"api_key\"]',\n  'system'\n)",
+    "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-credential',\n  'credential',\n  'credential 目錄（D38 圍牆修復：改走 entries 表 entry_type=credential，取代舊 credentials 表；零密文，密文本體住 Workers per-script Secrets）',\n  '[\"name\",\"service\",\"sensitivity\",\"secret_ref\",\"last_used_at\"]',\n  'system'\n)",
+    "CREATE TABLE IF NOT EXISTS credentials ( \n  api_key      TEXT NOT NULL,\n  name         TEXT NOT NULL,\n  service      TEXT,\n  sensitivity  TEXT NOT NULL DEFAULT 'standard',\n  secret_ref   TEXT NOT NULL,\n  created_at   INTEGER NOT NULL,\n  last_used_at INTEGER,\n  PRIMARY KEY (api_key, name)\n)",
+    "INSERT INTO entries (id, entry_type, owner_id, page_name, metadata_json, created_at, updated_at)\nSELECT\n  'e_cred_' || lower(hex(randomblob(8))),\n  'credential',\n  c.api_key,\n  c.name,\n  json_object('service', c.service, 'sensitivity', c.sensitivity, 'secret_ref', c.secret_ref, 'last_used_at', c.last_used_at),\n  c.created_at,\n  unixepoch()\nFROM credentials c\nWHERE NOT EXISTS (\n  SELECT 1 FROM entries e\n  WHERE e.entry_type = 'credential' AND e.owner_id = c.api_key AND e.page_name = c.name\n)",
+    "DROP TABLE IF EXISTS credentials",
+    "ALTER TABLE entries ADD COLUMN src_id TEXT",
+    "ALTER TABLE entries ADD COLUMN rel_id TEXT",
+    "ALTER TABLE entries ADD COLUMN dst_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_entries_rel_src ON entries(src_id) WHERE src_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_entries_rel_dst ON entries(dst_id, rel_id) WHERE dst_id IS NOT NULL",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_root', 'root', 'system', NULL)",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_belongs', 'belongs', 'system', NULL)",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_field_of', 'field_of', 'system', NULL)",
+    "CREATE TABLE IF NOT EXISTS entry_values ( \n  id TEXT PRIMARY KEY,\n  record_id TEXT NOT NULL,\n  template_id TEXT NOT NULL,\n  slot_name TEXT NOT NULL,\n  entry_id TEXT NOT NULL,\n  created_at INTEGER DEFAULT (unixepoch()),\n  UNIQUE(record_id, slot_name)\n)",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id, created_at, updated_at)\nSELECT t.id, t.name, 'sheet', NULL, t.created_at, t.updated_at FROM templates t",
+    "INSERT OR IGNORE INTO entries (id, entry_type, src_id, rel_id, dst_id)\nSELECT 'relb_' || t.id, 'relation', t.id, 'sys_belongs', 'sys_root' FROM templates t",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type)\nSELECT 'fld_' || t.id || '_' || j.value, j.value, 'field'\nFROM templates t, json_each(t.slots_json) j",
+    "INSERT OR IGNORE INTO entries (id, entry_type, src_id, rel_id, dst_id)\nSELECT 'relf_' || t.id || '_' || j.value, 'relation', 'fld_' || t.id || '_' || j.value, 'sys_field_of', t.id\nFROM templates t, json_each(t.slots_json) j",
+    "INSERT OR IGNORE INTO entries (id, content, entry_type)\nSELECT DISTINCT 'fld_' || ev.template_id || '_' || ev.slot_name, ev.slot_name, 'field' FROM entry_values ev",
+    "INSERT OR IGNORE INTO entries (id, entry_type, src_id, rel_id, dst_id)\nSELECT DISTINCT 'relf_' || ev.template_id || '_' || ev.slot_name, 'relation',\n       'fld_' || ev.template_id || '_' || ev.slot_name, 'sys_field_of', ev.template_id\nFROM entry_values ev",
+    "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, created_at, updated_at)\nSELECT ev.record_id, 'record',\n       (SELECT e2.owner_id FROM entry_values ev2 JOIN entries e2 ON ev2.entry_id = e2.id\n         WHERE ev2.record_id = ev.record_id AND e2.owner_id IS NOT NULL LIMIT 1),\n       MIN(ev.created_at), MIN(ev.created_at)\nFROM entry_values ev GROUP BY ev.record_id",
+    "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, src_id, rel_id, dst_id, created_at)\nSELECT 'relb_' || ev.record_id || '_' || ev.template_id, 'relation',\n       (SELECT e2.owner_id FROM entry_values ev2 JOIN entries e2 ON ev2.entry_id = e2.id\n         WHERE ev2.record_id = ev.record_id AND e2.owner_id IS NOT NULL LIMIT 1),\n       ev.record_id, 'sys_belongs', ev.template_id, MIN(ev.created_at)\nFROM entry_values ev GROUP BY ev.record_id, ev.template_id",
+    "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, src_id, rel_id, dst_id, created_at)\nSELECT 'relv_' || ev.id, 'relation', e.owner_id,\n       ev.record_id, 'fld_' || ev.template_id || '_' || ev.slot_name, ev.entry_id, ev.created_at\nFROM entry_values ev JOIN entries e ON ev.entry_id = e.id",
+    "DROP TABLE IF EXISTS entry_values"
   ]
 }
