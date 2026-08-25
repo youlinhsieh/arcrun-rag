@@ -1515,7 +1515,10 @@ const STEPS = [
   }
 
   if (toml === before && js === jsBefore) {
-    return { status: 'skip', detail: [`釘子與安裝器原始碼都沒動（built ${built}，src ${ctx.installerSrcHash.slice(0, 12)}）`] };
+    // 🔴 migration 覆蓋率那一行**跳過時也要印**：閘在上面已經跑過（帶不齊會 throw），
+    //   但如果只在「有動」的那一趟才顯示，盤點的人會以為這一趟沒驗——
+    //   而「只在單邊執行的站是共同盲區」正是 2026-08-25 這整件事的形狀之一。
+    return { status: 'skip', detail: [`釘子與安裝器原始碼都沒動（built ${built}，src ${ctx.installerSrcHash.slice(0, 12)}）`, ...migLines] };
   }
   writeFileSync(tomlPath, toml);
   if (js !== jsBefore) writeFileSync(jsPath, js);

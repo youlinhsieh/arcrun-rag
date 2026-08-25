@@ -3142,13 +3142,13 @@
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
      "status": "skip",
-     "note": "釘子與安裝器原始碼都沒動（built 2026-08-24，src 43e8f04e70d6）"
+     "note": "釘子與安裝器原始碼都沒動（built 2026-08-24，src 032637b22914）"
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
      "status": "skip",
-     "note": "線上已是 1.4.53／pin 389c6cd／安裝器原始碼 43e8f04e70d6 未變，且釘子沒動 ⇒ 不重複部署"
+     "note": "線上已是 1.4.53／pin 389c6cd／安裝器原始碼 032637b22914 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -3177,8 +3177,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "Gitea 已有 1.4.53（Arcrun RAG）：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/1.4.53"
     },
     {
      "id": "release-check",
@@ -3189,7 +3189,7 @@
    ],
    "sourceCommit": "Arcrun@db33cbe907dd",
    "machine": "9f06f3113188",
-   "ts": 1787574036161
+   "ts": 1787665872222
   },
   "prod": {
    "results": [
