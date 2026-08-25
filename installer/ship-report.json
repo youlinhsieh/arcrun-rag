@@ -3190,6 +3190,143 @@
    "sourceCommit": "Arcrun@db33cbe907dd",
    "machine": "9f06f3113188",
    "ts": 1787574036161
+  },
+  "prod": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.36；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：移除資料夾時，可以順便把我們放進去的隱藏檔案一起清掉・只刪我們自己建的，你的檔案一個都不會碰・這幾種情況我們刻意不刪・不勾這個框的話，行為跟以前一模一樣：硬碟上一個檔都不會少"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "skip",
+     "note": "已與遠端同步，沒有要推的"
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
+     "status": "skip",
+     "note": "釘子與安裝器原始碼都沒動（built 2026-08-24，src 43e8f04e70d6）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.53／pin 4f167bf／安裝器原始碼 43e8f04e70d6 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "failed"
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "not-run"
+    }
+   ],
+   "sourceCommit": "Arcrun@db33cbe907dd",
+   "machine": "9f06f3113188",
+   "ts": 1787577739979
   }
  }
 }
