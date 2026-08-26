@@ -91,7 +91,7 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 #   - BUNDLE_BUILT＝釘點 manifest.built（D37 單一真相源：換釘點時跟著 manifest 改）
 #   - DEPLOY_ENV=staging → 首頁版本字串帶 +staging，一眼分辨
 # ---------------------------------------------------------------------------
-INSTALLER_SRC_SHA = "43e8f04e70d66e45e218fca978e9bf52f2415af7666921c92f9e37b5a3eb6034"
+INSTALLER_SRC_SHA = "032637b229146a0b0c152ab085584ffe18564b69a5d5f8b737dc0809e80e23c6"
 [env.staging]
 name = "arcrun-rag-installer-staging"
 # P10（2026-08-07）：允許本 worker（在 workers.dev 上）直接 fetch 同帳號其他
