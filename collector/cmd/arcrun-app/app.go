@@ -119,6 +119,9 @@ type syncStatus struct {
 	// arcrun-rag#46：「移除並收回中」的資料夾進度（key＝資料夾路徑）。
 	// 形狀定義在 collector/sync_status.go，這裡原樣接住不另定義一份會漂移的結構。
 	Retiring map[string]collector.RetiringStatus `json:"retiring,omitempty"`
+	// arcrun-rag#140：雲端上找不到、正在自動補送的資料夾（key＝資料夾路徑）。
+	// 同上：形狀定義在 collector/sync_status.go，這裡原樣接住。
+	Resync map[string]collector.ResyncStatus `json:"resync,omitempty"`
 }
 
 type skippedDoc struct {
@@ -241,6 +244,10 @@ type UIFolder struct {
 	Retiring        bool   `json:"retiring,omitempty"`
 	RetireRemaining int    `json:"retireRemaining,omitempty"` // 還剩幾筆
 	RetireError     string `json:"retireError,omitempty"`     // 失敗真因（原文，不改寫）
+	// arcrun-rag#140：雲端上找不到先前送過的檔案（知識庫被重裝／清空過），正在自動補送。
+	// 🔴 這張票的病有一半是「**沒有任何地方會說話**」——檔案在資料夾裡、AI 卻查不到，
+	//    而且查不出為什麼。所以補送不能靜悄悄地跑，這一行就是那句話的落點。
+	ResyncNote string `json:"resyncNote,omitempty"` // 一句人話（沒事＝空字串，前端不畫）
 }
 type UIAccount struct {
 	Name    string     `json:"name"`
@@ -505,7 +512,13 @@ func (a *App) GetState() UIState {
 	for i, acc := range cfg.Accounts {
 		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email}
 		for _, f := range acc.WatchFolders {
-			ui.Folders = append(ui.Folders, UIFolder{Path: f, AccIdx: i})
+			uf := UIFolder{Path: f, AccIdx: i}
+			// arcrun-rag#140：雲端補送中就把那句人話帶到畫面上。
+			// key＝資料夾路徑，與 collector 寫入 status.json 時同一把（見 direct.go 的 resync[root]）。
+			if rs, ok := sync.Resync[f]; ok {
+				uf.ResyncNote = rs.Note
+			}
+			ui.Folders = append(ui.Folders, uf)
 		}
 		// 收回中的資料夾照樣列出來，只是標成「收回中」——不然按下移除之後它立刻消失，
 		// 使用者無從知道撤除還在跑、更看不到失敗的原因（那正是這張票的病的另一面）。

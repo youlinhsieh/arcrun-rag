@@ -672,6 +672,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	// 每輪重建、照現況重報（level-triggered），App 看到 done 才把設定裡那一筆清掉。
 	var retiring map[string]RetiringStatus
 
+	// `inkstone/arcrun-rag#140`：這一輪各個資料夾的「雲端補送」現況（key＝資料夾路徑）。
+	// 同 retiring 的 level-triggered 語意：每輪照 manifest 現況重報，補完自然消失。
+	var resync map[string]ResyncStatus
+
 	// t215：全域「雲端最新版」只抓一次（自帶節流，見 cloud_latest.go）——
 	// 這是所有帳號共用的同一把尺，不是逐帳號各打一次。
 	latestRelease, latestOK := FetchLatestCloudRelease()
@@ -733,6 +737,13 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			r, e, p, rp := runDirectOnceRoot(accCfg, root, dryRun, qs, now)
 			totalProgress = totalProgress.Add(rp.Progress)
 			stuckReasons = append(stuckReasons, rp.StuckReasons...)
+			// #140：有話要說才佔畫面（零值＝這個資料夾沒有補送中的事）。
+			if rp.Resync.Pending > 0 || rp.Resync.Repaired > 0 || rp.Resync.LastError != "" {
+				if resync == nil {
+					resync = map[string]ResyncStatus{}
+				}
+				resync[root] = rp.Resync
+			}
 			if multi {
 				for i := range r {
 					r[i].Root = root
@@ -828,6 +839,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			ExtractorError: extractorError,
 			AccountDetails: accountDetails,
 			Retiring:       retiring, // arcrun-rag#46：移除並收回中的資料夾進度
+			Resync:         resync,   // arcrun-rag#140：雲端上找不到、正在自動補送的資料夾
 		}
 		// G-6.2：把「讀不了的檔」寫進狀態檔，App 首頁才有東西可以講。
 		// 排序＝畫面每輪穩定（map 迭代順序隨機，不排的話清單會自己跳動）。
@@ -1204,6 +1216,10 @@ func accountsConnected(cfg *DirectConfig) bool {
 type rootProgress struct {
 	Progress     SyncProgress // 這一根的 Total/Done/Pending/Stuck（Unreadable 由呼叫端補，見 progress.go）
 	StuckReasons []string     // 已放棄自動重試那些條目的 LastError 原文，交給 ClassifyFailure 分類
+	// Resync＝這一根的「雲端補送」現況（#140）。**從 manifest 現況重算**，不是本輪計數
+	// ——後者在沒事做的那輪會歸零，那正是 2026-08-05 leo 實撞的「明明做完了畫面卻寫等待中」。
+	// 沒事＝零值，呼叫端不寫進 status.json（不製造常駐噪音）。
+	Resync ResyncStatus
 }
 
 // qs：這個帳號本輪共用的額度冷卻狀態（跨同帳號的多個監看根，見 quota.go）。
@@ -1255,6 +1271,52 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	if err != nil {
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
 	}
+	// 2026-08-07 task 3（斷點續傳）：每個事件處理完就立刻存檔，不要等整輪跑完。
+	// 舊行為＝整個 for 迴圈跑完才 Save 一次——process 在跑到一半被殺掉（重開機、
+	// 換版、當機）時，**已經成功的那些也會遺失**，下次重開等於從頭來過，
+	// 且已經花掉的額度/請求全部白費（正是 leo 要求「不從頭來」要防的事）。
+	// 改成每個事件收工就存一次：kill 在任何一刻，磁碟上的 manifest 都反映
+	// 「這一刻之前已確定成功的事」，下一輪只會處理真正還沒做完的。
+	//
+	// （#140：定義位置從「Scan() 之後」往上搬到這裡，因為雲端對帳跑在 Scan() 之前
+	//  也要落盤——拔掉的章沒存進磁碟，process 被殺掉就等於沒對過帳。內容一字未動。）
+	saveManifest := func() {
+		if dryRun {
+			return
+		}
+		if serr := m.Save(absManifest); serr != nil {
+			results = append(results, DirectResult{Status: "failed", Error: "manifest 存檔失敗（斷點續傳可能失效）：" + serr.Error()})
+			exit = 1
+		}
+	}
+
+	// 🔴 雲端對帳（`inkstone/arcrun-rag#140`，2026-08-26）——**必須在 Scan() 之前**。
+	// 它做的唯一一件事是把「雲端已經沒有了」的 ingested 章拔掉；拔完之後
+	// 下面那個 Scan() 就會因為 `orig[p].IngestedHash == ""` 自然補一發 added 事件
+	// （scan.go 步驟 4 的既有語意「上輪偵測過但 ingest 未成功 → 重試」）
+	// ⇒ 補送走的是**既有的**萃取路，既有的單輪上限／失敗退避／額度冷卻全部照舊生效。
+	// 放在 Scan() 之後就得再等一輪才會動，且要另外發明一條送件路。見 cloud_audit.go。
+	auditErr := ""
+	if ar := auditCloudLedger(cfg, absRoot, m, dryRun, runNow); ar != nil {
+		auditErr = ar.Err
+		if ar.Voided > 0 {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: fmt.Sprintf("雲端上找不到 %d 份先前送過的檔案（對帳了 %d 份，知識庫可能重裝過），已排進佇列自動補送", ar.Voided, ar.Checked),
+			})
+		}
+		if ar.Err != "" {
+			// 上游錯誤原文照顯示（leo 2026-08-06：「別人的錯誤一律要顯示給用戶看，
+			// 不然就會變成我的錯誤」）。對帳失敗**不設 exit**：它是保險絲不是主流程，
+			// 連不上雲端時檔案同步照常走。
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: "無法跟雲端核對哪些檔案還在（不影響同步，稍後自動再試）：" + ar.Err,
+			})
+		}
+		saveManifest() // 拔掉的章與對帳時間當下就落盤（斷點續傳同款）
+	}
+
 	// 2026-08-07 task 3：Scan() 會把 removed 的路徑從 m.Entries 整批拿掉（rebuild 語意，
 	// 見 scan.go 步驟 7）——但那只是「偵測到不見了」，不代表下架 POST 已經成功。
 	// 沒有這份快照的話，本輪只要有任何一個 added/modified 事件先觸發了下面的
@@ -1290,22 +1352,6 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	}
 
 	now := runNow.Unix()
-
-	// 2026-08-07 task 3（斷點續傳）：每個事件處理完就立刻存檔，不要等整輪跑完。
-	// 舊行為＝整個 for 迴圈跑完才 Save 一次——process 在跑到一半被殺掉（重開機、
-	// 換版、當機）時，**已經成功的那些也會遺失**，下次重開等於從頭來過，
-	// 且已經花掉的額度/請求全部白費（正是 leo 要求「不從頭來」要防的事）。
-	// 改成每個事件收工就存一次：kill 在任何一刻，磁碟上的 manifest 都反映
-	// 「這一刻之前已確定成功的事」，下一輪只會處理真正還沒做完的。
-	saveManifest := func() {
-		if dryRun {
-			return
-		}
-		if serr := m.Save(absManifest); serr != nil {
-			results = append(results, DirectResult{Status: "failed", Error: "manifest 存檔失敗（斷點續傳可能失效）：" + serr.Error()})
-			exit = 1
-		}
-	}
 
 	// 結構先行（InkStoneCo#43，2026-08-15）：掃描一結束（純本機、免費、秒級）就先把
 	// 「這個資料夾有哪些檔案／最近改了什麼」送上知識庫，**不等 LLM 萃取、不受額度影響**
@@ -1528,6 +1574,12 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					res.Status = "ingested"
 					// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
 					m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+					// 🔴 #140：`cards` 為空＝該檔被判「無可萃取概念」，這一輪**一張卡都沒上雲**。
+					//   不記下來的話，雲端對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、
+					//   永遠停不下來，而且每次都燒一份 AI 額度。
+					if len(cards) == 0 {
+						m.MarkNoCloudCard(ev.Path)
+					}
 					qs.DailyCount++ // 2026-08-07：今天的成就數（額度訊息「今天已經幫你整理了 N 份」用）
 				} else {
 					// t195：記下失敗並排定退避，否則下輪又把它當新檔重試
@@ -1676,6 +1728,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			// 這裡不判斷任何識別字，即使 LastError 是空字串也照樣送（ClassifyFailure("") 落「其他」，
 			// 不會漏算份數）。
 			rp.StuckReasons = append(rp.StuckReasons, e.LastError)
+		}
+	}
+	// #140：同一套「現況快照」邏輯——補送進度也是原地數出來的，不是本輪計數器。
+	if pending, repaired := ResyncSummary(m, runNow); pending > 0 || repaired > 0 || auditErr != "" {
+		rp.Resync = ResyncStatus{
+			Pending:   pending,
+			Repaired:  repaired,
+			LastError: auditErr, // 真因原文，不改寫（leo 2026-08-06）
+			Note:      resyncNote(pending, repaired, auditErr),
+		}
+		if m.CloudAuditAt > 0 {
+			rp.Resync.CheckedAt = time.Unix(m.CloudAuditAt, 0).UTC().Format(time.RFC3339)
 		}
 	}
 	return results, exit, payload, rp

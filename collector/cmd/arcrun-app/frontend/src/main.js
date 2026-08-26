@@ -320,9 +320,10 @@ function pageLib(s, idx) {
       ${f.retireError ? `<div class="d folder-note">${esc(f.retireError)}</div>` : ''}` : `
       <div class="folder">
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
-        <span class="tag">自動同步中</span>
+        <span class="tag">${f.resyncNote ? '補送中' : '自動同步中'}</span>
         <button class="ghost" data-rm="${esc(f.path)}" data-acc="${f.accIdx}">移除</button>
-      </div>`).join('')
+      </div>
+      ${f.resyncNote ? `<div class="d folder-note">${esc(f.resyncNote)}</div>` : ''}`).join('')
       || `<div class="empty"><div class="t">這個知識庫還沒有資料夾</div>
            <div class="d">按右上的「加入資料夾」，選一個要自動整理的資料夾。</div></div>`}`;
 }

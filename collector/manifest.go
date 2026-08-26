@@ -56,6 +56,27 @@ type ManifestEntry struct {
 	//    真因（Cloudflare「當日免費額度用完」／「這份 PDF 沒有文字層」）**當場消失**
 	//    ⇒ 使用者以為是我們壞掉。原因必須跟著 entry 存活到下次成功為止。
 	LastError string `json:"last_error,omitempty"`
+
+	// ── 雲端對帳（`inkstone/arcrun-rag#140`，2026-08-26）──────────────────────
+	// 病：上面那個 IngestedHash 的章**永遠不會過期**。雲端 08-14 被重裝／清空之後，
+	// 檔案內容沒變 ⇒ 不產生事件 ⇒ 永遠不會重送，而且沒有任何地方會說話。
+	// ⇒ 章的意思要從「我送過了」改成「我送過了**而且雲端現在還有**」，
+	//   後半句只能去問雲端（見 cloud_audit.go）。這三個欄位是那個問答的記帳。
+	//
+	// CloudCheckedAt＝最後一次向雲端確認過這個檔的時間（unix 秒）。
+	// 用途有二：①決定「太久沒對帳」該重問（cloudAuditRecheckInterval）；
+	// ②讓候選排序把最久沒對的排前面 ⇒ 巨量資料夾也會被輪完，不會有人永遠排不到。
+	CloudCheckedAt int64 `json:"cloud_checked_at,omitempty"`
+	// CloudMissingAt＝最後一次「雲端查不到、章被拔掉」的時間（unix 秒，0＝從沒發生）。
+	// 🔴 它同時是**防重送迴圈的閘**：雲端 ingest 非同步，剛送出去那幾秒查不到是正常的，
+	//    沒有這個窗口，對帳下一輪又判它不在 ⇒ 每輪重送 ⇒ 把使用者的 AI 額度燒光
+	//    ⇒ 那就是「把一個 bug 換成另一個」（#140 驗收條件 5 明文禁止）。
+	CloudMissingAt int64 `json:"cloud_missing_at,omitempty"`
+	// NoCloudCard＝這一次 ingest 蓋章時**沒有任何卡片被送上雲**
+	//（萃取判定「無可萃取概念」，cards 為空 ⇒ direct.go 的送卡迴圈一圈都沒跑）。
+	// 🔴 不記這一格的話，對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、永遠停不下來。
+	//    舊的 manifest 沒有這一格＝當成「送過」，那正是本票要救的那批檔的處境。
+	NoCloudCard bool `json:"no_cloud_card,omitempty"`
 }
 
 // retryBackoff 退避階梯：1m → 5m → 15m → 1h → 6h，之後每次 6h。
@@ -101,6 +122,12 @@ type Manifest struct {
 	// 不在任何一邊的掃描結果裡，下一輪不會再有 renamed 事件把它帶出來。不記住它，
 	// 一次下架失敗（雲端剛好那幾秒掛掉）就永久遺失，舊卡從此不會再被清。
 	PendingTakedowns map[string]string `json:"pending_takedowns,omitempty"`
+
+	// CloudAuditAt＝這個資料夾最後一次跑雲端對帳批次的時間（unix 秒）。
+	// 純節流用（cloudAuditFolderInterval）：daemon 預設 5 秒一輪，沒有這道閘
+	// 就是每 5 秒對雲端發 20 個請求。與 InventoryHash 同為 Manifest 層欄位，
+	// Scan() 的 rebuild 只重建 Entries，天然跨輪存活。
+	CloudAuditAt int64 `json:"cloud_audit_at,omitempty"`
 }
 
 // QueueTakedown 記一筆「這個舊路徑（連同當時的頁名）還沒在雲端下架」的待辦。
@@ -186,6 +213,27 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	// 成功即清掉失敗狀態（t195）：下次再壞會從第一階退避重新算起。
 	e.FailCount, e.LastFailAt, e.NextRetry = 0, 0, 0
 	e.LastError = ""
+	// #140：預設「這次有送卡上雲」；真的一張卡都沒送的那條路由呼叫端補打
+	// MarkNoCloudCard（見 direct.go 的 cards 為空分支）。預設值放這裡而不是
+	// 讓呼叫端每次都設，是因為漏設的方向要落在**安全的那一邊**：
+	// 誤標 false ⇒ 頂多多對一次帳（一個唯讀請求）；誤標 true ⇒ 這個檔從此
+	// 不再被對帳，雲端掉了也沒人發現——那正是本票在修的病。
+	e.NoCloudCard = false
+	// 🔴 CloudCheckedAt／CloudMissingAt **刻意不清**：
+	//    前者是輪值排序的依據，後者是防重送迴圈的 grace 窗口與「補送過」的證據
+	//    （ResyncSummary 靠 IngestedAt >= CloudMissingAt 判斷這份是不是剛補回來的）。
+	//    清掉等於把剛補送成功的那批檔立刻放回可再拔章的池子。
+	return true
+}
+
+// MarkNoCloudCard 標記「這次 ingest 沒有任何卡片被送上雲端」。
+// 只有萃取判定「無可萃取概念」（cards 為空）的那條路會呼叫。見 NoCloudCard 欄位註解。
+func (m *Manifest) MarkNoCloudCard(path string) bool {
+	e, ok := m.Entries[path]
+	if !ok {
+		return false
+	}
+	e.NoCloudCard = true
 	return true
 }
 

@@ -556,6 +556,15 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			//   ⇒ 畫面只剩 humanizeFailure 的最後退路「當時沒有記下原因」。
 			//   這正是上面那句警告的第二次實例——真因是我們自己刪掉的，不是沒記。
 			ne.LastError = carry.LastError
+			// 🔴 #140（2026-08-26）：雲端對帳的三個欄位同樣要 carry，而且漏了會**很貴**：
+			//   - CloudCheckedAt 歸零 ⇒ 每輪都判「太久沒對帳」⇒ 每輪重問整批（請求風暴）
+			//   - CloudMissingAt 歸零 ⇒ **防重送迴圈的 grace 消失** ⇒ 補送 → 下一輪又拔章
+			//     → 再補送…把使用者的 AI 額度燒光（票上明文禁止的「把一個 bug 換成另一個」）
+			//   - NoCloudCard 歸零 ⇒ 沒卡可送的檔每天被重萃一次，永遠停不下來
+			//   這正是上面那句警告（t195／LastError 5fcc139）的第三次實例，所以照著它走。
+			ne.CloudCheckedAt = carry.CloudCheckedAt
+			ne.CloudMissingAt = carry.CloudMissingAt
+			ne.NoCloudCard = carry.NoCloudCard
 		}
 		newEntries[p] = ne
 	}

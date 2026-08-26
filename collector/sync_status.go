@@ -52,6 +52,23 @@ type RetiringStatus struct {
 	LastError string `json:"last_error,omitempty"` // 最後一次失敗的真因（原文，不改寫）
 }
 
+// ResyncStatus＝某個監看資料夾的「雲端補送」現況（`inkstone/arcrun-rag#140`）。
+//
+// 🔴 為什麼一定要有畫面：這張票的病不只是「該送的沒送」，還有
+// 「**沒有任何地方會說話**」——使用者看到檔案在資料夾裡、AI 卻查不到，
+// 而且查不出為什麼。所以修法不能靜悄悄地重送：他要看得見
+// 「有 N 份在補送、不是你弄壞的、你不必做任何事」。
+//
+// 與 Retiring／FolderPlans 同族：**每輪照 manifest 現況重算的快照**，
+// 不進 CarryForwardActivity——補完就自然歸零，不必有人去清它。
+type ResyncStatus struct {
+	Pending   int    `json:"pending"`              // 章已拔掉、還沒補送成功的份數
+	Repaired  int    `json:"repaired"`             // 最近一天內已補送成功的份數
+	CheckedAt string `json:"checked_at,omitempty"` // 最近一次對帳時間（RFC3339）
+	Note      string `json:"note,omitempty"`       // 給使用者看的一句人話
+	LastError string `json:"last_error,omitempty"` // 對帳本身失敗的真因（原文，不改寫）
+}
+
 // SyncStatus 彙總每輪同步的萃取結果，持久化至 ~/.arcrun-rag/status.json。
 // 托盤依此決定顯示「已萃 N 檔」、「⚠ 萃取失敗 M 檔」還是「⚠ 萃取引擎未就緒」。
 type SyncStatus struct {
@@ -82,6 +99,10 @@ type SyncStatus struct {
 	// arcrun-rag#46：「移除並收回中」的資料夾進度（key＝資料夾路徑）。
 	// 與 SkippedDocs 同族——每輪照現況重算的快照，不進 CarryForwardActivity。
 	Retiring map[string]RetiringStatus `json:"retiring,omitempty"`
+
+	// `inkstone/arcrun-rag#140`：雲端上找不到、正在自動補送的資料夾（key＝資料夾路徑）。
+	// 與 Retiring 同族的現況快照，見 ResyncStatus 註解。
+	Resync map[string]ResyncStatus `json:"resync,omitempty"`
 
 	// 🔴 G-6.2「不准安靜地略過」（2026-08-06）：副檔名不在 allowedExt 的檔案，
 	// 以前在 scan.go 的白名單閘就 `return nil` 蒸發了——沒事件、沒紀錄、沒畫面。
