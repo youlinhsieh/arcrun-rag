@@ -412,3 +412,85 @@ input[type=text], input[type=password] {
   word-break: break-all; white-space: pre-wrap;
 }
 .wfitem .out.bad { color: var(--err); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   資料夾結構樹（`inkstone/InkStoneCo#44` 桌面那半；形狀規格 `inkstone/Arcrun#144`）
+
+   leo 2026-08-19（驗 1.4.49 的 markmap 之後打回）：
+     「我的需求是**向右向下**，類似 terminal 的 tree，**一列一列向下往後退縮**，
+       緊湊但可點擊展開，**模擬 Windows 的檔案總管的 tree**⋯⋯
+       可以用滑鼠輕易操作，**不會佔用大面積**。」
+
+   ⇒ 這一段的每個數字都在服務那句話：
+     · 一列 = 一個 flex row，靠 padding-left 退縮（縮排 16px／層，同檔案總管量級）
+     · 行高壓到 20px 上下、字級 13px ⇒ 1080p 一個畫面塞得下數十列
+     · 三角形＋資料夾 icon 在最左，數字與原因往右排，掃視時眼睛只走一條直線
+   🔴 顏色一個 hex 都不准出現（本檔開頭那條規矩）——全部走 arcrun-cis.css 的變數。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.ftbox {
+  margin: -3px 0 9px; padding: 8px 10px 6px;
+  background: var(--well); border-radius: 10px;
+}
+.fthead {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 7px; margin-bottom: 5px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), .08);
+}
+.fthead button { padding: 4px 9px; font-size: 12px; }
+/* 樹本體：檔案總管那種「緊湊但點得到」的密度。
+   overflow-x 讓很深的樹自己捲，不去撐破右側版面。 */
+.ftbody { overflow-x: auto; padding: 1px 0; }
+.ftrow {
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 2px 4px 2px 0; font-size: 13px; line-height: 1.5;
+  white-space: nowrap; border-radius: 5px;
+}
+/* 有子資料夾的那幾列才可點——整列都是點擊區（三角形只有 12px，滑鼠不好瞄）。 */
+.ftrow.has { cursor: pointer; user-select: none; }
+.ftrow.has:hover { background: rgba(var(--amber-rgb), .08); }
+.ftrow.has:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+/* 三角形：**用 CSS 畫，不用字元**。
+   leo 2026-08-19 打回 markmap 的其中一條理由就是「**展開字很小**⋯⋯
+   用戶要擁有觸控板，否則很難閱讀」——▸▾ 這兩個字在不同平台的中文字型裡
+   大小與位置都不一樣（Windows 常被當全形處理），畫出來的則到處一致。 */
+.ftrow .tw {
+  width: 14px; flex: none; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ftrow .tw i {
+  display: block; width: 0; height: 0;
+  border-left: 5px solid rgba(var(--ink-rgb), .5);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .12s;
+}
+.ftrow.open .tw i { transform: rotate(90deg); }
+.ftrow.has:hover .tw i { border-left-color: var(--amber); }
+.ftrow .ic { flex: none; font-size: 12.5px; }
+.ftrow .nm { font-weight: 500; }
+.ftrow .num {
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  color: rgba(var(--ink-rgb), .55);
+}
+/* 全部同步完＝這一格沒有待辦，用完整墨色讓它從灰階裡浮出來（不另發明「成功色」）。 */
+.ftrow .num.full { color: var(--ink); }
+/* 🔴 選擇器**不要**綁在 .ftrow 底下：頁首那句「為什麼只收這些」也用同一個 class，
+   綁死就只有樹裡面吃得到樣式、頁首那句會掉回 16px 的內文級——實撞過一次，
+   畫面上那句話比整棵樹都大聲，喧賓奪主。 */
+/* 「為什麼沒上去」是次要資訊：**它可以被截斷，資料夾名字不行**。
+   （整棵未收的理由是一整句話，不截的話一列會長到把樹推出畫面外。）
+   截掉的部分留在 title 裡，滑鼠停著就看得到全文。 */
+.ftbox .why {
+  font-size: 12px; color: rgba(var(--ink-rgb), .45);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.fthead .why { flex: 1; min-width: 0; line-height: 1.6; }
+/* 整棵沒走進去：語氣是告知不是錯誤，所以不用 --err。 */
+.ftrow .skip {
+  font-size: 11.5px; color: rgba(var(--ink-rgb), .5);
+  border: 1px solid rgba(var(--ink-rgb), .18); border-radius: 5px; padding: 0 5px;
+}
+.ftmsg {
+  padding: 6px 2px 2px; font-size: 12px; line-height: 1.65;
+  color: rgba(var(--ink-rgb), .45);
+}

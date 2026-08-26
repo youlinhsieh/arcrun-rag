@@ -927,6 +927,57 @@ func (a *App) OpenLogFolder() error {
 // LogFolderPath 給畫面顯示用（讓使用者就算按鈕失效也知道去哪找）。
 func (a *App) LogFolderPath() string { return appDir() }
 
+// ── 資料夾結構（`inkstone/InkStoneCo#44`，leo 2026-08-26）──
+//
+// leo 的交付定義第一段：「在 Portal 和**桌面小幫手**上，任何一個連上的資料夾
+// 都攤得開它完整的巢狀子資料夾樹，每一層看得到這層有幾份、同步了幾份、
+// 沒同步的那幾份為什麼沒上去。」——這支是桌面那半的資料入口。
+//
+// 🔴 **三件刻意不做的事**，每一件都是紅線：
+//
+//	① 不自己走一次檔案系統。樹是 collector 每輪算好落地的（BuildFolderTree ⇒
+//	   folder-trees.json），這裡只讀。App 若自己數一次，就會出現「畫面說 A、
+//	   雲端說 B」——同一個資料夾兩份實作，遲早對不起來。
+//	② 不去雲端拿。樹本來就是本機算的；繞一趟雲端只是把離線、額度用完、
+//	   退避窗口這幾種情況都變成「畫面壞掉」。
+//	③ 不掛在 GetState 上。GetState 每秒被 tick 呼叫一次，而樹上限 300 個節點；
+//	   只有使用者真的按開那個資料夾時才需要它 ⇒ 獨立一支、按需呼叫。
+//
+// 回傳 nil 代表「這個資料夾還沒被回報過」（剛加入、還沒跑完第一輪），
+// **不是**空樹——畫面要分得出「還沒掃到」與「掃過但裡面是空的」（arcrun-rag#106
+// 那條紅線的同一個形狀：不准拿一個我們自己編的 0 去回答使用者）。
+func (a *App) GetFolderTree(path string) (*collector.FolderTree, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	// 快照與 manifest 同目錄。manifest 路徑以設定檔為準（使用者可能把它指到別處），
+	// 讀不到設定就退回預設位置——與 statusPath() 同一個假設。
+	store := filepath.Join(appDir(), "folder-trees.json")
+	if cfg, err := loadCfg(); err == nil && strings.TrimSpace(cfg.Manifest) != "" {
+		store = collector.FolderTreeStorePath(cfg.Manifest)
+	}
+	s, err := collector.LoadFolderTreeStore(store)
+	if err != nil {
+		// 檔案還不存在＝第一輪還沒跑完，那不是錯誤，是「還沒有」。
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if t, ok := s.Trees[path]; ok {
+		return &t, nil
+	}
+	// 設定裡存的路徑與 collector 寫入時用的 absRoot 可能一個帶了尾斜線、
+	// 一個沒有（AddFolder 直接存系統選擇器給的字串）⇒ 正規化後再找一次，
+	// 不要因為一個斜線就跟使用者說「還沒回報」。
+	if abs, err := filepath.Abs(path); err == nil {
+		if t, ok := s.Trees[abs]; ok {
+			return &t, nil
+		}
+	}
+	return nil, nil
+}
+
 // ── 托盤會呼叫的兩個動作（t194）──
 
 // ShowWindow 把主視窗叫出來並帶到前景。

@@ -41,7 +41,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -349,4 +351,97 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 	m.FolderTreeNextRetry = 0
 	m.FolderTreeNextSend = now.Add(folderTreeMinInterval).Unix()
 	return res
+}
+
+// ── 本機那一份：桌面小幫手要攤開的，是同一棵樹 ─────────────────────────────
+//
+// 🔴 為什麼要在本機也落地一份（`inkstone/InkStoneCo#44`，leo 2026-08-26）：
+//
+// leo 的交付定義第一段是「**在 Portal 和桌面小幫手上**，任何一個連上的資料夾
+// 都攤得開它完整的巢狀子資料夾樹」。上面的 syncFolderTree 只完成了前半——
+// 樹送上雲端、由 portal 讀回來畫。**桌面小幫手不能走那條路**，三個理由：
+//
+//	① 它要在**離線**、雲端額度用完、或 syncFolderTree 正在退避窗口裡的時候
+//	   照樣攤得開——那些正是使用者最想知道「到底同步到哪了」的時刻；
+//	② 樹是**本機算出來的**（分母來自這台電腦的 WalkDir），繞一趟雲端再拿回來，
+//	   等於讓本機畫面依賴一條它根本不需要的網路；
+//	③ syncFolderTree 有內容雜湊閘與最小間隔，**它回 nil 的輪次遠多於送出的輪次**
+//	   ——本機畫面不該跟著那道為了省 KV 額度而設的閘一起沉默。
+//
+// 🔴 **不另算第二套**（本票紅線）：這裡存下來的就是 BuildFolderTree 交出、
+// 也正要送上雲端的那個 `FolderTree`，一個欄位都不重組、一個數字都不重算。
+// 桌面與 portal 看到的若有一天不一樣，那只可能是「哪一邊比較舊」，
+// 不可能是「兩邊各自算」。
+
+// FolderTreeStore＝本機的樹快照（key＝監看根的絕對路徑）。
+//
+// 為什麼是「一個檔裝全部」而不是每個根一個檔：桌面小幫手拿得到的是
+// config 裡那串資料夾路徑，用路徑當 key 直接查得到；每根一檔就得讓 App 去
+// 複製 manifestPathFor 那條 host＋路徑的雜湊公式——**那才是第二份實作**。
+type FolderTreeStore struct {
+	UpdatedAt string                `json:"updated_at"`
+	Trees     map[string]FolderTree `json:"trees"`
+}
+
+// FolderTreeStorePath 回傳本機樹快照的路徑：與 manifest／status.json 同目錄。
+func FolderTreeStorePath(manifestPath string) string {
+	return filepath.Join(filepath.Dir(manifestPath), "folder-trees.json")
+}
+
+// LoadFolderTreeStore 讀回上一輪的快照；讀不到／解析失敗都回可用的零值
+// （呼叫端當「沒有上一輪」處理，與 LoadSyncStatus 同一套慣例）。
+func LoadFolderTreeStore(path string) (FolderTreeStore, error) {
+	s := FolderTreeStore{Trees: map[string]FolderTree{}}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return s, err
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		return FolderTreeStore{Trees: map[string]FolderTree{}}, err
+	}
+	if s.Trees == nil {
+		s.Trees = map[string]FolderTree{}
+	}
+	return s, nil
+}
+
+// SaveFolderTreeStore 覆寫快照。
+func SaveFolderTreeStore(path string, s FolderTreeStore) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// MergeFolderTreeStore 把「這一輪算出來的樹」併進上一輪的快照。
+//
+// 三條規則，每一條都對應一個會讓畫面說謊的情境：
+//
+//	① 這一輪算出來的**覆蓋**舊的——樹永遠是現況，不累積歷史。
+//	② 這一輪**沒算出來**（那個根掃描失敗、或還沒輪到）⇒ 沿用上一輪的。
+//	   不然使用者會看到自己昨天還好好的資料夾突然變成「還沒回報」——
+//	   那是 2026-08-05「明明做完了畫面卻說等待中」同一個形狀的病。
+//	③ 已經**不在看守清單**上的根⇒刪掉。留著就是一棵指向不存在設定的幽靈樹，
+//	   而且使用者移除資料夾之後還看得到它，會以為沒移掉。
+//
+// knownRoots＝這一輪 RunDirectOnce 打算處理的所有監看根（不論成功與否）。
+func MergeFolderTreeStore(prev FolderTreeStore, fresh map[string]FolderTree, knownRoots []string, now time.Time) FolderTreeStore {
+	known := make(map[string]bool, len(knownRoots))
+	for _, r := range knownRoots {
+		known[r] = true
+	}
+	out := FolderTreeStore{UpdatedAt: now.UTC().Format(time.RFC3339), Trees: map[string]FolderTree{}}
+	for root, t := range prev.Trees {
+		if known[root] { // ②③：還在看守清單上才留，其餘丟掉
+			out.Trees[root] = t
+		}
+	}
+	for root, t := range fresh {
+		out.Trees[root] = t // ①
+	}
+	return out
 }

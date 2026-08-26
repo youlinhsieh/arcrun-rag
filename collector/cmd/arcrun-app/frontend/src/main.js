@@ -296,6 +296,217 @@ function cardSkipped(k) {
 }
 
 // ── 各庫頁：動作全部作用在這個庫（不會加錯帳號）──
+// ══════════════════════════════════════════════════════════════════════════
+// 資料夾結構樹（`inkstone/InkStoneCo#44` 桌面那半，leo 2026-08-26）
+//
+// leo 的交付定義第一段：「在 Portal 和**桌面小幫手**上，任何一個連上的資料夾
+// 都攤得開它完整的巢狀子資料夾樹，每一層看得到這層有幾份、同步了幾份、
+// 沒同步的那幾份為什麼沒上去。」Portal 那半已經在跑，這裡是桌面這半。
+//
+// 🔴 形狀規格＝`inkstone/Arcrun#144`（leo 2026-08-19 驗 1.4.49 之後打回 markmap）：
+//   「我的需求是**向右向下**，類似 terminal 的 tree，**一列一列向下往後退縮**，
+//     緊湊但可點擊展開，**模擬 Windows 的檔案總管的 tree**，這是一般辦公室用戶
+//     都有的經驗，且可以用滑鼠輕易操作，不會佔用大面積。」
+//   ⇒ 一列一行、縮排、可摺疊、字級行距貼近作業系統的檔案總管。
+//   ⇒ **不用任何樹狀圖套件**：這個形狀就是「縮排的清單」，一個 div 一列就到位；
+//     引一包 library 進來只會多一份要跟著 CIS 對齊的樣式來源。
+//
+// 🔴 **一個判準都不在這裡發明**（同 portal 那半的紅線）：兩個數字與「為什麼沒收」
+//   的分類全部由 collector 算好（`collector/foldertree.go`，判準活在 scan.go 那趟
+//   WalkDir）。這裡只做兩件事：把節點串成樹、把子樹的數字加起來。
+//   哪天想在這裡寫「.py 算不算支援」——停手，那是第二份實作。
+// ══════════════════════════════════════════════════════════════════════════
+
+// data：path → 樹（undefined＝還沒問、null＝問過但小幫手還沒回報）
+// open：path → 這個資料夾的樹展開了沒
+// nodes：path → { 節點路徑: 展開了沒 }（沒有紀錄＝用預設，見 nodeIsOpen）
+const treeState = { data: {}, open: {}, nodes: {} };
+
+// 資料夾路徑當不了 DOM id（含空白、斜線、中文）⇒ 折成一個穩定的短碼。
+function treeBoxId(path) {
+  let h = 0;
+  for (let i = 0; i < path.length; i++) h = (h * 31 + path.charCodeAt(i)) | 0;
+  return 'ft' + (h >>> 0).toString(36);
+}
+
+// 子樹合計：小幫手送的每個數字都只算「這一層直接放的檔」（存兩套遲早對不起來），
+// 所以要顯示「這個資料夾底下總共」就得在這裡疊一次。
+// 🔴 skipped 的節點整棵不計：沒走進去就是不知道裡面有幾個檔，加 0 會讓分母說謊。
+// （與 portal 的 rollupTree 同一套算法——兩邊看到的數字必須是同一個。）
+function rollupTree(nodes) {
+  const byPath = {}, kids = {};
+  nodes.forEach((n) => { byPath[n.path] = n; (kids[n.parent] = kids[n.parent] || []).push(n); });
+  const sums = {};
+  function walk(n) {
+    const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0 };
+    if (!n.skipped) {
+      acc.total = n.total_files; acc.synced = n.synced_files; acc.pending = n.pending_files;
+      acc.unsupported = n.unsupported_files; acc.excluded = n.excluded_files;
+    }
+    (kids[n.path] || []).forEach((c) => {
+      const x = walk(c);
+      acc.total += x.total; acc.synced += x.synced; acc.pending += x.pending;
+      acc.unsupported += x.unsupported; acc.excluded += x.excluded;
+    });
+    sums[n.path] = acc;
+    return acc;
+  }
+  // 根＝parent 是 '-'（collector/foldertree.go 刻意用它，才分得出「我是根」與「父親是根」）
+  (kids['-'] || []).forEach(walk);
+  // 孤兒節點（父親不在這份清單裡，例如樹被截斷）也要走一次，否則它整棵不會被算到
+  nodes.forEach((n) => { if (sums[n.path] === undefined && !byPath[n.parent]) walk(n); });
+  return { sums, kids, byPath };
+}
+
+// 差額必須解釋得了：總數 − 已同步 ＝ 不支援 ＋ 不收 ＋ 處理中。
+// 這行文案的存在理由就是 leo 那句「不上傳通常是不支援，比如程式碼、不支援的格式」
+// ——畫面要自己回答，不必問人。
+function gapWhy(s) {
+  const parts = [];
+  if (s.unsupported > 0) parts.push(s.unsupported + ' 份格式還讀不了');
+  if (s.excluded > 0) parts.push(s.excluded + ' 份不在收檔範圍（程式碼等）');
+  if (s.pending > 0) parts.push(s.pending + ' 份處理中');
+  return parts.join('・');
+}
+
+// 預設只展開根那一層——**照檔案總管的行為**：打開一個資料夾看到它底下一層，
+// 要更深自己點。一次全攤開在 8000 個檔的資料夾上就是一面沒人看得完的牆。
+function nodeIsOpen(path, n) {
+  const st = treeState.nodes[path] || {};
+  return st[n.path] === undefined ? n.depth === 0 : st[n.path];
+}
+
+function renderFolderTree(path) {
+  const box = $(treeBoxId(path));
+  if (!box) return;
+  const tree = treeState.data[path];
+  if (tree === undefined) { box.innerHTML = `<div class="ftmsg">讀取中…</div>`; return; }
+  // 🔴 分得出「還沒掃到」與「掃過、裡面是空的」——後者是 arcrun-rag#106 的正常情況
+  //    （指定了空資料夾，它就該在畫面上存在），前者是「再等一下」。
+  //    兩者講同一句話，等於拿我們自己編的答案回答使用者。
+  if (tree === null) {
+    box.innerHTML = `<div class="ftmsg">同步小幫手還沒掃到這個資料夾的結構。
+      第一次同步跑完之後就會出現——檔案多的話要等久一點，按上面的「立刻同步」可以催它。</div>`;
+    return;
+  }
+  const nodes = tree.nodes || [];
+  if (!nodes.length) {
+    box.innerHTML = `<div class="ftmsg">這個資料夾目前沒有任何內容（指定了就會在這裡，等你放東西進去）。</div>`;
+    return;
+  }
+  const r = rollupTree(nodes);
+  let html = '';
+  function emit(n) {
+    const s = r.sums[n.path] || { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0 };
+    const kids = (r.kids[n.path] || []).slice().sort((a, b) => (a.path < b.path ? -1 : 1));
+    const open = kids.length ? nodeIsOpen(path, n) : false;
+    // 縮排 16px 一層＝檔案總管的量級；一列一行、往後退縮（Arcrun#144 的形狀）。
+    const indent = 4 + n.depth * 16;
+    // 🔴 三角形用 CSS 畫（`<i>` 那個空元素），**不用 ▸▾ 字元**：
+    //    那兩個字在 Windows 的中文字型裡會被當成全形符號、大小與位置各機器不同，
+    //    而它正是 leo 2026-08-19 點名「展開字很小、滑鼠不好按」的那個東西。
+    //    畫出來的三角形每一台都一樣大，也才控得住點擊區。
+    // 可展開的那幾列是**按鈕**，不是裝飾用的 div：標上 role/tabindex/aria-expanded
+    // ⇒ 鍵盤按得到、輔助技術念得出「收合／展開」，機械檢查也看得見它是可操作的。
+    let row = `<div class="ftrow${kids.length ? ' has' : ''}${open ? ' open' : ''}" style="padding-left:${indent}px"`
+      + (kids.length
+        ? ` data-tnode="${esc(n.path)}" data-troot="${esc(path)}" role="button" tabindex="0"`
+          + ` aria-expanded="${open}" title="${open ? '收合' : '展開'}「${esc(n.name || '')}」"`
+        : '') + `>`
+      + `<span class="tw">${kids.length ? '<i></i>' : ''}</span>`
+      + `<span class="ic">${kids.length && open ? '📂' : '📁'}</span>`
+      + `<span class="nm">${esc(n.name || '（未命名）')}</span>`;
+    if (n.skipped) {
+      // 🔴 整棵沒走進去 ⇒ 不准顯示 0/0（那會是我們自己編的數字），改講理由。
+      const why = n.skip_reason || '（小幫手沒說明理由）';
+      row += `<span class="skip">整個資料夾未收</span>`
+        + `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
+    } else {
+      const full = s.total > 0 && s.synced === s.total;
+      row += `<span class="num${full ? ' full' : ''}">${s.synced} / ${s.total}</span>`;
+      const why = gapWhy(s);
+      if (why) row += `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
+    }
+    if (kids.length && !open) row += `<span class="why">…還有 ${kids.length} 個子資料夾</span>`;
+    html += row + `</div>`;
+    if (open) kids.forEach(emit);
+  }
+  (r.kids['-'] || []).forEach(emit);
+  // 父親不在清單裡的孤兒（樹被截斷時會有）——照樣列出來，缺角要看得見，不要偷偷藏起來
+  const seen = {};
+  nodes.forEach((n) => { seen[n.path] = true; });
+  nodes.forEach((n) => { if (n.parent !== '-' && !seen[n.parent]) emit(n); });
+
+  let foot = '';
+  if (tree.truncated) {
+    foot += `<div class="ftmsg">資料夾太多，只顯示前 ${nodes.length} 個（實際有 ${tree.total_nodes} 個）。</div>`;
+  }
+  foot += `<div class="ftmsg">數字是「已同步 / 這個資料夾底下總共」。兩者不相等是正常的——
+    差額是還讀不了的格式、不在收檔範圍的檔案（程式碼等），或還在處理中。</div>`;
+  box.innerHTML = `<div class="fthead">`
+    + `<button class="ghost" data-texpand="${esc(path)}">全部展開</button>`
+    + `<button class="ghost" data-tcollapse="${esc(path)}">全部收合</button>`
+    + (tree.reason ? `<span class="why">${esc(tree.reason)}</span>` : '')
+    + `</div><div class="ftbody">${html}</div>${foot}`;
+  wireTree();
+}
+
+// 展開／收合某個資料夾的樹。第一次展開才去讀（同 portal 的 lazy 做法），
+// 之後留在記憶體裡——它是**畫面暫存不是第二份真相源**，關掉視窗就沒了。
+async function toggleFolderTree(path) {
+  treeState.open[path] = !treeState.open[path];
+  const box = $(treeBoxId(path));
+  const btn = document.querySelector(`[data-tree="${cssq(path)}"]`);
+  if (btn) btn.textContent = (treeState.open[path] ? '▾ ' : '▸ ') + '資料夾結構';
+  if (!box) return;
+  box.style.display = treeState.open[path] ? '' : 'none';
+  if (!treeState.open[path]) return;
+  if (treeState.data[path] !== undefined) { renderFolderTree(path); return; }
+  renderFolderTree(path); // 先畫「讀取中…」
+  try {
+    const t = await go.GetFolderTree(path);
+    treeState.data[path] = t || null;   // 後端回 null＝還沒回報過
+  } catch (e) {
+    box.innerHTML = `<div class="err">讀不到這個資料夾的結構：${esc(String(e))}</div>`;
+    return;
+  }
+  renderFolderTree(path);
+}
+
+// 屬性選擇器要跳脫引號——資料夾路徑什麼字元都可能有。
+function cssq(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+
+function setAllTreeNodes(path, open) {
+  const tree = treeState.data[path];
+  if (!tree) return;
+  const st = {};
+  (tree.nodes || []).forEach((n) => { st[n.path] = open; });
+  if (!open) st[''] = true; // 全部收合時根自己留著，不然整棵消失、看起來像壞了
+  treeState.nodes[path] = st;
+  renderFolderTree(path);
+}
+
+function wireTree() {
+  document.querySelectorAll('[data-tnode]').forEach((el) => {
+    const toggle = () => {
+      const root = el.dataset.troot, np = el.dataset.tnode;
+      const st = treeState.nodes[root] || (treeState.nodes[root] = {});
+      const tree = treeState.data[root] || { nodes: [] };
+      const n = (tree.nodes || []).find((x) => x.path === np);
+      st[np] = !(st[np] === undefined ? (n && n.depth === 0) : st[np]);
+      renderFolderTree(root);
+    };
+    el.onclick = toggle;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+  });
+  document.querySelectorAll('[data-texpand]').forEach((el) => {
+    el.onclick = () => setAllTreeNodes(el.dataset.texpand, true);
+  });
+  document.querySelectorAll('[data-tcollapse]').forEach((el) => {
+    el.onclick = () => setAllTreeNodes(el.dataset.tcollapse, false);
+  });
+}
+
 function pageLib(s, idx) {
   const a = s.accounts[idx];
   if (!a) return `<div class="empty"><div class="t">找不到這個知識庫</div></div>`;
@@ -321,8 +532,10 @@ function pageLib(s, idx) {
       <div class="folder">
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
         <span class="tag">${f.resyncNote ? '補送中' : '自動同步中'}</span>
+        <button class="ghost" data-tree="${esc(f.path)}">${treeState.open[f.path] ? '▾' : '▸'} 資料夾結構</button>
         <button class="ghost" data-rm="${esc(f.path)}" data-acc="${f.accIdx}">移除</button>
       </div>
+      <div class="ftbox" id="${treeBoxId(f.path)}"${treeState.open[f.path] ? '' : ' style="display:none"'}></div>
       ${f.resyncNote ? `<div class="d folder-note">${esc(f.resyncNote)}</div>` : ''}`).join('')
       || `<div class="empty"><div class="t">這個知識庫還沒有資料夾</div>
            <div class="d">按右上的「加入資料夾」，選一個要自動整理的資料夾。</div></div>`}`;
@@ -739,6 +952,12 @@ function wire() {
   document.querySelectorAll('[data-addto]').forEach((b) => { b.onclick = () => addFolder(Number(b.dataset.addto)); });
   document.querySelectorAll('[data-rm]').forEach((b) => {
     b.onclick = () => confirmRemove(Number(b.dataset.acc), b.dataset.rm);
+  });
+  // #44：資料夾結構。換頁／重畫之後把本來就展開著的那幾棵補回去——
+  // 不補的話使用者每次切回這一頁都得重按一次（狀態在 treeState，畫面卻是空的）。
+  document.querySelectorAll('[data-tree]').forEach((b) => {
+    b.onclick = () => toggleFolderTree(b.dataset.tree);
+    if (treeState.open[b.dataset.tree]) renderFolderTree(b.dataset.tree);
   });
 
   // ── App 啟動器（arcrun-rag#137）──

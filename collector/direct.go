@@ -693,6 +693,12 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	// key＝資料夾路徑（同一個根被多帳號看守時後寫覆蓋——策略只看資料夾，與帳號無關）。
 	folderPlans := map[string]FolderPlanStatus{}
 
+	// `inkstone/InkStoneCo#44`（桌面小幫手那半）：每個看守資料夾這一輪的樹。
+	// 與 folderPlans 同一套 key 與同一套覆蓋語意。knownRoots 記「這一輪打算處理哪些根」
+	// ——合併時要靠它把已經不看守的根從快照裡刪掉（見 MergeFolderTreeStore ③）。
+	folderTrees := map[string]FolderTree{}
+	var knownRoots []string
+
 	// t210：跨帳號、跨資料夾累加的總量進度（見 rootProgress 註解）。
 	var totalProgress SyncProgress
 	var stuckReasons []string
@@ -766,6 +772,12 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			r, e, p, rp := runDirectOnceRoot(accCfg, root, dryRun, qs, now)
 			totalProgress = totalProgress.Add(rp.Progress)
 			stuckReasons = append(stuckReasons, rp.StuckReasons...)
+			// #44：這一根的樹。**掃壞了（Nodes 空）就不要覆蓋上一輪的好資料**——
+			// 合併時沿用舊的（MergeFolderTreeStore ②），畫面不會突然變成「還沒回報」。
+			knownRoots = append(knownRoots, root)
+			if len(rp.Tree.Nodes) > 0 {
+				folderTrees[root] = rp.Tree
+			}
 			// #140：有話要說才佔畫面（零值＝這個資料夾沒有補送中的事）。
 			if rp.Resync.Pending > 0 || rp.Resync.Repaired > 0 || rp.Resync.LastError != "" {
 				if resync == nil {
@@ -992,6 +1004,17 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		CarryForwardActivity(prevStatus, &st) // 2026-08-07：沿用函式開頭已載入的 prevStatus，不重讀一次
 		if serr := SaveSyncStatus(statusPath, st); serr != nil {
 			fmt.Fprintf(os.Stderr, "status 寫入失敗（不擋看守）：%v\n", serr)
+		}
+
+		// `inkstone/InkStoneCo#44`：本機那份樹快照。
+		// 🔴 **刻意不放進 status.json**：桌面小幫手每秒讀一次 status.json（tick），
+		//    而一棵樹上限 300 個節點、一台機器可能看守好幾個資料夾
+		//    ⇒ 併進去等於讓每一秒都去解析幾百 KB 只有「使用者按開樹」那一刻才要用的資料。
+		//    分成兩個檔，讀的人各取所需（小幫手只在展開時才讀這一份）。
+		treePath := FolderTreeStorePath(cfg.Manifest)
+		prevTrees, _ := LoadFolderTreeStore(treePath) // 讀不到＝沒有上一輪，零值可用
+		if terr := SaveFolderTreeStore(treePath, MergeFolderTreeStore(prevTrees, folderTrees, knownRoots, now)); terr != nil {
+			fmt.Fprintf(os.Stderr, "資料夾結構寫入失敗（不擋看守）：%v\n", terr)
 		}
 	}
 
@@ -1252,6 +1275,10 @@ type rootProgress struct {
 	// ——後者在沒事做的那輪會歸零，那正是 2026-08-05 leo 實撞的「明明做完了畫面卻寫等待中」。
 	// 沒事＝零值，呼叫端不寫進 status.json（不製造常駐噪音）。
 	Resync ResyncStatus
+	// Tree＝這一根這一輪算出來的資料夾樹（`inkstone/InkStoneCo#44`，桌面小幫手那半）。
+	// 🔴 **就是送上雲端的那一棵**（BuildFolderTree 的產物原件），不是為了畫面另算一份。
+	//    呼叫端把它落地成 folder-trees.json，小幫手離線也攤得開（理由見 foldertree.go 檔尾）。
+	Tree FolderTree
 }
 
 // qs：這個帳號本輪共用的額度冷卻狀態（跨同帳號的多個監看根，見 quota.go）。
@@ -1770,7 +1797,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 
 	// t210：manifest 走到這裡已經是本輪最終狀態（每個事件處理完就地更新），
 	// 原地數一次就是對的（同 SkippedDocCount 那套「現況快照」邏輯，不必另外維護計數器）。
-	rp := rootProgress{Progress: m.Progress()}
+	rp := rootProgress{Progress: m.Progress(), Tree: tree}
 	for _, e := range m.Entries {
 		if e != nil && e.FailCount >= MaxFailBeforeSkip {
 			// LastError 原文交給呼叫端彙總後過 ClassifyFailure——分類判斷只住那一個接縫，
