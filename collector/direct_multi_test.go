@@ -133,8 +133,10 @@ func TestRunDirectOnceMultiRootDryRun(t *testing.T) {
 		if r.Status != "planned" {
 			t.Fatalf("dry-run 事件應為 planned：%+v", r)
 		}
-		if r.Type == "inventory" {
-			continue // 結構先行：每根各有一張總覽卡（planned），檔案事件另計
+		if r.Type == "inventory" || r.Type == "folder_tree" {
+			// 每根各有一張總覽卡與一棵資料夾樹（都是 planned），檔案事件另計。
+			// 兩者都不是檔案事件：一個是結構先行的知識卡，一個是 portal 畫面的樹。
+			continue
 		}
 		byRoot[r.Root] = append(byRoot[r.Root], r.Path)
 	}

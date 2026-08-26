@@ -128,6 +128,20 @@ type Manifest struct {
 	// 就是每 5 秒對雲端發 20 個請求。與 InventoryHash 同為 Manifest 層欄位，
 	// Scan() 的 rebuild 只重建 Entries，天然跨輪存活。
 	CloudAuditAt int64 `json:"cloud_audit_at,omitempty"`
+	// ── InkStoneCo#44 線 A：資料夾樹的冪等記帳（見 foldertree.go）───────────────
+	// FolderTreeHash＝最後一次**成功送達雲端**的整棵樹內容雜湊；
+	// FolderTreeFailHash／FolderTreeNextRetry＝上一次送失敗的內容與退避到期時間。
+	// 存在理由與上面 InventoryHash 那三個完全同款（t195：沒有退避，雲端一壞就是每 5 秒撞一次）。
+	// 同屬 Manifest 層欄位 ⇒ Scan() 的 rebuild 只重建 Entries，天然跨輪存活。
+	// FolderTreeNextSend＝**成功送出後**的最小間隔到期時間（folderTreeMinInterval）。
+	// 與上面兩個 *Retry 欄位是不同的東西：那兩個是「失敗退避」（t195 的慣例），
+	// 這個是「成功也要節流」。需要它的原因是這棵樹沒有「本輪無事件就不送」那道閘
+	//（空資料夾一個事件都沒有）⇒ 初次同步時內容雜湊每輪都變，沒有它就是每 5 秒
+	// 一次雲端 KV 寫入，一小時燒光當天額度。
+	FolderTreeHash      string `json:"folder_tree_hash,omitempty"`
+	FolderTreeFailHash  string `json:"folder_tree_fail_hash,omitempty"`
+	FolderTreeNextRetry int64  `json:"folder_tree_next_retry,omitempty"`
+	FolderTreeNextSend  int64  `json:"folder_tree_next_send,omitempty"`
 }
 
 // QueueTakedown 記一筆「這個舊路徑（連同當時的頁名）還沒在雲端下架」的待辦。

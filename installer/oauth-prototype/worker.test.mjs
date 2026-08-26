@@ -2008,3 +2008,176 @@ function installStallFixFetchMulti({ accounts } = {}) {
   });
   return { calls, manifest, state };
 }
+
+// ===========================================================================
+// Arcrun#157：「沒變就別重裝」被一個布林廢掉——把「舊」分級
+// ---------------------------------------------------------------------------
+// leo 2026-08-26：「為什麼每次都重裝 23 個，應該裝過不會再動？」
+//
+// 病根不是「有一顆卡住」，是 probeInstanceStale 只回一格布林，而呼叫端拿它當總開關：
+//   ARCRUN_BUNDLE_VERSION 是**部署時貼的 var，不是內容的函數** ⇒ 每次發版必變
+//   ⇒ stale 每次發版必為真 ⇒ 逐顆 sha256 跳過**永遠不會生效**（人只在發版時按更新）。
+// 實測 1.4.54 → 1.4.55：23 顆裡只有 arcrun-kbdb 的 sha 變了，其餘 22 顆全被白推一次。
+//
+// 🔴 這幾條同時守住紅線：**instanceStale 沒有被關掉**。
+//    cypher 是印記載體 ⇒ 版號一落後它一定被重推 ⇒ t146（cypher 永遠裝不到、
+//    triplet seed 永遠種不進去）不會復活。守法＝下面「印記載體一定重推」那兩條。
+// ===========================================================================
+
+import { canSkipWorker } from './worker.js';
+
+const SEEN = 'aaaa1111'; // 帳本記著的 sha＝manifest 這次的 sha（內容沒變）
+
+test('#157 每次發版都會走到的那一格：版號落後 ⇒ scope=stamp（不是全部重推）', async () => {
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.54', bundle_commit: 'd60cd1258f43', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.54' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.55', wantCommit: 'd60cd1258f43',
+    });
+    assert.equal(p.stale, true, '確實是舊的（這一格語意不變）');
+    assert.equal(p.scope, 'stamp', '只有標籤落後＝重推印記載體就補得回來，不該連累另外 20 顆');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#157 leo 08-26 實撞：cypher 1.4.55 / ui 1.4.54 ⇒ scope=stamp', async () => {
+  // youlin 實測。成因是 `acr update` 只部 23 顆不含 ui（本票缺口②）⇒ 兩個印記走岔。
+  // ui 的 bytes 其實是對的（ui_fingerprint 2d331d41… ＝ bundle 內嵌常數），落後的只有標籤。
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.55', bundle_commit: 'd60cd1258f43', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) {
+      return { json: { ok: true, ui_fingerprint: '2d331d41223782ff', bundle_version: '1.4.54' } };
+    }
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.55', wantCommit: 'd60cd1258f43',
+    });
+    assert.equal(p.stale, true);
+    assert.equal(p.scope, 'stamp');
+    assert.match(p.reason, /ui bundle_version=1\.4\.54/);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#157 🔴 紅線：commit 對不上 ⇒ scope=all（帳本整份不可信，不准只補印記）', async () => {
+  // 跑的不是我們以為的那份碼 ⇒ prevSha 對每一顆都失去可信度。
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.55', bundle_commit: 'd7a98f53a1b2', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.55' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.55', wantCommit: 'd60cd1258f43',
+    });
+    assert.equal(p.scope, 'all', '版號一樣但不是同一份碼＝連帳本都不能信');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#157 🔴 紅線：探測不通 ⇒ scope=all（fail-stale 沒有被放寬）', async () => {
+  installFetch(async () => ({ throw: '連不上' }));
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version', wantVer: '1.4.55',
+    });
+    assert.equal(p.scope, 'all');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#157 對得上 ⇒ scope=none', async () => {
+  installFetch(async (url) => {
+    if (url.endsWith('/health')) {
+      return { json: { ok: true, bundle_version: '1.4.55', bundle_commit: 'd60cd1258f43', mail_relay_configured: true } };
+    }
+    if (url.endsWith('/__version')) return { json: { ok: true, ui_fingerprint: 'fp', bundle_version: '1.4.55' } };
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const p = await probeInstanceStale({
+      healthUrl: 'https://c.test/health', uiVersionUrl: 'https://u.test/__version',
+      wantVer: '1.4.55', wantCommit: 'd60cd1258f43',
+    });
+    assert.equal(p.stale, false);
+    assert.equal(p.scope, 'none');
+  } finally {
+    restoreFetch();
+  }
+});
+
+// ── canSkipWorker：這一顆這次到底推不推 ────────────────────────────────────
+
+test('#157 正身：scope=stamp 時，內容沒變的一般零件**真的被略過**', () => {
+  // 這就是 leo 問的「裝過不會再動」。以前這裡是 false（全部重推）。
+  assert.equal(canSkipWorker({ name: 'arcrun-string-ops', entrySha: SEEN, prevSha: SEEN, scope: 'stamp' }), true);
+  assert.equal(canSkipWorker({ name: 'arcrun-http-request', entrySha: SEEN, prevSha: SEEN, scope: 'stamp' }), true);
+});
+
+test('#157 🔴 紅線：scope=stamp 時，印記載體**一定重推**（t146 的保險沒被關掉）', () => {
+  // cypher 不重推 ⇒ 版號永遠補不上、triplet seed 永遠種不進去（t146 那次事故）。
+  assert.equal(canSkipWorker({ name: 'arcrun-cypher-executor', entrySha: SEEN, prevSha: SEEN, scope: 'stamp' }), false);
+  assert.equal(canSkipWorker({ name: 'arcrun-rag-ui', entrySha: SEEN, prevSha: SEEN, scope: 'stamp' }), false);
+});
+
+test('#157 🔴 紅線：scope=all 時，一顆都不准略過', () => {
+  assert.equal(canSkipWorker({ name: 'arcrun-string-ops', entrySha: SEEN, prevSha: SEEN, scope: 'all' }), false);
+  assert.equal(canSkipWorker({ name: 'arcrun-cypher-executor', entrySha: SEEN, prevSha: SEEN, scope: 'all' }), false);
+});
+
+test('#157 內容真的變了 ⇒ 一律重推（不管 scope）', () => {
+  for (const scope of ['none', 'stamp', 'all']) {
+    assert.equal(canSkipWorker({ name: 'arcrun-kbdb', entrySha: 'bbbb2222', prevSha: SEEN, scope }), false,
+      `scope=${scope} 時 sha 變了還略過＝把新版擋在門外`);
+  }
+});
+
+test('#157 帳本沒記過這顆／manifest 沒給 sha ⇒ 沒有「沒變」的證據，只能推', () => {
+  assert.equal(canSkipWorker({ name: 'arcrun-set', entrySha: SEEN, prevSha: '', scope: 'none' }), false);
+  assert.equal(canSkipWorker({ name: 'arcrun-set', entrySha: '', prevSha: SEEN, scope: 'none' }), false);
+});
+
+test('#157 收斂：scope=none 且內容沒變 ⇒ 略過（同一版再跑一次不該全推）', () => {
+  assert.equal(canSkipWorker({ name: 'arcrun-cypher-executor', entrySha: SEEN, prevSha: SEEN, scope: 'none' }), true);
+  assert.equal(canSkipWorker({ name: 'arcrun-string-ops', entrySha: SEEN, prevSha: SEEN, scope: 'none' }), true);
+});
+
+test('#157 實測數字：1.4.54→1.4.55 只有 1 顆內容變 ⇒ 從 23 顆降到 3 顆', () => {
+  // 真實 manifest 差異（本票留證）：只有 arcrun-kbdb 的 sha256 變了，其餘 22 顆一致。
+  const names = [
+    'arcrun-array-ops', 'arcrun-auth-oauth2', 'arcrun-auth-service-account', 'arcrun-auth-static-key',
+    'arcrun-code', 'arcrun-cron', 'arcrun-cypher-executor', 'arcrun-date-ops', 'arcrun-filter',
+    'arcrun-foreach-control', 'arcrun-http-request', 'arcrun-if-control', 'arcrun-kbdb', 'arcrun-mcp',
+    'arcrun-merge', 'arcrun-number-ops', 'arcrun-rag-ui', 'arcrun-set', 'arcrun-string-ops',
+    'arcrun-switch', 'arcrun-try-catch', 'arcrun-validate-json', 'arcrun-wait',
+  ];
+  assert.equal(names.length, 23);
+  const pushed = names.filter((name) => !canSkipWorker({
+    name,
+    entrySha: name === 'arcrun-kbdb' ? 'CHANGED' : SEEN, // 只有這顆內容變了
+    prevSha: SEEN,
+    scope: 'stamp',                                       // 版號 1.4.54 → 1.4.55
+  }));
+  assert.deepEqual(pushed.sort(), ['arcrun-cypher-executor', 'arcrun-kbdb', 'arcrun-rag-ui'],
+    '該推的只有「內容變了的那顆」＋「兩顆印記載體」');
+  assert.equal(pushed.length, 3, 'leo 問的「為什麼每次都重裝 23 個」＝這裡從 23 變 3');
+});

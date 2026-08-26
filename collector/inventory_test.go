@@ -16,15 +16,40 @@ import (
 
 // splitInventory 把 results 拆成（總覽卡, 其餘）。既有測試斷言「幾個檔案事件」時
 // 用 rest；要驗結構先行本身時用 inv。
+// splitInventory 把「每輪都會做的結構回報」從「檔案事件」裡分出來。
+//
+// 有兩種結構回報，都不是檔案事件、都與 LLM 無關、都在額度閘之外：
+//   - `inventory`＝資料夾總覽**知識卡**（給檢索用的 markdown，走 rag_ingest_card）
+//   - `folder_tree`＝portal 畫面用的**結構化樹**（InkStoneCo#44，走 /portal/daemon/folder-tree）
+//
+// 🔴 2026-08-17：`folder_tree` 這一類是後加的，而本函式當時沒跟著加 ⇒ 五支既有測試
+// 突然把「樹的回報」當成一個檔案事件，紅了。**這正是「新增一種結果型別」時最容易漏的一環**：
+// 分類器只認得舊的那一種，新的就靜靜地落進 rest。以後再加第三種，記得改這裡。
 func splitInventory(results []DirectResult) (inv, rest []DirectResult) {
 	for _, r := range results {
-		if r.Type == "inventory" {
+		switch r.Type {
+		case "inventory":
 			inv = append(inv, r)
-		} else {
+		case "folder_tree":
+			// 樹不算總覽卡（回傳值只有兩個，刻意不擴成三個——呼叫端在意的是
+			// 「哪些是檔案事件」，樹跟總覽卡一樣都屬於「不是檔案事件」那一堆）。
+			// 要專門驗樹的測試自己從 results 撈 Type=="folder_tree"。
+		default:
 			rest = append(rest, r)
 		}
 	}
 	return inv, rest
+}
+
+// folderTreeResults 撈出本輪的資料夾樹回報（專門驗樹的測試用）。
+func folderTreeResults(results []DirectResult) []DirectResult {
+	var out []DirectResult
+	for _, r := range results {
+		if r.Type == "folder_tree" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func invEntries(paths map[string]int64) map[string]*ManifestEntry {
@@ -117,6 +142,10 @@ func TestDirectInventory_先於萃取且冪等(t *testing.T) {
 	}
 	var order []string // 按抵達順序記 page_name
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// InkStoneCo#44：資料夾樹不是卡片（沒有 page_name），不能算進「送了幾張卡」。
+		if answeredFolderTreePost(w, r) {
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)

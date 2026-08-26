@@ -106,6 +106,11 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 	var mu sync.Mutex
 	var order []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// InkStoneCo#44：資料夾樹走 portal 登記端點，body 沒有 page_name。
+		// 不先擋掉，下面那行型別斷言會 panic，而測試會變成掛住 8 分鐘（見該 helper 的說明）。
+		if answeredFolderTreePost(w, r) {
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)
@@ -199,7 +204,9 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 func ingestedPaths(results []DirectResult) []string {
 	var out []string
 	for _, r := range results {
-		if r.Status == "ingested" && r.Type != "inventory" { // 結構先行：總覽卡另計
+		// 只數「檔案事件」。總覽卡（inventory）與資料夾樹（folder_tree，InkStoneCo#44）
+		// 都是每輪的結構回報，不是使用者的檔案——同 countsAsDocument 的那條線。
+		if r.Status == "ingested" && r.Type != "inventory" && r.Type != "folder_tree" {
 			out = append(out, r.Path)
 		}
 	}
@@ -230,6 +237,11 @@ func TestDirect_ResumeAfterInterruption(t *testing.T) {
 	var mu sync.Mutex
 	var posted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// InkStoneCo#44：資料夾樹的 body 沒有 path ⇒ 不擋掉的話會被記成一筆空字串，
+		// 本測就會看到「送了 4 次」而誤判斷點續傳失效。
+		if answeredFolderTreePost(w, r) {
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)

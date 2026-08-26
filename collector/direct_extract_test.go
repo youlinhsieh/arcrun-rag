@@ -55,6 +55,12 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 	// 假 cypher：收 rag_ingest_card、驗 payload、記帳
 	var posted []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// InkStoneCo#44：資料夾樹走 portal 登記端點（不是 workflow webhook），
+		// 它不是「卡片」也不含任何原文 ⇒ 不算進 posted，也不算打錯端點。
+		if strings.HasSuffix(r.URL.Path, "/portal/daemon/folder-tree") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/webhooks/named/demo/rag_ingest_card/trigger") {
 			t.Errorf("打錯端點：%s", r.URL.Path)
 		}
@@ -281,9 +287,12 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 
 	var hitCard, hitDirect bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 🔴 這裡以前寫的是 `else { hitDirect = true }`——「不是卡片端點就當成直送端點」。
+		// InkStoneCo#44 加了第三個端點（資料夾樹）之後，那個 else 就開始說謊。
+		// 改成指名要驗的那條路：本測要守的契約是「**原文不出機**」＝不准打 rag_ingest_direct。
 		if strings.Contains(r.URL.Path, "rag_ingest_card") {
 			hitCard = true
-		} else {
+		} else if strings.Contains(r.URL.Path, "rag_ingest_direct") {
 			hitDirect = true
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})

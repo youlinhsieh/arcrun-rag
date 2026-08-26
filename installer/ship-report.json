@@ -3737,17 +3737,19 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "failed"
+     "status": "done",
+     "note": null
     },
     {
      "id": "release-check",
      "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     }
    ],
    "sourceCommit": "Arcrun@d60cd1258f43",
    "machine": "9f06f3113188",
-   "ts": 1787735946525
+   "ts": 1787736324911
   }
  }
 }

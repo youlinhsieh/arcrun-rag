@@ -139,6 +139,31 @@ type TriggerPayload struct {
 	//    而畫面上的數字是 **0**。講一個 0 跟安靜地少收，對使用者是同一件事。
 	ExcludedDirs     []ExcludedDir `json:"-"` // 已排序，上限 MaxExcludedDirsListed
 	ExcludedDirCount int           `json:"-"` // 總數（可能大於清單長度）
+
+	// ── InkStoneCo#44 線 A：portal 的資料夾樹（leo 2026-08-17）─────────────────
+	// DirStats＝走訪時**逐目錄**數出來的分母（key＝相對監看根的路徑，`""`＝根）。
+	// AllExcludedDirs＝整棵被剪掉的目錄，**未裁切**（上面那個 ExcludedDirs 為了畫面
+	// 只留 20 筆；樹要畫得完整需要全量，不然「哪些沒收」會缺角）。
+	//
+	// 🔴 為什麼分母一定要在這裡數、不能另外走一趟：判斷「支不支援／收不收」的那一整套
+	// 判準就活在這個 WalkDir 裡（allowedExt／docLikeExt／Plan.KeepsFile／TemplateOwns）。
+	// 另外走一趟＝同一件事第二份實作，必然漂移 ⇒ 畫面上的數字與實際收的檔對不起來，
+	// 而 leo 要的正是「兩個數字的差額解釋得了」。
+	// 同 `json:"-"`：給本機與 portal 用的，不進 collector-trigger schema。
+	DirStats        map[string]*dirStat `json:"-"`
+	AllExcludedDirs []ExcludedDir       `json:"-"`
+}
+
+// dirStat＝一個目錄「這一層直接放的檔案」的分類計數（不含子目錄；子樹合計由畫面自己疊，
+// 存兩套就是同一件事兩份實作，遲早對不起來）。
+//
+// 🔴 不變式：`total == supported + unsupported + excluded`。
+// 少一類就會出現「兩個數字的差額解釋不了」，而那正是 leo 這條規格要解掉的病。
+type dirStat struct {
+	total       int // 這一層看得到的檔案總數（分母）
+	supported   int // 通過所有閘、進了 manifest 的（＝分子的候選）
+	unsupported int // 副檔名還讀不了的（docLikeExt 與其他）
+	excluded    int // 收檔策略／範本身分決定不收的（程式碼多半落這裡）
 }
 
 // MaxExcludedDirsListed：最多逐筆列幾個被跳過的目錄。超過的只反映在 ExcludedDirCount
@@ -304,6 +329,18 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	// 整棵剪掉的目錄與理由。**剪掉的重點就是不走進去**，所以這裡記的是目錄不是檔案數
 	// ——使用者要知道的本來就是「哪幾個資料夾沒收、為什麼」。見 ExcludedDir 的說明。
 	var excludedDirs []ExcludedDir
+	// InkStoneCo#44 線 A：逐目錄的分母。與上面幾個計數器同一趟走訪算出來——
+	// 判準只有這一份，畫面上的數字才可能與實際收的檔對得起來。
+	dirStats := map[string]*dirStat{"": {}} // 根一定存在（空資料夾也要有節點，arcrun-rag#106）
+	statOf := func(relSlash string) *dirStat {
+		dir := folderOfRel(relSlash)
+		st, ok := dirStats[dir]
+		if !ok {
+			st = &dirStat{}
+			dirStats[dir] = st
+		}
+		return st
+	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -333,6 +370,11 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 						excludedDirs = append(excludedDirs, ExcludedDir{Path: rel, Reason: why})
 						return filepath.SkipDir
 					}
+					// #44 線 A：走得進去的目錄一律登記，**就算它一個檔都沒有**
+					// ——leo 的規格是「不管那層有沒有文件，整棵樹都要採」。
+					if _, ok := dirStats[rel]; !ok {
+						dirStats[rel] = &dirStat{}
+					}
 				}
 			}
 			return nil
@@ -342,6 +384,12 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		}
 		if rel, ok := relOf(); ok && !opts.Plan.KeepsFile(rel) {
 			excludedByPlan++
+			// #44 線 A：這是「使用者看得到、但我們決定不收」的檔（程式碼多半落在這裡）。
+			// 它**要算進分母**——leo 的規格就是「兩個數字不相等是正常的，差額＝不支援」，
+			// 而分母裡沒有它，差額就永遠解釋不了。
+			s := statOf(rel)
+			s.total++
+			s.excluded++
 			return nil
 		}
 		if abs, aerr := filepath.Abs(p); aerr == nil && opts.SkipPaths[abs] {
@@ -365,6 +413,18 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			}
 		}
 		ext := strings.ToLower(filepath.Ext(name))
+		// #44 線 A：走到這裡的都是「使用者自己的、看得見的」檔——上面三道
+		// （隱藏檔／SkipPaths 的機器檔／TemplateOwns 我們自己鋪的範本）刻意不算進分母，
+		// 理由與 scan.go 既有註解同一條：**我們自己鋪的東西不該佔用他的注意力**。
+		if rel, ok := relOf(); ok {
+			s := statOf(rel)
+			s.total++
+			if allowedExt[ext] {
+				s.supported++
+			} else {
+				s.unsupported++
+			}
+		}
 		if !allowedExt[ext] {
 			// G-6.2：**這裡以前是條死巷**——`return nil` 之後這個檔就從世界上消失了。
 			// 現在留個名，讓 direct.go 有東西可以寫進 status.json、App 有東西可以顯示。
@@ -583,6 +643,10 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	// 排序＝畫面每輪穩定；裁切前先記總數，不然「等 N 個」會少報。
 	sort.Slice(excludedDirs, func(i, j int) bool { return excludedDirs[i].Path < excludedDirs[j].Path })
 	excludedDirCount := len(excludedDirs)
+	// #44 線 A：樹要畫得完整，需要**未裁切**的全量（下面那個裁切是給狀態列用的）。
+	// 先複製再裁切——共用同一個底層陣列的話，裁切會讓樹跟著少一截。
+	allExcludedDirs := make([]ExcludedDir, len(excludedDirs))
+	copy(allExcludedDirs, excludedDirs)
 	if len(excludedDirs) > MaxExcludedDirsListed {
 		excludedDirs = excludedDirs[:MaxExcludedDirsListed]
 	}
@@ -601,5 +665,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		ExcludedByPlan:    excludedByPlan,
 		ExcludedDirs:      excludedDirs,
 		ExcludedDirCount:  excludedDirCount,
+		DirStats:          dirStats,
+		AllExcludedDirs:   allExcludedDirs,
 	}, nil
 }

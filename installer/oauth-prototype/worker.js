@@ -1240,17 +1240,53 @@ async function seedCredential(token, accountId, dbId, apiKey, name, value, servi
  *    舊 bundle 沒有 `manifest.source` ⇒ 我們也貼不出來 ⇒ 若照樣要求，實例永遠補不齊
  *    ⇒ **每次安裝都全量重推、而且永遠治不好**（t146 那型無窮迴圈的形狀，不可再造一個）。
  *
- * @returns {{stale:boolean, instanceVersion:string, wantVersion:string, instanceCommit:string, uiFingerprint:string, reason:string}}
+ * ── 🔴 「舊」有兩種，混成一個布林就會每版全量重推（Arcrun#157，2026-08-26）──────
+ * leo 08-26：「**為什麼每次都重裝 23 個，應該裝過不會再動？**」
+ * 答案不是「有一顆卡住」，而是**這個函式的回傳值只有一格**：
+ *
+ *   `ARCRUN_BUNDLE_VERSION` 是**部署時貼上去的 var，不是內容的函數**
+ *   ⇒ 每次發版它都變，即使那顆 worker 的 bytes 一個位元都沒動。
+ *   實測 1.4.54 → 1.4.55：23 顆裡**只有 `arcrun-kbdb` 的 sha256 變了**，
+ *   cypher 與 ui 的 bytes 兩版完全相同（`d4ad7f488c67…` / `594637e14cd1…`）。
+ *
+ * 而呼叫端拿 `stale` 當**總開關**：一旦為真，逐顆 sha256 跳過**全部失效**。
+ * ⇒ 版號一定會變 ⇒ `stale` 在**每一次發版**必為真 ⇒ 逐顆跳過**永遠不會生效**，
+ *   因為人只有在發版時才會按更新。leo 07-29 要的「沒變就別重裝」被這個布林整個廢掉。
+ *
+ * ⇒ 治法**不是關掉這道保險**（那會讓 t146 復活），是**把「舊」分級**：
+ *
+ *     scope 'none'   對得上，沒有任何一顆被強迫
+ *     scope 'stamp'  只有「印記」落後（版號／commit／config var／ui 版號）
+ *                    ⇒ 只強迫重推**帶印記的那幾顆**（isStampTarget：cypher＋ui）
+ *                    ——它們就是印記的載體，不重推它們版號永遠補不上；
+ *                    其餘 20 顆照舊比 sha256，沒變就真的不推
+ *     scope 'all'    連「這台實例現在是什麼」都問不出來／答案自相矛盾
+ *                    ⇒ 一顆都不信，全量重推（＝本函式原本的行為）
+ *
+ * 判準：**這個症狀能不能靠「重推印記載體」修好？**
+ *   能（版號不符／缺 commit／缺 mail_relay var／ui 落後）→ `'stamp'`
+ *   不能（探測不通／實例連欄位都沒有／commit 對不上）→ `'all'`
+ * 最後一格特別重要：**commit 不符代表 KV 帳本對這台實例的認知整個不可信**
+ * ⇒ `prevSha` 對每一顆都不能信 ⇒ 只能全推。這條不准為了省時間放寬。
+ *
+ * ⚠️ `stale` 這一格**語意不變**（`scope !== 'none'`），舊呼叫端與舊測試照樣成立。
+ *
+ * @returns {{stale:boolean, scope:'none'|'stamp'|'all', instanceVersion:string, wantVersion:string, instanceCommit:string, uiFingerprint:string, reason:string}}
  */
 export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wantCommit = '', timeoutMs = 10000 }) {
   const out = {
     stale: true,
+    // 預設 'all'＝最保守的那一格：任何還沒被分類的失敗路徑都全量重推，
+    // 與本函式既有的 fail-stale 精神一致（讀不到一律當舊的）。
+    scope: 'all',
     instanceVersion: '(讀不到)',
     wantVersion: wantVer,
     instanceCommit: '(無)',
     uiFingerprint: '(無)',
     reason: '',
   };
+  /** 這次的「舊」只是印記落後——重推 isStampTarget 那幾顆就補得回來。 */
+  const stampOnly = () => { out.scope = 'stamp'; return out; };
 
   // ① cypher：實例的後端版本
   try {
@@ -1259,12 +1295,15 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wan
     const gotVer = (hj && hj.bundle_version) || '';
     out.instanceVersion = gotVer || '(讀不到)';
     if (!gotVer) {
+      // scope 'all'：連版本欄位都沒有＝古早世代的實例，它身上每一顆都可能與帳本不符。
       out.reason = 'cypher 讀不到 bundle_version（舊實例沒這欄位）＝重推';
       return out;
     }
     if (gotVer !== wantVer) {
-      out.reason = `cypher bundle_version=${gotVer} ≠ ${wantVer}＝重推`;
-      return out;
+      // 🔴 #157：這是**最常走到的一格**（每次發版都會），而它只代表「印記落後」。
+      //    以前這裡讓 23 顆全部重推；現在只重推印記載體，其餘照比 sha256。
+      out.reason = `cypher bundle_version=${gotVer} ≠ ${wantVer}＝重推印記載體`;
+      return stampOnly();
     }
     // arcrun-rag#38/#69/#25（2026-08-11）：**版本號相同不代表 config 也是最新的**——
     // PORTAL_MAIL_RELAY_BASE 是這次才第一次被安裝器寫入的 var，跟 bundle_version
@@ -1273,19 +1312,25 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wan
     // ⇒ 這個 var 永遠補不進去、忘記密碼永遠是斷的。這裡額外問一句「這個 var 到底有沒有」，
     // 沒有就跟版本不符一樣處理＝重推（fail-stale：讀不到／沒設一律當舊的，不假設已經最新）。
     if (!(hj && hj.mail_relay_configured)) {
-      out.reason = 'cypher 沒有設定 PORTAL_MAIL_RELAY_BASE（忘記密碼寄不出信）＝重推';
-      return out;
+      // PORTAL_MAIL_RELAY_BASE 是 cypher 身上的 var，而 cypher 就是印記載體
+      // ⇒ 重推它就補得回來，不需要動其餘 20 顆。
+      out.reason = 'cypher 沒有設定 PORTAL_MAIL_RELAY_BASE（忘記密碼寄不出信）＝重推印記載體';
+      return stampOnly();
     }
     // Arcrun#106 另一半（見上方檔頭）：版號對得上，還要 commit 也對得上。
     const gotCommit = (hj && hj.bundle_commit) || '';
     out.instanceCommit = gotCommit || '(無)';
     if (wantCommit) {
       if (!gotCommit) {
-        out.reason = 'cypher 沒有 bundle_commit（查不出它跑的是哪一份碼）＝重推';
-        return out;
+        // 存量實例只是**少貼一個標籤**（#106 之前那條路沒烙），碼本身沒有可疑之處
+        // ⇒ 重推印記載體就補得回去。
+        out.reason = 'cypher 沒有 bundle_commit（查不出它跑的是哪一份碼）＝重推印記載體';
+        return stampOnly();
       }
       if (!commitsAgree(gotCommit, wantCommit)) {
-        out.reason = `cypher bundle_commit=${gotCommit} ≠ ${wantCommit}（版號一樣但不是同一份碼）＝重推`;
+        // 🔴 這一格維持 'all'：實例上跑的**不是我們以為的那份碼**
+        // ⇒ KV 帳本記的 `prevSha` 對**每一顆**都失去可信度，不能只補印記就當沒事。
+        out.reason = `cypher bundle_commit=${gotCommit} ≠ ${wantCommit}（版號一樣但不是同一份碼）＝全部重推`;
         return out;
       }
     }
@@ -1303,17 +1348,23 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wan
     if (!gotFp) {
       // 舊世代沒有 /__version ⇒ SPA fallback 回首頁 HTML ⇒ JSON 解析失敗。
       // 天然向後相容：不需要額外的世代判斷。
-      out.reason = 'ui 無 /__version（舊世代不會自報版本）＝重推';
-      return out;
+      // 走到這裡表示 cypher 的版號＋commit 都對得上（上面已擋），所以「舊」的只有 ui 這顆
+      // ⇒ 重推印記載體即可。
+      out.reason = 'ui 無 /__version（舊世代不會自報版本）＝重推印記載體';
+      return stampOnly();
     }
     const uiVer = (uj && uj.bundle_version) || '';
     if (!uiVer) {
-      out.reason = 'ui 有 /__version 但沒報版本（空字串）＝重推';
-      return out;
+      out.reason = 'ui 有 /__version 但沒報版本（空字串）＝重推印記載體';
+      return stampOnly();
     }
     if (uiVer !== wantVer) {
-      out.reason = `ui bundle_version=${uiVer} ≠ ${wantVer}＝重推`;
-      return out;
+      // 🔴 #157 leo 08-26 實撞的那一格：youlin 上 cypher 報 1.4.55、ui 報 1.4.54。
+      //    成因是 `acr update` 只部 23 顆**不含 ui**（見本票缺口②）⇒ 兩個印記走岔。
+      //    ui 的 bytes 其實是對的（實測 ui_fingerprint 2d331d41… ＝ bundle 內嵌常數），
+      //    落後的只有那張**標籤** ⇒ 重推 ui 這一顆就收斂，不必陪葬另外 20 顆。
+      out.reason = `ui bundle_version=${uiVer} ≠ ${wantVer}＝重推印記載體`;
+      return stampOnly();
     }
   } catch (e) {
     out.reason = 'ui 探測失敗＝重推（寧可多推，不可漏推）';
@@ -1321,8 +1372,27 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wan
   }
 
   out.stale = false;
+  out.scope = 'none';
   out.reason = `cypher 與 ui 都是 ${wantVer}＝已是最新，整批可跳過`;
   return out;
+}
+
+/**
+ * 這一顆這次**能不能靠「內容沒變」跳過**——判斷收在一處，別散回迴圈裡。
+ *
+ * `probeInstanceStale` 只回答「這台實例哪裡舊」，**要不要推某一顆是另一個問題**：
+ * 它同時取決於那顆的 sha256 有沒有變、以及它是不是印記的載體。
+ * 兩件事混在呼叫點寫，就是 #157 那個 `!instanceStale && …` 布林的由來。
+ *
+ * @param {{name:string, entrySha:string, prevSha:string, scope:'none'|'stamp'|'all'}} o
+ * @returns {boolean} true＝這顆可以略過（內容沒變且沒被強迫重推）
+ */
+export function canSkipWorker({ name, entrySha, prevSha, scope }) {
+  // 帳本沒記過這顆／manifest 沒給 sha ⇒ 沒有「沒變」的證據，只能推。
+  if (!prevSha || !entrySha || prevSha !== entrySha) return false;
+  if (scope === 'all') return false;                       // 帳本整份不可信
+  if (scope === 'stamp' && isStampTarget(name)) return false; // 標籤要靠重推它才補得上
+  return true;
 }
 
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
@@ -2080,6 +2150,9 @@ async function runInstall(env, sid, progress, force) {
       // 二修的錯：instanceStale 只在指紋一致時計算 ⇒ 這次 pin 換了、指紋不一致
       // ⇒ instanceStale 恆為 false ⇒ 逐顆跳過照常生效 ⇒ 修了等於沒修（leo 連三次重裝都沒解）。
       let instanceStale = false;
+      // #157：「舊」分成 'none' / 'stamp' / 'all' 三級（見 probeInstanceStale 檔頭）。
+      // force 時等同 'all'——使用者明講要重裝，就不要拿跳過邏輯跟他爭。
+      let staleScope = force ? 'all' : 'none';
       if (!force) {
         // 🔴 2026-08-02：wantVer 必須與**寫進實例的格式**一致（deployBundledWorker 的
         //    ARCRUN_BUNDLE_VERSION）。兩邊算法一旦不同步，instanceStale 會恆為 true
@@ -2097,6 +2170,8 @@ async function runInstall(env, sid, progress, force) {
           wantCommit: sourceCommitOf(manifest.source),
         });
         instanceStale = probe.stale;
+        staleScope = probe.scope;
+        progress.result.staleScope = probe.scope; // 除錯用：這次是全推還是只補印記
         progress.result.instanceVersion = probe.instanceVersion;
         progress.result.instanceCommit = probe.instanceCommit;
         progress.result.wantVersion = probe.wantVersion;
@@ -2143,7 +2218,14 @@ async function runInstall(env, sid, progress, force) {
         // 一修只擋掉「整段跳過」，但這裡還有第二層——每顆仍因 sha 沒變被個別略過
         // ⇒ cypher 永遠裝不到 ⇒ triplet seed 永遠種不進去（leo 連兩次重裝都沒解）。
         // instanceStale 為真時，**逐顆跳過一律失效**。
-        if (!instanceStale && prevSha && entry.sha256 && prevSha === entry.sha256) {
+        //
+        // 🔴 #157 二修（2026-08-26，leo：「為什麼每次都重裝 23 個，應該裝過不會再動？」）：
+        //    上面那句話**太寬**。版號是「部署時貼的 var」不是內容的函數 ⇒ 每次發版必變
+        //    ⇒ instanceStale 每次發版必為真 ⇒ 這條跳過**永遠不會生效**（人只在發版時按更新）。
+        //    實測 1.4.54→1.4.55：23 顆裡只有 arcrun-kbdb 的 sha 變了，其餘 22 顆全被白推一次。
+        //    ⇒ 改問 canSkipWorker：只有「印記載體」與「帳本整份不可信」兩種情況才強迫重推。
+        //    t146 那道保險**沒有被關掉**——cypher 是印記載體，版號一落後它一定會被重推。
+        if (canSkipWorker({ name: entry.name, entrySha: entry.sha256, prevSha, scope: staleScope })) {
           const s2skip = progress.steps.find((x) => x.id === 'deploy');
           if (s2skip) s2skip.note = `${progress.result.deployedNames.length + 1}/${manifest.core.length}：${entry.name}（未變動，略過）`;
           progress.result.deployedNames.push(entry.name);

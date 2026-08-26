@@ -475,6 +475,35 @@ func (c *DirectConfig) triggerURL(workflow string) string {
 	return fmt.Sprintf("%s/webhooks/named/%s/%s/trigger", c.CypherURL, c.Namespace, workflow)
 }
 
+// folderTreeURL 組出「回報資料夾樹」的端點（InkStoneCo#44 線 A）。
+//
+// 🔴 為什麼不是 named-webhook（也就是不做成一條 workflow）：這件事是**登記**，
+// 不是知識萃取——它寫的是 portal 的登記簿（庫目錄＋資料夾節點），與
+// `/portal/daemon/extract`（extract_workersai.go:86）、`/portal/daemon/libraries`
+// 同一族、同一把 `X-Arcrun-API-Key`。做成 workflow 會為了「把結構化資料寫進登記簿」
+// 在 workflow 裡塞一串 code 節點，那正是「表面走 Arcrun、實際整段寫 JS」的腹語術。
+func (c *DirectConfig) folderTreeURL() string {
+	return c.CypherURL + "/portal/daemon/folder-tree"
+}
+
+// countsAsDocument 回答「這筆結果算不算**使用者的一份文件**」——
+// 也就是該不該進 status.json 的 `extracted_ok` / `extract_failed`（＝托盤上那句
+// 「已整理 N 份 / ⚠ N 份失敗」）。
+//
+// 🔴 `folder_tree` 不算。它送的是**畫面用的資料夾結構**，不是知識、不是使用者的檔案：
+// 收端只寫一把 KV，一份文件都沒有經手。
+//
+// 📌 這是本分支自己踩到的（InkStoneCo#44）：漏掉這道閘的症狀是**空資料夾**——
+// 一個檔都沒有，樹卻照樣要送（那正是 arcrun-rag#106 要的），一旦雲端連不上，
+// 使用者的托盤就會顯示「⚠ 1 份失敗」而他根本沒有半份檔案。
+// 「講一個假的 1」跟「安靜地少講」對使用者是同一件事（同 #104 那條紅線）。
+//
+// `inventory`（資料夾總覽卡）刻意**仍然算**：它是真的被寫進知識庫的一張卡，
+// 使用者在雲端查得到它——與這裡的樹不是同一種東西。
+func countsAsDocument(r DirectResult) bool {
+	return r.Type != "folder_tree"
+}
+
 // postJSON POST 一個 JSON body 到 url，回傳 HTTP 狀態碼與回應片段。非 2xx 視為錯誤。
 func (c *DirectConfig) postJSON(url string, body any) (int, string, error) {
 	data, err := json.Marshal(body)
@@ -751,7 +780,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			}
 			for i := range r {
 				r[i].Account = accHost // t104: 標明所屬帳號
-				if cfg.Extractor != "" {
+				if cfg.Extractor != "" && countsAsDocument(r[i]) {
 					switch r[i].Status {
 					case "ingested":
 						accSt.ExtractedOK++
@@ -894,6 +923,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 頂層彙總（向後相容：單帳號時填頂層欄位讓舊版 tray 仍能讀）
 		if cfg.Extractor != "" {
 			for _, r := range results {
+				if !countsAsDocument(r) {
+					continue
+				}
 				switch r.Status {
 				case "ingested":
 					st.ExtractedOK++
@@ -1377,6 +1409,23 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		results = append(results, fcRes...)
 		if fcRes[0].Status != "planned" {
 			saveManifest() // 同上：folder_card_hashes 當下就落盤，斷點續傳才接得上
+		}
+	}
+
+	// InkStoneCo#44 線 A（leo 2026-08-17）：把「這個資料夾長什麼樣、每一層同步了幾份／
+	// 總共幾份」送上 portal。與上面的總覽卡刻意分開——那張是給檢索用的 markdown 卡，
+	// 這棵是給畫面用的結構化資料，消費者不同（理由全文見 foldertree.go 檔頭）。
+	//
+	// 位置與總覽卡同一段的三個理由完全通用（不等 LLM／在額度閘之外／反映現況），
+	// 再加第四個**只屬於它**的：**空資料夾一個事件都不會有**（arcrun-rag#106 的情境本身），
+	// 所以它不能被任何「有事件才做」的閘擋住——分子分母都由現況算出，靜止時
+	// 內容雜湊自然擋住重送，不需要事件當第二道閘。
+	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
+		payload.AllExcludedDirs, plan, runNow)
+	if treeRes := syncFolderTree(cfg, absRoot, m, tree, dryRun, runNow); treeRes != nil {
+		results = append(results, *treeRes)
+		if treeRes.Status != "planned" {
+			saveManifest() // 記住 folder_tree_hash／失敗退避
 		}
 	}
 
