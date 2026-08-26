@@ -83,8 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@4f167bfc8fa2debf65d0c65ff731c80d8990a80f';
-const BUNDLE_BUILT = '2026-08-24'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b873d3c86ff1901dc643a7be4b62e132a1ac87af';
+const BUNDLE_BUILT = '2026-08-26'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 // 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
 const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
 function bundleBase(env) {
@@ -1929,16 +1929,51 @@ async function runInstall(env, sid, progress, force) {
     }
   }
 
-  // --- d. migration（一次批次送多語句，已實測可行）-------------------------
+  // --- d. migration（一次批次送多語句；撞到「已經套過」才退回逐句容錯）-----------
+  //
+  // 🔴 2026-08-26 實錯（leo 更新時當場失敗，畫面停在「建立資料表結構」）：
+  //   `duplicate column name: src_id: SQLITE_ERROR`
+  //   前一天剛把安裝器從「只帶 0001+0002」修成「帶全部七支」（inkstone/Arcrun#159），
+  //   而 `0007` 的 `ALTER TABLE ADD COLUMN` **不是冪等的**——
+  //   已經跑過那支的實例（例如先走過 `acr update` 的）再裝一次就當場炸。
+  //   那支 migration 自己的註解就寫著「**重跑由套用端容錯 duplicate column**」，
+  //   而**這一側沒有容錯**：整批一次送，任何一句錯就整步失敗。
+  //
+  //   ⇒ 修「migration 沒帶齊」的同時，沒有想到「帶齊之後會重複套用」。
+  //     一個修法解開了另一個一直被遮住的缺陷。
+  //
+  //   做法照 `cli/src/lib/deploy.ts` 的 `applyMigrationFile()`（那條路沒壞）：
+  //   **預設整批送（維持既有行為與 subrequest 預算）；只有在撞到 duplicate column
+  //   時才退回逐句、逐句容錯**。不預先逐句跑——41 句 × HTTP 來回會吃掉免費層的
+  //   subrequest 額度（每個用戶都在免費層，見 principles「免費層預算設計原則」）。
   if (!stepDone('schema')) {
     try {
       await setStep('schema', 'running');
-      await cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
+      const runSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sql: MIGRATION_SQL }),
+        body: JSON.stringify({ sql }),
       });
-      await setStep('schema', 'done', '資料表已就緒');
+      let tolerated = 0;
+      try {
+        await runSql(MIGRATION_SQL);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // 只有「這一句本來就套過了」才退回逐句；其他錯照樣往上拋，不吞。
+        if (!/duplicate column/i.test(msg)) throw e;
+        for (const stmt of MIGRATIONS.statements) {
+          try {
+            await runSql(stmt);
+          } catch (e2) {
+            const m2 = e2 instanceof Error ? e2.message : String(e2);
+            if (/duplicate column/i.test(m2)) { tolerated++; continue; }
+            throw e2;
+          }
+        }
+      }
+      await setStep('schema', 'done', tolerated
+        ? `資料表已就緒（${tolerated} 項先前已套過，略過）`
+        : '資料表已就緒');
     } catch (e) {
       await fail('schema', e);
       return;

@@ -45,7 +45,9 @@ export function checkArmed(inkstoneRoot, { now = Math.floor(Date.now() / 1000) }
   if (!existsSync(armed)) {
     throw new Error(
       `需要 leo 親自解保險，但 .github-armed 不存在。\n` +
-      `     請 leo 整行貼：scripts/github-arm.sh "<出貨說明>" 30\n` +
+      `     🔴 2026-08-16 起 arm 走 Gitea 票，**不要叫 leo 開終端機**：\n` +
+      `       bash scripts/gitea-arm-request.sh <票號> "<出貨說明>"   ← 你跑，它把 ARM 碼貼上那張票\n` +
+      `       → 轉告他那組碼，他在同一張票回覆（手機即可）→ bash scripts/gitea-arm-check.sh\n` +
       `     （這道閘 AI 不得自造——自造就等於自己批准自己發佈）`);
   }
   const raw = readFileSync(armed, 'utf8').split('\n');
@@ -54,7 +56,7 @@ export function checkArmed(inkstoneRoot, { now = Math.floor(Date.now() / 1000) }
   if (!Number.isFinite(expiry) || expiry <= 0) {
     throw new Error(
       `.github-armed 格式看不懂（第一行應是到期時間戳，讀到 ${JSON.stringify(raw[0])}）。\n` +
-      `     → 重新跑 scripts/github-arm.sh 產生一份乾淨的保險檔`);
+      `     → 走 Gitea 票重新請一次：scripts/gitea-arm-request.sh <票號> "<出貨說明>"（2026-08-16 起）`);
   }
   if (now > expiry) {
     const overMin = Math.round((now - expiry) / 60);
@@ -62,7 +64,8 @@ export function checkArmed(inkstoneRoot, { now = Math.floor(Date.now() / 1000) }
       `.github-armed 已過期 ${overMin} 分鐘（保險早就自動回鎖了，這個檔只是還沒被清掉）。\n` +
       `     這就是 8/8 23:16 那份保險現在的狀態——舊版 ship.mjs 只查「檔案存不存在」，\n` +
       `     不查過不過期，過期的舊保險照樣會放行，這是本次一併補上的洞。\n` +
-      `     請 leo 重新跑：scripts/github-arm.sh "<出貨說明>" 30`);
+      `     🔴 arm 2026-08-16 起走 Gitea 票：你跑 scripts/gitea-arm-request.sh <票號> "<出貨說明>"，\n` +
+      `     leo 在那張票回覆 ARM 碼（手機即可），再跑 scripts/gitea-arm-check.sh。**別叫他開終端機。**`);
   }
   return { mission: mission || '(github-armed 第二行沒有任務描述)', expiresAt: expiry };
 }

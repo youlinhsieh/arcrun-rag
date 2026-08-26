@@ -60,8 +60,8 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@4f167bfc8fa2debf65d0c65ff731c80d8990a80f"
-BUNDLE_BUILT = "2026-08-24"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b873d3c86ff1901dc643a7be4b62e132a1ac87af"
+BUNDLE_BUILT = "2026-08-26"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
 # LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
