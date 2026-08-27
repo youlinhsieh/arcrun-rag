@@ -4050,8 +4050,8 @@
     {
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
-     "status": "skip",
-     "note": "bundle 已委任 0.18.39；內容是否真的到位由下一站 daemon-check 逐檔查證"
+     "status": "done",
+     "note": null
     },
     {
      "id": "daemon-check",
@@ -4086,8 +4086,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "skip",
-     "note": "已是最新：「已送上去」從今以後是真的送上去了・太大的檔案現在會好好跟你說"
+     "status": "done",
+     "note": null
     },
     {
      "id": "version",
@@ -4104,8 +4104,8 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
@@ -4170,7 +4170,7 @@
    ],
    "sourceCommit": "Arcrun@9a9891a0dde7",
    "machine": "9f06f3113188",
-   "ts": 1787806574173
+   "ts": 1787810732037
   }
  }
 }
