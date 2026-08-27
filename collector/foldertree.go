@@ -355,7 +355,7 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		"sync_token":   h,
 		"nodes":        tree.Nodes,
 	}
-	status, _, err := cfg.postJSON(cfg.folderTreeURL(), body)
+	status, _, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
 	res.HTTPStatus = status
 	if err != nil {
 		res.Status = "failed"

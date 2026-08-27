@@ -140,6 +140,17 @@ type SyncStatus struct {
 	// 不會被清成 0（現況快照，不是本輪計數）。
 	Progress         SyncProgress     `json:"progress"`
 	FailureBreakdown FailureBreakdown `json:"failure_breakdown"`
+
+	// Stalls＝這一輪「等太久」的事（`inkstone/arcrun-rag#153`）。
+	//
+	// 為什麼要有這一格：2026-08-28 實撞的畫面是**小幫手開著、沒有錯誤訊息、
+	// 什麼都不動**——同步停在一發等不到回覆的請求上，而使用者看得到的每一個
+	// 數字都還是上一輪的。**靜默的等待跟當掉對使用者是同一件事**，
+	// 所以「哪個帳號、哪件事、等了多久」要有地方講。
+	//
+	// 與 SkippedDocs 同族：每輪重算的現況快照，不進 CarryForwardActivity
+	//（上一輪等太久不代表這一輪也在等，帶下來就會變成一個永遠擦不掉的警告）。
+	Stalls []StalledCall `json:"stalls,omitempty"`
 }
 
 // FolderPlanStatus＝某個看守資料夾這一輪用了什麼收檔策略、據此少收了什麼

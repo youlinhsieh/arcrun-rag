@@ -166,7 +166,7 @@ func repairCardSourceBlocks(cfg *DirectConfig, absRoot string, m *Manifest, dryR
 
 		// ① 先重推（零 LLM）。欄位與 direct.go 送新卡時逐欄一致，
 		//    workflow 進門會先刪同 page_name＋同 source_path 的舊 blocks ⇒ 取代不疊加。
-		status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.CardIngestWF), map[string]any{
+		status, _, perr := cfg.postJSON(stepRepairOrigin, cfg.triggerURL(cfg.CardIngestWF), map[string]any{
 			"page_name":     pageNameOf(libPath),
 			"path":          libPath,
 			"card_content":  docCard,

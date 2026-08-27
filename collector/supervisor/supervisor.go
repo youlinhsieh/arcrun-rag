@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -46,12 +47,23 @@ type Status struct {
 	Rounds      int       // 累計掃描輪數
 	Restarts    int       // 累計重起次數
 	LastError   string    // 最近一次錯誤（stderr 末行 / 退出原因）
+	// Waiting＝正在等某一發雲端回覆的白話說明（`inkstone/arcrun-rag#153`）。
+	// 空＝沒有人在等。它不是錯誤——所以不寫進 LastError（那一格會被診斷檔
+	// 當成「出事了」帶出去，見 diagnostics_export.go 的 engineLastErrorFor）。
+	Waiting string
 }
 
 // round 對應 collector direct 每輪印到 stdout 的 JSON（見 direct.go runOne）。
 type round struct {
 	At    string `json:"at"`
 	Phase string `json:"phase"` // t191："start"（開工）／"done"（跑完）；舊版沒有此欄＝空
+	// `inkstone/arcrun-rag#153`："waiting"＝這一發等太久了，還沒跑完。
+	// 🔴 它**不是**一輪的結束：下面的 decode 迴圈把任何非 start 的值都當成
+	// 「跑完了」，不特別認得它的話，托盤會在同步途中跳回「看守中」——
+	// 正是 t191 修掉的那個病（「看起來好像就做完了」）。
+	Account   string `json:"account,omitempty"`    // 哪個知識庫帳號
+	Step      string `json:"step,omitempty"`       // 哪件事（白話）
+	WaitedSec int    `json:"waited_sec,omitempty"` // 等了幾秒
 
 	Folder  string            `json:"folder"`
 	Results []json.RawMessage `json:"results"`
@@ -327,11 +339,21 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 		at := parseAt(r.At)
 		if r.Phase == "start" {
 			// t191：開工 → 顯示「同步中…」。不累加 Rounds（那是「完成幾輪」）。
-			s.setState(func(st *Status) { st.State = StateSyncing })
+			s.setState(func(st *Status) { st.State = StateSyncing; st.Waiting = "" })
+			continue
+		}
+		if r.Phase == "waiting" {
+			// #153：還在等某一發回覆 ⇒ 仍在同步中，**不算跑完一輪**。
+			// 把「哪個帳號、哪件事、等了多久」留在狀態上，托盤才講得出來
+			// ——不然使用者看到的就是「開著、沒有錯誤、什麼都不動」。
+			note := fmt.Sprintf("正在等「%s」回覆「%s」，已經等了 %d 秒",
+				r.Account, r.Step, r.WaitedSec)
+			s.setState(func(st *Status) { st.State = StateSyncing; st.Waiting = note })
 			continue
 		}
 		s.setState(func(st *Status) {
 			st.State = StateWatching
+			st.Waiting = "" // 跑完了＝沒有人在等，別讓上一輪的等待訊息留在畫面上
 			st.Rounds++
 			if !at.IsZero() {
 				st.LastRoundAt = at

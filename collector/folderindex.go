@@ -318,7 +318,7 @@ func syncFolderCards(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, 
 			continue
 		}
 		pace()
-		status, _, err := cfg.postJSON(cfg.triggerURL(wf), map[string]any{
+		status, _, err := cfg.postJSON(stepFolderCard, cfg.triggerURL(wf), map[string]any{
 			"page_name":     c.Page,
 			"path":          c.Path,
 			"card_content":  c.Content,

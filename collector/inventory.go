@@ -274,7 +274,7 @@ func syncInventory(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, dr
 	// 只帶 library ⇒ 兩台機器上同名的資料夾會生出一模一樣的鍵，後同步的那台會把
 	// 前一台的總覽卡蓋掉。這裡與逐檔卡走同一組欄位，不另開一種。
 	mach := cfg.machineIdentity()
-	status, _, err := cfg.postJSON(cfg.triggerURL(wf), map[string]any{
+	status, _, err := cfg.postJSON(stepInventory, cfg.triggerURL(wf), map[string]any{
 		"page_name":     page,
 		"path":          res.Path,
 		"card_content":  card,

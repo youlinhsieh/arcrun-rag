@@ -30,6 +30,7 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,7 +99,15 @@ func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool,
 	if strings.TrimSpace(library) != "" {
 		q.Set("library", library)
 	}
-	req, err := http.NewRequest(http.MethodGet, base+"/kbdb/entries?"+q.Encode(), nil)
+	// #153：對帳一輪可能連打 cloudAuditBatch（20）發。「一發卡住」的代價在這裡
+	// 會被乘上批次大小 ⇒ 20 秒的 client 逾時最壞就是 400 秒，而這期間畫面一個字
+	// 都不會說。掛上等待閘：等到超時就記帳，同一個帳號連續等不到就整輪不再問。
+	gate := cfg.openGate(stepCloudAudit)
+	defer gate.release()
+	if note := gate.blocked(); note != "" {
+		return false, false, errors.New(note)
+	}
+	req, err := http.NewRequestWithContext(gate.ctx, http.MethodGet, base+"/kbdb/entries?"+q.Encode(), nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -106,7 +115,7 @@ func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool,
 	req.Header.Set("X-Arcrun-API-Key", cfg.APIKey)
 	resp, err := cloudAuditHTTP.Do(req)
 	if err != nil {
-		return false, false, err
+		return false, false, gate.record(err)
 	}
 	defer resp.Body.Close()
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8192))

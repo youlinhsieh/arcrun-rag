@@ -114,6 +114,12 @@ type DirectConfig struct {
 	// 所以改名不會讓庫裡憑空多出一台機器。
 	MachineLabel string `json:"machine_label,omitempty"`
 
+	// guard＝這一輪的「等待閘」（見 stallguard.go）。RunDirectOnce 每輪換一份新的；
+	// makeAccountSubConfig 的 `sub := *c` 會把這個**指標**一起帶過去，所以同一輪的
+	// 所有帳號、所有資料夾共用同一份紀錄——斷路器要跨得了資料夾才擋得住「一發卡住
+	// 就整輪停擺」。不落 config 檔（它是這一次執行的狀態，不是使用者設定）。
+	guard *roundGuard
+
 	// machine＝解析好的機器身分快取（不落 config 檔：ID 的家是 machine.json，
 	// 這裡只是這一輪的記憶體副本。makeAccountSubConfig 的 `sub := *c` 會一起複製，
 	// 所以多帳號同一輪只解析一次、每個帳號送出的值必然一致）。
@@ -467,7 +473,11 @@ func (c *DirectConfig) migrateManifestIfNeeded(absRoot, newPath string) {
 	}
 }
 
-// directHTTP 是 direct 模式共用的 HTTP client（萃取 workflow 可能同步跑 LLM，放寬 timeout）。
+// directHTTP 是 direct 模式共用的 HTTP client。
+//
+// 🔴 這把 Timeout 是**最後一道**保險，不是每一發的上限（`inkstone/arcrun-rag#153`）：
+// 真正生效的上限由呼叫端的 callStep 帶進 context（見 stallguard.go），因為
+// 「送一份筆記」跟「請雲端同步跑完 AI 萃取」本來就不該共用同一個數字。
 var directHTTP = &http.Client{Timeout: 300 * time.Second}
 
 // triggerURL 組出 named-webhook 觸發完整 URL。
@@ -505,12 +515,23 @@ func countsAsDocument(r DirectResult) bool {
 }
 
 // postJSON POST 一個 JSON body 到 url，回傳 HTTP 狀態碼與回應片段。非 2xx 視為錯誤。
-func (c *DirectConfig) postJSON(url string, body any) (int, string, error) {
+//
+// step 講的是「這一發在做什麼」（`inkstone/arcrun-rag#153`）：它決定這一發自己的
+// 上限，也決定卡住時畫面與日誌上那句話怎麼寫。同一個網址在不同地方是不同的事
+//（收卡那條路，可能是使用者剛存的新檔，也可能是在補修舊筆記的出處）——
+// 所以 step 由呼叫端給，不從網址反推，反推出來的名字會說謊。
+func (c *DirectConfig) postJSON(step callStep, url string, body any) (int, string, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return 0, "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	gate := c.openGate(step)
+	defer gate.release() // context 要活到下面讀完回應為止，所以是 defer 不是就地釋放
+	// 這一輪已經判定這個帳號沒有回應 ⇒ 連打都不打，立刻回頭讓其他資料夾繼續。
+	if note := gate.blocked(); note != "" {
+		return 0, "", errors.New(note)
+	}
+	req, err := http.NewRequestWithContext(gate.ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return 0, "", err
 	}
@@ -518,7 +539,7 @@ func (c *DirectConfig) postJSON(url string, body any) (int, string, error) {
 	req.Header.Set("X-Arcrun-API-Key", c.APIKey)
 	resp, err := directHTTP.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", gate.record(err)
 	}
 	defer resp.Body.Close()
 	// 🔴 讀 64KB 而不是 1KB：觸發端點的回應是一層外殼包著工作流的輸出，
@@ -610,6 +631,12 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	exit := 0
 	var lastPayload *TriggerPayload
 	now := time.Now() // 2026-08-07 pacing task：整輪共用同一個時間點（排序/冷卻判斷一致、好測試）
+
+	// 🔴 `inkstone/arcrun-rag#153`：這一輪的「等待閘」。每輪換一份新的——斷路器只管
+	// 這一輪，下一輪一律從零開始重新試（同步是 level-triggered 的，沒有什麼要記住）。
+	// 指標會隨 makeAccountSubConfig 的 `sub := *c` 傳給每個帳號、每個資料夾，
+	// 所以「這個帳號沒有回應」這件事跨得了資料夾——那正是本票要修的那條線。
+	cfg.guard = newRoundGuard()
 
 	// 2026-08-07：提早載入上一輪 status（原本只在函式尾端載入做 CarryForwardActivity）。
 	// 額度冷卻與「今天已萃幾份」是**跨輪持續的狀態**（quotaState 見 quota.go），
@@ -757,7 +784,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 更新進度不同步），一個帳號通了不代表另一個也通。
 		// 只在走 workers-ai 這條路時掃；選了 Gemini 的人不需要知道這件事。
 		if accCfg.Extractor == "workers-ai" {
-			state := ProbeWorkersAI(accCfg.CypherURL, accCfg.APIKey)
+			state := accCfg.probeWorkersAI()
 			accSt.CloudAIReady = state.Ready
 			accSt.CloudAINote = state.Note
 			if !state.Ready && state.Note != "" {
@@ -896,6 +923,8 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			AccountDetails: accountDetails,
 			Retiring:       retiring, // arcrun-rag#46：移除並收回中的資料夾進度
 			Resync:         resync,   // arcrun-rag#140：雲端上找不到、正在自動補送的資料夾
+			// #153：這一輪等太久的事。空＝沒有人在等，畫面上不佔位置。
+			Stalls: cfg.guard.Stalls(),
 		}
 		// G-6.2：把「讀不了的檔」寫進狀態檔，App 首頁才有東西可以講。
 		// 排序＝畫面每輪穩定（map 迭代順序隨機，不排的話清單會自己跳動）。
@@ -1109,11 +1138,17 @@ func drainPendingTakedowns(
 		}
 		return results, exit
 	}
+	// #153：同一條撤除路徑服務兩件事，而使用者眼中它們不是同一件——
+	// 「我刪了一個檔」跟「我把整個資料夾收回來」卡住時該說的話不一樣。
+	step := stepTakedown
+	if resultType == "folder_takedown" {
+		step = stepRetire
+	}
 	for oldPath, pageName := range m.PendingTakedowns {
 		pace()
 		res := DirectResult{Type: resultType, Path: oldPath}
 		mach := cfg.machineIdentity()
-		status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
+		status, _, perr := cfg.postJSON(step, cfg.triggerURL(cfg.RemovedWF), map[string]any{
 			"page_name":     pageName,
 			"path":          oldPath,
 			"library":       cfg.libraryFor(absRoot),
@@ -1567,6 +1602,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				results = append(results, res)
 				continue
 			}
+			// 🔴 #153：這個**帳號**這一輪已經被判定沒有回應 ⇒ 連試都不試。
+			// 與上面的額度冷卻同一層、同一個理由：這不是這個檔的問題，
+			// 記進它的病歷（FailCount／退避階梯）會讓一次雲端沒回應，
+			// 變成一整批檔案「已放棄自動重試」——那是把別人的停機算在使用者頭上。
+			// 沒有這道閘的話，一個沒有回應的帳號會讓這一輪繼續逐檔去撞，
+			// 每撞一次就是一個 Budget，25 個檔就是幾十分鐘。
+			if note := cfg.unreachableNote(); note != "" {
+				res.Status = "skipped"
+				res.Error = note
+				results = append(results, res)
+				continue
+			}
 			// 🔴 t195 止血點：這個檔剛失敗過且還在退避窗口內 → 這輪跳過。
 			//   沒有這道閘時的實測災情：`小果被AFTEE詐貸.pdf` 因雲端 401 失敗，
 			//   每輪重掃又被當成新檔 ⇒ **1387 輪、跨 11 小時**，且它排在佇列前面，
@@ -1619,7 +1666,19 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// ⇒ 探測在 RunDirectOnce（ProbeWorkersAI），結果寫進 status.json，
 					//   托盤那行「狀態：」直接告訴用戶該做什麼。
 					// 靜默退回會讓用戶**永遠不知道自己的雲端還沒更新**——正是要避免的黑箱。
+					// #153：萃取也是一發會等很久的網路呼叫，而 workers-ai 打的正是
+					// **使用者自己的那台雲端實例**——跟上面那些收口是同一台。
+					// 它有自己的 client timeout，但沒有人在數「這個帳號已經連續幾發
+					// 等不到回覆」⇒ 漏掉這一格的話，單輪上限 25 個檔會變成 25 次
+					// 各自的等待，同一輪照樣走不完。
+					//
+					// 🔴 gemma 那條**刻意不掛**：它打的是 Google，不是使用者的知識庫。
+					// 掛上去的話，Google 慢會被算成「你的知識庫沒有回應」——
+					// 誤導的訊息比沒有訊息更貴（會害人往錯的方向查）。
+					xgate := cfg.openGate(stepExtractDoc)
 					cards, xerr = ExtractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin)
+					xgate.release()
+					xerr = xgate.record(xerr) // 只有「等到超時」會被記帳，其餘錯誤原樣往下走
 				case "gemma":
 					cards, xerr = ExtractWithGemma(cfg.GeminiAPIKey, cfg.LLMModel, absRoot, ev.Path, cardOrigin)
 				default:
@@ -1700,7 +1759,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						cardBody["quality"] = "low"
 						cardBody["quality_warnings"] = warns
 					}
-					status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.CardIngestWF), cardBody)
+					status, _, perr := cfg.postJSON(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody)
 					res.HTTPStatus = status
 					if perr != nil {
 						res.Status, res.Error = "failed", perr.Error()
@@ -1743,7 +1802,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			// ⚠️ 雲端這支 workflow 本輪**沒有跟著改**（youlin stage 上根本沒部署它，
 			// 現役是 rag_ingest_card）——它會忽略這兩個欄位，行為與從前一字不差。
 			machDirect := cfg.machineIdentity()
-			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.IngestWF), map[string]any{
+			status, _, perr := cfg.postJSON(stepIngestDoc, cfg.triggerURL(cfg.IngestWF), map[string]any{
 				"page_name":     pageNameOf(ev.Path),
 				"path":          ev.Path,
 				"content":       string(content),
@@ -1780,7 +1839,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			// 連坐殺掉 B 機器同名檔」，而多補一維會改變既有的撤除命中範圍——
 			// 那是另一件事，要另外驗（本輪不驗的不做）。
 			machRm := cfg.machineIdentity()
-			status, _, perr := cfg.postJSON(cfg.triggerURL(cfg.RemovedWF), map[string]any{
+			status, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
 				"page_name":     pageNameOf(ev.Path),
 				"path":          ev.Path,
 				"machine":       machRm.ID,
@@ -1919,20 +1978,22 @@ func runDirect(args []string) int {
 		//    ⇒ 開工前先印一筆 `phase:"start"`，托盤收到就顯示「同步中…」，
 		//      收到 `phase:"done"` 再切回「看守中」。
 		//    形狀相容：兩筆都有 `at`，舊版托盤只會多算一次 round，不會壞掉。
-		startOut, _ := json.MarshalIndent(struct {
+		//
+		// 🔴 #153：這兩筆改走 printJSONLine——「還在等」的播報跑在另一條 goroutine 上，
+		// 而 done 那筆可能有幾十 KB。共用同一把鎖，兩邊才不會把彼此的 JSON 切成兩半
+		//（切壞一次，supervisor 的 decoder 就再也讀不到這個行程的任何一筆，見 stallguard.go）。
+		printJSONLine(struct {
 			At    string `json:"at"`
 			Phase string `json:"phase"`
-		}{time.Now().Format(time.RFC3339), "start"}, "", "  ")
-		fmt.Println(string(startOut))
+		}{time.Now().Format(time.RFC3339), "start"})
 
 		results, exit, _ := RunDirectOnce(cfg, *dryRun)
-		out, _ := json.MarshalIndent(struct {
+		printJSONLine(struct {
 			At      string         `json:"at"`
 			Phase   string         `json:"phase"`
 			Folders []string       `json:"folders"`
 			Results []DirectResult `json:"results"`
-		}{time.Now().Format(time.RFC3339), "done", cfg.Folders(), results}, "", "  ")
-		fmt.Println(string(out))
+		}{time.Now().Format(time.RFC3339), "done", cfg.Folders(), results})
 		return exit
 	}
 
