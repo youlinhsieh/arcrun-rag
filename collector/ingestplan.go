@@ -62,6 +62,9 @@ type IngestPlan struct {
 	// WikiRelDir＝現成 wiki 的相對路徑（僅 IngestCuratedWiki）。
 	WikiRelDir string `json:"wiki_rel_dir,omitempty"`
 	// DocRelDirs＝要收的文件目錄（僅 IngestDocsOnly；根層 .md 另由 keepsRootDoc 放行）。
+	// 來源有兩種，合併後去重排序（見 mergeDocDirs）：固定三名字（existingDocDirs）
+	// ＋ Phase 0 內容判準自動找到的非標準命名文件目錄（scanAuxDirs 的 autoDocDirs，
+	// `arcrun-rag#136`）。
 	DocRelDirs []string `json:"doc_rel_dirs,omitempty"`
 	// Reason＝一句話講給使用者聽的「為什麼只收這些」。
 	Reason string `json:"reason"`
@@ -237,7 +240,7 @@ func PlanIngest(absRoot string) IngestPlan {
 	}
 
 	evidence := shape.Evidence()
-	others := otherWikiDirs(absRoot)
+	aux := scanAuxDirs(absRoot)
 	if wiki := findCuratedWiki(absRoot); wiki != "" {
 		return IngestPlan{
 			Mode:       IngestCuratedWiki,
@@ -245,12 +248,12 @@ func PlanIngest(absRoot string) IngestPlan {
 			WikiRelDir: wiki,
 			Reason: "這是一個開發專案（" + evidence + "），而且你已經整理好一份知識庫（" + wiki + "）——" +
 				"我直接讀那一份就好，不再把整個專案的原始碼與零散檔案重萃一次。",
-			OtherWikiDirs: others,
+			OtherWikiDirs: aux.otherWikiDirs,
 			ignore:        ignore,
 		}
 	}
 
-	docs := existingDocDirs(absRoot)
+	docs := mergeDocDirs(existingDocDirs(absRoot), aux.autoDocDirs)
 	reason := "這是一個開發專案（" + evidence + "），我只讀文件、不讀程式碼。"
 	if len(docs) > 0 {
 		reason = "這是一個開發專案（" + evidence + "），我只讀文件（" +
@@ -261,9 +264,31 @@ func PlanIngest(absRoot string) IngestPlan {
 		Shape:         shape,
 		DocRelDirs:    docs,
 		Reason:        reason,
-		OtherWikiDirs: others,
+		OtherWikiDirs: aux.otherWikiDirs,
 		ignore:        ignore,
 	}
+}
+
+// mergeDocDirs 合併「固定三名字」與「內容判準自動找到的」兩份文件目錄清單，去重排序。
+// 兩份清單本來就可能重疊（例如根層真的叫 `docs` 又剛好零程式碼）——去重才不會讓
+// Reason 文案讀起來像「docs、docs」。
+func mergeDocDirs(fixed, auto []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range fixed {
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	for _, d := range auto {
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // findCuratedWiki 回傳第一個「存在且真的有內容」的現成 wiki 目錄（相對路徑），沒有回空字串。
@@ -315,24 +340,38 @@ func existingDocDirs(absRoot string) []string {
 	return out
 }
 
-// otherWikiDirs 找出監看根底下**其他**地方的 wiki（子專案自己的知識庫）。
+// auxDirScan＝一次全樹走訪同時算出來的兩種結果（合併走訪，見 scanAuxDirs）。
+type auxDirScan struct {
+	otherWikiDirs []string // 子專案自己的 wiki（找到但刻意不收，只講出來）
+	autoDocDirs   []string // Phase 0：內容判準找到的「非標準命名文件目錄」（要收）
+}
+
+// scanAuxDirs 走訪一次監看根，同時算出「其他子專案的 wiki 在哪」與
+// 「Phase 0：非標準命名但整棵零程式碼的文件目錄」（`inkstone/arcrun-rag#136`
+// leo 2026-08-24 第三次追加，優先度高於樹狀 UI）。
 //
-// 🔴 為什麼找出來卻不收：leo 的 `InkStoneCo` 底下有 `products/*`、`matrix/*` 這些
-// **各自獨立的 repo**，每一個都有自己的 `system-dev/wiki`。它們是**別的專案**的知識，
-// 混進這個資料夾的知識庫裡，AR-Mira 搜一個主題就會回一堆分不清屬於誰的東西。
-// 要收哪一個，是使用者的決定——把那個子專案自己加進看守清單即可。
+// 🔴 兩者原本是兩支各自獨立的函式（otherWikiDirs／新的內容判準），這裡合併成一次
+// 走訪——理由是研究文件（`docs-only-skip-visibility-override-research.md` §2.5）
+// 明講的經濟性：兩者都要「走一次監看根、套用同一組排除規則、在沒被排除的節點上
+// 做判斷」，差別只在判斷內容。合併之後每輪同步只走一次樹，不是兩次。
 //
-// 但**一定要講出來**：使用者接了一個 monorepo 卻只看到 32 張卡，不告訴他其餘的在哪，
-// 他只會覺得東西不見了（票上的紅線：不要讓他猜）。
+// 🔴 合併還解決了一個正確性問題（不是效能問題）：如果分開各自跑一次 WalkDir，
+// 一個子專案自己的 `xxx/wiki/` 會被 otherWikiDirs 判定「找到但刻意不收」，
+// 但新的內容判準若獨立走訪，會用「零程式碼＋有文件」的邏輯把同一個 `wiki` 目錄
+// **又收了一次**，直接推翻 otherWikiDirs 那條「這是別人的知識，不混進來」的
+// 既有設計（該函式原本的說明就在解釋為什麼刻意不收）。同一次走訪、同一個節點只判
+// 一次，兩件事天生不會互相打架。
 //
-// 走訪時套用與 Scan 相同的跳過規則（隱藏目錄、noise、linked worktree、
-// 已知的 curated 位置自己），所以出貨用 worktree 與 templatefs 的那十幾份不會列進來。
-func otherWikiDirs(absRoot string) []string {
-	seen := map[string]bool{}
+// 🔴 判準只在**通過既有排除規則、沒被任何一條攔下**的節點上跑（隱藏目錄、
+// `toolOwnedDirNames`、`ambiguousBuildDirNames`+`looksGenerated`、linked worktree）
+// ——與 `SkipsDirWhy` 的優先序一致，所以 `node_modules` 底下的任何內容
+// **根本沒有機會被走到**，不會重新引入 `#104` 的套件洩漏洞。
+func scanAuxDirs(absRoot string) auxDirScan {
+	seenWiki := map[string]bool{}
 	for _, rel := range curatedWikiCandidates {
-		seen[rel] = true
+		seenWiki[rel] = true
 	}
-	var out []string
+	var result auxDirScan
 	_ = filepath.WalkDir(absRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil || !d.IsDir() || p == absRoot {
 			return nil
@@ -351,14 +390,71 @@ func otherWikiDirs(absRoot string) []string {
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
-		if name == "wiki" && !seen[relSlash] && dirHasMarkdown(p) {
-			out = append(out, relSlash)
+
+		// ① 別人的 wiki——找到就講出來，但不收、不繼續往下走訪（其餘同舊行為）。
+		if name == "wiki" && !seenWiki[relSlash] && dirHasMarkdown(p) {
+			result.otherWikiDirs = append(result.otherWikiDirs, relSlash)
+			return filepath.SkipDir
+		}
+
+		// ② Phase 0：這個目錄「自己直接放的檔案」零程式碼、且至少一個文件類副檔名
+		//    ⇒ 即使名字不叫 docs，也當文件目錄收。
+		//
+		//    🔴 只看「這個目錄自己直接放的檔案」，不遞迴檢查整棵子樹——
+		//    研究文件原本建議整棵子樹零程式碼才算，但真實案例
+		//    （`pms_v1_legacy` 巢狀 `pms-backup/pms_db_backup.sql`）證明那樣會讓
+		//    `pms_v1_legacy` 自己直接放的 `PMS_USER_STORIES.md`／`PMS_GAP_ANALYSIS.md`
+		//    因為巢狀兩層深的一個 .sql 備份檔而整批繼續被跳過——治標的判準沒解決
+		//    票上真正的案例。改成逐層各自判斷之後，`pms_v1_legacy` 用自己的直接內容
+		//    合格，`pms-backup`（自己直接放著 .sql）不合格但不影響外層，而巢狀更深的
+		//    `pms-backup/.wiki`（自己直接內容零程式碼＋有 .md）又重新合格——
+		//    這與 Scan／畫面本來就「每個節點只算自己直接放的檔案」（`total_files` 等
+		//    欄位的既有語意，見 `collector/foldertree.go`）一致，不是另立一套算法。
+		//
+		//    合格就整棵收（`SkipsDirWhy`／`KeepsFile` 的 `onPathTo` 前綴比對本來就會
+		//    涵蓋子孫），不必再往下走訪找子孫裡還有沒有另一個合格點。
+		//    不合格則繼續遞迴——巢狀更深處仍可能有獨立合格的文件子目錄。
+		if !seenWiki[relSlash] && dirQualifiesAsAutoDoc(p) {
+			result.autoDocDirs = append(result.autoDocDirs, relSlash)
 			return filepath.SkipDir
 		}
 		return nil
 	})
-	sort.Strings(out)
-	return out
+	sort.Strings(result.otherWikiDirs)
+	sort.Strings(result.autoDocDirs)
+	return result
+}
+
+// dirQualifiesAsAutoDoc 回答「這個目錄自己直接放的檔案，算不算文件目錄」——
+// Phase 0 的核心判準（`inkstone/arcrun-rag#136`）：零程式碼副檔名＋至少一個
+// 文件類副檔名。**只看直接放在這個目錄裡的檔案**，不遞迴看子目錄（見呼叫端說明）。
+//
+// 🔴 「零程式碼」而非「程式碼佔比低於門檻」：leo 08-24 第三次留言明講不要用比例——
+// 一個真正的程式碼目錄（`scripts/` 這種文件寫得多的）不該因為比例低就被誤判成文件夾。
+// 副檔名表沿用既有的（`codeFileExts`／`allowedExt`／`docLikeExt`），不重新發明一套。
+func dirQualifiesAsAutoDoc(absDir string) bool {
+	entries, err := os.ReadDir(absDir)
+	if err != nil {
+		return false
+	}
+	hasDoc := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		if codeFileExts[ext] {
+			return false // 一個程式碼副檔名就整個不合格——零門檻，見上方說明
+		}
+		if allowedExt[ext] || docLikeExt[ext] {
+			hasDoc = true
+		}
+	}
+	return hasDoc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

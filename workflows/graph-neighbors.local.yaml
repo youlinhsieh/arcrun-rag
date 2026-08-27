@@ -26,6 +26,20 @@ config:
     # （`kbdb/src/routes/records.ts` intParam fallback）。寫明的理由是 64 KiB 天花板——
     # `http_request` 零件超過就 trap 成 `unreachable`，而「靠對方的預設值剛好安全」
     # 是下一個人改預設值時才會炸的那種安全（`inkstone/arcrun-rag#104`，2026-08-27）。
+    #
+    # 🔴 別把這個數字調大（`inkstone/Arcrun#168`，2026-08-27 實測）：
+    #   有人在 168 建議「跟 canonical 範例一樣調到 500」，**這是錯的建議，已用真資料證偽**：
+    #   youlin（yuga3bse）當天 total=226 筆 triplet，實際打包成這支零件要吃的形狀
+    #   （{success, records:[{record_id, values}], count}）量出 68,387 bytes——
+    #   **已經超過 65,536 的 cap**。調到 500 只會讓這支查詢本身 trap 成 unreachable，
+    #   graph_neighbors 整條查詢從「查不到舊資料」變成「整條查詢壞掉」，比現狀更糟。
+    #   （226 筆比對：limit=100 實測約 30,259 bytes，46% 額度，安全。）
+    #   168 診斷的真病是**結構性**的：這條路由只給「這個租戶最新的 N 筆」，
+    #   triplet 越寫越多，舊資料就從「最新 N 筆」的窗口被擠出去——調大上限只是把
+    #   擠出去的時間點往後延，不是解法。真正的解法要嘛 KBDB 加「依節點過濾」的
+    #   伺服器端查詢（改 `kbdb/src/actions/record-crud.ts`，不在本 repo）、要嘛讓
+    #   portal 圖譜模式改走已經修好雙向比對的 `/map/select`（`kbdb/src/actions/
+    #   library-map.ts`，同樣不在本 repo）——兩者都是跨 repo 的架構決定，見 168 討論。
     url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}&limit=100"
     headers:
       Accept: "application/json"

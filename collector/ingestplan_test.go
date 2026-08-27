@@ -229,6 +229,15 @@ func TestPlanIngest_ExclusionsAreVisible(t *testing.T) {
 }
 
 // 沒有現成 wiki 的 repo：退到「只讀文件、不讀程式碼」（leo 明講的第三步）。
+//
+// 🔴 2026-08-27 Phase 0（`arcrun-rag#136`，leo 08-24 第三次追加）之後行為分兩種：
+//   - `src/說明.md`：`src/` 這個目錄自己直接放的檔案裡就有 `.go`（程式碼）——
+//     零程式碼這一條不成立，繼續當程式碼目錄整棵跳過，不收。
+//   - `internal/notes.md`：`internal/` 這個目錄自己直接放的檔案裡**只有這份 .md**、
+//     沒有任何程式碼副檔名——即使名字不叫 docs，Phase 0 判準也會把它當文件目錄收。
+//     這不是誤放的迴歸，是這次要的效果：leo 08-24「如果要加上很多（手動救回），
+//     那就更覺得很煩，就會棄用」——非標準命名但整棵零程式碼的資料夾預設就該收，
+//     不必等使用者自己救。
 func TestPlanIngest_RepoWithoutWikiReadsDocsOnly(t *testing.T) {
 	root := t.TempDir()
 	files := codeProjectFiles("", ".go", "package main")
@@ -236,8 +245,8 @@ func TestPlanIngest_RepoWithoutWikiReadsDocsOnly(t *testing.T) {
 		"README.md":         "# 專案",
 		"docs/請假規則.md":      "# 特休 14 天",
 		"docs/報銷政策.md":      "# 每日 3000 元",
-		"src/說明.md":         "# 散在程式碼旁邊",
-		"internal/notes.md": "# 也是程式碼旁邊",
+		"src/說明.md":         "# 散在程式碼旁邊——但 src/ 自己直接放的檔案裡就有 .go，不合格",
+		"internal/notes.md": "# 自己單獨一個資料夾，直接內容零程式碼——Phase 0 判準下合格",
 	} {
 		files[rel] = body
 	}
@@ -250,9 +259,11 @@ func TestPlanIngest_RepoWithoutWikiReadsDocsOnly(t *testing.T) {
 	if plan.Mode != IngestDocsOnly {
 		t.Fatalf("策略=%s，want %s", plan.Mode, IngestDocsOnly)
 	}
-	want := []string{"README.md", "docs/報銷政策.md", "docs/請假規則.md"}
+	want := []string{"README.md", "docs/報銷政策.md", "docs/請假規則.md", "internal/notes.md"}
+	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("送了 %v，want %v（程式碼旁邊的 .md 不該收）", got, want)
+		t.Fatalf("送了 %v，want %v（`src/` 因為自己直接放著 .go 仍不收；`internal/` "+
+			"自己直接內容零程式碼，Phase 0 判準下該收）", got, want)
 	}
 }
 
@@ -571,7 +582,11 @@ func TestPlanIngest_三種收法在新判準下都還正確(t *testing.T) {
 			wantGot:  []string{"wiki/INDEX.md", "wiki/status.md"},
 		},
 		{
-			// ③ 軟體專案、沒有現成 wiki ⇒ 只收文件區＋根層說明檔，跳過原始碼
+			// ③ 軟體專案、沒有現成 wiki ⇒ 只收文件區＋根層說明檔＋跳過原始碼，
+			//    但 Phase 0（`arcrun-rag#136`）之後也收「非標準命名、自己直接內容零程式碼」
+			//    的資料夾——`雜/` 自己只放了一份 `隨手記.md`，沒有任何程式碼副檔名，
+			//    即使名字不叫 docs 也算文件目錄。這不是誤放的迴歸，見同檔
+			//    TestPlanIngest_RepoWithoutWikiReadsDocsOnly 上方的完整說明。
 			name: "沒wiki的專案只收文件跳過源碼",
 			files: func() map[string]string {
 				f := merge(codeProjectFiles("", ".go", "package main"))
@@ -580,7 +595,7 @@ func TestPlanIngest_三種收法在新判準下都還正確(t *testing.T) {
 				return f
 			}(),
 			wantMode: IngestDocsOnly,
-			wantGot:  []string{"README.md", "docs/請假規則.md"},
+			wantGot:  []string{"README.md", "docs/請假規則.md", "雜/隨手記.md"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -667,6 +682,150 @@ func TestPlanIngest_判成專案時要講得出憑什麼(t *testing.T) {
 	for _, bad := range []string{"版控", "git", "Git", "GitHub", "gitea"} {
 		if strings.Contains(plan.Reason, bad) {
 			t.Errorf("理由裡出現了版控字眼 %q——判準已經不看版控了：%q", bad, plan.Reason)
+		}
+	}
+}
+
+// 🔴 Phase 0（`arcrun-rag#136`，leo 2026-08-24 第三次追加）——正面驗收：
+// 票上真正的案例（`pms_v1_legacy/pms-backup`）：非標準命名、整棵沒有一套程式碼、
+// 但巢狀更深處混了一份資料庫備份檔——這正是研究文件原本「整棵子樹零程式碼」的
+// 設計會漏掉的那個真實形狀（見 `dirQualifiesAsAutoDoc` 的說明）。
+//
+// fixture 照 leo 08-24 給的 Finder 截圖形狀造：
+//
+//	pms_v1_legacy/
+//	  PMS_USER_STORIES.md         ← 自己直接放的文件（零程式碼）；一旦這裡合格，
+//	                                 整個 pms_v1_legacy 都被收（onPathTo 前綴涵蓋子孫）
+//	  pms-backup/
+//	    PMS_ASSESSMENT.md          ← 自己直接放的文件
+//	    pms_db_backup.sql          ← 巢狀更深處的「程式碼副檔名」（codeFileExts 收 .sql）
+//
+// 🔴 `pms-backup` 底下混了 .sql 這件事，**不影響** `pms_v1_legacy` 本身的合格判斷
+// （逐層判準只看每一層自己的直接內容），所以 `pms-backup/PMS_ASSESSMENT.md`
+// 也跟著被收——它是「已合格的 pms_v1_legacy」底下的子孫，不必再單獨判一次
+// （與 `docs/` 目錄底下不管有沒有子資料夾都整棵收，是同一條既有語意）。
+func TestPlanIngest_Phase0非標準命名文件目錄零程式碼即收(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["README.md"] = "# 專案"
+	files["pms_v1_legacy/PMS_USER_STORIES.md"] = "# 使用者故事"
+	files["pms_v1_legacy/pms-backup/PMS_ASSESSMENT.md"] = "# 評估報告"
+	files["pms_v1_legacy/pms-backup/pms_db_backup.sql"] = "-- 假資料，測試只在意副檔名不在意內容\n"
+	writeFixture(t, root, files)
+
+	payload, plan := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	t.Logf("策略=%s（%s）", plan.Mode, plan.Reason)
+	t.Logf("送出：%v", got)
+	for _, d := range payload.ExcludedDirs {
+		t.Logf("跳過 %s — %s", d.Path, d.Reason)
+	}
+
+	if plan.Mode != IngestDocsOnly {
+		t.Fatalf("策略=%s，want %s", plan.Mode, IngestDocsOnly)
+	}
+	want := []string{
+		"README.md",
+		"pms_v1_legacy/PMS_USER_STORIES.md",          // 自己直接放的檔案零程式碼，合格
+		"pms_v1_legacy/pms-backup/PMS_ASSESSMENT.md", // 已合格祖先底下的子孫，一併收
+	}
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("送出 %v，want %v", got, want)
+	}
+}
+
+// 🔴 Phase 0——正面驗收（獨立合格）：`pms-backup` 若是「自己單獨掛上去的看守根」
+// （不在任何已合格祖先底下），逐層判準要能單獨判它自己——它自己直接混了 .sql，
+// 不合格，但巢狀更深處若有一個自己零程式碼的子目錄，仍要被獨立找到。
+// 用 `archive/`（非標準命名、非隱藏）取代真實案例裡的 `.wiki`——後者是
+// daemon 自己產生的隱藏快取目錄，本來就會被 Scan 的隱藏目錄規則整個擋下，
+// 不是這裡要驗的「內容判準」這件事。
+func TestPlanIngest_Phase0巢狀更深處的獨立合格目錄也找得到(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["pms_v1_legacy/pms-backup/PMS_ASSESSMENT.md"] = "# 評估報告"
+	files["pms_v1_legacy/pms-backup/pms_db_backup.sql"] = "-- 假資料，測試只在意副檔名不在意內容\n"
+	files["pms_v1_legacy/pms-backup/archive/OLD_NOTES.md"] = "# 更早的筆記"
+	writeFixture(t, root, files)
+
+	payload, _ := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	t.Logf("送出：%v", got)
+	want := "pms_v1_legacy/pms-backup/archive/OLD_NOTES.md"
+	found := false
+	for _, p := range got {
+		if p == want {
+			found = true
+		}
+		if strings.HasPrefix(p, "pms_v1_legacy/pms-backup/") && p != want {
+			t.Fatalf("`pms-backup` 自己混了 .sql 不該被收，卻收了 %s", p)
+		}
+	}
+	if !found {
+		t.Fatalf("巢狀更深處的獨立合格目錄沒被找到：%v", got)
+	}
+}
+
+// 🔴 Phase 0——反面驗收①：`pms-backup` 自己直接放著 `.sql`（程式碼副檔名），
+// 所以它自己不合格，同層的 `PMS_ASSESSMENT.md` 目前**仍然不會被收**——
+// 這是逐層判準（而非整棵子樹判準）刻意接受的邊界：一個目錄自己混了程式碼副檔名，
+// 就當它自己是「開發用的」，不因為隔壁躺著一份文件就整個放行。使用者若真的要救
+// 這一份，仍然有第 6 節的樹狀 UI／手動覆寫（尚未實作，見票上 Phase 2）這條路。
+// 本測試把這個邊界寫清楚，不讓它在下一輪被誤改成「連 pms-backup 自己也收」。
+func TestPlanIngest_Phase0巢狀混雜程式碼的目錄自己仍不收(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["pms_v1_legacy/pms-backup/PMS_ASSESSMENT.md"] = "# 評估報告"
+	files["pms_v1_legacy/pms-backup/pms_db_backup.sql"] = "-- 假資料，測試只在意副檔名不在意內容\n"
+	writeFixture(t, root, files)
+
+	payload, _ := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	for _, p := range got {
+		if strings.Contains(p, "pms-backup/") {
+			t.Fatalf("`pms-backup` 自己直接放著 .sql（程式碼副檔名），不該被 Phase 0 判準收進去：%v", got)
+		}
+	}
+}
+
+// 🔴 Phase 0——反面驗收②：不准重新引入 `#104` 的套件洩漏洞。
+// `node_modules` 底下即使巢狀著一個「整棵零程式碼」的文件目錄，也不能被收——
+// `toolOwnedDirNames` 的優先序排在 Phase 0 判準之前，整棵 `SkipDir`，
+// 新判準根本沒有機會看到 `node_modules` 底下的任何內容。
+func TestPlanIngest_Phase0不重新引入套件洩漏洞(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["node_modules/some-pkg/docs-backup/README.md"] = "# 別人的套件文件"
+	files["node_modules/some-pkg/docs-backup/GUIDE.md"] = "# 別人的套件文件"
+	writeFixture(t, root, files)
+
+	payload, _ := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	for _, p := range got {
+		if strings.Contains(p, "node_modules/") {
+			t.Fatalf("Phase 0 判準洩漏了 node_modules 底下的內容（重新打開 #104 那個洞）：%v", got)
+		}
+	}
+}
+
+// 🔴 Phase 0——反面驗收③：真正的程式碼目錄不受影響，仍走原本的 docs-only 通用跳過。
+// `workers/pms-auth` 自己直接放著 `.go`（與 `package.json`），零程式碼那一條不成立，
+// 整棵照舊被跳過——不因為新判準而多送出任何一份程式碼旁邊的檔案。
+func TestPlanIngest_Phase0真正的程式碼目錄不受影響(t *testing.T) {
+	root := t.TempDir()
+	files := codeProjectFiles("", ".go", "package main")
+	files["workers/pms-auth/package.json"] = `{"name":"pms-auth"}`
+	files["workers/pms-auth/main.go"] = "package main"
+	files["workers/pms-auth/README.md"] = "# 這個服務怎麼跑"
+	writeFixture(t, root, files)
+
+	payload, plan := scanWithPlan(t, root)
+	got := eventPaths(payload)
+	t.Logf("策略=%s｜送出：%v", plan.Mode, got)
+	for _, p := range got {
+		if strings.Contains(p, "workers/pms-auth/") {
+			t.Fatalf("`workers/pms-auth` 自己直接放著 .go，不該被 Phase 0 判準收進去：%v", got)
 		}
 	}
 }

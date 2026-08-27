@@ -428,18 +428,73 @@ config:
   # 6) 收尾：把答案、出處與**檢索過程**包成回應。
   #    retrieval 即使沒答案也照回——它描述的是「我們去查了什麼」，那件事有發生，
   #    與「查到了沒有」是兩回事（前端徽章要能顯示「未命中圖譜、已改讀全庫」）。
+  # inkstone/Arcrun#170：「讀到內容」不等於「用在這次回答」。
+  #
+  # 舊判準 `answer ? sources : []` 只檢查 answer 是不是空字串——但 assemble 的 prompt
+  # 明文要求 LLM 資料不足時**照樣**輸出一句完整非空的話（「【答】知識庫裡沒有這方面資料」），
+  # 那句話對 JS 來說是 truthy ⇒ 舊判準把「LLM 說沒有」誤判成「有找到」，
+  # 於是 sources／retrieval 原封不動附上（leo 2026-08-27 實測：答「沒有這方面資料」，
+  # 底下卻列了 3 個子庫、8 個檔案當「出處」）。
+  #
+  # 新判準改用**這次答案真的引用了哪幾個編號**：prompt 已經要求引用時標 [n]，
+  # 這是我們自己控制的契約，不是在賭 LLM 用詞穩不穩定。
+  #   · 有引用 [n] → 只留被引用到的那幾筆（「搜到 N 筆＝真的用在這次回答的 N 筆」）
+  #   · 完全沒有引用（含明講「沒有這方面資料」、或只用館藏目錄回答的情況）
+  #     → sources／graph_facts／retrieval 全部清空，畫面只剩一句人話，
+  #       不附一棵「讀過但沒用上」的假樹。
+  #
+  # 🔴 retrieval 本身也要收斂到「真的用上的那條路徑」（leo 原話：「這張圖的目的是告訴他
+  # 相關文件放哪裡……只該在真的有命中的時候出現，而且只畫命中的那條路徑」）。實測撞過：
+  # fetch_pages 一次讀回選中庫底下 8 個檔案（IDF 排序後全部塞進 8000 字預算），但這次答案
+  # 只真的引用了其中 1 個——若整包 retrieval 原樣附上，畫面會出現「命中 1 筆出處、卻列了
+  # 8 個檔案的檢索樹」，跟 #170 要修的病是同一個形狀，只是換了個位置。所以這裡把
+  # libraries／indexes_read／pages_read 都收斂到「真的貢獻了被引用內容」的那幾筆。
   finalize:
     component: "__CODE_URL__"
     code: |
       const answer = String(input.answer == null ? '' : input.answer).trim();
-      const sources = Array.isArray(input.sources) ? input.sources : [];
-      const facts = Array.isArray(input.graph_facts) ? input.graph_facts : [];
+      const rawSources = Array.isArray(input.sources) ? input.sources : [];
+      const rawFacts = Array.isArray(input.graph_facts) ? input.graph_facts : [];
+      const rawRetrieval = input.retrieval && typeof input.retrieval === 'object' ? input.retrieval : null;
+
+      // 用 match（非 exec）取出這次答案真的引用過的編號，避免依賴 LLM 的措辭。
+      const cited = new Set();
+      (answer.match(/\[\d+\]/g) || []).forEach(function (tag) {
+        cited.add(parseInt(tag.slice(1, -1), 10));
+      });
+
+      const sources = cited.size ? rawSources.filter(function (s) { return s && cited.has(s.n); }) : [];
+      const hit = sources.length > 0;
+
+      let retrieval = null;
+      if (hit && rawRetrieval) {
+        // sources 的 mode 欄位存的就是 library 名（assemble 的投影：{ n, mode: bk.library, page, source }）。
+        const citedLibs = new Set(sources.map(function (s) { return s.mode; }).filter(Boolean));
+        // pages_read 是「按頁＋機器聚合」的一列（assemble 的 perMachine 分組），
+        // 而 sources 是「按片段（chunk）」的一列——同一頁常常有好幾個片段、各自不同的
+        // source URI（#0／#3…）。拿片段的 source 字面去比對頁級的代表 source 一定對不上
+        // （代表片段不保證是被引用的那一段）。真正共通的鍵是「頁名＋機器」，兩邊都有。
+        const citedPageKeys = new Set(sources.map(function (s) {
+          return String(s.page || '') + '|' + String(s.machine || '');
+        }));
+        retrieval = Object.assign({}, rawRetrieval, {
+          libraries: (Array.isArray(rawRetrieval.libraries) ? rawRetrieval.libraries : [])
+            .filter(function (l) { return l && citedLibs.has(l.library); }),
+          indexes_read: (Array.isArray(rawRetrieval.indexes_read) ? rawRetrieval.indexes_read : [])
+            .filter(function (ix) { return ix && citedLibs.has(ix.library); }),
+          pages_read: (Array.isArray(rawRetrieval.pages_read) ? rawRetrieval.pages_read : [])
+            .filter(function (p) { return p && citedPageKeys.has(String(p.page || '') + '|' + String(p.machine || '')); })
+        });
+      }
+
       return {
         success: true,
         answer: answer || '（知識庫裡沒有找到足以回答的資料。）',
-        sources: answer ? sources : [],
-        graph_facts: facts,
-        retrieval: input.retrieval || null
+        sources: sources,
+        // 三元組摘要跟出處同命運：沒有真的用上任何一筆原文，這些「參考事實」
+        // 也只是陪葬的內部資訊，一併清空。
+        graph_facts: hit ? rawFacts : [],
+        retrieval: retrieval
       };
     input:
       answer: "{{ask_llm.text}}"
