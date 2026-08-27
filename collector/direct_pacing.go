@@ -107,3 +107,41 @@ func sortEventsNewestFirst(absRoot string, events []Event) []Event {
 func resumeAfterCapMessage(remaining int) string {
 	return fmt.Sprintf("已排入佇列，下一輪會繼續處理（本輪上限已到，還有 %d 筆等待）", remaining)
 }
+
+// partitionRetryEligible 把「已依 mtime 新到舊排序」的事件分成兩組：
+//   - ready：這輪真的會被嘗試（會呼叫 pace()／打雲端）——沒在退避中、沒達重試上限、
+//     帳號沒在額度冷卻中。
+//   - waiting：這輪不會被嘗試，只是單純交代原因——退避窗口未到、已達
+//     MaxFailBeforeSkip、或整個帳號正在額度冷卻。
+//
+// removed 事件不受退避／額度冷卻管制（下架本來就不看 ShouldRetry，見 direct.go 的
+// case "removed"），一律歸 ready，維持既有行為不變。
+//
+// 🔴 為什麼要在 cap 之前先分這一刀（arcrun-rag#104 comment 4480，t217）：
+// 舊版直接對排序後的原始清單套用 perRunCap（`orderedEvents[:perRunCap]`）。
+// mtime 不會因為一個檔正在退避就變新或變舊，排序因此是穩定的——只要前 perRunCap
+// 名裡有幾個持續失敗的檔案，它們會**每一輪都繼續佔著那幾個名額**（即使這一輪
+// 根本不會被嘗試，只是被跳過），排在它們後面、從沒被嘗試過的事件因此永遠排不到，
+// 不管跑幾百輪都一樣。這正是 leo 實測「1691→1880→1936 筆從不減少」的真因：
+// 不是處理得慢，是那些筆數的候補名單裡，有一大段從頭到尾沒拿到出場機會。
+//
+// 呼叫端該把 cap 套在這裡回傳的 ready 上，讓「退避中」的事件不佔嘗試名額，
+// 把機會讓給排在它們後面、真正還沒被嘗試過的事件。
+func partitionRetryEligible(m *Manifest, events []Event, now int64, force bool, coolingDown bool) (ready, waiting []Event) {
+	for _, ev := range events {
+		if ev.Type == "removed" {
+			ready = append(ready, ev)
+			continue
+		}
+		if coolingDown {
+			waiting = append(waiting, ev)
+			continue
+		}
+		if m.ShouldRetry(ev.Path, now, force) {
+			ready = append(ready, ev)
+		} else {
+			waiting = append(waiting, ev)
+		}
+	}
+	return ready, waiting
+}

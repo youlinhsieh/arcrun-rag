@@ -1503,13 +1503,31 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	//   - 上限：巨量積壓（實據 27,164 檔）不該一輪湧完；超過上限的事件本輪不碰，
 	//     manifest 未標 ingested ⇒ 下一輪 Scan() 自然重新出現（且若使用者這期間
 	//     寫了新檔，新檔的 mtime 更新，下一輪排序會插到最前面，不會被積壓卡住）。
+	//
+	// 🔴 arcrun-rag#104 comment 4480（t217，2026-08-27）：cap 過去套在「排序後的原始
+	// 清單」上，而不是套在「這輪真的會被嘗試」的事件上。退避中／已達重試上限的檔案
+	// 不會因為正在退避就往後排（mtime 沒變、排序不變）⇒ 只要前 perRunCap 名一直是
+	// 同一批持續失敗的檔案，它們就會**永久佔滿名額**，排在後面的事件不管跑幾輪都
+	// 排不到——這正是 leo 實測到的「1691→1880→1936 筆從不減少」，佇列本身就是問題。
+	// 修法：cap 改套在 partitionRetryEligible 分出來的 ready（會真的嘗試）事件上；
+	// 退避中的事件（waiting）不佔嘗試名額，讓排在它們後面、真正還沒被嘗試過的事件
+	// 有機會遞補上來。waiting 仍要展示（診斷用、不是安靜消失），但同樣設一個上限，
+	// 避免巨量積壓（實據 KB 資料夾 ~1900 筆退避中）把單輪結果與 status.json 灌爆。
 	orderedEvents := sortEventsNewestFirst(absRoot, payload.Events)
 	perRunCap := cfg.effectiveMaxEventsPerRun()
+	readyEvents, waitingEvents := partitionRetryEligible(m, orderedEvents, now, cfg.ForceSync, qs.inCooldown(runNow))
+
 	deferredCount := 0
-	if len(orderedEvents) > perRunCap {
-		deferredCount = len(orderedEvents) - perRunCap
-		orderedEvents = orderedEvents[:perRunCap]
+	if len(readyEvents) > perRunCap {
+		deferredCount = len(readyEvents) - perRunCap
+		readyEvents = readyEvents[:perRunCap]
 	}
+	visibleWaiting := waitingEvents
+	if len(visibleWaiting) > perRunCap {
+		deferredCount += len(visibleWaiting) - perRunCap
+		visibleWaiting = visibleWaiting[:perRunCap]
+	}
+	orderedEvents = append(readyEvents, visibleWaiting...)
 
 	for _, ev := range orderedEvents {
 		switch ev.Type {
