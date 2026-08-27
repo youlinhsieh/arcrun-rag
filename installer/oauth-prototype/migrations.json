@@ -6,7 +6,8 @@
     "0004_execution_log_template.sql",
     "0005_credential_template.sql",
     "0006_drop_credentials_table.sql",
-    "0007_tree_record_model.sql"
+    "0007_tree_record_model.sql",
+    "0008_entries_content_index.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n\n  \n  parent_id TEXT,\n\n  \n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n\n  \n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n\n  \n  confidence REAL,\n  metadata_json TEXT,\n\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -49,6 +50,7 @@
     "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, created_at, updated_at)\nSELECT ev.record_id, 'record',\n       (SELECT e2.owner_id FROM entry_values ev2 JOIN entries e2 ON ev2.entry_id = e2.id\n         WHERE ev2.record_id = ev.record_id AND e2.owner_id IS NOT NULL LIMIT 1),\n       MIN(ev.created_at), MIN(ev.created_at)\nFROM entry_values ev GROUP BY ev.record_id",
     "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, src_id, rel_id, dst_id, created_at)\nSELECT 'relb_' || ev.record_id || '_' || ev.template_id, 'relation',\n       (SELECT e2.owner_id FROM entry_values ev2 JOIN entries e2 ON ev2.entry_id = e2.id\n         WHERE ev2.record_id = ev.record_id AND e2.owner_id IS NOT NULL LIMIT 1),\n       ev.record_id, 'sys_belongs', ev.template_id, MIN(ev.created_at)\nFROM entry_values ev GROUP BY ev.record_id, ev.template_id",
     "INSERT OR IGNORE INTO entries (id, entry_type, owner_id, src_id, rel_id, dst_id, created_at)\nSELECT 'relv_' || ev.id, 'relation', e.owner_id,\n       ev.record_id, 'fld_' || ev.template_id || '_' || ev.slot_name, ev.entry_id, ev.created_at\nFROM entry_values ev JOIN entries e ON ev.entry_id = e.id",
-    "DROP TABLE IF EXISTS entry_values"
+    "DROP TABLE IF EXISTS entry_values",
+    "CREATE INDEX IF NOT EXISTS idx_entries_content ON entries(content) WHERE content IS NOT NULL"
   ]
 }
