@@ -114,3 +114,4 @@
 | 2026-08-27 19:43:04 | stage | 0.18.41 | 0.18.40 | ⛔ 擋下 | version-match；filename-carries-version |
 | 2026-08-27 19:50:12 | stage | 0.18.41 | 0.18.41 | ✅ 放行 | — |
 | 2026-08-27 19:53:36 | stage | 0.18.41 | 0.18.41 | ✅ 放行 | — |
+| 2026-08-27 21:19:20 | stage | 0.18.42 | 0.18.41 | ⛔ 擋下 | version-match；filename-carries-version |
