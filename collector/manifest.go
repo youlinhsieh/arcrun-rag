@@ -107,6 +107,13 @@ type Manifest struct {
 	// 雲端一壞就是每 5 秒撞一次。內容變了（雜湊不同）視同新卡，立即可再試。
 	InventoryFailHash  string `json:"inventory_fail_hash,omitempty"`
 	InventoryNextRetry int64  `json:"inventory_next_retry,omitempty"`
+	// SourceOriginRepairedAt＝這個監看根的「### 出處」已全部改成
+	// 「機器 › 知識庫 › 庫內路徑」的時間（unix 秒，0＝還沒修過）。
+	// 🔴 `inkstone/Arcrun#167`：舊卡寫的是 `../<檔名>`（daemon 的內部目錄結構），
+	//    AI 照著答，使用者走不到那個檔。修產生端只治得了新卡，既有的要就地重推
+	//    （見 sourcerepair.go）。這一格的存在是為了**修完就不再每輪掃全庫**——
+	//    沒有它，這個修復會變成一個永遠在跑的背景工作。
+	SourceOriginRepairedAt int64 `json:"source_origin_repaired_at,omitempty"`
 
 	// PendingTakedowns＝改名／搬移後「舊路徑」在雲端知識庫裡還沒下架成功的待辦清單
 	// （key=舊相對路徑，value=該路徑當時導出的頁名）。InkStoneCo#44 ⑩：

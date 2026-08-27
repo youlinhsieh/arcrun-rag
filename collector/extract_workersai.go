@@ -94,7 +94,7 @@ func tooBigForWorkersAI(srcText, relPath string) string {
 // ExtractWithWorkersAI 讀原稿 → 送自己雲端的 /portal/daemon/extract 萃卡 → 卡片落地。
 // cypherURL/apiKey 用的是 daemon 既有的連線憑證（送卡片上雲時同一把，見 direct.go）。
 // 回傳產出的卡片相對路徑（單檔一卡），與 ExtractWithGemma 契約一致。
-func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string, error) {
+func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin SourceOrigin) ([]string, error) {
 	if strings.TrimSpace(cypherURL) == "" {
 		return nil, fmt.Errorf("workers-ai 萃取路需要 cypher_url（config）")
 	}
@@ -183,7 +183,7 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 		if perr != nil {
 			return nil, perr
 		}
-		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, time.Now())
+		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
 		if berr != nil {
 			return nil, berr
 		}

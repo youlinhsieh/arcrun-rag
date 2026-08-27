@@ -40,7 +40,7 @@ func TestBuildWikiDoc_CardShapeMatchesSpec(t *testing.T) {
 	src := "# 測試文件\n\n內文若干"
 	mustWrite(t, filepath.Join(root, "測試文件.md"), src)
 
-	cards, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsNow)
+	cards, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsOrigin("測試文件.md"), wsNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,9 +58,16 @@ func TestBuildWikiDoc_CardShapeMatchesSpec(t *testing.T) {
 			t.Fatalf("文件卡缺「%s」：\n%s", want, doc)
 		}
 	}
-	// 出處路徑相對 .wiki，真的指得到原稿（lint「出處路徑指不到原稿」項）
-	if !strings.Contains(doc, "`../測試文件.md`") {
-		t.Fatalf("出處路徑不對：\n%s", doc)
+	// 🔴 `inkstone/Arcrun#167`：出處寫的是「哪台機器／哪個庫／庫內什麼路徑」，
+	// **不再是 `../`**（那是卡片檔相對原檔的內部結構，使用者拿著它走不到任何地方）。
+	if !strings.Contains(doc, "`test@Machine \u203a test-lib \u203a 測試文件.md`") {
+		t.Fatalf("出處沒寫成「機器 › 庫 › 庫內路徑」：\n%s", doc)
+	}
+	if !strings.Contains(doc, "`test-lib/測試文件.md`"+triSep+"提及") {
+		t.Fatalf("出處三元組主詞不是庫內定位：\n%s", doc)
+	}
+	if strings.Contains(doc, "../") {
+		t.Fatalf("出處仍帶內部相對路徑 `../`：\n%s", doc)
 	}
 	ca := mustRead(t, filepath.Join(root, ".wiki", "概念甲.md"))
 	for _, want := range []string{
@@ -84,7 +91,7 @@ func TestBuildWikiDoc_EdgesAreBidirectional(t *testing.T) {
 	root := t.TempDir()
 	src := "# 測試文件\n內文"
 	mustWrite(t, filepath.Join(root, "測試文件.md"), src)
-	if _, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsOrigin("測試文件.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	cb := mustRead(t, filepath.Join(root, ".wiki", "概念乙.md"))
@@ -100,7 +107,7 @@ func TestBuildWikiDoc_LinksClosedAndIndexishFixed(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "文件.md"), src)
 	ex := wsExtract()
 	ex.Points = []string{"[[概念甲]] — 這行是 index 式，要被改寫", "這裡提到 [[不存在的卡]] 應拆殼"}
-	if _, err := BuildWikiDoc(root, "文件.md", src, ex, wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "文件.md", src, ex, wsOrigin("文件.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	doc := mustRead(t, filepath.Join(root, ".wiki", "文件.md"))
@@ -117,7 +124,7 @@ func TestMarkDocNoConcept_ListedOnIndex(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "發票.txt"), "金額 100")
 	ex := &DocExtract{NoConcept: true, Reason: "純紀錄（發票），沒有可獨立成立的判斷"}
-	cards, err := BuildWikiDoc(root, "發票.txt", "金額 100", ex, wsNow)
+	cards, err := BuildWikiDoc(root, "發票.txt", "金額 100", ex, wsOrigin("發票.txt"), wsNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +146,7 @@ func TestBuildWikiDoc_NestedNodeAndAncestors(t *testing.T) {
 	src := "# 週會決議\n內容"
 	mustWrite(t, filepath.Join(root, rel, "週會.md"), src)
 
-	if _, err := BuildWikiDoc(root, "專案/會議/週會.md", src, wsExtract(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "專案/會議/週會.md", src, wsExtract(), wsOrigin("專案/會議/週會.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "專案", "會議", ".wiki", "週會決議.md")); err != nil {
@@ -173,14 +180,14 @@ func TestBuildWikiDoc_ReextractCleansOldCards(t *testing.T) {
 	root := t.TempDir()
 	src := "# 文件\n內文"
 	mustWrite(t, filepath.Join(root, "文件.md"), src)
-	if _, err := BuildWikiDoc(root, "文件.md", src, wsExtract(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "文件.md", src, wsExtract(), wsOrigin("文件.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	// 第二輪：概念換名
 	ex2 := wsExtract()
 	ex2.Concepts = []WikiConcept{{Name: "全新概念", Gloss: "新的一句話", Summary: "新摘要", Points: []string{"新判斷"}}}
 	ex2.Points = []string{"重點換成 [[全新概念]] 了"}
-	if _, err := BuildWikiDoc(root, "文件.md", src, ex2, wsNow.Add(24*time.Hour)); err != nil {
+	if _, err := BuildWikiDoc(root, "文件.md", src, ex2, wsOrigin("文件.md"), wsNow.Add(24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".wiki", "概念甲.md")); !os.IsNotExist(err) {
@@ -201,7 +208,7 @@ func TestRemoveWikiDoc_CleansEverything(t *testing.T) {
 	root := t.TempDir()
 	src := "# 文件\n內文"
 	mustWrite(t, filepath.Join(root, "文件.md"), src)
-	if _, err := BuildWikiDoc(root, "文件.md", src, wsExtract(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "文件.md", src, wsExtract(), wsOrigin("文件.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveWikiDoc(root, "文件.md"); err != nil {
@@ -230,10 +237,10 @@ func TestBuildWikiDoc_SameConceptFromTwoDocsDisambiguated(t *testing.T) {
 			Points:   []string{"重點連到 [[迭代]]"},
 			Concepts: []WikiConcept{{Name: "迭代", Gloss: "同名概念", Summary: "摘要", Points: []string{"判斷"}}}}
 	}
-	if _, err := BuildWikiDoc(root, "a.md", srcA, ex(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "a.md", srcA, ex(), wsOrigin("a.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildWikiDoc(root, "b.md", srcB, ex(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "b.md", srcB, ex(), wsOrigin("b.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	first := mustRead(t, filepath.Join(root, ".wiki", "迭代.md"))
@@ -255,7 +262,7 @@ func TestNodeIndex_FiveFieldsPerDocLine(t *testing.T) {
 	root := t.TempDir()
 	src := "# 測試文件\n內文"
 	mustWrite(t, filepath.Join(root, "測試文件.md"), src)
-	if _, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsNow); err != nil {
+	if _, err := BuildWikiDoc(root, "測試文件.md", src, wsExtract(), wsOrigin("測試文件.md"), wsNow); err != nil {
 		t.Fatal(err)
 	}
 	idx := mustRead(t, filepath.Join(root, ".wiki", "00-INDEX.md"))

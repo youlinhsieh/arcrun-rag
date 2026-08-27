@@ -1391,6 +1391,26 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		saveManifest() // 拔掉的章與對帳時間當下就落盤（斷點續傳同款）
 	}
 
+	// 🔴 既有卡片的「### 出處」就地修正（`inkstone/Arcrun#167`）——一次性、修完蓋章。
+	// 舊卡的出處寫的是 `../<檔名>`（daemon 自己的目錄結構），AI 照著答、使用者走不到。
+	// 修產生端只治得了新卡，票上寫死「不能只修新的」⇒ 這裡把本機既有的卡重畫那一塊
+	// 並原樣重推（零 LLM，workflow 進門先刪同名舊 blocks ⇒ 取代不疊加）。見 sourcerepair.go。
+	if sr := repairCardSourceBlocks(cfg, absRoot, m, dryRun, false, runNow); sr != nil {
+		if sr.Repushed > 0 {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: fmt.Sprintf("已修好 %d 份筆記的「原文位置」寫法（從前寫的是程式內部路徑，現在會告訴你在哪台機器、哪個知識庫、庫內哪一個檔）", sr.Repushed),
+			})
+		}
+		if sr.Err != "" {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: "更新「原文位置」時有一份沒成功（不影響同步，稍後自動再試）：" + sr.Err,
+			})
+		}
+		saveManifest()
+	}
+
 	// 2026-08-07 task 3：Scan() 會把 removed 的路徑從 m.Entries 整批拿掉（rebuild 語意，
 	// 見 scan.go 步驟 7）——但那只是「偵測到不見了」，不代表下架 POST 已經成功。
 	// 沒有這份快照的話，本輪只要有任何一個 added/modified 事件先觸發了下面的
@@ -1578,6 +1598,15 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			pace() // 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下
 			if cfg.Extractor != "" {
 				// 四步定稿：本地萃卡 → 每張卡 POST rag_ingest_card（原文不出機）
+				// 🔴 `inkstone/Arcrun#167`：卡片的「### 出處」要寫得出「哪台機器 ／
+				//    哪個庫 ／ 庫內什麼路徑」，所以萃卡前先把這三件備好交給塑形層。
+				//    三件與下面 cardBody 送雲端的 machine/library/path 是**同一組值**
+				//    ——卡上寫的與雲端存的從此對得起來（不再各說各話）。
+				cardOrigin := SourceOrigin{
+					MachineLabel: cfg.machineIdentity().Label,
+					Library:      cfg.libraryFor(absRoot),
+					LibraryPath:  ev.Path,
+				}
 				var cards []string
 				var xerr error
 				switch cfg.Extractor {
@@ -1590,9 +1619,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// ⇒ 探測在 RunDirectOnce（ProbeWorkersAI），結果寫進 status.json，
 					//   托盤那行「狀態：」直接告訴用戶該做什麼。
 					// 靜默退回會讓用戶**永遠不知道自己的雲端還沒更新**——正是要避免的黑箱。
-					cards, xerr = ExtractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path)
+					cards, xerr = ExtractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin)
 				case "gemma":
-					cards, xerr = ExtractWithGemma(cfg.GeminiAPIKey, cfg.LLMModel, absRoot, ev.Path)
+					cards, xerr = ExtractWithGemma(cfg.GeminiAPIKey, cfg.LLMModel, absRoot, ev.Path, cardOrigin)
 				default:
 					// t176：claude 路先不支援（RunDirectOnce 開頭已正規化）。
 					// 走到這裡代表 config 有沒見過的值——誠實報錯，不要靜默跳過（禁假綠）。

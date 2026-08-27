@@ -44,7 +44,7 @@ func TestExtractWithGemmaThinkingModel(t *testing.T) {
 			}},
 		})
 	})()
-	cards, err := ExtractWithGemma("k123", "gemma-test", root, "會議記錄.md")
+	cards, err := ExtractWithGemma("k123", "gemma-test", root, "會議記錄.md", testOrigin())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,14 +79,14 @@ func TestExtractWithGemmaThoughtOnly(t *testing.T) {
 			}},
 		})
 	})()
-	if _, err := ExtractWithGemma("k", "m", root, "x.md"); err == nil {
+	if _, err := ExtractWithGemma("k", "m", root, "x.md", testOrigin()); err == nil {
 		t.Fatal("thought-only 應報錯")
 	}
 }
 
 // 缺 key＝引導訊息。
 func TestExtractWithGemmaNoKey(t *testing.T) {
-	if _, err := ExtractWithGemma("", "m", t.TempDir(), "x.md"); err == nil {
+	if _, err := ExtractWithGemma("", "m", t.TempDir(), "x.md", testOrigin()); err == nil {
 		t.Fatal("缺 key 應報錯")
 	}
 }
@@ -124,7 +124,7 @@ func TestExtractWithGemma_VaultDoesNotGainPages(t *testing.T) {
 
 	pagesBefore := countMD(t, filepath.Join(root, "pages")) + countMD(t, filepath.Join(root, "journals")) + countTopLevelMD(t, root)
 
-	cards, err := ExtractWithGemma("k123", "gemma-test", root, srcRel)
+	cards, err := ExtractWithGemma("k123", "gemma-test", root, srcRel, testOrigin())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestExtractWithGemma_VaultExistingCardNotClobbered(t *testing.T) {
 		})
 	})()
 
-	_, err := ExtractWithGemma("k123", "gemma-test", root, srcRel)
+	_, err := ExtractWithGemma("k123", "gemma-test", root, srcRel, testOrigin())
 	if err == nil {
 		t.Fatal("目標位置被別人佔用時應報錯，不得無聲覆蓋")
 	}

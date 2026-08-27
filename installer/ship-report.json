@@ -4471,8 +4471,8 @@
     {
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "bundle 已委任 0.18.41；內容是否真的到位由下一站 daemon-check 逐檔查證"
     },
     {
      "id": "daemon-check",
@@ -4507,8 +4507,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "已是最新：不叫「docs」的文件夾，現在也認得出來"
     },
     {
      "id": "version",
@@ -4525,65 +4525,73 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "已與遠端同步，沒有要推的"
     },
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）",
-     "status": "failed"
+     "status": "done",
+     "note": null
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "docs",
      "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "mail-relay",
      "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "purge",
      "title": "讓送貨管道拿到新版並確認它真的收斂了",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "verify",
      "title": "驗收（用戶端視角，不是部署訊息）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "release-check",
      "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     }
    ],
    "sourceCommit": "Arcrun@f87260b1234f",
    "machine": "9f06f3113188",
-   "ts": 1787831469917
+   "ts": 1787831848056
   }
  }
 }

@@ -148,7 +148,7 @@ func TestExtractWithWorkersAI_太大的檔一個請求都不送(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ExtractWithWorkersAI(srv.URL, "k", root, "巨檔.md")
+	_, err := ExtractWithWorkersAI(srv.URL, "k", root, "巨檔.md", testOrigin())
 	if err == nil {
 		t.Fatal("太大的檔應該直接失敗")
 	}

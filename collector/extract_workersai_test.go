@@ -45,7 +45,7 @@ func TestExtractWithWorkersAI_VaultRedirectsAndDoesNotClobber(t *testing.T) {
 	})
 	defer closeFn()
 
-	cards, err := ExtractWithWorkersAI(url, "key123", root, srcRel)
+	cards, err := ExtractWithWorkersAI(url, "key123", root, srcRel, testOrigin())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestExtractWithWorkersAI_NonVaultUnchanged(t *testing.T) {
 	})
 	defer closeFn()
 
-	cards, err := ExtractWithWorkersAI(url, "key123", root, srcRel)
+	cards, err := ExtractWithWorkersAI(url, "key123", root, srcRel, testOrigin())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestExtractWithWorkersAI_SendsSharedPrompt(t *testing.T) {
 	})
 	defer closeFn()
 
-	if _, err := ExtractWithWorkersAI(url, "key123", root, srcName); err != nil {
+	if _, err := ExtractWithWorkersAI(url, "key123", root, srcName, testOrigin()); err != nil {
 		t.Fatal(err)
 	}
 	srcText, err := ConvertToText(srcName, []byte(srcBody))
@@ -181,7 +181,7 @@ func TestExtractWorkersAIAndGemmaProduceIdenticalWiki(t *testing.T) {
 		t.Fatal(err)
 	}
 	undo := gemmaCardStub(t, fixture)
-	cardsG, errG := ExtractWithGemma("k-test", "", rootG, srcName)
+	cardsG, errG := ExtractWithGemma("k-test", "", rootG, srcName, testOrigin())
 	undo()
 	if errG != nil {
 		t.Fatal(errG)
@@ -195,7 +195,7 @@ func TestExtractWorkersAIAndGemmaProduceIdenticalWiki(t *testing.T) {
 	url, closeFn := workersAIStub(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "output": fixture})
 	})
-	cardsW, errW := ExtractWithWorkersAI(url, "key123", rootW, srcName)
+	cardsW, errW := ExtractWithWorkersAI(url, "key123", rootW, srcName, testOrigin())
 	closeFn()
 	if errW != nil {
 		t.Fatal(errW)

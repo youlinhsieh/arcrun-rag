@@ -386,13 +386,93 @@ func entityFallback(ents []WikiEntity, selfName, selfGloss string) []WikiEntity 
 	return []WikiEntity{{Name: selfName, Type: "概念", Desc: firstNonEmpty(selfGloss, "本卡描述的概念")}}
 }
 
-func renderSourceLine(b *strings.Builder, srcRel, cardName string) {
+// SourceOrigin＝「這份原稿實際在哪裡」的三件式：哪台機器 ／ 哪個庫 ／ 庫內什麼路徑。
+//
+// 🔴 為什麼要有這個型別（`inkstone/Arcrun#167`，leo 2026-08-27 用 n8n 實測抓到）：
+// 從前「### 出處」寫的是 `../<檔名>`——那是**卡片檔相對於原檔**的路徑，
+// 也就是 daemon 自己的目錄結構（卡在 `<node>/.wiki/`，原檔在上一層）。
+// 它有兩個要命的地方：
+//
+//	① 它是**內部結構**，卻被寫進知識內容 ⇒ 任何讀到那塊的 AI 都照著答，
+//	   而使用者拿著 `../小果被AFTEE詐貸.pdf` 走不到任何地方。
+//	② 原稿在子資料夾時，`../<檔名>` 把**資料夾整段弄丟了**
+//	   （實據：`system-dev/wiki/trees/2026-08-17-today.md` 的出處只剩
+//	   `../2026-08-17-today.md`）⇒ 連「同一個庫裡是哪一份」都定位不到。
+//
+// 三件式是**同一份 metadata 早就在送的那三格**（library／machine／source_path，
+// 見 direct.go 的 cardBody 與 rag_ingest_card 的 post_block）——
+// 這裡不是新增資料，是把已經有的東西寫成人看得懂的樣子。
+//
+// 🔴 為什麼**不寫絕對路徑**（票上要求說明判斷）：卡會離開這台機器（上雲、被別台的
+// AI 讀到），而絕對路徑只在鑄它的那台成立。給了它，跨機器問「原文在哪」拿到的
+// 會是一個**看起來最精確、實際上打不開**的答案——那正是 `../` 這枚坑的同一個形狀。
+// 「機器 ＋ 庫 ＋ 庫內路徑」才是三台機器上都成立的座標：認出機器 → 打開那個庫的
+// 資料夾 → 走庫內路徑。絕對路徑該由**知道監看根在哪的那一端**（daemon／portal）
+// 現場組，不該固化進知識內容。
+type SourceOrigin struct {
+	// MachineLabel＝人看得懂的機器稱呼（daemon 的 machine.json / config 的 machine_label）。
+	MachineLabel string
+	// Library＝這份原稿所屬的知識庫名（＝監看根，daemon 的 libraryFor）。
+	Library string
+	// LibraryPath＝**庫內**相對路徑，含子資料夾，一律 forward slash。
+	// 與 metadata 的 source_path 同一個值 ⇒ 卡上寫的與雲端存的對得起來。
+	LibraryPath string
+}
+
+// unknownOriginMark＝三件式缺格時的誠實標記。
+// 寧可讓使用者看到「（未知）」，也不要給一個看起來精確、實際上走不到的路徑
+// ——那正是 `../` 這枚坑的形狀。
+const unknownOriginMark = "（未知）"
+
+// originSep＝三件式之間的分隔符，與 portal 的來源顯示同一種
+//（`youlinhsieh@Leo-MBA › rt-lib › 檔名 第 4 段`）⇒ 使用者在兩個地方看到同一種形狀。
+const originSep = " › "
+
+// Human 回一句「這份原文在哪」：`機器 › 知識庫 › 庫內路徑`。
+func (o SourceOrigin) Human() string {
+	mach := strings.TrimSpace(o.MachineLabel)
+	if mach == "" {
+		mach = "機器" + unknownOriginMark
+	}
+	lib := strings.TrimSpace(o.Library)
+	if lib == "" {
+		lib = "知識庫" + unknownOriginMark
+	}
+	return mach + originSep + lib + originSep + o.pathOrUnknown()
+}
+
+// Ref 回三元組主詞用的那個字串＝`庫名/庫內路徑`。
+// 庫名未知時退回純庫內路徑——**任何情況下都不帶 `../`**。
+func (o SourceOrigin) Ref() string {
+	lib := strings.TrimSpace(o.Library)
+	if lib == "" {
+		return o.pathOrUnknown()
+	}
+	return lib + "/" + o.pathOrUnknown()
+}
+
+func (o SourceOrigin) pathOrUnknown() string {
+	p := strings.TrimSpace(filepath.ToSlash(o.LibraryPath))
+	p = strings.TrimPrefix(p, "./")
+	if p == "" {
+		return "庫內路徑" + unknownOriginMark
+	}
+	return p
+}
+
+// renderSourceLine 寫「### 出處」那一塊：**先一行人話位置，再一行三元組**。
+//
+// 人話那行刻意不含 `>>`：`## 關聯` 段的解析（`rag_ingest_card` 的 parse_card）
+// 只把含兩個 `>>` 的行收成三元組 ⇒ 它進得了知識內容、進不了圖，
+// 正好是我們要的（給人讀的句子不該變成一條邊）。
+func renderSourceLine(b *strings.Builder, o SourceOrigin, cardName string) {
 	b.WriteString("### 出處\n")
-	b.WriteString("- `" + srcRel + "`" + triSep + "提及" + triSep + cardName + "\n")
+	b.WriteString("- 原文位置（機器" + originSep + "知識庫" + originSep + "庫內路徑）：`" + o.Human() + "`\n")
+	b.WriteString("- `" + o.Ref() + "`" + triSep + "提及" + triSep + cardName + "\n")
 }
 
 // renderDocCard 文件卡（＝這份文件的 hub）：重點是判斷句、行內連到概念卡。
-func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, srcRel string) string {
+func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin SourceOrigin) string {
 	allowed := map[string]bool{"00-INDEX": true, d.Card: true}
 	for _, c := range conceptNames {
 		allowed[c] = true
@@ -442,12 +522,12 @@ func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, srcRel str
 	for _, c := range conceptNames {
 		b.WriteString("- [[" + d.Card + "]]" + triSep + "整理出" + triSep + "[[" + c + "]]\n")
 	}
-	renderSourceLine(&b, srcRel, d.Card)
+	renderSourceLine(&b, origin, d.Card)
 	return b.String()
 }
 
 // renderConceptCard 原子概念卡。extraRels＝機械補上的反向邊（雙向連結保證）。
-func renderConceptCard(c WikiConcept, cardName, docCard, srcRel, created, updated string,
+func renderConceptCard(c WikiConcept, cardName, docCard string, origin SourceOrigin, created, updated string,
 	allowed map[string]bool, extraRels []string) string {
 	var b strings.Builder
 	renderFrontmatter(&b, cleanTags(c.Tags), firstNonEmpty(sanitizeProse(c.Gloss, map[string]bool{}), cardName), created, updated)
@@ -497,7 +577,7 @@ func renderConceptCard(c WikiConcept, cardName, docCard, srcRel, created, update
 	for _, line := range extraRels {
 		b.WriteString(line + "\n")
 	}
-	renderSourceLine(&b, srcRel, cardName)
+	renderSourceLine(&b, origin, cardName)
 	return b.String()
 }
 
@@ -525,7 +605,7 @@ func writeWikiFile(absRoot, dest string, content []byte) error {
 // BuildWikiDoc 把一份文件的萃取結果落成規範形的 `.wiki/` 產物。
 // 回傳本次產出的卡（相對監看根、文件卡在第一個）。
 // ex.NoConcept 為真（或概念數 0）時不產卡，改走「標空」路徑（回傳空清單）。
-func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, now time.Time) ([]string, error) {
+func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin SourceOrigin, now time.Time) ([]string, error) {
 	if ex == nil {
 		return nil, fmt.Errorf("BuildWikiDoc: 沒有萃取結果")
 	}
@@ -651,7 +731,6 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, now time.Tim
 	}
 
 	// 渲染＋寫檔（先清掉這份文件上一輪產的、這一輪不再存在的卡）。
-	srcRel := "../" + base
 	var newCards []string
 	rel := func(cardName string) string {
 		return filepath.ToSlash(filepath.Join(nodeFromKey(nodeKey), wikiRelDir, cardName+".md"))
@@ -684,14 +763,14 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, now time.Tim
 		return r, writeWikiFile(absRoot, destAbs, []byte(content))
 	}
 
-	docRel, err := writeCard(docCard, renderDocCard(&entry, ex, conceptNames, srcRel))
+	docRel, err := writeCard(docCard, renderDocCard(&entry, ex, conceptNames, origin))
 	if err != nil {
 		return nil, err
 	}
 	newCards = append(newCards, docRel)
 	for i, c := range concepts {
 		name := conceptNames[i]
-		content := renderConceptCard(c, name, docCard, srcRel, created, todayOf(now), allowed, extraRels[name])
+		content := renderConceptCard(c, name, docCard, origin, created, todayOf(now), allowed, extraRels[name])
 		r, werr := writeCard(name, content)
 		if werr != nil {
 			return nil, werr

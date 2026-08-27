@@ -88,7 +88,7 @@ func cleanGemmaCard(text, pageName string) string {
 
 // ExtractWithGemma 讀原稿 → 呼 Gemini 萃卡 → 卡片落地 system-dev/wiki/cards/。
 // 回傳產出的卡片相對路徑（單檔一卡）。
-func ExtractWithGemma(apiKey, model, absRoot, relPath string) ([]string, error) {
+func ExtractWithGemma(apiKey, model, absRoot, relPath string, origin SourceOrigin) ([]string, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemma 萃取路需要 gemini_api_key（config）")
 	}
@@ -171,7 +171,7 @@ func ExtractWithGemma(apiKey, model, absRoot, relPath string) ([]string, error) 
 	if perr != nil {
 		return nil, perr
 	}
-	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, time.Now())
+	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
 	if berr != nil {
 		return nil, berr
 	}

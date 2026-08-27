@@ -344,7 +344,7 @@ func TestVaultFootprint_ForeignWikiFileNotClobbered(t *testing.T) {
 	}
 
 	defer gemmaCardStub(t, cardFixture("會議記錄", "專案"))()
-	if _, err := ExtractWithGemma("k-test", "gemma-test", root, srcRel); err == nil {
+	if _, err := ExtractWithGemma("k-test", "gemma-test", root, srcRel, testOrigin()); err == nil {
 		t.Fatal("目標被佔用時應報錯，不得無聲覆蓋")
 	}
 	data, _ := os.ReadFile(filepath.Join(cardDir, "會議記錄.md"))

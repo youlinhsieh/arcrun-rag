@@ -67,7 +67,7 @@ func TestWiring_docx轉檔發生在送LLM之前(t *testing.T) {
 	writeDocx(t, filepath.Join(dir, rel), `<w:p><w:r><w:t>維修費用 350,000 元</w:t></w:r></w:p>`)
 
 	// 空 API key → 函式最前面就擋下，證明不了轉檔。給假 key 讓它走到轉檔那一步。
-	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel)
+	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel, testOrigin())
 	if err == nil {
 		t.Fatal("用假 key 不該成功")
 	}
@@ -90,7 +90,7 @@ func TestWiring_抽不出文字要明確失敗不靜默(t *testing.T) {
 	rel := "空的.docx"
 	writeDocx(t, filepath.Join(dir, rel), `<w:p><w:r><w:t>   </w:t></w:r></w:p>`)
 
-	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel)
+	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel, testOrigin())
 	if err == nil {
 		t.Fatal("抽不出文字應該失敗")
 	}
@@ -109,7 +109,7 @@ func TestWiring_未支援格式與無文字要能區分(t *testing.T) {
 	rel := "簡報.ppt"
 	os.WriteFile(filepath.Join(dir, rel), []byte("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1fake"), 0o644)
 
-	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel)
+	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel, testOrigin())
 	if err == nil {
 		t.Fatal("未支援格式應該失敗")
 	}
@@ -127,7 +127,7 @@ func TestWiring_md不受轉檔層影響(t *testing.T) {
 	rel := "筆記.md"
 	os.WriteFile(filepath.Join(dir, rel), []byte("# 標題\n\n內容"), 0o644)
 
-	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel)
+	_, err := ExtractWithGemma("fake-key-for-test", "", dir, rel, testOrigin())
 	if err == nil {
 		t.Fatal("假 key 不該成功")
 	}
