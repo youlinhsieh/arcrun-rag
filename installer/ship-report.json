@@ -4471,8 +4471,8 @@
     {
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
-     "status": "skip",
-     "note": "bundle 已委任 0.18.41；內容是否真的到位由下一站 daemon-check 逐檔查證"
+     "status": "done",
+     "note": null
     },
     {
      "id": "daemon-check",
@@ -4507,8 +4507,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "skip",
-     "note": "已是最新：不叫「docs」的文件夾，現在也認得出來"
+     "status": "done",
+     "note": null
     },
     {
      "id": "version",
@@ -4531,14 +4531,14 @@
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "skip",
-     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+     "status": "done",
+     "note": null
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "skip",
-     "note": "已與遠端同步，沒有要推的"
+     "status": "done",
+     "note": null
     },
     {
      "id": "pin",
@@ -4591,7 +4591,7 @@
    ],
    "sourceCommit": "Arcrun@f87260b1234f",
    "machine": "9f06f3113188",
-   "ts": 1787831848056
+   "ts": 1787837647855
   }
  }
 }
