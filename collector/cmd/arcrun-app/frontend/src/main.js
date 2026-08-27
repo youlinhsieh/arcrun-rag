@@ -331,7 +331,12 @@ function treeBoxId(path) {
 
 // 子樹合計：小幫手送的每個數字都只算「這一層直接放的檔」（存兩套遲早對不起來），
 // 所以要顯示「這個資料夾底下總共」就得在這裡疊一次。
-// 🔴 skipped 的節點整棵不計：沒走進去就是不知道裡面有幾個檔，加 0 會讓分母說謊。
+// 🔴 **沒走進去**的節點整棵不計：不知道裡面有幾個檔，加 0 會讓分母說謊。
+// 分辨方法（inkstone/Arcrun#180 之後）：`skipped` 已經改成「這一層的檔不收」，
+// 而**走進去過的節點 total_files 是真的**——所以只有 `total_files === 0` 的
+// skipped 節點才是「真的沒走進去」，那種才不計。
+// 走進去過的（例如 `system-dev/wiki` 6 個範本檔全排除）要照算，
+// 不然 leo 要的「知道資料夾下有幾個檔案被萃」在合計上又變回 0。
 // （與 portal 的 rollupTree 同一套算法——兩邊看到的數字必須是同一個。）
 function rollupTree(nodes) {
   const byPath = {}, kids = {};
@@ -339,7 +344,7 @@ function rollupTree(nodes) {
   const sums = {};
   function walk(n) {
     const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0 };
-    if (!n.skipped) {
+    if (!n.skipped || n.total_files > 0) {
       acc.total = n.total_files; acc.synced = n.synced_files; acc.pending = n.pending_files;
       acc.unsupported = n.unsupported_files; acc.excluded = n.excluded_files;
     }
@@ -416,10 +421,16 @@ function renderFolderTree(path) {
       + `<span class="tw">${kids.length ? '<i></i>' : ''}</span>`
       + `<span class="ic">${kids.length && open ? '📂' : '📁'}</span>`
       + `<span class="nm">${esc(n.name || '（未命名）')}</span>`;
-    if (n.skipped) {
+    if (n.skipped && n.total_files === 0) {
       // 🔴 整棵沒走進去 ⇒ 不准顯示 0/0（那會是我們自己編的數字），改講理由。
       const why = n.skip_reason || '（小幫手沒說明理由）';
       row += `<span class="skip">整個資料夾未收</span>`
+        + `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
+    } else if (n.skipped) {
+      // #180：走進去了、數字是真的，只是這一層一個檔都沒收
+      // ⇒ **數字照顯示**（他要知道底下有幾個），理由也照講。
+      const why = n.skip_reason || '（小幫手沒說明理由）';
+      row += `<span class="num">${s.synced} / ${s.total}</span>`
         + `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
     } else {
       const full = s.total > 0 && s.synced === s.total;

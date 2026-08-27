@@ -83,9 +83,25 @@ func UnmarkName(base string) string {
 // ⚠️ 例外只有這兩個目錄。監看根底下**其他任何位置**的新檔，一律得帶前綴——
 // 想在別處寫一個「名字不能改」的檔時，先想清楚那個檔為什麼不能住進這兩個目錄。
 func IsMachineOwnedRel(relSlash string) bool {
-	if IsMarked(pathBase(relSlash)) {
-		return true
-	}
+	return IsMarked(pathBase(relSlash)) || InMachineOwnedDir(relSlash)
+}
+
+// InMachineOwnedDir 只回答上面那兩條路的**第二條**：這個路徑上有沒有一層是
+// `.arcrun-rag/` 或 `.wiki/`。
+//
+// 🔴 為什麼要把它單獨切出來（inkstone/Arcrun#180 ↔ #134，2026-08-28）：
+// 兩條路的**證據強度不一樣**，而收檔判準需要分得開它們——
+//
+//	目錄（本函式）＝**位置**證明它是產物。`.wiki/` 是這一版寫卡的唯一落點，
+//	                任何時候走到那裡的東西都是我們此刻正在維護的產物 ⇒ 鐵證。
+//	前綴（IsMarked）＝**歷史**說某一版的 daemon 寫過它。它不保證「現在還是產物」：
+//	                leo 的 `youlinhsieh-test1` 底下那 9 張 `cards/arcrun-*.md`
+//	                是 8/4 舊版寫的，而他 08-14 明講「這些庫都早就萃好了⋯⋯直接 ingest」
+//	                ——對他而言那就是他的知識。
+//
+// ⇒ 要「絕不把產物當原稿」時用本函式；要「連歷史產物都不碰」時才用 IsMachineOwnedRel。
+// 規約本身（每個新檔都要帶標記）沒有變，vault_footprint_test.go 仍然用完整判準。
+func InMachineOwnedDir(relSlash string) bool {
 	for _, seg := range strings.Split(relSlash, "/") {
 		if seg == workspaceRelDir || seg == wikiRelDir {
 			return true

@@ -164,6 +164,10 @@ type dirStat struct {
 	supported   int // 通過所有閘、進了 manifest 的（＝分子的候選）
 	unsupported int // 副檔名還讀不了的（docLikeExt 與其他）
 	excluded    int // 收檔策略／範本身分決定不收的（程式碼多半落這裡）
+	// excludeWhy＝這一層的檔被排除的理由（產品文案，第一個排除的檔說了算）。
+	// #180：以前不收就是「不走進去」，理由掛在被剪掉的目錄上；現在走進去了，
+	// 理由得跟著檔案的排除一起記下來，不然畫面只剩一個沒有解釋的 `0/6`。
+	excludeWhy string
 }
 
 // MaxExcludedDirsListed：最多逐筆列幾個被跳過的目錄。超過的只反映在 ExcludedDirCount
@@ -360,10 +364,19 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			if p != root && opts.SkipDirNames[name] {
 				return filepath.SkipDir // 名單目錄（呼叫端自訂）整棵跳過
 			}
-			// #104：依策略整棵跳過（使用者的 .gitignore／依賴／建置產物／範本／
-			// worktree／巢狀 repo／以及非本次策略要收的區域）。
+			// #104：依策略整棵剪掉（使用者的 .gitignore／依賴／建置產物／
+			// worktree／巢狀 repo）。
 			// 🔴 每一次剪枝都要留下「哪一個、為什麼」——票上的紅線是排除規則要看得見，
 			//    而 2026-08-16 實測發現原本整棵剪掉的部分完全沒有被記錄。
+			//
+			// 🔴 inkstone/Arcrun#180（leo 2026-08-28）：**「不收」不准再實作成「不走進去」。**
+			//    leo 原話：「我要的就是雲端看到**所有的 folder** 像 tree 一樣呈現，去遍歷就好了」
+			//    「所有的 system-dev 都可以展開，**因為就算沒有可萃的它也有下層**」。
+			//    實測差距：`youlinhsieh-test1` 地端 `find -type d` 有 13 個目錄，
+			//    雲端的樹只有 3 個節點——樹在 `system-dev` 那一節就斷了。
+			//    ⇒ 收檔範圍那幾條（curated-wiki 只走 wiki／docs-only 只走文件區／
+			//      範本目錄）已從 SkipsDirWhy 搬到 CollectsDirWhy：**走訪照走、節點照生、
+			//      數字照算**，只是標明「這一層我不收」。
 			if p != root {
 				if rel, ok := relOf(); ok {
 					if skip, why := opts.Plan.SkipsDirWhy(rel, p); skip {
@@ -374,6 +387,11 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 					// ——leo 的規格是「不管那層有沒有文件，整棵樹都要採」。
 					if _, ok := dirStats[rel]; !ok {
 						dirStats[rel] = &dirStat{}
+					}
+					// #180：走進來了，但這一層的檔這次不收 ⇒ 節點照生、子節點照長，
+					// 只是把理由掛上去（畫面仍然講得出「為什麼這裡沒收」）。
+					if collect, why := opts.Plan.CollectsDirWhy(rel); !collect {
+						excludedDirs = append(excludedDirs, ExcludedDir{Path: rel, Reason: why})
 					}
 				}
 			}
@@ -390,6 +408,13 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			s := statOf(rel)
 			s.total++
 			s.excluded++
+			if s.excludeWhy == "" {
+				if _, why := opts.Plan.CollectsDirWhy(folderOfRel(rel)); why != "" {
+					s.excludeWhy = why
+				} else {
+					s.excludeWhy = "這一層的檔案不在這次的收檔範圍裡"
+				}
+			}
 			return nil
 		}
 		if abs, aerr := filepath.Abs(p); aerr == nil && opts.SkipPaths[abs] {
@@ -406,16 +431,33 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		//    · 我們代裝 template 的資料夾（沒有 `.git`）⇒ 那些檔是**我們鋪的**，照舊不收
 		//    · 使用者自己的 repo（有 `.git`）⇒ 那份 wiki 是**他寫的**，正是他要我們讀的
 		//    判準只有 PlanIngest 一個地方，見 ingestplan.go。
+		//
+		// 🔴 inkstone/Arcrun#180：**不收照舊，但不准再從畫面上消失。**
+		//    leo 要的是「知道資料夾下有幾個檔案被萃」——以前這裡直接 `return nil`，
+		//    那些檔連分母都沒進去，於是 `system-dev/wiki`（實際 6 個檔）在樹上是 `0/0`、
+		//    `scripts`（實際 1 個檔）也是 `0/0`。**兩個 0 都是我們自己編的數字。**
+		//    現在照樣不收，但算進 total／excluded，使用者看得到「這裡有 6 個，我一個都沒收」。
+		//
+		// 🔴 inkstone/Arcrun#180 驗收條件 2／3：判準從**路徑前綴**換成**內容**
+		//    （templateuntouched.go）。舊的 `TemplateOwns` 把 `system-dev/` 整棵當範本，
+		//    分不出同一棵樹底下的兩種東西——`system-dev/wiki/status.md`（安裝器鋪的空殼）
+		//    與 `system-dev/wiki/cards/*.md`（9 張真的卡）於是一起被丟掉。
+		//    現在逐檔比對：和快照逐字相同＝空殼，不收；其餘照常判斷。
 		if rel, rerr := filepath.Rel(root, p); rerr == nil {
 			relSlash := filepath.ToSlash(rel)
-			if TemplateOwns(relSlash) && !opts.Plan.OverridesTemplateOwned(relSlash) {
+			if TemplateUntouched(relSlash, p) {
+				s := statOf(relSlash)
+				s.total++
+				s.excluded++
+				if s.excludeWhy == "" {
+					s.excludeWhy = "這是安裝範本時鋪下來的空白樣板，你還沒在上面寫過東西"
+				}
 				return nil
 			}
 		}
 		ext := strings.ToLower(filepath.Ext(name))
-		// #44 線 A：走到這裡的都是「使用者自己的、看得見的」檔——上面三道
-		// （隱藏檔／SkipPaths 的機器檔／TemplateOwns 我們自己鋪的範本）刻意不算進分母，
-		// 理由與 scan.go 既有註解同一條：**我們自己鋪的東西不該佔用他的注意力**。
+		// #44 線 A：走到這裡的都是「使用者自己的、看得見的」檔（隱藏檔與 SkipPaths 的
+		// 機器檔刻意不算進分母：**我們自己寫的東西不該佔用他的注意力**）。
 		if rel, ok := relOf(); ok {
 			s := statOf(rel)
 			s.total++

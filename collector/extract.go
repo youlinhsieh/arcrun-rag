@@ -123,7 +123,22 @@ func snapshotCards(absRoot string) map[string]fileState {
 	for _, relDir := range []string{cardsRelDir, vaultCardsRelDir} {
 		base := filepath.Join(absRoot, filepath.FromSlash(relDir))
 		_ = filepath.Walk(base, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || filepath.Ext(p) != ".md" {
+			if err != nil {
+				return nil
+			}
+			// 🔴 inkstone/Arcrun#134（2026-08-28）：`.wiki/` 整棵跳過。
+			// 那是規範定的卡片正式落點，不是「位置不對的卡」——而 enforceCardMarks
+			// 會把這裡掃到的**新**檔搬去 cardRelFor（搬出隱藏目錄、加 arcrun- 前綴），
+			// 也就是把產物送回 Scan 看得見的地方，下一輪被當新原稿再萃一次。
+			// 829da02 的 `before[rel]` 只擋得住「本來就在的檔」，擋不住這一輪剛寫的卡。
+			// 與 tidy.go collectCardItems 同一個洞，兩支都補才堵得住。
+			if info.IsDir() {
+				if p != base && strings.HasPrefix(info.Name(), ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if filepath.Ext(p) != ".md" {
 				return nil
 			}
 			rel, rerr := filepath.Rel(absRoot, p)

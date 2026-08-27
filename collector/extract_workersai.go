@@ -63,7 +63,8 @@ var workersAIHTTP = &http.Client{Timeout: 90 * time.Second}
 //	{"error":{"message":"This model's maximum context length is 131000 tokens…
 //
 // ⇒ 兩個錯：①明知一定會失敗還是送出去（每次燒一份額度、拖住整個佇列）
-//           ②失敗的理由沒有翻成人話（#104 的紅線：不要讓他猜）。
+//
+//	②失敗的理由沒有翻成人話（#104 的紅線：不要讓他猜）。
 //
 // 300,000 這個數字怎麼來的：實測那份 401,526 位元組的檔，上游回報
 // 「prompt contains at least 122,xxx tokens」，而可用輸入是
@@ -201,6 +202,17 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 	// vault 落隱藏目錄，且**檔名一律帶 arcrun- 前綴**（第二輪：光換目錄擋不住撞名，
 	// 因為 Logseq 的頁名是 basename）。落地前先查目標存不存在、不無條件覆蓋（safeWriteCard）。
 	cardRel := cardRelFor(absRoot, pageName)
+	// 🔴 inkstone/Arcrun#180（2026-08-28）：**不准把萃取結果寫回原稿自己身上。**
+	// 舊制的落點是 `system-dev/wiki/cards/arcrun-<頁名>.md`，而 `MarkName` 是冪等的
+	// ⇒ 原稿本來就住在那裡、名字本來就帶前綴時（leo 的 9 張現成卡正是這一種），
+	// 算出來的目的地**就是原稿自己**。真寫下去＝原稿被自己的摘要蓋掉（safeWriteCard
+	// 會留一份 `.bak-*`，但下一輪內容又變了 ⇒ 每輪重萃、每輪燒一次額度）。
+	// 這條路只在**舊雲端**（回 `card` 而不是 `output`）才走得到，所以平常撞不到；
+	// #180 讓 `system-dev/` 收得到之後就撞得到了。誠實報錯，不要靜默略過。
+	if cardRel == filepath.ToSlash(relPath) {
+		return nil, fmt.Errorf("這份檔案本身就在卡片產物區、而且已經帶著我們的標記（%s）"+
+			"——整理它會蓋掉它自己。請把它移到別的資料夾，或更新你的知識庫到新版", relPath)
+	}
 	dest := filepath.Join(absRoot, filepath.FromSlash(cardRel))
 	if err := safeWriteCard(absRoot, dest, []byte(card)); err != nil {
 		return nil, err

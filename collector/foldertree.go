@@ -58,7 +58,22 @@ const (
 	//
 	// 🔴 **超過不准安靜地截掉**——`FolderTree.Truncated` 會被送上去、由畫面講出來
 	//（同 #104「排除規則要看得見」那條紅線：安靜地少講與講一個 0，對使用者是同一件事）。
-	MaxFolderTreeNodes = 300
+	//
+	// 🔴 2026-08-28（inkstone/Arcrun#180）從 300 提到 2000。leo 的規格是
+	// 「**雲端看到所有的 folder**」，而剪枝拿掉之後節點會變多——300 會讓「看得到全部」
+	// 在大資料夾上靜默失效（`Truncated` 雖然誠實，但那是在說「我做不到你要的事」）。
+	//
+	// **實測（本次改動後，同一台機器）**：
+	//
+	//	youlinhsieh-test1   12 個節點（地端 `find -type d` 非隱藏 12）
+	//	youlinhsieh-test2   13（地端 13）
+	//	pms                 53（地端 360——差額是 node_modules／dist／.gitignore 宣告的，
+	//	                    那幾種仍然剪枝，但節點與理由都在）
+	//	InkStoneCo          62（地端 14,923，同上）
+	//
+	// ⇒ 真實資料夾離 300 都還很遠；2000 是留給「一個沒有 .gitignore 的大筆記庫」的餘裕。
+	// 一棵樹在收端是一把 KV、整棵覆寫，2000 個節點約 400 KB，離 KV 的 25 MB 很遠。
+	MaxFolderTreeNodes = 2000
 
 	// folderTreeRetryDelay：整棵樹送失敗後，同一份內容多久才准再試。
 	// 理由同 inventory.go：積壓時每輪都有事件，沒有退避就是每 5 秒撞一次（t195 教訓）。
@@ -106,8 +121,18 @@ type FolderNode struct {
 	// ExcludedFiles＝收檔策略決定不收的（leo 講的「程式碼」多半落在這裡，見 ingestplan.go）。
 	ExcludedFiles int `json:"excluded_files"`
 
-	// Skipped＝這整棵子樹被剪掉了（沒有走進去），所以上面的數字**全部是 0 而且不是事實**。
-	// 🔴 畫面看到 Skipped 必須改講 SkipReason，不准顯示 `0/0`——那會是我們自己編的數字。
+	// Skipped＝**這一層的檔案這次一個都不收**。SkipReason 說得出為什麼。
+	//
+	// 🔴 2026-08-28（inkstone/Arcrun#180）語意收窄了一格，因為 leo 推翻了原本的做法：
+	// 以前 Skipped 同時代表「整棵沒走進去」⇒ 數字全是 0 而且不是事實 ⇒ **底下一個
+	// 子節點都不會生**。leo 的原話：「**所有的 system-dev 都可以展開，因為就算沒有
+	// 可萃的它也有下層**」「我要的就是雲端看到**所有的 folder** 像 tree 一樣呈現」。
+	// ⇒ 現在絕大多數 Skipped 節點是**走進去了、數字是真的、子節點也都在**，
+	//   只是這一層的檔不收（範本檔、非本次收檔範圍…）。
+	//
+	// 仍然有數字是 0 而且不是事實的那一種——真的沒走進去的（`node_modules` 這類，
+	// 見 IngestPlan.SkipsDirWhy 剩下的五條）。**分辨方法：那種節點沒有子節點。**
+	// 畫面看到 Skipped 一律改講 SkipReason，不要只顯示分子分母。
 	Skipped bool `json:"skipped,omitempty"`
 	// SkipReason＝一句話講給使用者聽的「為什麼整個沒收」（原文來自 IngestPlan.SkipsDirWhy）。
 	SkipReason string `json:"skip_reason,omitempty"`
@@ -162,6 +187,14 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 		n.TotalFiles = st.total
 		n.UnsupportedFiles = st.unsupported
 		n.ExcludedFiles = st.excluded
+		// #180：這一層走進去了、數字是真的，但**一個檔都沒收** ⇒ 照樣要講得出為什麼。
+		// 以前這種節點根本不存在（整棵被剪掉），現在存在了，就不能只給一個沒有解釋的
+		// `0 / 6`——那對使用者跟「安靜地少收」是同一件事。
+		// 🔴 子節點與真實數字都留著（leo 2026-08-28：「跳過的節點仍要展得開」）。
+		if st.total > 0 && st.excluded == st.total && st.excludeWhy != "" {
+			n.Skipped = true
+			n.SkipReason = st.excludeWhy
+		}
 	}
 
 	// 分子：manifest 現況。已送達且送上去之後沒再改過＝已同步，其餘＝還在路上。

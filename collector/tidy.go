@@ -119,7 +119,37 @@ func collectCardItems(absRoot string) []TidyItem {
 	for _, relDir := range cardDirsToScan() {
 		base := filepath.Join(absRoot, filepath.FromSlash(relDir))
 		_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				return nil
+			}
+			// 🔴 inkstone/Arcrun#134（2026-08-28 實測）：**隱藏目錄整棵跳過。**
+			//
+			// `<node>/.wiki/` 是規範定的卡片正式落點（machinemark.go 例外 ③），
+			// 而卡片產物區 `system-dev/wiki/cards/` 底下也會長出一個。少了這一行，
+			// 這支就把 `cards/.wiki/換柱.md`「歸位」成 `cards/arcrun-換柱.md`
+			// ——把**產物搬回 Scan 看得見的地方**，於是下一輪它被當成新原稿再萃一次，
+			// 產出「卡片的卡片」，再被搬出來⋯⋯迴圈不會停。
+			// 實測 `youlinhsieh-test1`：`cards/` 20 分鐘內從 9 個檔長到 55 個，
+			// 出現 `arcrun-換柱（arcrun-換柱）.md` 這種第三代檔名。
+			//
+			// `collectTemplateItems` 同一輪（f71e5a2）就寫了同一行同一個理由
+			// （「收容處自己就在 `.arcrun-rag/` 底下，不跳過的話第二次跑會把
+			// 搬過去的東西再搬一次」）——這支漏掉了。當時 `.wiki/` 還不存在
+			// （2026-08-15 才隨 ef5e6c5 進來），所以不是被否決，是沒人回來補。
+			//
+			// 📌 `inkstone/Arcrun#180` 從**另一面**撞到同一個洞，兩件事一起記著：
+			//   · #134 看到的是「產物被搬出去 ⇒ 下一輪再萃 ⇒ 卡萃卡」
+			//   · #180 看到的是「萃取端**讀不到自己一秒前寫的卡**」——
+			//     8 份文件全部 `讀卡片失敗：open …/.wiki/結晶管線.md: no such file`，
+			//     於是 `system-dev/wiki/cards/` 底下那 9 張現成的卡一張都上不了雲端。
+			//   ⇒ 同一行修好兩個症狀。
+			// ⚠️ 只跳**子**目錄（`p != base`）：`.arcrun-rag/wiki/cards` 是 base 自己，
+			//    #60 第三輪正是把卡搬進那裡——連 base 一起跳掉等於把上一輪的修復關掉。
+			//    `TestMigrateCardNames_收容處自己仍然掃得到` 守這一格。
+			if d.IsDir() {
+				if p != base && strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			name := d.Name()

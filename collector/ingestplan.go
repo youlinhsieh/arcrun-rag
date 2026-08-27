@@ -160,15 +160,30 @@ var toolOwnedFileNames = map[string]bool{
 	"Gemfile.lock": true, "poetry.lock": true, "pnpm-workspace.yaml": true,
 }
 
-// templateOwnedDirNames＝system-dev-template 鋪出來的產物區，任何深度都不當原稿
-// （daemon-beta task 2，2026-08-06，原始出處 commit b4fee43）。
+// 🔴 這裡以前有第四張表：`templateOwnedDirNames = {"system-dev": true}`
+// ——「目錄名等於 system-dev ⇒ 任何深度、所有模式，整棵剪掉」。
+// **inkstone/Arcrun#180（leo 2026-08-28）把它拿掉了，但不是放行，是換成分辨。**
 //
-// 🔴 這一條以前是 direct.go 自己手捏的第二張表（`SkipDirNames{"system-dev": true}`），
-// 而 #104 的排除清單在這裡——**兩張表分居兩處，於是 2026-08-16 讀源碼的人只看到其中一張，
-// 把「清單根本沒接上」當成了真兇**（實際上兩張都有接上，見 direct.go 的 `Plan: plan`）。
-// 收成同一個地方，就不會再有第二張表可以漏看。
-// curated-wiki 模式要收的正是 `system-dev/wiki` ⇒ 那條路由 onPathTo 放行。
-var templateOwnedDirNames = map[string]bool{"system-dev": true}
+// leo 的原話：「**cards 在 system-dev 下，wiki 就在裡面，所以不允許跳過它**，
+// 而且**所有的 system-dev 都可以展開，因為就算沒有可萃的它也有下層**。」
+//
+// 實據（`~/Desktop/youlinhsieh-test1`）：
+//
+//	system-dev/wiki/        ← 6 個範本空殼（Jul 28 同一秒鋪下來的）
+//	system-dev/wiki/cards/  ← 9 張真的卡（火星座標／Leo-Hsieh-填答／小果被AFTEE詐貸…）
+//
+// 一張名字表沒有辦法分辨這兩層——它只看得到「這個目錄叫 system-dev」，
+// 於是把空殼和真內容一起丟掉，而且**連底下有哪些子資料夾都沒生出來**
+// （地端 find 有 13 個目錄，雲端的樹只有 3 個節點）。
+//
+// 換掉的是問題本身：
+//
+//	舊：這個目錄叫什麼名字？                      ⇒ 整棵剪掉
+//	新：這一個檔，和安裝器鋪下去的原版一不一樣？   ⇒ 逐檔決定（templateuntouched.go）
+//
+// 空殼與原版逐字相同 ⇒ 照舊不收（紅線①：不准變成放行）；
+// 使用者寫過、或安裝器根本沒鋪過的檔（那 9 張卡）⇒ 收。
+// 而目錄一律照走 ⇒ 樹長得出來（紅線②：展開 ≠ 收檔）。
 
 // projectManifestFiles＝「有人在這一層跑建置工具」的佐證檔。
 //
@@ -463,13 +478,23 @@ func dirQualifiesAsAutoDoc(absDir string) bool {
 
 // SkipsDir 回答「走訪時要不要整棵跳過這個目錄」。relSlash 是相對監看根的路徑。
 //
-// 三類跳過，全模式適用：
-//  1. noise（依賴／建置產物／範本）——名字判準，見 noiseDirNames
-//  2. linked worktree——`.git` 是檔案。#104 實據裡的 `.claude/worktrees/…` 與
-//     `products/arcrun-rag-wt60ship` 全是這一種：主 repo 的第二份簽出，收了就是重複
-//  3. 巢狀 repo（自己有 `.git` 的子目錄）——那是別的專案，見 otherWikiDirs 的說明
+// 🔴 **「不走進去」與「不收這裡的檔」是兩件事**（inkstone/Arcrun#180 紅線②，
+// leo 2026-08-28：「所有的 system-dev 都可以展開，**因為就算沒有可萃的它也有下層**」）。
+// 這支只回答前者，而且**只剩「走進去也沒有意義」的那幾種**：
 //
-// 再加上模式限定的：curated-wiki 只走那一份 wiki 的路；docs-only 只走文件目錄的路。
+//  1. 使用者自己宣告不要的（`.gitignore`）
+//  2. 工具產生的（別人的套件、快取、建置產物）——名字本身就不是人話
+//  3. 泛用名的建置目錄（旁邊擺著產生它的專案檔才算）
+//  4. linked worktree——同一個 repo 的第二份簽出，整棵是重複的
+//  5. 巢狀 repo——那是另一個獨立專案，要收請自己加進看守清單
+//
+// 這五種每一種都是「裡面長什麼樣不必知道」，剪掉不會讓使用者少看到自己的東西
+// （而且 `node_modules` 這種走進去就是幾萬個節點，畫面反而看不了）。
+//
+// **拿掉的是「收檔範圍」那幾條**：以前 curated-wiki 只走那份 wiki 的路、docs-only 只走
+// 文件區、範本目錄整棵剪掉——那三條講的是「要不要**收**」，卻長在剪枝上，
+// 於是樹在那一節就斷了（實測：地端 13 個目錄，雲端的樹只有 3 個節點）。
+// 它們搬去 CollectsDirWhy，只影響收檔，不影響走訪。
 // （隱藏目錄由 Scan 自己擋，那條規則比本檔更早存在，不搬過來。）
 func (p IngestPlan) SkipsDir(relSlash, absPath string) bool {
 	skip, _ := p.SkipsDirWhy(relSlash, absPath)
@@ -496,10 +521,6 @@ func (p IngestPlan) SkipsDirWhy(relSlash, absPath string) (bool, string) {
 	if ambiguousBuildDirNames[name] && looksGenerated(absPath) {
 		return true, "這是建置工具產生的目錄（旁邊就是產生它的專案檔）"
 	}
-	// ④ template 鋪出來的產物區（任何深度）。curated-wiki 要收的那條路例外。
-	if templateOwnedDirNames[name] && !(p.Mode == IngestCuratedWiki && onPathTo(relSlash, p.WikiRelDir)) {
-		return true, "這是開發範本鋪出來的目錄，不是你的知識"
-	}
 	if IsLinkedWorktree(absPath) {
 		return true, "這是同一個專案的第二份簽出（git worktree），內容與主資料夾重複"
 	}
@@ -507,21 +528,31 @@ func (p IngestPlan) SkipsDirWhy(relSlash, absPath string) (bool, string) {
 	if IsRepoRoot(absPath) {
 		return true, "這是另一個獨立的專案，要收請把它自己加進看守清單"
 	}
+	return false, ""
+}
+
+// CollectsDirWhy 回答「這一層的檔案，這次收不收」——**走訪照走，只影響收檔**。
+//
+// 回 (false, 理由) ＝ 這一層的檔不收，理由講給使用者聽；(true, "") ＝ 照收檔規則走。
+//
+// 這裡裝的正是從剪枝搬過來的那幾條收檔範圍：curated-wiki 只讀那份整理好的 wiki、
+// docs-only 只讀文件區。**它們是好的判斷，錯的只是它們以前長在剪枝上**
+// ——把「不收」實作成「不走進去」，代價是使用者連自己有哪些子資料夾都看不到。
+func (p IngestPlan) CollectsDirWhy(relSlash string) (bool, string) {
 	switch p.Mode {
 	case IngestCuratedWiki:
-		// 只有「通往那份 wiki 的路」與「那份 wiki 底下」要走。
 		if !onPathTo(relSlash, p.WikiRelDir) {
-			return true, "這次只讀你整理好的 " + p.WikiRelDir
+			return false, "這次只讀你整理好的 " + p.WikiRelDir
 		}
 	case IngestDocsOnly:
 		for _, d := range p.DocRelDirs {
 			if onPathTo(relSlash, d) {
-				return false, ""
+				return true, ""
 			}
 		}
-		return true, "這是一個開發專案，這次只讀文件區，不讀程式碼"
+		return false, "這是一個開發專案，這次只讀文件區，不讀程式碼"
 	}
-	return false, ""
+	return true, ""
 }
 
 // KeepsFile 回答「這個檔要不要收」。relSlash 是相對監看根的路徑。
@@ -537,6 +568,56 @@ func (p IngestPlan) KeepsFile(relSlash string) bool {
 	}
 	// 機器產生的鎖定檔不是知識（見 toolOwnedFileNames）。
 	if toolOwnedFileNames[filepath.Base(relSlash)] {
+		return false
+	}
+	// 🔴 inkstone/Arcrun#134（2026-08-28 實測）：**我們自己產的卡不是原稿。**
+	//
+	// curated-wiki 模式收的是「他親手整理的 `system-dev/wiki/`」，而那個目錄底下
+	// 同時住著 daemon 上一版寫進去的卡（`cards/arcrun-*.md`，帶 MachineMark）。
+	// 少了這一問，daemon 會把自己 8/4 產的卡當成新原稿再萃一次，得到「卡片的卡片」
+	// ——實測 `youlinhsieh-test1` 一輪長出 10 份第二代文件卡（`arcrun-換柱`、
+	// `arcrun-官架子`…），而它們又會變成第三代的原稿。
+	//
+	// 判準用 IsMachineOwnedRel 而不是「在不在某個目錄」：那支是規約的完整判準
+	// （帶 MachineMark 前綴 ∪ 路徑上有 `.arcrun-rag/` 或 `.wiki/`），
+	// 而使用者自己寫的卡不帶前綴 ⇒ 照收不誤，curated-wiki 的規格（#104 第二層，
+	// 「那份 wiki 是他寫的，正是他要我們讀的」）不受影響。
+	if InMachineOwnedDir(relSlash) {
+		return false
+	}
+	// 🔴 inkstone/Arcrun#180（2026-08-28）把上面那一問**收窄成只在 curated-wiki 生效**，
+	// 因為 #134 與 #180 的迴歸網在同一個路徑上要求相反的答案：
+	//
+	//	#134 cardloop_test.go：`system-dev/wiki/cards/arcrun-換柱.md`        **不准收**
+	//	#180 template_not_knowledge_test.go：`system-dev/wiki/cards/arcrun-火星座標_短片劇本_v1.md` **必須收**
+	//
+	// 同一個目錄、同一個前綴 ⇒ **靠名字分不開**，實測 #151 併入後四種模式全部回 false，
+	// leo 的那 9 張卡一張都收不到（而他 08-14 的原話是「這些庫都早就萃好了⋯⋯直接 ingest」，
+	// #180 票上第 3 條驗收就是「那 9 張卡的內容進得了雲端」）。
+	//
+	// 收窄的依據是 #134 自己寫下的理由——它整段講的是 curated-wiki：
+	// 「curated-wiki 模式收的是『他親手整理的 system-dev/wiki/』，而那個目錄底下
+	//   同時住著 daemon 上一版寫進去的卡」。**接一個開發 repo 時那個重疊是結構性的**
+	//（`cardsRelDir` 就等於 `system-dev/wiki/cards`）⇒ 該擋。
+	// 一般資料夾／筆記庫（mode=all）沒有那個結構性重疊，而 leo 對這一種明確表過態。
+	//
+	// 🔴 **這一格是我的假設，不是 leo 的裁決**：兩張票的驗收互斥，需要他選一邊。
+	//    假設寫在這裡與 PR／票上，錯了打回即可（`inkstone/Arcrun#180`）。
+	// 迴圈安不安全：#134 三個環裡真正關掉迴圈的是 tidy／snapshotCards 那兩個
+	//（產物只落 `.wiki/`，上面那一問就擋得住）。實測 4 輪 mode=all 收這 9 張卡，
+	// `system-dev/wiki/cards/` 從頭到尾維持 9 個檔、沒有第二代。
+	//
+	// 🔴 第二格收窄：**再加一問「在不在卡片產物區」**。
+	// `IsMarked` 只看 basename 前綴，而 `arcrun-` 是這個專案的人也會用的命名習慣——
+	// 實測 leo 的 `youlinhsieh-test1` **根層**就有三個他自己寫的檔中招：
+	//	`arcrun-1457驗收-20260827.md`／`arcrun-md-test.md`／
+	//	`arcrun-複驗用-請勿刪-20260827c.md`（檔名裡就寫著「請勿刪」）
+	// 對照組實跑（#151 原樣、dry-run）：這三個連同那 9 張卡共 **12 個檔被排進「下架」**
+	// ——不是不收而已，是**把雲端已經有的內容撤掉**。
+	// #134 要擋的是「daemon 寫在他 wiki 裡的卡」，那些卡一律住在卡片產物區
+	//（`system-dev/wiki/cards/`／`.arcrun-rag/wiki/cards/`，`cardRelFor` 的落點），
+	// 所以多這一問不會放過任何一個它要擋的東西，卻救回使用者自己命名的檔。
+	if p.Mode == IngestCuratedWiki && IsMarked(filepath.Base(relSlash)) && isUnderCardDir(relSlash) {
 		return false
 	}
 	switch p.Mode {
