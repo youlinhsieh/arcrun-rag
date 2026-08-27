@@ -51,6 +51,46 @@ import (
 // （選型實測 llama-4-scout 約 2.4s，但長文＋冷啟動要留餘裕。）
 var workersAIHTTP = &http.Client{Timeout: 90 * time.Second}
 
+// maxWorkersAIExtractBytes＝送進雲端萃取的純文字上限（位元組）。
+//
+// 🔴 為什麼要有這道閘（2026-08-26 實測 `InkStoneCo`，非推測）：
+// 這條路沒有任何長度判斷——整份原稿原封不動塞進 prompt。leo 的
+// `system-dev/wiki/mistakes.md`（562 KB）、`status.md`（401 KB）、
+// `status-archive-2026-08.md`（511 KB）因此每一輪都撞同一面牆，
+// 而使用者看到的是這串**沒有人讀得懂的東西**：
+//
+//	本地萃取失敗：雲端萃取失敗（HTTP 502）：Workers AI 執行失敗：8007:
+//	{"error":{"message":"This model's maximum context length is 131000 tokens…
+//
+// ⇒ 兩個錯：①明知一定會失敗還是送出去（每次燒一份額度、拖住整個佇列）
+//           ②失敗的理由沒有翻成人話（#104 的紅線：不要讓他猜）。
+//
+// 300,000 這個數字怎麼來的：實測那份 401,526 位元組的檔，上游回報
+// 「prompt contains at least 122,xxx tokens」，而可用輸入是
+// 131,000 − 8,192(輸出) ≈ 122,800 ⇒ 中文原稿約 3.3 位元組/token。
+// 300 KB ≈ 9 萬 token，留了三成餘裕給提示詞本身與英數混排的變異。
+//
+// ⚠️ 這個上限只綁**這條路**（雲端 llama-4-scout 的 131k 視窗）。
+// gemma 路走 Gemini、視窗大一個數量級，不受此限——判準跟著模型走，
+// 不做成全域常數，免得換模型時有人以為它是產品規格。
+const maxWorkersAIExtractBytes = 300_000
+
+// tooBigForWorkersAI 回傳「這份原稿太大，這條路讀不完」的人話理由；
+// 沒超過回空字串。
+//
+// 🔴 訊息是產品文案不是 debug 字串：要講**多大**、**為什麼不收**、**他能做什麼**，
+// 而且不准出現狀態碼、模型名或 token 這種只有工程師看得懂的詞。
+func tooBigForWorkersAI(srcText, relPath string) string {
+	if len(srcText) <= maxWorkersAIExtractBytes {
+		return ""
+	}
+	// 中文一個字約 3 位元組——換算成「字數」才是使用者對得上的單位。
+	wan := len(srcText) / 3 / 10000
+	return fmt.Sprintf(
+		"這份檔太大了（約 %d 萬字），雲端的整理模型一次讀不完，所以這次沒有收它。"+
+			"把它拆成幾份小一點的檔就會自動收進來。", wan)
+}
+
 // ExtractWithWorkersAI 讀原稿 → 送自己雲端的 /portal/daemon/extract 萃卡 → 卡片落地。
 // cypherURL/apiKey 用的是 daemon 既有的連線憑證（送卡片上雲時同一把，見 direct.go）。
 // 回傳產出的卡片相對路徑（單檔一卡），與 ExtractWithGemma 契約一致。
@@ -72,6 +112,12 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string) ([]string,
 	srcText, err := ConvertToText(relPath, raw)
 	if err != nil {
 		return nil, fmt.Errorf("轉檔失敗（%s）：%w", relPath, err)
+	}
+
+	// 🔴 明知送出去一定會失敗，就不要送（見 maxWorkersAIExtractBytes）。
+	// 早一步擋下＝不燒額度、不占佇列，而且使用者看到的是人話不是上游錯誤碼。
+	if why := tooBigForWorkersAI(srcText, relPath); why != "" {
+		return nil, fmt.Errorf("%s", why)
 	}
 
 	pageName := pageNameOf(relPath)

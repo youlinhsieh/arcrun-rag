@@ -140,10 +140,15 @@ config:
     headers:
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
+  # 🔴 limit=100 不是 500：`http_request` 零件讀不回超過 64 KiB 的回應（緩衝區寫死
+  # `make([]byte, 65536)`），越線整顆 WASM trap 成 `unreachable`，這個節點一失敗
+  # 後面全部不執行。而這條撈的是**全租戶**三元組（KBDB 沒有按來源過濾的參數）⇒
+  # 大小跟著租戶長大、遲早越線。分界線與算術見 `rag-ingest-card.local.yaml`
+  # 的 `list_old_triplets`（`inkstone/arcrun-rag#104`，2026-08-27 實測）。
   list_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500"
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"

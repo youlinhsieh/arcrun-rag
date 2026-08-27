@@ -11,7 +11,7 @@
       "fetch_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}",
+        "url": "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}&limit=100",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -282,7 +282,7 @@
       "list_old_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500",
+        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -543,7 +543,7 @@
       "list_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500",
+        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"

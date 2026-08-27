@@ -521,9 +521,24 @@ func (c *DirectConfig) postJSON(url string, body any) (int, string, error) {
 		return 0, "", err
 	}
 	defer resp.Body.Close()
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	// 🔴 讀 64KB 而不是 1KB：觸發端點的回應是一層外殼包著工作流的輸出，
+	// 而**失敗的證據住在殼裡面**（見 triggeroutcome.go）。1KB 會把 JSON 切斷 ⇒
+	// 永遠解析不了 ⇒ 每一次失敗都被讀成「看不出來」⇒ 下面那道閘等於不存在。
+	full, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	snippet := full
+	if len(snippet) > 1024 {
+		snippet = snippet[:1024]
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.StatusCode, string(snippet), fmt.Errorf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	// 🔴 2xx 只證明「請求送到了」，不證明「東西寫進知識庫了」。
+	// named-webhook 觸發成功一律回 200，工作流內部失敗藏在 body 裡
+	//（2026-08-26 實測 `InkStoneCo`：26 份蓋了「已送達」章，雲端只有 4 份）。
+	// 判斷放在這裡而不是各呼叫端：**「忘了接」這個失敗模式不該存在**
+	//（同 ingestplan.go 把兩張排除表收成一張的理由）。
+	if msg := webhookFailure(string(full)); msg != "" {
+		return resp.StatusCode, string(snippet), errors.New(msg)
 	}
 	return resp.StatusCode, string(snippet), nil
 }

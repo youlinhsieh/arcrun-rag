@@ -54,10 +54,37 @@ config:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
+  # 🔴 limit 為什麼是 100 不是 500（`inkstone/arcrun-rag#104`，2026-08-27 在 youlin 逐格量出來的）
+  #
+  # `http_request` 零件**讀不回超過 64 KiB 的回應**：它的輸出緩衝區寫死
+  # `make([]byte, 65536)`（`matrix/arcrun/registry/components/http_request/main.go:88`）。
+  # 越線就整顆 WASM trap，執行器把它記成
+  #   {"success":false,"status":500,"error":"{\"success\":false,\"error\":\"unreachable\"}"}
+  #
+  # 而這條是本工作流唯一「回應大小跟著整個租戶長大」的請求——它撈的是**全租戶**三元組
+  # （KBDB 這條路由沒有任何按來源／頁名過濾的參數）⇒ 遲早越線，而且是一去不回：
+  # 這個節點一失敗，`ON_SUCCESS` 就不往下走，parse_card／post_block 全都不執行
+  # ⇒ **整份卡從此寫不進知識庫，而觸發端點照樣回 HTTP 200。**
+  #
+  # 分界線（實測，不是推估）：
+  #   limit=170 → 62,297 B ✅   limit=180 → 65,450 B ✅
+  #   limit=181 → 65,797 B ❌   limit=182 → 66,106 B ❌     ⇒ 分界＝65,536＝64 KiB
+  # 當時 youlin 有 182 條三元組 ⇒ **剛好越線**，所以「某一天之後每張卡都寫不進去」。
+  #
+  # 100 的算術：實測單筆三元組 avg 381 B／max 497 B（n=182）
+  #   · 實測 100 筆 ＝ 42,446 B（額度的 65%）——這個值下整條圖跑通、卡片真的落地
+  #   · 保守估：單筆就算漲到 600 B，100 筆也只有 60,000 B，仍在線內
+  #
+  # ⚠️ 這是止血不是治本，兩件事都還欠著：
+  #   ① 治本在零件：超過 64 KiB 該誠實回報「太大」，不該 trap（Arcrun 核心，B 類）
+  #   ② 這個節點本來就問錯問題——它只需要「這一份的三元組」卻撈全租戶。
+  #      KBDB `/records/by-template/:template` 沒有 slot 值過濾 ⇒ 沒有伺服器端的正解。
+  #      在補上過濾之前覆蓋率本來就不完整（500 在 4,381 條的實例上也只有 11%）；
+  #      少收的代價是「舊三元組沒清掉＝重複」，比「整份卡寫不進去」輕得多。
   list_old_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=500"
+    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"

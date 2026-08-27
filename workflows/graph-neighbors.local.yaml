@@ -22,7 +22,11 @@ config:
   fetch_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}"
+    # limit=100 是**寫出來的現況**不是新上限：KBDB 這條路由不帶 limit 時預設就是 100
+    # （`kbdb/src/routes/records.ts` intParam fallback）。寫明的理由是 64 KiB 天花板——
+    # `http_request` 零件超過就 trap 成 `unreachable`，而「靠對方的預設值剛好安全」
+    # 是下一個人改預設值時才會炸的那種安全（`inkstone/arcrun-rag#104`，2026-08-27）。
+    url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}&limit=100"
     headers:
       Accept: "application/json"
       # 🔴 t195（2026-08-05）：與收卡端同一個病——D36（07-29）把全體改走 credential，
