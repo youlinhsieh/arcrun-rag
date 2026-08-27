@@ -296,10 +296,25 @@ func (gate *callGate) keepTalking() {
 // blocked 回「這一輪已經不打這個帳號了」的理由；空＝可以打。
 func (gate *callGate) blocked() string { return gate.skip }
 
+// traceCalls＝把每一發的「哪件事／打誰／花了多久」印到 stderr（`ARCRUN_TRACE=1` 開）。
+//
+// 🔴 為什麼要留這個：2026-08-28 第一次修完之後，端到端症狀還在，而現場能拿到的只有
+// 一張 SIGQUIT 堆疊——堆疊只說得出「此刻卡在哪一發」，**說不出「這一輪的時間花到哪去了」**。
+// 兩個人為此各自推測了一輪。有這一行就不必推測：跑一次，時間分佈直接列出來。
+var traceCalls = os.Getenv("ARCRUN_TRACE") != ""
+
+func (gate *callGate) trace(outcome string) {
+	if !traceCalls {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[trace] %7.1fs  %-22s %-8s %s\n",
+		time.Since(gate.started).Seconds(), gate.step.Name, outcome, gate.host)
+}
+
 // release 停掉播報並放掉 context。**一定要 defer**：context 活到呼叫端讀完回應
 // 之後才釋放，所以不能在讀 body 之前呼叫。
 func (gate *callGate) release() {
-	gate.once.Do(func() { close(gate.stop) })
+	gate.once.Do(func() { close(gate.stop); gate.trace("done") })
 	gate.cancel()
 }
 

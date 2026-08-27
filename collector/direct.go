@@ -1482,6 +1482,29 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 
 	now := runNow.Unix()
 
+	// 🔴 `inkstone/arcrun-rag#153` 第二輪：**樹算出來就立刻落地本機，排在所有雲端呼叫之前。**
+	//
+	// 為什麼非搬到這裡不可（2026-08-28 用 `ARCRUN_TRACE=1` 量出來的，不是推測）：
+	// 對一個**健康**的雲端實例，每一發呼叫實測 24〜33 秒
+	//（資料夾總覽 26.3s／目錄索引 24.0・24.1・23.5s／送出一份筆記 33.2・44.6s）。
+	// 一個 12 層、10 個檔的資料夾，一輪就是十幾分鐘；leo 真正的設定是三個帳號、
+	// 好幾千個檔，一輪是好幾小時。**沒有任何一發超過 300 秒，所以逾時與斷路器都不會動**
+	// ——這不是卡住，是這一輪還沒輪到寫它。
+	//
+	// 而這棵樹是**純本機、秒級**算出來的（就在上面那次 Scan 的產物上），
+	// 它沒有理由排在十幾分鐘的雲端佇列後面。搬到這裡之後，使用者的資料夾結構
+	// 在開跑幾秒內就是對的，即使這一輪還要再跑一小時。
+	//
+	// 內容一個位元都沒變：BuildFolderTree 吃的是 payload.DirStats／m.Entries／
+	// payload.AllExcludedDirs／plan，而從 Scan() 到這裡之間**沒有任何東西動過 m.Entries**
+	//（動它的是下面「removed 暫時放回」那段，本來就在原位置之後）。
+	// 送上雲端那一發（syncFolderTree）**維持在原來的位置**，用的就是這一棵。
+	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
+		payload.AllExcludedDirs, plan, runNow)
+	if !dryRun {
+		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
+	}
+
 	// 結構先行（InkStoneCo#43，2026-08-15）：掃描一結束（純本機、免費、秒級）就先把
 	// 「這個資料夾有哪些檔案／最近改了什麼」送上知識庫，**不等 LLM 萃取、不受額度影響**
 	// ——走 rag_ingest_card（零 LLM 的機械收口），所以刻意放在：
@@ -1517,8 +1540,6 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 再加第四個**只屬於它**的：**空資料夾一個事件都不會有**（arcrun-rag#106 的情境本身），
 	// 所以它不能被任何「有事件才做」的閘擋住——分子分母都由現況算出，靜止時
 	// 內容雜湊自然擋住重送，不需要事件當第二道閘。
-	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
-		payload.AllExcludedDirs, plan, runNow)
 	if treeRes := syncFolderTree(cfg, absRoot, m, tree, dryRun, runNow); treeRes != nil {
 		results = append(results, *treeRes)
 		if treeRes.Status != "planned" {

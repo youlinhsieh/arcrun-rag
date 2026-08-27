@@ -478,3 +478,38 @@ func MergeFolderTreeStore(prev FolderTreeStore, fresh map[string]FolderTree, kno
 	}
 	return out
 }
+
+// PublishFolderTreeNow 把**這一個根**剛算好的樹立刻寫進本機快照，不等整輪跑完。
+//
+// 🔴 為什麼要有它（`inkstone/arcrun-rag#153` 第二輪，2026-08-28 實測）：
+// 一輪同步是**一條線**走完的，而對一個健康的雲端實例，每一發呼叫實測要 24〜33 秒
+// （`ARCRUN_TRACE=1` 量的：資料夾總覽 26.3s、目錄索引 24.0/24.1/23.5s、
+//  送出一份筆記 33.2/44.6s）。一個 12 層、10 個檔的資料夾，一輪就是**十幾分鐘**；
+// leo 真正的設定是三個帳號、好幾千個檔，一輪是**好幾小時**。
+//
+// 而 `folder-trees.json` 從前**只在整輪的最後**才落地
+// ⇒ 使用者看到的是「小幫手開著、沒有錯誤、什麼都不動，資料夾結構永遠停在上一版」。
+// **那不是卡住，是這一輪還沒輪到寫它。**
+//
+// 樹本身是**純本機、秒級**算出來的（BuildFolderTree 在掃描一結束就有答案），
+// 它沒有任何理由要排在十幾分鐘的雲端佇列後面等。
+//
+// 與收工時那次 SaveFolderTreeStore 的分工：
+//   - 這裡：只**更新這一個根**，不刪任何東西（還不知道整輪看守哪些根）。
+//   - 收工：跑完整的 MergeFolderTreeStore，該刪的（已不看守的根）在那時才刪。
+// 兩次都是冪等的覆蓋，先寫一次不會讓收工那次結果不同。
+//
+// 失敗一律吞掉：快照是給畫面看的，寫不進去不該擋住同步本體。
+func PublishFolderTreeNow(manifestPath, root string, tree FolderTree, now time.Time) {
+	if manifestPath == "" || root == "" || len(tree.Nodes) == 0 {
+		return // 沒算出東西就別覆蓋上一輪的好資料（同 MergeFolderTreeStore 規則②）
+	}
+	path := FolderTreeStorePath(manifestPath)
+	store, _ := LoadFolderTreeStore(path) // 讀不到＝沒有上一輪，零值可用
+	if store.Trees == nil {
+		store.Trees = map[string]FolderTree{}
+	}
+	store.Trees[root] = tree
+	store.UpdatedAt = now.UTC().Format(time.RFC3339)
+	_ = SaveFolderTreeStore(path, store)
+}
