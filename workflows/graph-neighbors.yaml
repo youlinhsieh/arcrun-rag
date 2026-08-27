@@ -1,13 +1,13 @@
 name: graph_neighbors
 description: >
-  同步查詢：給一個節點 → 從 KBDB triplet 記錄建鄰接表 → 記憶體 BFS 找 N 跳鄰居 → 同步回鄰居清單。
-  這是「查詢面工作流」示範：用同步查詢 trigger（GET /q/:ns/graph_neighbors 或
-  POST /webhooks/named/:name/query），把 workflow 最終節點輸出直接當 HTTP response 拿回，
-  取代 graph plugin 內建的 GET /graph/neighbors。對照 kbdb-graph-plugin graph-traverse.ts 的記憶體 BFS。
+  同步查詢：給一個節點 → 直接向 KBDB 的 /graph/neighbors/:node 端點要「這個節點的鄰居」→
+  同步回鄰居清單。這是「查詢面工作流」示範：查詢端點不必是框架寫死的 route，可以是一條
+  workflow.yaml。取代 graph plugin 內建的 GET /graph/neighbors，也取代本檔 2026-08-27 之前
+  「撈全表三元組 → 記憶體 BFS」的舊做法（見下方 inkstone/Arcrun#168 一段）。
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⚠️ 先改成你自己的 KBDB URL（self-hosted 必看）
-#   fetch_triplets 的 base URL 走 {{input.kbdb_base}} 參數（每次呼叫帶），**沒有寫死官方庫**。
+#   fetch_neighbors 的 base URL 走 {{input.kbdb_base}} 參數（每次呼叫帶），**沒有寫死官方庫**。
 #   照抄本示範時，把觸發參數 kbdb_base 換成你自己部署的 KBDB 對外 URL——
 #   抄了別人的值＝你的查詢與資料流向直接打進別人的庫（KBDB_BASE_URL fallback 同家族坑）。
 # ══════════════════════════════════════════════════════════════════════════════
@@ -21,131 +21,94 @@ description: >
 #      workers.dev URL 亦可直接帶。
 
 # ── 觸發（同步查詢 trigger，非 202）──
-#   GET  https://{你的-cypher-domain}/q/{namespace}/graph_neighbors?node=Arcrun&depth=2&template=graph_triplet&namespace={namespace}&kbdb_base=https://{你的-kbdb-domain}
+#   GET  https://{你的-cypher-domain}/q/{namespace}/graph_neighbors?node=Arcrun&depth=2&template=triplet&namespace={namespace}&kbdb_base=https://{你的-kbdb-domain}
 #   POST https://{你的-cypher-domain}/webhooks/named/graph_neighbors/query
 #        -H "X-Arcrun-API-Key: {namespace}"
-#        -d '{"node":"Arcrun","depth":2,"template":"graph_triplet","namespace":"{namespace}","kbdb_base":"https://{你的-kbdb-domain}"}'
-#   → 直接回 { success, start, depth, directed, neighbors:[...], count }（最終節點輸出本身）。
+#        -d '{"node":"Arcrun","depth":2,"template":"triplet","namespace":"{namespace}","kbdb_base":"https://{你的-kbdb-domain}"}'
+#   → 直接回最終節點輸出。⚠️ `code` 零件的原始輸出會多包一層 `{success, data:{...}}`，
+#     所以同步查詢端點拿到的是 `{success:true, data:{success,start,depth,directed,neighbors,edges,count}}`。
+#     portal 圖譜模式不受影響（`mapGraphWorkflowOutput` 本來就會剝這一層再讀 neighbors／edges）。
 #   （敏感輸入用 POST /query：GET /q/ 的 query string 會進各層 log，見 description.md。）
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 inkstone/Arcrun#168（2026-08-27）——為什麼把「撈全表 → 記憶體 BFS」整段拿掉
+#
+# 舊做法：fetch_triplets 打 GET /records/by-template/:template（`ORDER BY created_at DESC
+# LIMIT N`），把整批三元組塞進 code 節點做 BFS。**這條路只看得到「這個租戶最新的 N 筆」**
+# ⇒ 三元組越寫越多，越舊的實體越先被擠出視窗，跟它的內容對不對、標記對不對完全無關。
+#
+# 實測（youlin `yuga3bse`，2026-08-27，不是推論）：
+#   總筆數 226；`[[小果被AFTEE詐貸]]`（2026-07-28 收的）的三條三元組排名 99／100／101，
+#   剛好卡在 limit=100 的門檻上 ⇒ 同一分鐘內，今天寫的節點查得到 4 個鄰居、7 月底寫的查到 0 個。
+#
+# 🔴 **調大 limit 不是解，已被真資料證偽兩次**：226 筆打包成這支零件要吃的形狀是
+#   **68,387 bytes**，已超過 `http_request` 零件輸出緩衝區 65,536 的 cap（超過就 trap 成
+#   `unreachable`，見 `inkstone/arcrun-rag#104`）⇒ 調到 500 只會讓這支查詢自己壞掉，
+#   從「查不到舊資料」變成「整條查詢壞掉」。
+#
+# 修法：KBDB 新增 `GET /graph/neighbors/:node`（`kbdb/src/actions/graph-query.ts`，
+# `inkstone/Arcrun#172` 已併入 matrix/arcrun main）——**反過來從節點名直接查**，
+# 逐跳只查上一跳新發現的節點（走 `idx_entries_content` ＋既有 `idx_entries_rel_dst` 兩層索引）。
+# ⇒ 回應大小只跟**實際鄰居數量**成正比，不跟租戶三元組總數或資料新舊有任何關係。
+# ⇒ 這支 workflow 因此不再需要 `limit`，也不再需要在記憶體裡建鄰接表。
+# ══════════════════════════════════════════════════════════════════════════════
+
 flow:
-  - "input >> ON_SUCCESS >> fetch_triplets"
-  - "fetch_triplets >> ON_SUCCESS >> bfs_neighbors"
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> fetch_neighbors"
+  - "fetch_neighbors >> ON_SUCCESS >> parse_neighbors"
 
 config:
-  # 1) 撈本租戶的 triplet 記錄。triplet = base 萬用表的一個 template（graph plugin 寫入），
-  #    slots = subject / predicate / object。base 端點：GET /records/by-template/:template?owner_id=
-  #    回 { success, records:[{ record_id, values:{subject,predicate,object} }], count }。
-  #    ⚠️ template 名（此處 {{input.template}}，預設由呼叫者帶 graph_triplet）以實際部署的
-  #       kbdb-graph-plugin triplet template id 為準——上線前對一次。
+  # 0) 節點名進 URL **路徑**之前先 encodeURIComponent——與 rag_takedown_direct 的 prep
+  #    同一條既有慣例（`agent-memory §7` 實撞教訓）。卡片標題會出現 `#`／`?`／`%`／空白，
+  #    `#` 沒編碼就是 URL 片段起點 ⇒ 後半整段（含 query string）被截掉 ⇒ 症狀是「查不到」。
+  prep:
+    component: code
+    code: |
+      const node = String(input.node == null ? '' : input.node).trim();
+      if (!node) return { success: false, error: 'graph_neighbors 缺 node 參數' };
+      const d = parseInt(String(input.depth == null ? 1 : input.depth), 10);
+      const depth = Math.max(1, Math.min(Number.isFinite(d) && d > 0 ? d : 1, 10));
+      const template = String(input.template == null ? '' : input.template).trim() || 'triplet';
+      const directed = String(input.directed) === 'true' ? 'true' : 'false';
+      return { success: true, node: node, node_enc: encodeURIComponent(node),
+               depth: String(depth), template: encodeURIComponent(template), directed: directed };
+    input:
+      node: "{{input.node}}"
+      depth: "{{input.depth}}"
+      template: "{{input.template}}"
+      directed: "{{input.directed}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 1) 向 KBDB 要「這個節點的鄰居」。BFS 在 KBDB 端做完，這裡只是把結果拿回來。
+  #    回 { success, start, depth, directed, neighbors:[{node,predicate,from,depth}],
+  #         edges:[{subject,predicate,object}], count }。
+  #    ⚠️ template 名以實際部署的 triplet template id 為準（未帶時 KBDB 端預設 `triplet`）。
   #    ⚠️ base URL 由呼叫者帶（{{input.kbdb_base}}）——不寫死任何一家的庫（見檔頂警示）。
-  fetch_triplets:
+  fetch_neighbors:
     component: http_request
     method: GET
-    # limit=100 是**寫出來的現況**不是新上限：KBDB 這條路由不帶 limit 時預設就是 100
-    # （`kbdb/src/routes/records.ts` intParam fallback）。寫明的理由是 64 KiB 天花板——
-    # `http_request` 零件超過就 trap 成 `unreachable`，而「靠對方的預設值剛好安全」
-    # 是下一個人改預設值時才會炸的那種安全（`inkstone/arcrun-rag#104`，2026-08-27）。
-    #
-    # 🔴 別把這個數字調大（`inkstone/Arcrun#168`，2026-08-27 實測）：
-    #   有人在 168 建議「跟 canonical 範例一樣調到 500」，**這是錯的建議，已用真資料證偽**：
-    #   youlin（yuga3bse）當天 total=226 筆 triplet，實際打包成這支零件要吃的形狀
-    #   （{success, records:[{record_id, values}], count}）量出 68,387 bytes——
-    #   **已經超過 65,536 的 cap**。調到 500 只會讓這支查詢本身 trap 成 unreachable，
-    #   graph_neighbors 整條查詢從「查不到舊資料」變成「整條查詢壞掉」，比現狀更糟。
-    #   （226 筆比對：limit=100 實測約 30,259 bytes，46% 額度，安全。）
-    #   168 診斷的真病是**結構性**的：這條路由只給「這個租戶最新的 N 筆」，
-    #   triplet 越寫越多，舊資料就從「最新 N 筆」的窗口被擠出去——調大上限只是把
-    #   擠出去的時間點往後延，不是解法。真正的解法要嘛 KBDB 加「依節點過濾」的
-    #   伺服器端查詢（改 `kbdb/src/actions/record-crud.ts`，不在本 repo）、要嘛讓
-    #   portal 圖譜模式改走已經修好雙向比對的 `/map/select`（`kbdb/src/actions/
-    #   library-map.ts`，同樣不在本 repo）——兩者都是跨 repo 的架構決定，見 168 討論。
-    url: "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}&limit=100"
+    url: "{{input.kbdb_base}}/graph/neighbors/{{prep.data.node_enc}}?depth={{prep.data.depth}}&template={{prep.data.template}}&directed={{prep.data.directed}}&owner_id={{input.namespace}}"
     headers:
       Accept: "application/json"
 
-  # 2) ★ 記憶體 BFS（通用 code 零件，sandbox inline JS，無 LLM、無 fs/網路，stdin→stdout JSON）。
-  #    對照 kbdb-graph-plugin graph-traverse.ts:23-51 的記憶體 BFS：把 triplet 當有向邊
-  #    subject --predicate--> object 建鄰接表，從 start 逐跳擴張到 depth 上限，收集新訪節點當鄰居。
-  #    directed=false（預設）時把邊當雙向（無向圖鄰居）；directed=true 只走 subject→object。
-  bfs_neighbors:
+  # 2) 把 fetch_neighbors 的字串 body 解析成結構化 JSON——純局部整形
+  #    （07-thin-shell §3.5「code-node：非 call-api 的純計算」），不是業務邏輯。
+  parse_neighbors:
     component: code
     code: |
-      // graph_neighbors — 記憶體 BFS 找 N 跳鄰居（純函式、決定性、零 token）。
-      // input（由下方 input: 映射解析後注入）：
-      //   records[]  : triplet 記錄（{ values:{subject,predicate,object} } 或扁平 {subject,predicate,object}）
-      //   start      : 起點節點名（字串）
-      //   depth      : 最大跳數（字串或數字，來自 query string 時是字串）
-      //   directed   : "true" 只走 subject→object；否則當無向
-
-      const records = Array.isArray(input.records) ? input.records : [];
-      const start = String(input.start == null ? '' : input.start);
-      const maxDepth = Math.max(1, parseInt(String(input.depth == null ? 1 : input.depth), 10) || 1);
-      const directed = String(input.directed == null ? '' : input.directed) === 'true';
-
-      if (!start) {
-        return { success: false, error: 'graph_neighbors 缺 start（node）參數' };
+      // fetch_neighbors.data.body 是 KBDB /graph/neighbors/:node 回應的原始 JSON 字串。
+      let body = input.body;
+      if (body && typeof body === 'object') return body;
+      try {
+        return JSON.parse(String(body));
+      } catch (e) {
+        return { success: false, error: 'graph_neighbors: KBDB 回應不是合法 JSON：' + String(e) };
       }
-
-      // 建鄰接表：subject --predicate--> object。無向時同時加反向邊。
-      // 比對用正規化 key（NFKC＋小寫＋trim）：搜「rag」要能命中節點「RAG」；顯示一律用庫裡原名。
-      function norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }
-      const adj = new Map();
-      const display = new Map();
-      function addEdge(from, to, predicate) {
-        const fk = norm(from), tk = norm(to);
-        if (!display.has(fk)) display.set(fk, String(from).trim());
-        if (!display.has(tk)) display.set(tk, String(to).trim());
-        if (!adj.has(fk)) adj.set(fk, []);
-        adj.get(fk).push({ node: tk, predicate: predicate });
-      }
-      for (const r of records) {
-        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : r;
-        if (!v || typeof v !== 'object') continue;
-        const s = v.subject, p = v.predicate, o = v.object;
-        if (!s || !o) continue;
-        addEdge(s, o, p);
-        if (!directed) addEdge(o, s, p);
-      }
-
-      // BFS：一層一跳，收集首次訪到的節點當鄰居（記 depth / 來源 / 關係）。
-      const startKey = norm(start);
-      const resolvedStart = display.get(startKey) || start;
-      const visited = new Set([startKey]);
-      let frontier = [startKey];
-      const neighbors = [];
-      for (let d = 1; d <= maxDepth; d++) {
-        const next = [];
-        for (const cur of frontier) {
-          const outs = adj.get(cur) || [];
-          for (const e of outs) {
-            if (visited.has(e.node)) continue;
-            visited.add(e.node);
-            neighbors.push({ node: display.get(e.node) || e.node, predicate: e.predicate, from: display.get(cur) || cur, depth: d });
-            next.push(e.node);
-          }
-        }
-        frontier = next;
-        if (frontier.length === 0) break;
-      }
-
-      return {
-        success: true,
-        start: resolvedStart,   // 命中節點的庫內原名（搜 rag → RAG）
-        query: start,           // 呼叫者原始輸入
-        depth: maxDepth,
-        directed: directed,
-        neighbors: neighbors,
-        count: neighbors.length,
-      };
-    # input 映射：{{...}} 對 workflow context 展開後注入 code 沙箱的 `input` 變數。
-    # {{input.X}} 的 input = 上游 input 節點輸出（＝觸發 context）；{{fetch_triplets.data.records}}
-    # = http_request 回應 body 的 records 陣列（單一 ref pass-through 保留陣列型別）。
     input:
-      records: "{{fetch_triplets.data.records}}"
-      start: "{{input.node}}"
-      depth: "{{input.depth}}"
-      directed: "{{input.directed}}"
+      body: "{{fetch_neighbors.data.body}}"
     limits:
-      timeout_ms: 3000            # 純 CPU BFS，充裕
-      max_output_bytes: 2097152   # 鄰居清單上限 2 MiB（呼叫端同步查詢輸出也有 5 MiB 硬上限）
+      timeout_ms: 1000
+      max_output_bytes: 2097152

@@ -2,32 +2,44 @@
   {
     "file": "graph-neighbors.local.yaml",
     "name": "graph_neighbors",
-    "description": "同步查詢：從 KBDB triplet 記錄建鄰接表，記憶體 BFS 找 N 跳鄰居。 arcrun-rag 產品包版（零件走安裝時代入的 worker URL）。\n",
+    "description": "同步查詢：向 KBDB 的 /graph/neighbors/:node 端點要「這個節點的鄰居」，同步回鄰居清單。 arcrun-rag 產品包版（零件走安裝時代入的 worker URL）。\n",
     "flow": [
-      "input >> ON_SUCCESS >> fetch_triplets",
-      "fetch_triplets >> ON_SUCCESS >> bfs_neighbors"
+      "input >> ON_SUCCESS >> prep",
+      "prep >> ON_SUCCESS >> fetch_neighbors",
+      "fetch_neighbors >> ON_SUCCESS >> parse_neighbors"
     ],
     "config": {
-      "fetch_triplets": {
+      "prep": {
+        "component": "__CODE_URL__",
+        "code": "const node = String(input.node == null ? '' : input.node).trim();\nif (!node) return { success: false, error: 'graph_neighbors 缺 node 參數' };\nconst d = parseInt(String(input.depth == null ? 1 : input.depth), 10);\nconst depth = Math.max(1, Math.min(Number.isFinite(d) && d > 0 ? d : 1, 10));\nconst template = String(input.template == null ? '' : input.template).trim() || 'triplet';\nconst directed = String(input.directed) === 'true' ? 'true' : 'false';\nreturn { success: true, node: node, node_enc: encodeURIComponent(node),\n         depth: String(depth), template: encodeURIComponent(template), directed: directed };\n",
+        "input": {
+          "node": "{{input.node}}",
+          "depth": "{{input.depth}}",
+          "template": "{{input.template}}",
+          "directed": "{{input.directed}}"
+        },
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "fetch_neighbors": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "{{input.kbdb_base}}/records/by-template/{{input.template}}?owner_id={{input.namespace}}&limit=100",
+        "url": "__KBDB_BASE__/graph/neighbors/{{prep.data.node_enc}}?depth={{prep.data.depth}}&template={{prep.data.template}}&directed={{prep.data.directed}}&owner_id=__NAMESPACE__",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
         }
       },
-      "bfs_neighbors": {
+      "parse_neighbors": {
         "component": "__CODE_URL__",
-        "code": "let records = input.records;\nif (typeof records === 'string') { try { records = JSON.parse(records); } catch (e) { records = []; } }\nif (records && !Array.isArray(records) && Array.isArray(records.records)) records = records.records;\nif (!Array.isArray(records)) records = [];\nconst start = String(input.start == null ? '' : input.start);\nconst maxDepth = Math.max(1, parseInt(String(input.depth == null ? 1 : input.depth), 10) || 1);\nconst directed = String(input.directed == null ? '' : input.directed) === 'true';\nif (!start) return { success: false, error: 'graph_neighbors 缺 start（node）參數' };\n// 比對用正規化 key（NFKC＋小寫＋trim）：搜「rag」要能命中節點「RAG」；顯示一律用庫裡原名。\nfunction norm(s) { s = String(s).trim(); try { s = s.normalize('NFKC'); } catch (e) {} return s.toLowerCase(); }\nconst adj = new Map();\nconst display = new Map();\nfunction addEdge(from, to, predicate) {\n  const fk = norm(from), tk = norm(to);\n  if (!display.has(fk)) display.set(fk, String(from).trim());\n  if (!display.has(tk)) display.set(tk, String(to).trim());\n  if (!adj.has(fk)) adj.set(fk, []);\n  adj.get(fk).push({ node: tk, predicate: predicate });\n}\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : r;\n  if (!v || typeof v !== 'object') continue;\n  if (v.status === 'deprecated') continue;\n  const s = v.subject, p = v.predicate, o = v.object;\n  if (!s || !o) continue;\n  addEdge(s, o, p);\n  if (!directed) addEdge(o, s, p);\n}\nconst startKey = norm(start);\nconst resolvedStart = display.get(startKey) || start;\nconst visited = new Set([startKey]);\nlet frontier = [startKey];\nconst neighbors = [];\nfor (let d = 1; d <= maxDepth; d++) {\n  const next = [];\n  for (const cur of frontier) {\n    const outs = adj.get(cur) || [];\n    for (const e of outs) {\n      if (visited.has(e.node)) continue;\n      visited.add(e.node);\n      neighbors.push({ node: display.get(e.node) || e.node, predicate: e.predicate, from: display.get(cur) || cur, depth: d });\n      next.push(e.node);\n    }\n  }\n  frontier = next;\n  if (frontier.length === 0) break;\n}\nreturn { success: true, start: resolvedStart, query: start, depth: maxDepth, directed: directed, neighbors: neighbors, count: neighbors.length };\n",
+        "code": "let body = input.body;\nif (body && typeof body === 'object') return body;\ntry {\n  return JSON.parse(String(body));\n} catch (e) {\n  return { success: false, error: 'graph_neighbors: KBDB 回應不是合法 JSON：' + String(e) };\n}\n",
         "input": {
-          "records": "{{fetch_triplets.data.body}}",
-          "start": "{{input.node}}",
-          "depth": "{{input.depth}}",
-          "directed": "{{input.directed}}"
+          "body": "{{fetch_neighbors.data.body}}"
         },
         "limits": {
-          "timeout_ms": 3000,
+          "timeout_ms": 1000,
           "max_output_bytes": 2097152
         }
       }
@@ -47,27 +59,38 @@
           "label": "input"
         },
         {
-          "id": "fetch_triplets",
+          "id": "prep",
           "type": "Component",
-          "componentId": "fetch_triplets",
-          "label": "fetch_triplets"
+          "componentId": "prep",
+          "label": "prep"
         },
         {
-          "id": "bfs_neighbors",
+          "id": "fetch_neighbors",
           "type": "Component",
-          "componentId": "bfs_neighbors",
-          "label": "bfs_neighbors"
+          "componentId": "fetch_neighbors",
+          "label": "fetch_neighbors"
+        },
+        {
+          "id": "parse_neighbors",
+          "type": "Component",
+          "componentId": "parse_neighbors",
+          "label": "parse_neighbors"
         }
       ],
       "edges": [
         {
           "from": "input",
-          "to": "fetch_triplets",
+          "to": "prep",
           "type": "ON_SUCCESS"
         },
         {
-          "from": "fetch_triplets",
-          "to": "bfs_neighbors",
+          "from": "prep",
+          "to": "fetch_neighbors",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_neighbors",
+          "to": "parse_neighbors",
           "type": "ON_SUCCESS"
         }
       ]
