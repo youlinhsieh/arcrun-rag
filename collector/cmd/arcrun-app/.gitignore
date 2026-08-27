@@ -16,3 +16,17 @@ dist-msix/
 # Python 匯入快取（daemon-version.py 被 import 時產生）。可重現的產物，且綁 Python 版本
 # （檔名帶 cpython-314）⇒ 不進版控。2026-08-18 D95 第三輪：第一輪搬檔時誤把一顆帶了進來。
 __pycache__/
+
+# 🔴 `go build ./...` 在本目錄留下的執行檔（inkstone/arcrun-rag#158，2026-08-28）。
+#   Go 對「單一 main 套件」會把成品寫成**目錄名**，所以任何人在這裡跑一次 go build
+#   就會生出 `arcrun-app` 這顆 20 MB 的二進位。它一路被追蹤到 2026-08-28 為止。
+#
+#   為什麼非拿掉不可（實測，不是推論）：這顆檔案**在版本指紋的涵蓋範圍內**
+#   （`daemon-version.py` 的 `scan_source()` 走 `git ls-files -co --exclude-standard`）
+#   ⇒ 只是重編一次、一行原始碼都沒改，指紋就從 1325784830f592ff 變成 eba122f83317b67d
+#   ⇒ 出貨線的 `daemon-source-check` 判「0.18.46 打包之後，1 個檔案變動過」而擋下。
+#   **把編譯產物算進「原始碼指紋」，那個指紋就量不到它宣稱要量的東西。**
+#
+#   ⚠️ 錨在本目錄（開頭的 `/`）：不要寫成 `arcrun-app`，那會連子目錄裡同名的東西一起蓋掉。
+#   打包腳本要的產物在 `build/bin/`（早就 ignore），不是這一顆——三支腳本都沒引用它。
+/arcrun-app

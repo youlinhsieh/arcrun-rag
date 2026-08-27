@@ -1,1 +1,11 @@
 node_modules/
+
+# 🔴 `go build ./...` 在本目錄留下的執行檔（inkstone/arcrun-rag#158，2026-08-28）。
+#   同 `cmd/arcrun-app/arcrun-app` 的形狀：Go 把單一 main 套件的成品寫成**目錄名**，
+#   所以在 `collector/` 跑一次 go build 就生出一顆 8 MB 的 `collector`。
+#   它一路被追蹤到 2026-08-28，而且**算在版本指紋裡**——重編一次就讓指紋變動、
+#   出貨線的 `daemon-source-check` 判「打包之後源碼又動過」。
+#
+#   ⚠️ 錨在本目錄（開頭的 `/`）：`collector` 這個字在這棵樹底下太常見，不錨會誤傷。
+#   出貨要的執行檔由三支打包腳本產在 `cmd/arcrun-app/build/bin/`，不是這一顆。
+/collector
