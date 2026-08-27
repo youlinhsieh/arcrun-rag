@@ -187,10 +187,13 @@ func TestStallSaysWhichAccountWhichStepHowLong(t *testing.T) {
 	}
 	// 交給呼叫端的錯誤是產品文案：講哪件事、等多久、他會怎樣，不出現狀態碼／內部名詞。
 	msg := err.Error()
-	for _, want := range []string{stepRepairOrigin.Name, "沒有回應", "會自動恢復"} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("錯誤訊息少了「%s」：%s", want, msg)
-		}
+	if !strings.Contains(msg, stepRepairOrigin.Name) {
+		t.Fatalf("錯誤訊息沒講是哪件事：%s", msg)
+	}
+	// 🔴 不再寫死「會自動恢復」這幾個字——改用產生端與消費端**共用**的那個判準。
+	// 寫死字串正是第三輪的病：我改了措辭，兩邊就對不上了（見 explainsWhySkipped）。
+	if !explainsWhySkipped(msg) {
+		t.Fatalf("🔴 這句話不會被 status.json 收進失敗清單 ⇒ 畫面上會沒有原因：%s", msg)
 	}
 	for _, banned := range []string{"context deadline", "HTTP", "timeout", "Client.Timeout"} {
 		if strings.Contains(msg, banned) {
@@ -334,5 +337,91 @@ func TestGateAlwaysHasADeadlineEvenWithoutGuard(t *testing.T) {
 	}
 	if el := time.Since(start); el > 2*time.Second {
 		t.Fatalf("🔴 沒有 guard 就沒有上限了（等了 %v）", el)
+	}
+}
+
+// 🔴 慢但**成功**的雲端，不准被講成「沒有回應」，也不准害後面的檔被跳過。
+//
+// 這一條是 2026-08-28 第三輪的實撞：`送出一份筆記` 實測 33〜57 秒，而我第一輪
+// 憑「零 LLM 應該很快」的**推論**給了 60 秒上限 ⇒ 尾巴被剪斷 2 發 ⇒ 斷路器跳 ⇒
+// **後面 9 個檔全被跳過**，畫面還對使用者說「知識庫現在沒有回應」。
+// 那台知識庫一路都在回應（同一輪成功送出 8 份筆記），只是慢。
+func TestSlowButSucceedingCloudIsNotCalledUnresponsive(t *testing.T) {
+	// 上限給 2 秒，伺服器每發 300ms——**遠低於上限**，就是「慢但會成功」。
+	stallTestTimings(t, 2*time.Second, 50*time.Millisecond)
+
+	origFetch := fetchCloudVersion
+	fetchCloudVersion = func(string) (string, bool) { return "", false }
+	defer func() { fetchCloudVersion = origFetch }()
+
+	var hits int64
+	slow := slowButHealthyServer(t, 300*time.Millisecond, &hits)
+
+	root := t.TempDir()
+	for i := range [8]struct{}{} {
+		name := filepath.Join(root, "note"+string(rune('a'+i))+".md")
+		if err := os.WriteFile(name, []byte("# 筆記\n內容"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestPath := filepath.Join(t.TempDir(), "m.json")
+	cfg := &DirectConfig{
+		Manifest: manifestPath,
+		Accounts: []AccountConfig{{CypherURL: slow.URL, Namespace: "n", APIKey: "k",
+			WatchFolders: []string{root}}},
+		Library: "kb", MaxRemoved: DefaultMaxRemovedRatio,
+		CardIngestWF: "rag_ingest_card", IngestWF: "rag_ingest_direct", RemovedWF: "rag_takedown_direct",
+		ForceSync: true,
+	}
+	results, _, _ := RunDirectOnce(cfg, false)
+
+	// ① 斷路器不准跳：它一路都在回應。
+	if note := cfg.unreachableNote(); note != "" {
+		t.Fatalf("🔴 慢但成功的雲端被判成不能打了：%s", note)
+	}
+	for _, s := range cfg.guard.Stalls() {
+		if s.Skipped {
+			t.Fatalf("🔴 有一筆標成「這一輪跳過該帳號」：%+v", s)
+		}
+	}
+
+	// ② 一個檔都不准被「帳號沒回應」這個理由跳過。
+	skipped := 0
+	for _, r := range results {
+		if r.Status == "skipped" && (strings.Contains(r.Error, "沒有回應") ||
+			strings.Contains(r.Error, "回得太慢")) {
+			skipped++
+		}
+	}
+	if skipped > 0 {
+		t.Fatalf("🔴 有 %d 個檔因為「帳號沒回應」被跳過，但雲端每一發都成功了", skipped)
+	}
+
+	// ③ 就算真的有一發逾時，只要它這一輪回應過，措辭就不准是「沒有回應」。
+	g := newRoundGuard()
+	g.announce = func(StalledCall) {}
+	g.succeeded("h")
+	msg := g.strike("h", stepIngestCard, 3*time.Second)
+	if strings.Contains(msg, "沒有回應") {
+		t.Fatalf("🔴 它回應過，卻還是說「沒有回應」：%s", msg)
+	}
+	if !strings.Contains(msg, "回得太慢") {
+		t.Fatalf("措辭應該是「回得太慢」：%s", msg)
+	}
+}
+
+// 「連續」兩個字必須是真的：成功一次就把計數歸零。
+func TestStrikesAreActuallyConsecutive(t *testing.T) {
+	g := newRoundGuard()
+	g.announce = func(StalledCall) {}
+	g.strike("h", stepIngestCard, time.Second) // 第 1 次逾時
+	g.succeeded("h")                           // 中間成功了一次
+	g.strike("h", stepIngestCard, time.Second) // 又逾時一次 ⇒ 這是「第 1 次連續」
+	if r := g.skipReason("h"); r != "" {
+		t.Fatalf("🔴 中間成功過，卻仍然跳閘了——訊息裡的「連續」是假的：%s", r)
+	}
+	g.strike("h", stepIngestCard, time.Second) // 真的連續第 2 次 ⇒ 才該跳
+	if g.skipReason("h") == "" {
+		t.Fatal("真的連續兩次逾時了，該跳閘卻沒跳")
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 // ── FindClaudeBin fallback（t92）──────────────────────────────────────────────
@@ -267,4 +269,47 @@ func TestCarryForwardActivity(t *testing.T) {
 			t.Fatalf("沒有任何歷史時應保持空值，得到 %+v", st)
 		}
 	})
+}
+
+// 🔴 產生訊息的那一端，和決定「這則訊息要不要上畫面」的那一端，必須永遠對得上。
+//
+// 2026-08-28 第三輪差點實撞：我改了斷路器的措辭，判準沒跟著改 ⇒ 那 9 個被跳過的檔
+// 會**連一句原因都沒有地從畫面消失**。不會報錯、不會有紅字，就是安靜地不見。
+// 這條網把兩端綁在一起：斷路器講的每一種話，都要能被 explainsWhySkipped 認得。
+func TestSkipMessagesAlwaysExplainThemselves(t *testing.T) {
+	g := newRoundGuard()
+	g.announce = func(StalledCall) {}
+
+	// ① 從沒回應過的帳號（措辭：沒有回應）
+	first := g.strike("dead.example", stepIngestCard, 60*time.Second)
+	// ② 連續第二次 ⇒ 跳閘，這句會被貼在每一個被跳過的檔上
+	tripped := g.strike("dead.example", stepIngestCard, 60*time.Second)
+	// ③ 回應過、只是慢的帳號（措辭：回得太慢）
+	g.succeeded("slow.example")
+	slow := g.strike("slow.example", stepIngestCard, 60*time.Second)
+
+	for name, msg := range map[string]string{
+		"第一次逾時":   first,
+		"跳閘（貼在被跳過的檔上）": tripped,
+		"回得太慢":    slow,
+	} {
+		if msg == "" {
+			t.Fatalf("%s：訊息是空的", name)
+		}
+		if !explainsWhySkipped(msg) {
+			t.Fatalf("🔴 %s 的訊息不會被 status.json 收進失敗清單 ⇒ "+
+				"畫面上那些檔會沒有任何原因地消失。\n訊息：%s", name, msg)
+		}
+		// 產品文案：不准漏出內部語彙
+		for _, banned := range []string{"HTTP", "context", "timeout", "goroutine", "token"} {
+			if strings.Contains(msg, banned) {
+				t.Fatalf("🔴 %s 漏出內部語彙「%s」：%s", name, banned, msg)
+			}
+		}
+	}
+
+	// 反面：一句不講原因的話，不該被收進去（不然畫面會被噪音塞滿）
+	if explainsWhySkipped("跳過") {
+		t.Fatal("不講原因的訊息不該被當成「講得出原因」")
+	}
 }

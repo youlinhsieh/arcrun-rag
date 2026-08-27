@@ -117,6 +117,7 @@ func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool,
 	if err != nil {
 		return false, false, gate.record(err)
 	}
+	gate.ok()
 	defer resp.Body.Close()
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

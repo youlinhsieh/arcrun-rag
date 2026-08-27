@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // AccountSyncStatus 彙總單一帳號的每輪同步結果（t104 多帳號看守）。
@@ -237,4 +238,29 @@ func LoadSyncStatus(path string) (SyncStatus, error) {
 // tray 寫入此檔 → collector 偵測到後立刻跑一輪同步並刪除它。
 func SyncNowSignalPath(manifestPath string) string {
 	return filepath.Join(filepath.Dir(manifestPath), "sync-now")
+}
+
+// explainsWhySkipped 回答：「這一則 `skipped` 的訊息，講得出**為什麼**嗎？」
+// 講得出 ⇒ 收進 status.json 的失敗清單，畫面才有原因可講；講不出 ⇒ 不佔畫面。
+//
+// 🔴 為什麼要抽成具名函式（`inkstone/arcrun-rag#153` 第三輪，2026-08-28 差點實撞）：
+// 這個判準本來是**寫死在 direct.go 裡的三個字串比對**，而產生那些訊息的地方在別的檔。
+// 我改了斷路器的措辭（「會自動恢復」→「稍後會自動再試」），兩邊當場對不上——
+// 後果不是報錯，是**那 9 個被跳過的檔會連一句原因都沒有地從畫面上消失**，
+// 正是這個 repo 一再修的「安靜地略過」。
+//
+// 抽成一個函式解不掉「字串比對很脆」這件事，但它解掉了**兩邊會各自漂走**：
+// 現在只有一個地方定義「講得出原因」，而且有測試守著（sync_status_test.go）。
+// 新增訊息時，讓它通過這個函式，或把新的識別字加在這裡——不要在別處另開一張表。
+func explainsWhySkipped(msg string) bool {
+	for _, mark := range []string{
+		"後重試",     // 退避中：「上次失敗（第 N 次），X 後重試」
+		"已暫停自動重試", // 連續失敗到上限
+		"會自動恢復",   // 額度冷卻／帳號暫時打不通，之後自己會好
+	} {
+		if strings.Contains(msg, mark) {
+			return true
+		}
+	}
+	return false
 }

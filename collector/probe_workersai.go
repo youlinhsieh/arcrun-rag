@@ -106,6 +106,9 @@ func (c *DirectConfig) probeWorkersAI() CloudAIState {
 	gate := c.openGate(stepProbeAI)
 	state, err := ProbeWorkersAI(gate.ctx, c.CypherURL, c.APIKey)
 	gate.release()
+	if err == nil {
+		gate.ok()
+	}
 	if perr := gate.record(err); perr != nil {
 		// 等到超時 ⇒ 講的是「沒有回應」，不是「你的雲端沒裝好」。
 		// 把等待誤報成「你沒更新」會害使用者白跑一趟去按重裝。

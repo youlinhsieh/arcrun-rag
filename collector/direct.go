@@ -541,6 +541,7 @@ func (c *DirectConfig) postJSON(step callStep, url string, body any) (int, strin
 	if err != nil {
 		return 0, "", gate.record(err)
 	}
+	gate.ok() // #153：回來了就把「連續逾時」的計數歸零——否則「連續」兩個字是假的
 	defer resp.Body.Close()
 	// 🔴 讀 64KB 而不是 1KB：觸發端點的回應是一層外殼包著工作流的輸出，
 	// 而**失敗的證據住在殼裡面**（見 triggeroutcome.go）。1KB 會把 JSON 切斷 ⇒
@@ -998,8 +999,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 					//    使用者才看得到「為什麼」而不只是「幾份」。
 					// 2026-08-07：額度冷卻的 skip 訊息（quotaState.noticeNow().Combined()）
 					// 用「會自動恢復」當識別字——同樣要讓使用者看得到原因，不是只看到「幾份」。
-					if strings.Contains(r.Error, "後重試") || strings.Contains(r.Error, "已暫停自動重試") ||
-						strings.Contains(r.Error, "會自動恢復") {
+					if explainsWhySkipped(r.Error) {
 						st.Failures = append(st.Failures, ExtractFail{
 							Path:  r.Path,
 							Error: shortError(r.Error),
@@ -1699,6 +1699,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					xgate := cfg.openGate(stepExtractDoc)
 					cards, xerr = ExtractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin)
 					xgate.release()
+					if xerr == nil {
+						xgate.ok()
+					}
 					xerr = xgate.record(xerr) // 只有「等到超時」會被記帳，其餘錯誤原樣往下走
 				case "gemma":
 					cards, xerr = ExtractWithGemma(cfg.GeminiAPIKey, cfg.LLMModel, absRoot, ev.Path, cardOrigin)
