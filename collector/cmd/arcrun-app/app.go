@@ -122,6 +122,10 @@ type syncStatus struct {
 	// arcrun-rag#140：雲端上找不到、正在自動補送的資料夾（key＝資料夾路徑）。
 	// 同上：形狀定義在 collector/sync_status.go，這裡原樣接住。
 	Resync map[string]collector.ResyncStatus `json:"resync,omitempty"`
+	// arcrun-rag#159：逐個看守資料夾的同步現況（key＝資料夾路徑）。
+	// 同上：形狀定義在 collector/progress.go／sync_status.go，這裡原樣接住。
+	// 這是資料夾那一列打不打勾的**唯一**依據（見 folder_badge.go）。
+	FolderProgress map[string]collector.SyncProgress `json:"folder_progress,omitempty"`
 }
 
 type skippedDoc struct {
@@ -247,7 +251,20 @@ type UIFolder struct {
 	// arcrun-rag#140：雲端上找不到先前送過的檔案（知識庫被重裝／清空過），正在自動補送。
 	// 🔴 這張票的病有一半是「**沒有任何地方會說話**」——檔案在資料夾裡、AI 卻查不到，
 	//    而且查不出為什麼。所以補送不能靜悄悄地跑，這一行就是那句話的落點。
-	ResyncNote string `json:"resyncNote,omitempty"` // 一句人話（沒事＝空字串，前端不畫）
+	//
+	// ⚠️ 2026-08-28（arcrun-rag#159）**這一行不再畫在畫面上**——leo：「補送中是什麼
+	//    意思？不要發明奇怪狀態」。同步狀態改由下面 Sync/SyncTip 那一格的圖示表達，
+	//    而它算的是真的份數（見 folder_badge.go）。這個欄位留著給診斷檔與 status.json，
+	//    #140 的「不能靜悄悄地重送」由圖示接手：補送中的檔在 manifest 裡就是還沒送成功，
+	//    圖示本來就不會打勾。
+	ResyncNote string `json:"resyncNote,omitempty"`
+
+	// arcrun-rag#159：這一列的同步狀態圖示。Sync 是機器代碼（ok／working／trouble／
+	// unknown），SyncTip 是滑過去看得到的一句短話。判準與文案都在 folder_badge.go
+	// ——**寫在 Go 這一側**，因為「打勾是不是真的」要能被測試守著，
+	// 而前端只負責把代碼換成一個圖示。
+	Sync    string `json:"sync"`
+	SyncTip string `json:"syncTip"`
 }
 type UIAccount struct {
 	Name    string     `json:"name"`
@@ -257,7 +274,11 @@ type UIAccount struct {
 	// 連結」）——一個使用者可能連著不只一個知識庫，之前只有小幫手自己的版本會提示更新，
 	// 每個知識庫各自的雲端版本完全沒有畫面。判準與 portal 版本卡同一套
 	// （collector.EvalCloudUpdate，不是 t103 的相容底線），這裡只翻成人話，不重新判斷。
-	CloudVerKnown  bool   `json:"cloudVerKnown"`            // false＝查不到（連不上／還沒查過），前端要老實說「查不到」
+	CloudVerKnown  bool   `json:"cloudVerKnown"`            // false＝**從來沒查到過**這台的版本（不是「這一輪連不上」，見 direct.go #159）
+	// arcrun-rag#159：這一輪 /health 通不通。與 CloudVerKnown 是兩件事——
+	// 版本是事實（查到過就一直知道），可達性是當下狀態（會抽風）。
+	// 前端拿它把版本號調淡並在 tooltip 說明，**不拿它把版本抹掉**。
+	CloudVerFresh bool `json:"cloudVerFresh"`
 	CloudVerStale  bool   `json:"cloudVerStale"`            // true＝有新版可更新
 	CloudVerMine   string `json:"cloudVerMine,omitempty"`   // 這個知識庫目前的版本（可能連 Known=false 時也有值）
 	CloudVerLatest string `json:"cloudVerLatest,omitempty"` // 已知的最新版
@@ -518,6 +539,10 @@ func (a *App) GetState() UIState {
 			if rs, ok := sync.Resync[f]; ok {
 				uf.ResyncNote = rs.Note
 			}
+			// #159：這一列打不打勾。key 與 collector 寫入時同一把（資料夾絕對路徑）。
+			// 查不到＝collector 還沒回報過這個資料夾 ⇒ folderBadge 回 unknown，不猜。
+			fp, known := sync.FolderProgress[f]
+			uf.Sync, uf.SyncTip = folderBadge(fp, known)
 			ui.Folders = append(ui.Folders, uf)
 		}
 		// 收回中的資料夾照樣列出來，只是標成「收回中」——不然按下移除之後它立刻消失，
@@ -533,6 +558,7 @@ func (a *App) GetState() UIState {
 		// t215：per-account 雲端版本狀態——key 與 Host 同一套算法（shortHost），
 		// 對應 collector 寫入 status.json 時用的 instanceHostOf（兩者對一般 https URL 同值）。
 		if accSt, ok := sync.AccountDetails[ui.Host]; ok {
+			ui.CloudVerFresh = accSt.CloudCheckOK
 			ui.CloudVerKnown = accSt.CloudUpdateKnown
 			ui.CloudVerStale = accSt.CloudUpdateStale
 			ui.CloudVerMine = accSt.CloudVersion

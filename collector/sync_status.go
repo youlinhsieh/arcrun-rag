@@ -105,6 +105,23 @@ type SyncStatus struct {
 	// 與 Retiring 同族的現況快照，見 ResyncStatus 註解。
 	Resync map[string]ResyncStatus `json:"resync,omitempty"`
 
+	// FolderProgress＝**逐個看守資料夾**的同步現況（key＝資料夾路徑，`inkstone/arcrun-rag#159`）。
+	//
+	// 🔴 為什麼要有：小幫手畫面上每個資料夾都要能一眼看出「同步了沒」，而在這之前
+	// 那一格唯一的資料來源是 #140 的補送說明——**它只在有補送的時候才有值**，
+	// 於是畫面只好拿「有沒有那句話」當狀態。2026-08-28 leo 看到七列有六列寫「補送中」，
+	// 連 pending 已經是 0 的也照樣寫（實測 youlinhsieh-test1：pending=0／repaired=2，
+	// 畫面仍標補送中）——那個標籤量的根本不是同步狀態。
+	//
+	// 🔴 **不另算一套**：值就是 (*Manifest).Progress() 的原件，與首頁那行大數字、
+	// 診斷檔用同一個函式。逐資料夾加起來會等於首頁總量，因為它們本來就是同一組
+	// 數字被切開，不是兩份實作。
+	//
+	// 與 FolderPlans 同族的現況快照；某一輪那個根沒掃成（payload 為 nil）時**沿用
+	// 上一輪**，不要讓使用者看到昨天還好好的資料夾突然沒有狀態
+	// （同 MergeFolderTreeStore ② 的理由）。
+	FolderProgress map[string]SyncProgress `json:"folder_progress,omitempty"`
+
 	// 🔴 G-6.2「不准安靜地略過」（2026-08-06）：副檔名不在 allowedExt 的檔案，
 	// 以前在 scan.go 的白名單閘就 `return nil` 蒸發了——沒事件、沒紀錄、沒畫面。
 	// 使用者丟一份 .doc 進資料夾，得到的回應是**完全的沉默**。

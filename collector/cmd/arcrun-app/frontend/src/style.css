@@ -144,6 +144,41 @@ button.ghost:hover { color: var(--err); background: transparent; }
 .folder .tag.retiring { color: rgba(var(--ink-rgb), .5); }
 .folder-note { margin: -3px 0 9px; padding: 0 15px; font-size: 12.5px; }
 
+/* ══ arcrun-rag#159：那一列只剩「三角形 ＋ 路徑 ＋ 兩個圖示」══════════════
+   leo 2026-08-28：「補送中、資料夾結構、移除，**變成 3 個 emoticon 就好，
+   畫面上都是字壓力很大**」「**展開三角形按鈕放資料夾上**」
+   ⇒ 三角形移到列首（跟樹裡面的展開鈕同一個造型，使用者只要學一次）。 */
+.folder > .tw {
+  flex: none; width: 22px; height: 22px; padding: 0; border: none; background: none;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.folder > .tw:hover { background: none; }
+/* 三角形用 CSS 畫，不用 ▸▾ 字元——理由同樹裡那顆（見 .ftrow .tw i）：
+   那兩個字在 Windows 的中文字型裡是全形，大小與位置每台機器都不一樣。 */
+.folder > .tw i {
+  display: block; width: 0; height: 0;
+  border-left: 6px solid rgba(var(--ink-rgb), .5);
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  transition: transform .12s;
+}
+.folder.open > .tw i { transform: rotate(90deg); }
+.folder > .tw:hover i { border-left-color: var(--amber); }
+/* 狀態圖示。**一個字都沒有**——說明住在 title/aria-label 裡，滑過去才出現。 */
+.folder .fstat { flex: none; font-size: 14px; line-height: 1; cursor: default; }
+/* 🔴 視覺層級要對得上意思：**只有需要你出手的那一格才准大聲**。
+   「同步中」是常態、不需要任何人做什麼 ⇒ 壓到跟灰階一樣安靜；
+   ⚠️ 維持原色，因為它是唯一一個「你可能要看一下」的狀態。
+   （不壓的話 🔄 的藍色會比 ⚠️ 還跳，畫面就在對使用者喊錯的東西。） */
+.folder .fstat.working { filter: grayscale(.85); opacity: .5; }
+/* 還沒回報過的那一格刻意做得很淡：它不是「沒問題」，是「還不知道」。 */
+.folder .fstat.unknown { color: rgba(var(--ink-rgb), .3); font-size: 12px; }
+/* 圖示按鈕（移除）：跟三角形同一個量級，hover 才變紅——不預設嚷嚷。 */
+.folder .ico {
+  flex: none; padding: 4px 6px; border: none; background: none;
+  font-size: 14px; line-height: 1; filter: grayscale(1); opacity: .7;
+}
+.folder .ico:hover { background: none; filter: none; opacity: 1; }
+
 .big-num { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
 .kv { display: flex; gap: 26px; margin-top: 4px; }
 .kv .k { font-size: 12.5px; color: rgba(var(--ink-rgb), .45); }
@@ -299,6 +334,14 @@ input[type=text], input[type=password] {
 .kbrow .nm { font-size: 14px; font-weight: 600; flex: none; }
 .kbrow .right { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .kbver { margin-bottom: 14px; font-size: 13.5px; display: flex; align-items: center; gap: 10px; }
+/* arcrun-rag#159：版本那一格只有**數字與圖示**，說明收進 title。
+   等寬字讓 `1.4.46 → 1.4.58` 這種對照掃視時對得齊。 */
+.kbv { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: rgba(var(--ink-rgb), .7); }
+/* 這一輪連不上 ⇒ 版本號調淡表示「這是上次查到的」。**不是把它抹掉**——
+   版本查到過就是事實，抽風的是網路（見 collector/direct.go #159 那段）。 */
+.kbv.dim { opacity: .45; }
+/* 從來沒查到過：一個很淡的圈，跟資料夾那一列的 unknown 同一個語彙。 */
+.kbv.unknown { font-family: inherit; color: rgba(var(--ink-rgb), .3); }
 .warn { color: var(--err); font-size: 13px; }
 #side .nav .dot.warn {
   width: 7px; height: 7px; border-radius: 50%; flex: none;
@@ -432,12 +475,10 @@ input[type=text], input[type=password] {
   margin: -3px 0 9px; padding: 8px 10px 6px;
   background: var(--well); border-radius: 10px;
 }
-.fthead {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding-bottom: 7px; margin-bottom: 5px;
-  border-bottom: 1px solid rgba(var(--ink-rgb), .08);
-}
-.fthead button { padding: 4px 9px; font-size: 12px; }
+/* 🔴 arcrun-rag#159：`.fthead`（全部展開／全部收合＋收檔策略那句話）**整條移除**。
+   leo 2026-08-28 在截圖上圈掉它：「上下廢話刪除，只留乾淨 Tree」
+   「產生 GUI 就是要讓人減少讀字降低負擔，你在 GUI 寫這麼多字剛好違背它的原理」。
+   收檔策略那句話沒有被刪掉——它改掛在根那一列的數字上，點一下就看得到。 */
 /* 樹本體：檔案總管那種「緊湊但點得到」的密度。
    overflow-x 讓很深的樹自己捲，不去撐破右側版面。 */
 .ftbody { overflow-x: auto; padding: 1px 0; }
@@ -474,6 +515,19 @@ input[type=text], input[type=password] {
 }
 /* 全部同步完＝這一格沒有待辦，用完整墨色讓它從灰階裡浮出來（不另發明「成功色」）。 */
 .ftrow .num.full { color: var(--ink); }
+/* #159：這一列有「為什麼」可以看時，數字自己就是那顆按鈕（畫面上不多一個字、
+   也不多一顆按鈕）。虛線底線是唯一的提示——**它不是裝飾，是可點的告示**。 */
+.ftrow .num.hasWhy {
+  cursor: pointer;
+  border-bottom: 1px dotted rgba(var(--ink-rgb), .35);
+}
+.ftrow .num.hasWhy:hover { color: var(--ink); border-bottom-color: var(--amber); }
+.ftrow .num.hasWhy:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+/* 點開之後那一行理由。預設不存在——這就是「收起來不等於刪掉」的落點。 */
+.ftwhy {
+  font-size: 12px; line-height: 1.6; padding: 1px 4px 4px;
+  color: rgba(var(--ink-rgb), .55); white-space: normal; max-width: 46em;
+}
 /* 🔴 選擇器**不要**綁在 .ftrow 底下：頁首那句「為什麼只收這些」也用同一個 class，
    綁死就只有樹裡面吃得到樣式、頁首那句會掉回 16px 的內文級——實撞過一次，
    畫面上那句話比整棵樹都大聲，喧賓奪主。 */
@@ -483,12 +537,6 @@ input[type=text], input[type=password] {
 .ftbox .why {
   font-size: 12px; color: rgba(var(--ink-rgb), .45);
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-}
-.fthead .why { flex: 1; min-width: 0; line-height: 1.6; }
-/* 整棵沒走進去：語氣是告知不是錯誤，所以不用 --err。 */
-.ftrow .skip {
-  font-size: 11.5px; color: rgba(var(--ink-rgb), .5);
-  border: 1px solid rgba(var(--ink-rgb), .18); border-radius: 5px; padding: 0 5px;
 }
 .ftmsg {
   padding: 6px 2px 2px; font-size: 12px; line-height: 1.65;

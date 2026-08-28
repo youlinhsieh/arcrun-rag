@@ -37,6 +37,16 @@ type SyncProgress struct {
 	Pending    int `json:"pending"`    // 還沒送，會自動接著做（含退避等待中的）
 	Stuck      int `json:"stuck"`      // 連續失敗達上限、已暫停自動重試——**不會自己好**
 	Unreadable int `json:"unreadable"` // 格式讀不了，根本沒進 manifest（由呼叫端補進來）
+	// Failing＝Pending 裡「最近一次已經送失敗過、正在退避等重試」的份數
+	// （`inkstone/arcrun-rag#159`）。**它是 Pending 的子集合，不進不變式**——
+	// 加總永遠只算 Total == Done+Pending+Stuck+Unreadable。
+	//
+	// 🔴 為什麼要分出來：Pending 同時裝著兩種完全不同的處境——「還沒輪到」與
+	// 「一直送不上去」。混在一起時畫面只能講「同步中」，而 2026-08-28 leo 桌面上
+	// geek6688-test1 的 14 份**每一份都在失敗重試**（雲端回 HTTP 500 Too many
+	// subrequests，fail_count 是 7 與 3），講「同步中」等於叫他等一件正在壞掉的事。
+	// 分出來，畫面才判斷得出該不該示警（見 arcrun-app/folder_badge.go）。
+	Failing int `json:"failing"`
 }
 
 // Add 把另一個資料夾／帳號的進度累加進來——首頁與診斷檔講的都是總量。
@@ -47,6 +57,7 @@ func (p SyncProgress) Add(o SyncProgress) SyncProgress {
 		Pending:    p.Pending + o.Pending,
 		Stuck:      p.Stuck + o.Stuck,
 		Unreadable: p.Unreadable + o.Unreadable,
+		Failing:    p.Failing + o.Failing,
 	}
 }
 
@@ -69,6 +80,11 @@ func (m *Manifest) Progress() SyncProgress {
 			p.Stuck++
 		default:
 			p.Pending++
+			if e.FailCount > 0 {
+				// #159：還在排隊，但**已經失敗過**——退避等下一次重試。
+				// 與 Pending 並存（子集合），不影響上面的不變式。
+				p.Failing++
+			}
 		}
 	}
 	return p

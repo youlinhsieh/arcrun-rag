@@ -166,25 +166,39 @@ function cardKbVersions(s) {
     </div>`;
 }
 
-// kbVersionLine：單一知識庫的版本判定文案，首頁卡與各庫頁共用同一份翻譯，
-// 不讓兩處各寫各的文字（那樣才真的會出現「兩處講不同的話」）。
+// kbVersionLine：單一知識庫的版本，首頁卡與各庫頁共用同一份（不讓兩處各寫各的）。
 //
-// 三種情況都要照實講（cloud_version.go 記過的坑：把「查不到」呈現成「一切正常」）：
-//   ① Known 且落後 → 紅字＋按鈕，按下去帶 email 開 install 頁（同 portal 版本卡的預填做法）
-//   ② Known 且已最新 → 淡字「已是最新版」
-//   ③ 不 Known → 照原因分兩句：連不上這個知識庫／查得到目前版本但暫時查不到最新版
+// 🔴 `inkstone/arcrun-rag#159`（leo 2026-08-28）：「**GUI 是國際通用，圖形指示，
+//    不限語文**，所以任何出現文字都要謹慎，文字表示『我的設計不夠好所以要靠文字來補』」
+//    ⇒ 這一行以前是三句話（「有新版可更新（目前 x → 最新 y）」「已是最新版（x）」
+//      「目前連不上這個知識庫，查不到版本」）。現在只剩**版本號與圖示**：
+//
+//        1.4.60          ✅     已是最新
+//        1.4.46 → 1.4.58 ⬆️     有新版（按鈕，按下去帶 email 開安裝頁）
+//        ○                      從來沒查到過這台的版本
+//
+//    說明都收進 title（滑過去才出現），版面上一個字都不佔。
+//
+// 🔴 「這一輪連不上」**不再抹掉版本號**（見 collector/direct.go 那段註解）：
+//    版本查到過就是事實，抽風的是網路。連不上時版本號調淡，滑過去講得出來。
 function kbVersionLine(a) {
+  const dim = a.cloudVerFresh ? '' : ' dim';
+  const tip = a.cloudVerFresh ? '' : '上次查到的版本（現在暫時連不上）';
   if (!a.cloudVerKnown) {
-    const detail = a.cloudVerMine
-      ? `已知版本 ${esc(a.cloudVerMine)}，暫時查不到最新版本（稍後會自動再查）`
-      : '目前連不上這個知識庫，查不到版本';
-    return `<span class="d">${detail}</span>`;
+    // 分得出「沒查到這台的版本」與「查到了但暫時不知道最新版是多少」——
+    // 前者連版本號都沒有，後者有版本號可以顯示。
+    if (!a.cloudVerMine) {
+      return `<span class="kbv unknown" role="img" title="還沒查到這個知識庫的版本">○</span>`;
+    }
+    return `<span class="kbv${dim}" title="${esc(tip || '暫時查不到最新版本，稍後自動再查')}">${esc(a.cloudVerMine)}</span>`;
   }
   if (a.cloudVerStale) {
-    return `<span class="warn">有新版可更新（目前 ${esc(a.cloudVerMine)} → 最新 ${esc(a.cloudVerLatest)}）</span>
-      <button class="ghost" data-updatekb="${esc(a.email || '')}">前往安裝頁更新</button>`;
+    return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)} → ${esc(a.cloudVerLatest)}</span>
+      <button class="ico" data-updatekb="${esc(a.email || '')}"
+        title="前往安裝頁更新這個知識庫" aria-label="前往安裝頁更新這個知識庫">⬆️</button>`;
   }
-  return `<span class="d">已是最新版（${esc(a.cloudVerMine)}）</span>`;
+  return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)}</span>
+    <span class="fstat ok" role="img" title="已是最新版" aria-label="已是最新版">✅</span>`;
 }
 
 // installURLFor：與 portal 版本卡同一個做法——落後才需要按，按下去帶 email 讓安裝頁
@@ -320,7 +334,18 @@ function cardSkipped(k) {
 // data：path → 樹（undefined＝還沒問、null＝問過但小幫手還沒回報）
 // open：path → 這個資料夾的樹展開了沒
 // nodes：path → { 節點路徑: 展開了沒 }（沒有紀錄＝用預設，見 nodeIsOpen）
-const treeState = { data: {}, open: {}, nodes: {} };
+// why：path → { 節點路徑: 這一列的「為什麼」被點開了沒 }（arcrun-rag#159）
+const treeState = { data: {}, open: {}, nodes: {}, why: {} };
+
+// ── 資料夾那一列的狀態圖示（`inkstone/arcrun-rag#159`）────────────────────
+//
+// leo 2026-08-28：「補送中、資料夾結構、移除，**變成 3 個 emoticon 就好，
+// 畫面上都是字壓力很大**」「他要知道的是『我的資料夾是否同步了』，**有同步打勾就好**」
+//
+// 🔴 這裡**只做代碼→圖示的對照**，一個判斷都不做。
+//    「該不該打勾」住在 Go 那一側（cmd/arcrun-app/folder_badge.go，有測試守著）——
+//    前端自己判斷就會變成第二套判準，遲早跟後端說的不一樣。
+const SYNC_ICON = { ok: '✅', working: '🔄', trouble: '⚠️', unknown: '○' };
 
 // 資料夾路徑當不了 DOM id（含空白、斜線、中文）⇒ 折成一個穩定的短碼。
 function treeBoxId(path) {
@@ -390,13 +415,12 @@ function renderFolderTree(path) {
   //    （指定了空資料夾，它就該在畫面上存在），前者是「再等一下」。
   //    兩者講同一句話，等於拿我們自己編的答案回答使用者。
   if (tree === null) {
-    box.innerHTML = `<div class="ftmsg">同步小幫手還沒掃到這個資料夾的結構。
-      第一次同步跑完之後就會出現——檔案多的話要等久一點，按上面的「立刻同步」可以催它。</div>`;
+    box.innerHTML = `<div class="ftmsg">還沒掃到這個資料夾，第一次同步跑完就會出現。</div>`;
     return;
   }
   const nodes = tree.nodes || [];
   if (!nodes.length) {
-    box.innerHTML = `<div class="ftmsg">這個資料夾目前沒有任何內容（指定了就會在這裡，等你放東西進去）。</div>`;
+    box.innerHTML = `<div class="ftmsg">這個資料夾目前是空的。</div>`;
     return;
   }
   const r = rollupTree(nodes);
@@ -421,25 +445,37 @@ function renderFolderTree(path) {
       + `<span class="tw">${kids.length ? '<i></i>' : ''}</span>`
       + `<span class="ic">${kids.length && open ? '📂' : '📁'}</span>`
       + `<span class="nm">${esc(n.name || '（未命名）')}</span>`;
-    if (n.skipped && n.total_files === 0) {
-      // 🔴 整棵沒走進去 ⇒ 不准顯示 0/0（那會是我們自己編的數字），改講理由。
-      const why = n.skip_reason || '（小幫手沒說明理由）';
-      row += `<span class="skip">整個資料夾未收</span>`
-        + `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
-    } else if (n.skipped) {
-      // #180：走進去了、數字是真的，只是這一層一個檔都沒收
-      // ⇒ **數字照顯示**（他要知道底下有幾個），理由也照講。
-      const why = n.skip_reason || '（小幫手沒說明理由）';
-      row += `<span class="num">${s.synced} / ${s.total}</span>`
-        + `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
-    } else {
-      const full = s.total > 0 && s.synced === s.total;
-      row += `<span class="num${full ? ' full' : ''}">${s.synced} / ${s.total}</span>`;
-      const why = gapWhy(s);
-      if (why) row += `<span class="why" title="${esc(why)}">${esc(why)}</span>`;
-    }
-    if (kids.length && !open) row += `<span class="why">…還有 ${kids.length} 個子資料夾</span>`;
+    // ── 一列只有：三角形 ＋ 資料夾名 ＋ `X / Y`（`inkstone/arcrun-rag#159`）──
+    //
+    // leo 2026-08-28：「**上下廢話刪除**，**產生 GUI 就是要讓人減少讀字降低負擔，
+    // 你在 GUI 寫這麼多字剛好違背它的原理**」——他的截圖上同一句
+    // 「這是安裝範本時鋪下來的空白樣板…」**在一棵樹裡出現了 5 次**。
+    //
+    // 🔴 **「收起來」不等於「刪掉」**（本票紅線）：那些理由是使用者要救回被跳過的
+    //    資料夾時的線索（`inkstone/arcrun-rag#136`）。所以理由沒有被拿掉，
+    //    只是**不再預設佔畫面**——點那個數字就展開這一列自己的理由。
+    //    🔴 也**不塞進 tooltip**（同一條紅線：「不要把長句子搬進 tooltip 裡繼續長」），
+    //    tooltip 只有「點一下看原因」這種操作提示。
+    let why = n.skipped
+      ? (n.skip_reason || '（小幫手沒說明理由）')
+      : gapWhy(s);
+    // 收檔策略那句話（原本掛在樹的上方，leo 圈掉了）改掛在**根那一列**——
+    // 它講的就是這個監看根，點根的數字就看得到，資訊沒有消失。
+    if (n.parent === '-' && tree.reason) why = why ? `${tree.reason}（${why}）` : tree.reason;
+    // 整棵沒走進去（#180 之後：skipped 且 total_files 為 0）⇒ 不准顯示 0/0，
+    // 那會是我們自己編的數字。用「—」表示「這個數字我沒有」。
+    const noCount = n.skipped && n.total_files === 0;
+    const full = !noCount && s.total > 0 && s.synced === s.total;
+    const shown = noCount ? '—' : `${s.synced} / ${s.total}`;
+    row += `<span class="num${full ? ' full' : ''}${why ? ' hasWhy' : ''}"`
+      + (why
+        ? ` data-twhy="${esc(n.path)}" data-twroot="${esc(path)}" role="button" tabindex="0" title="點一下看原因"`
+        : '')
+      + `>${shown}</span>`;
     html += row + `</div>`;
+    if (why && (treeState.why[path] || {})[n.path]) {
+      html += `<div class="ftwhy" style="padding-left:${indent + 21}px">${esc(why)}</div>`;
+    }
     if (open) kids.forEach(emit);
   }
   (r.kids['-'] || []).forEach(emit);
@@ -448,17 +484,22 @@ function renderFolderTree(path) {
   nodes.forEach((n) => { seen[n.path] = true; });
   nodes.forEach((n) => { if (n.parent !== '-' && !seen[n.parent]) emit(n); });
 
+  // 🔴 樹的上方與下方**什麼都不留**（`inkstone/arcrun-rag#159`，leo 在截圖上圈了三處）：
+  //    ① 上方的「全部展開／全部收合 ＋ 這是一般資料夾或筆記庫…」整條拿掉
+  //    ② 下方的「數字是『已同步 / 這個資料夾底下總共』…」整段拿掉
+  //    ③ 下方的補送說明拿掉（狀態改由資料夾那一列的圖示表達）
+  //    leo 原話：「**上下廢話刪除，只留乾淨 Tree**」。
+  //
+  //    收檔策略那句話（tree.reason）沒有消失——它跟每一列的理由走同一條路：
+  //    點根那一列的數字就看得到（emit() 裡的 hasWhy）。
+  //
+  //    **唯一的例外是截斷警告**：它只在樹真的不完整時才出現，而不講就是讓畫面
+  //    宣稱「這是全部」——那是說謊，不是廢話。
   let foot = '';
   if (tree.truncated) {
-    foot += `<div class="ftmsg">資料夾太多，只顯示前 ${nodes.length} 個（實際有 ${tree.total_nodes} 個）。</div>`;
+    foot = `<div class="ftmsg">只顯示前 ${nodes.length} 個資料夾（實際有 ${tree.total_nodes} 個）。</div>`;
   }
-  foot += `<div class="ftmsg">數字是「已同步 / 這個資料夾底下總共」。兩者不相等是正常的——
-    差額是還讀不了的格式、不在收檔範圍的檔案（程式碼等），或還在處理中。</div>`;
-  box.innerHTML = `<div class="fthead">`
-    + `<button class="ghost" data-texpand="${esc(path)}">全部展開</button>`
-    + `<button class="ghost" data-tcollapse="${esc(path)}">全部收合</button>`
-    + (tree.reason ? `<span class="why">${esc(tree.reason)}</span>` : '')
-    + `</div><div class="ftbody">${html}</div>${foot}`;
+  box.innerHTML = `<div class="ftbody">${html}</div>${foot}`;
   wireTree();
 }
 
@@ -467,8 +508,13 @@ function renderFolderTree(path) {
 async function toggleFolderTree(path) {
   treeState.open[path] = !treeState.open[path];
   const box = $(treeBoxId(path));
+  // #159：那顆按鈕現在只有一個 CSS 畫的三角形（沒有文字），轉向由 class 決定。
   const btn = document.querySelector(`[data-tree="${cssq(path)}"]`);
-  if (btn) btn.textContent = (treeState.open[path] ? '▾ ' : '▸ ') + '資料夾結構';
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(!!treeState.open[path]));
+    const row = btn.closest('.folder');
+    if (row) row.classList.toggle('open', !!treeState.open[path]);
+  }
   if (!box) return;
   box.style.display = treeState.open[path] ? '' : 'none';
   if (!treeState.open[path]) return;
@@ -487,16 +533,6 @@ async function toggleFolderTree(path) {
 // 屬性選擇器要跳脫引號——資料夾路徑什麼字元都可能有。
 function cssq(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
-function setAllTreeNodes(path, open) {
-  const tree = treeState.data[path];
-  if (!tree) return;
-  const st = {};
-  (tree.nodes || []).forEach((n) => { st[n.path] = open; });
-  if (!open) st[''] = true; // 全部收合時根自己留著，不然整棵消失、看起來像壞了
-  treeState.nodes[path] = st;
-  renderFolderTree(path);
-}
-
 function wireTree() {
   document.querySelectorAll('[data-tnode]').forEach((el) => {
     const toggle = () => {
@@ -510,11 +546,19 @@ function wireTree() {
     el.onclick = toggle;
     el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
   });
-  document.querySelectorAll('[data-texpand]').forEach((el) => {
-    el.onclick = () => setAllTreeNodes(el.dataset.texpand, true);
-  });
-  document.querySelectorAll('[data-tcollapse]').forEach((el) => {
-    el.onclick = () => setAllTreeNodes(el.dataset.tcollapse, false);
+  // #159：點數字＝展開這一列自己的「為什麼」。理由沒有被刪掉，只是不再預設佔畫面。
+  // stopPropagation：這個數字常常長在「整列可點＝展開子資料夾」的列上，
+  // 不擋住的話點原因會順便把子資料夾收掉。
+  document.querySelectorAll('[data-twhy]').forEach((el) => {
+    const toggle = (e) => {
+      e.stopPropagation();
+      const root = el.dataset.twroot, np = el.dataset.twhy;
+      const st = treeState.why[root] || (treeState.why[root] = {});
+      st[np] = !st[np];
+      renderFolderTree(root);
+    };
+    el.onclick = toggle;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } };
   });
 }
 
@@ -540,14 +584,17 @@ function pageLib(s, idx) {
           : `正在從雲端收回…${f.retireRemaining ? `還有 ${f.retireRemaining} 份` : ''}`}</span>
       </div>
       ${f.retireError ? `<div class="d folder-note">${esc(f.retireError)}</div>` : ''}` : `
-      <div class="folder">
+      <div class="folder${treeState.open[f.path] ? ' open' : ''}">
+        <button class="tw" data-tree="${esc(f.path)}" aria-expanded="${!!treeState.open[f.path]}"
+          title="展開這個資料夾" aria-label="展開或收合這個資料夾的內容"><i></i></button>
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
-        <span class="tag">${f.resyncNote ? '補送中' : '自動同步中'}</span>
-        <button class="ghost" data-tree="${esc(f.path)}">${treeState.open[f.path] ? '▾' : '▸'} 資料夾結構</button>
-        <button class="ghost" data-rm="${esc(f.path)}" data-acc="${f.accIdx}">移除</button>
+        <span class="fstat ${esc(f.sync || 'unknown')}" role="img"
+          title="${esc(f.syncTip || '')}" aria-label="${esc(f.syncTip || '')}"
+          >${SYNC_ICON[f.sync] || SYNC_ICON.unknown}</span>
+        <button class="ico" data-rm="${esc(f.path)}" data-acc="${f.accIdx}"
+          title="移除這個資料夾" aria-label="移除這個資料夾並從知識庫收回">🗑</button>
       </div>
-      <div class="ftbox" id="${treeBoxId(f.path)}"${treeState.open[f.path] ? '' : ' style="display:none"'}></div>
-      ${f.resyncNote ? `<div class="d folder-note">${esc(f.resyncNote)}</div>` : ''}`).join('')
+      <div class="ftbox" id="${treeBoxId(f.path)}"${treeState.open[f.path] ? '' : ' style="display:none"'}></div>`).join('')
       || `<div class="empty"><div class="t">這個知識庫還沒有資料夾</div>
            <div class="d">按右上的「加入資料夾」，選一個要自動整理的資料夾。</div></div>`}`;
 }

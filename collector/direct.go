@@ -742,6 +742,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	folderTrees := map[string]FolderTree{}
 	var knownRoots []string
 
+	// `inkstone/arcrun-rag#159`：每個看守資料夾這一輪的同步現況（key＝資料夾路徑）。
+	// 值是 (*Manifest).Progress() 的原件——與 totalProgress 同一個來源，只是沒有累加。
+	folderProgress := map[string]SyncProgress{}
+
 	// t210：跨帳號、跨資料夾累加的總量進度（見 rootProgress 註解）。
 	var totalProgress SyncProgress
 	var stuckReasons []string
@@ -768,8 +772,28 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 
 		// t103：per-account 雲端版本偵測
 		cloudVer, cloudOK := fetchCloudVersion(accCfg.CypherURL)
+		// 🔴 `inkstone/arcrun-rag#159`：**一次探測失敗 ≠ 這台知識庫連不上。**
+		//
+		// leo 2026-08-28 的畫面上，`youlin.hsieh.dev` 那行紅字寫「目前連不上這個
+		// 知識庫，查不到版本」——而同一台機器上 curl 打同一支 /health 是 HTTP 200
+		// 亞秒回應。實查當下 status.json：**三個帳號全部** `cloud_check_ok=false`、
+		// 錯誤都是 `dial tcp: ... no such host`，而剛開的 Go 行程（cgo 與純 Go
+		// 兩種 resolver 都試過）解得出來、GET 也 200。
+		// ⇒ 那是這台機器當下的 DNS 抽風，不是知識庫掛了。
+		//
+		// 舊寫法把「這一輪沒查到」直接呈現成「查不到版本」，於是**一次抽風就抹掉
+		// 我們早就知道的事實**。改成：查不到就沿用上一輪查到的版本
+		//（同 CarryForwardActivity 的理由），只有**從來沒查到過**才是真的不知道。
+		// CloudCheckOK 仍照實記這一輪的可達性——那是另一件事，不混在一起。
+		if strings.TrimSpace(cloudVer) == "" {
+			if prevAcc, ok := prevStatus.AccountDetails[accHost]; ok {
+				cloudVer = prevAcc.CloudVersion
+			}
+		}
 		// t215：這個帳號要不要更新——與 portal 版本卡同一套判準（見檔頭）。
-		cloudUpd := EvalCloudUpdate(cloudVer, cloudOK, latestRelease, latestOK)
+		// 第二個參數傳「我們知不知道它的版本」而不是「這一輪連不連得上」：
+		// 版本是**事實**，可達性是**當下狀態**，兩者不是同一個問題。
+		cloudUpd := EvalCloudUpdate(cloudVer, strings.TrimSpace(cloudVer) != "", latestRelease, latestOK)
 		accSt := AccountSyncStatus{
 			LastSync:         time.Now().Format(time.RFC3339),
 			CloudVersion:     cloudVer,
@@ -861,6 +885,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 				skippedOtherNames = append(skippedOtherNames, p.SkippedOtherNames...)
 				// #104：這一根用了什麼策略、少收了什麼 —— 以前到這裡就被丟掉了
 				// （只有 CLI 的 stderr 講得出來，App 走的這條路一個字都不說）。
+				// #159：這一根的同步現況。與 folderPlans 同一個「掃成了才記」的閘——
+				// 掃壞的那輪 rootProgress 是零值，記下去畫面會把它讀成「0 份、已同步」
+				// ＝拿我們自己編的答案打勾。沒記的根由下面的沿用機制補上一輪的。
+				folderProgress[root] = rp.Progress
 				folderPlans[root] = FolderPlanStatus{
 					Mode:             string(p.Plan.Mode),
 					Reason:           p.Plan.Reason,
@@ -951,6 +979,21 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// #104：收檔策略與被排除的東西 —— 使用者要知道「有幾千個檔沒被收、為什麼」。
 		if len(folderPlans) > 0 {
 			st.FolderPlans = folderPlans
+		}
+		// #159：逐資料夾的同步現況。這一輪沒掃成的根**沿用上一輪**
+		// （同 MergeFolderTreeStore ② 的理由：畫面不該因為一輪掃壞就說「沒有狀態」）；
+		// 已經不在看守清單上的根自然消失——folderProgress 的 key 只可能來自本輪的
+		// knownRoots，移除掉的資料夾不會被沿用回來。
+		for _, root := range knownRoots {
+			if _, ok := folderProgress[root]; ok {
+				continue
+			}
+			if prev, ok := prevStatus.FolderProgress[root]; ok {
+				folderProgress[root] = prev
+			}
+		}
+		if len(folderProgress) > 0 {
+			st.FolderProgress = folderProgress
 		}
 		st.SkippedDocCount = len(skippedSeen)
 		for _, sf := range skippedSeen {
