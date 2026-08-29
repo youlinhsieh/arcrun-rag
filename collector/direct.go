@@ -1542,8 +1542,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// payload.AllExcludedDirs／plan，而從 Scan() 到這裡之間**沒有任何東西動過 m.Entries**
 	//（動它的是下面「removed 暫時放回」那段，本來就在原位置之後）。
 	// 送上雲端那一發（syncFolderTree）**維持在原來的位置**，用的就是這一棵。
+	//
+	// StampMachine（`inkstone/Arcrun#180`）：蓋上「這棵樹是哪一台機器算的」。蓋在這裡
+	// ——build 之後、Publish 與 sync 之前——所以**本機快照與上雲酬載必然是同一份身分**。
+	// 卡片那條路（folderindex／inventory／sourcerepair）用的是同一個 cfg.machineIdentity()，
+	// 同一輪只解析一次，兩條路送上去的值必然相同。
 	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
-		payload.AllExcludedDirs, plan, runNow)
+		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity())
 	if !dryRun {
 		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
 	}

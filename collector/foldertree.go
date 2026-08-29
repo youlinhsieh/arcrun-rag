@@ -149,6 +149,41 @@ type FolderTree struct {
 	Truncated   bool         `json:"truncated,omitempty"` // 節點超過上限，畫面要講出來
 	TotalNodes  int          `json:"total_nodes"`         // 截斷前的真實節點數
 	GeneratedAt int64        `json:"generated_at"`
+
+	// Machine／MachineLabel＝**這棵樹是哪一台機器報上來的**（`inkstone/Arcrun#180`）。
+	//
+	// 🔴 為什麼非有不可：雲端的庫清單是「總庫 → 機器 → 資料夾」三層。樹的酬載裡沒有
+	// 這一格時，**每一個庫都只能掛在「未知來源」底下** ⇒ leo 2026-08-28 看到 16 個庫
+	// 全擠在同一個未知節點下，第一反應是「這是把別的帳號同步的資料夾外洩了？」。
+	// 那個驚嚇是畫面造成的，而畫面之所以說不出來，是因為**上行酬載根本沒送**。
+	//
+	// 🔴 **不是新發明的東西**：機器身分早就存在（`machine.json`／`ResolveMachine`），
+	// 卡片那條路也早就在送了（`folderindex.go`／`inventory.go`／`sourcerepair.go`
+	// 的 `"machine"`／`"machine_label"` 兩欄）。這裡**照那條路走**，欄名一字不差，
+	// 收端才不必為了樹另認一組欄位。
+	//
+	// Machine＝比對鍵（鑄好不變）；MachineLabel＝顯示名（使用者可在 config 改）。
+	// 兩格分開的理由見 machineid.go：改名不該讓庫裡憑空多出一台機器。
+	//
+	// 🔴 這兩格**進 Hash()**（不像 GeneratedAt 那樣被剔掉）：使用者改了 machine_label
+	// 之後，雲端要看得到新名字 ⇒ 內容雜湊必須跟著變，否則冪等閘會讓它永遠不再送。
+	Machine      string `json:"machine,omitempty"`
+	MachineLabel string `json:"machine_label,omitempty"`
+}
+
+// StampMachine 蓋上「這棵樹是哪一台機器算的」，回一份新的樹（不改原件）。
+//
+// 🔴 為什麼是「蓋章」而不是塞進 BuildFolderTree 的參數：BuildFolderTree 是純函式，
+// 吃的全是「這個資料夾長什麼樣」的事實；機器身分是**這台電腦是誰**，是另一回事。
+// 分開之後，樹的既有測試不必為了機器身分多餵一份假身分。
+//
+// 🔴 為什麼要蓋在樹上、而不是送出時才從 cfg 拿：本機快照（folder-trees.json，
+// 桌面小幫手讀的那份）與上雲的酬載**是同一個 FolderTree**。蓋在樹上，兩邊必然一致；
+// 送出時才拿，本機那份就永遠是空的——而「本機那份有沒有 machine」正是這次的檢查點。
+func (t FolderTree) StampMachine(m MachineIdentity) FolderTree {
+	t.Machine = m.ID
+	t.MachineLabel = m.Label
+	return t
 }
 
 // BuildFolderTree 把「走訪時數出來的分母」與「manifest 現況的分子」合成一棵樹。
@@ -354,6 +389,12 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		"generated_at": tree.GeneratedAt,
 		"sync_token":   h,
 		"nodes":        tree.Nodes,
+		// 🔴 機器身分（`inkstone/Arcrun#180`）：欄名與卡片那條路一字不差
+		// （`folderindex.go`／`inventory.go`／`sourcerepair.go`），收端不必另認一組。
+		// 值取自 `tree`（已由 StampMachine 蓋章）而不是這裡再問一次 cfg——
+		// 本機快照與上雲酬載共用同一個 FolderTree，一個來源就不會漂。
+		"machine":       tree.Machine,
+		"machine_label": tree.MachineLabel,
 	}
 	status, _, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
 	res.HTTPStatus = status
