@@ -53,3 +53,4 @@
 | 2026-09-01 23:49:20 | stage | bundle 1.4.63；daemon 0.18.49；installer 1.0.5 | ⛔ 擋下 | 每條版本線都已發佈（bundle→inkstone/arcrun-rag、daemon→inkstone/arcrun-collector、installer→inkstone/arcrun-rag） |
 | 2026-09-01 23:56:41 | stage | bundle 1.4.63；daemon 0.18.49；installer 1.0.5 | ✅ 放行 | — |
 | 2026-09-13 22:53:04 | stage | bundle 1.4.64；daemon 0.18.52；installer 1.0.10 | ✅ 放行 | — |
+| 2026-09-13 23:17:19 | prod | bundle 1.4.64；daemon 0.18.52；installer 1.0.10 | ✅ 放行 | — |
