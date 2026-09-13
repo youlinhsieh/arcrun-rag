@@ -488,7 +488,8 @@ func SaveFolderTreeStore(path string, s FolderTreeStore) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	// #200：一輪途中每份檔都會重寫這個檔，而小幫手展開樹時會定期重讀 ⇒ 原子寫入（見 writeFileAtomic）。
+	return writeFileAtomic(path, data, 0o644)
 }
 
 // MergeFolderTreeStore 把「這一輪算出來的樹」併進上一輪的快照。

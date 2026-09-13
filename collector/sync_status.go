@@ -7,7 +7,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+// RoundProgress＝**這一輪還沒跑完時**，做到哪裡了（`inkstone/arcrun-rag#200`）。
+//
+// 🔴 為什麼要有：status.json 以前**只在整輪收工時**寫一次。對 leo 真正的設定
+// （三個帳號、好幾千個檔、每發雲端呼叫 24〜57 秒）一輪是好幾個小時
+// ⇒ 2026-09-13 實撞：12:00 之後 status.json 一次都沒寫過，而同一段時間 ISEP 的
+// manifest 已經記下 11 份送上雲端、AR-Mira 查得到卡——**畫面卻是每層 0 / N**，
+// leo：「它沒有跑任何一個東西」。那不是沒跑，是**跑了但一個字都沒回寫**。
+//
+// ⇒ 一輪途中每開始一件雲端呼叫、每處理完一份檔、每次「還在等」，都把這一格寫進去。
+// 收工時整份 status.json 照舊重寫，這一格自然消失（收工寫的那份不帶它）。
+// 行程在途中被殺掉時它會留在檔案裡——App 只在 collector 真的在跑一輪時才讀它。
+type RoundProgress struct {
+	StartedAt string `json:"started_at"`           // 這一輪什麼時候開始的
+	UpdatedAt string `json:"updated_at,omitempty"` // 最後一次寫進來的時間（久沒更新＝真的停住了）
+	Account   string `json:"account,omitempty"`    // 正在處理哪個知識庫（主機名，與 AccountDetails 同一把 key）
+	Folder    string `json:"folder,omitempty"`     // 正在處理哪個看守資料夾（絕對路徑；空＝帳號層的事）
+	Step      string `json:"step,omitempty"`       // 正在做哪件事（白話，同 callStep.Name）
+	StepSince string `json:"step_since,omitempty"` // 那件事從什麼時候開始等
+	Ingested  int    `json:"ingested"`             // 這一輪到目前為止送上雲端的份數
+	Failed    int    `json:"failed"`               // 這一輪到目前為止沒送成功的份數
+	// Waiting＝那件事已經等超過 stallNoticeEvery 還沒回來——「卡在哪一步」就是它。
+	Waiting *StalledCall `json:"waiting,omitempty"`
+}
 
 // AccountSyncStatus 彙總單一帳號的每輪同步結果（t104 多帳號看守）。
 // key in SyncStatus.AccountDetails = instanceHostOf(cypher_url)。
@@ -169,6 +195,10 @@ type SyncStatus struct {
 	// 與 SkippedDocs 同族：每輪重算的現況快照，不進 CarryForwardActivity
 	//（上一輪等太久不代表這一輪也在等，帶下來就會變成一個永遠擦不掉的警告）。
 	Stalls []StalledCall `json:"stalls,omitempty"`
+
+	// InRound＝這一輪還沒跑完時做到哪（`inkstone/arcrun-rag#200`，見 RoundProgress）。
+	// 收工時寫的那份不帶它 ⇒ 非空只可能是「一輪正在跑」或「上一輪跑到一半行程被殺掉」。
+	InRound *RoundProgress `json:"in_round,omitempty"`
 }
 
 // FolderPlanStatus＝某個看守資料夾這一輪用了什麼收檔策略、據此少收了什麼
@@ -210,13 +240,86 @@ func StatusFilePath(manifestPath string) string {
 	return filepath.Join(filepath.Dir(manifestPath), "status.json")
 }
 
+// statusFileMu＝status.json 同一時間只有一個人在寫（`inkstone/arcrun-rag#200`）。
+//
+// 以前只有收工那一次在寫，不需要鎖；現在一輪途中也會寫，而且「還在等」是從
+// 另一條 goroutine（callGate.keepTalking）寫的 ⇒ 兩邊各自「讀出來改一格再寫回去」
+// 會互相蓋掉對方剛寫的東西。
+var statusFileMu sync.Mutex
+
 // SaveSyncStatus 寫入（覆蓋）狀態檔。失敗只印 stderr，不擋看守本體。
 func SaveSyncStatus(path string, s SyncStatus) error {
+	statusFileMu.Lock()
+	defer statusFileMu.Unlock()
+	return saveSyncStatusLocked(path, s)
+}
+
+func saveSyncStatusLocked(path string, s SyncStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data, _ := json.MarshalIndent(s, "", "  ")
-	return os.WriteFile(path, data, 0o644)
+	return writeFileAtomic(path, data, 0o644)
+}
+
+// updateSyncStatus 在鎖裡把狀態檔讀出來、交給 fn 改、再寫回去。fn 回 false＝不寫。
+//
+// 🔴 讀得到檔案但**解不開**時一律不寫：拿零值改一格再寫回去，等於把上一輪
+// 所有的數字（資料夾進度、帳號狀態、額度冷卻）整份抹掉——比不更新更糟。
+func updateSyncStatus(path string, fn func(*SyncStatus) bool) error {
+	statusFileMu.Lock()
+	defer statusFileMu.Unlock()
+	s, err := LoadSyncStatus(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if !fn(&s) {
+		return nil
+	}
+	return saveSyncStatusLocked(path, s)
+}
+
+// writeFileAtomic 先寫暫存檔再改名蓋過去——讀的人永遠讀到一份完整的檔。
+//
+// 🔴 為什麼現在才需要（`inkstone/arcrun-rag#200`）：小幫手每秒讀一次 status.json，
+// 以前一輪只寫一次，撞到「寫到一半被讀」的機率小到沒人遇過；現在一輪途中會寫很多次。
+// 讀到半份 JSON 的後果是那一秒畫面整個掉回「沒有紀錄」。
+//
+// Windows 上讀的人剛好開著檔案時改名會失敗 ⇒ 重試幾次，還是不行就退回直接覆寫
+//（寧可偶爾讓讀的人撞到半份，也不能讓狀態檔整輪寫不進去）。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*.tmp")
+		if err != nil {
+			lastErr = err
+			break
+		}
+		name := tmp.Name()
+		_, werr := tmp.Write(data)
+		cerr := tmp.Close()
+		if werr == nil && cerr == nil {
+			_ = os.Chmod(name, perm)
+			if rerr := os.Rename(name, path); rerr == nil {
+				return nil
+			} else {
+				lastErr = rerr
+			}
+		} else if werr != nil {
+			lastErr = werr
+		} else {
+			lastErr = cerr
+		}
+		_ = os.Remove(name)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		if lastErr != nil {
+			return lastErr
+		}
+		return err
+	}
+	return nil
 }
 
 // CarryForwardActivity 決定「最近一次有做事」那三個欄位的值。

@@ -126,6 +126,11 @@ type roundGuard struct {
 	stalls   []StalledCall
 	// announce＝把「還在等」播出去。測試會換掉它（預設寫 stdout）。
 	announce func(StalledCall)
+
+	// ── `inkstone/arcrun-rag#200`：一輪途中把「做到哪」寫進 status.json（見 live_status.go）──
+	statusPath string        // 空＝不寫（dry-run、測試直接呼叫低層函式）
+	live       RoundProgress // 此刻做到哪
+	closed     bool          // 收工了，途中寫入一律停手
 }
 
 func newRoundGuard() *roundGuard {
@@ -256,6 +261,8 @@ func (g *roundGuard) strike(host string, step callStep, waited time.Duration) st
 		announce(StalledCall{Account: host, Step: step.Name,
 			WaitedSec: int(waited.Seconds()), Skipped: tripped, Note: note})
 	}
+	// #200：以前這份清單要等整輪收工才寫進 status.json——而收工可能是幾小時以後。
+	g.persistStalls()
 	// 🔴 把連線池裡那條可能已經死掉的連線丟掉。
 	// 實撞的形狀（2026-08-28）：行程活著、CPU 0%、`lsof` 一條 TCP 都沒有，
 	// 而堆疊停在 HTTP/2 的 roundTrip——連線在作業系統那層已經沒了，
@@ -314,6 +321,8 @@ func (c *DirectConfig) openGate(step callStep) *callGate {
 	if gate.skip != "" {
 		return gate // 已經跳閘：不必播報，呼叫端會立刻回頭
 	}
+	// #200：每一發雲端呼叫都經過這裡 ⇒ 「現在正在做哪件事」在這裡記一次就全部接上。
+	c.guard.stepStarted(step, gate.started)
 	go gate.keepTalking()
 	return gate
 }
@@ -335,13 +344,16 @@ func (gate *callGate) keepTalking() {
 			gate.g.mu.Lock()
 			announce := gate.g.announce
 			gate.g.mu.Unlock()
-			if announce != nil {
-				announce(StalledCall{
-					Account: gate.host, Step: gate.step.Name, WaitedSec: waited,
-					Note: fmt.Sprintf("還在等知識庫「%s」回覆「%s」，已經等了 %d 秒。",
-						gate.host, gate.step.Name, waited),
-				})
+			call := StalledCall{
+				Account: gate.host, Step: gate.step.Name, WaitedSec: waited,
+				Note: fmt.Sprintf("還在等知識庫「%s」回覆「%s」，已經等了 %d 秒。",
+					gate.host, gate.step.Name, waited),
 			}
+			if announce != nil {
+				announce(call)
+			}
+			// #200：以前這句只印到 stdout（collector.log 裡看得到），畫面與 status.json 一個字都沒有。
+			gate.g.noteWaiting(call)
 		}
 	}
 }
@@ -367,7 +379,7 @@ func (gate *callGate) trace(outcome string) {
 // release 停掉播報並放掉 context。**一定要 defer**：context 活到呼叫端讀完回應
 // 之後才釋放，所以不能在讀 body 之前呼叫。
 func (gate *callGate) release() {
-	gate.once.Do(func() { close(gate.stop); gate.trace("done") })
+	gate.once.Do(func() { close(gate.stop); gate.trace("done"); gate.g.stepDone(gate.step) })
 	gate.cancel()
 }
 

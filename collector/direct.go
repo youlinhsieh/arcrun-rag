@@ -669,6 +669,11 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	if cfg.Manifest != "" {
 		prevStatus, _ = LoadSyncStatus(StatusFilePath(cfg.Manifest)) // 讀不到＝零值，等同「沒有上一輪」
 	}
+	// 🔴 `inkstone/arcrun-rag#200`：一輪開始就寫一筆「正在跑」，之後每件事發生的當下更新
+	// （見 live_status.go）。放在載入 prevStatus **之後**：途中寫入不該影響這一輪讀到的上一輪。
+	if !dryRun && cfg.Manifest != "" {
+		cfg.guard.beginRound(StatusFilePath(cfg.Manifest), now)
+	}
 
 	// t92-②：預檢 extractor（機器層級），有 fallback 路徑時就地更新 cfg.ClaudeBin。
 	extractorOK := true
@@ -792,6 +797,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		}
 		accCfg := cfg.makeAccountSubConfig(acc)
 		accHost := instanceHostOf(acc.CypherURL)
+		cfg.guard.enterFolder(accHost, "") // #200：帳號層的事（探測雲端 AI、查版本）也要講得出在誰身上
 
 		// t103：per-account 雲端版本偵測
 		cloudVer, cloudOK := cloudVersionThrottled(accCfg.CypherURL, cfg.ForceSync) // #121：一分鐘問一次，見 cloudcheck.go
@@ -859,6 +865,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 
 		multi := len(accCfg.Folders()) > 1
 		for _, root := range accCfg.Folders() {
+			cfg.guard.enterFolder(accHost, root) // #200
 			r, e, p, rp := runDirectOnceRoot(accCfg, root, dryRun, qs, now)
 			totalProgress = totalProgress.Add(rp.Progress)
 			stuckReasons = append(stuckReasons, rp.StuckReasons...)
@@ -926,6 +933,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// arcrun-rag#46：把「使用者按了移除並收回」的資料夾撤乾淨。
 		// 放在看守資料夾之後：正在用的資料夾優先，收回是善後。
 		for _, root := range accCfg.RetiringRoots() {
+			cfg.guard.enterFolder(accHost, root) // #200
 			r, e, remaining, done := retireRootOnce(accCfg, root, dryRun)
 			for i := range r {
 				r[i].Root = root
@@ -979,6 +987,8 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 
 	// t91：每輪寫狀態檔（含 per-account 雲端版本與萃取計數）。
 	if !dryRun && cfg.Manifest != "" {
+		// #200：先封口再寫——晚到的「還在等」不准把收工這份蓋回「同步中」（見 finishRound）。
+		cfg.guard.finishRound()
 		st := SyncStatus{
 			LastSync:       time.Now().Format(time.RFC3339),
 			ExtractorOK:    extractorOK,
@@ -1618,6 +1628,45 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
 	}
 
+	// 🔴 `inkstone/arcrun-rag#200`：上面那棵樹是**開始送之前**算的，分子必然停在開工前。
+	// 以前它就是本機唯一的一棵——收工合併時用的也是它 ⇒ 2026-09-13 ISEP 送上去 11 份，
+	// 畫面每一層照樣 0 / N。
+	//
+	// ⇒ 每處理完一份檔，就用**同一個函式、同一組分母**、manifest 此刻的分子重算一棵，
+	//   立刻落地本機，並把這個資料夾的進度寫進 status.json（live_status.go）。
+	//   分母沿用這一輪掃描的結果：一輪途中使用者新丟的檔，本來就要下一輪才算得到。
+	//
+	// 「removed 暫時放回」的那幾筆不算進樹：它們只是下架重試的記帳，檔案已經不在了
+	//（同開工那棵的判準——那棵算的時候它們還沒被放回去）。
+	//
+	// 🔴 送上 portal 的那棵（syncFolderTree）**不在這裡重送**：每份檔多打一發雲端，
+	// 在一發 24〜57 秒的實例上等於把一輪拉長一倍。portal 下一輪掃描就會拿到新的。
+	latestTree := tree
+	removedNow := map[string]bool{}
+	for _, ev := range payload.Events {
+		if ev.Type == "removed" {
+			removedNow[ev.Path] = true
+		}
+	}
+	liveReport := func(outcome string) {
+		if dryRun {
+			return
+		}
+		entries := m.Entries
+		if len(removedNow) > 0 {
+			entries = make(map[string]*ManifestEntry, len(m.Entries))
+			for k, v := range m.Entries {
+				if !removedNow[k] {
+					entries[k] = v
+				}
+			}
+		}
+		latestTree = BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, entries,
+			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity())
+		PublishFolderTreeNow(cfg.Manifest, root, latestTree, runNow)
+		cfg.guard.fileFinished(root, outcome, m.Progress())
+	}
+
 	// 結構先行（InkStoneCo#43，2026-08-15）：掃描一結束（純本機、免費、秒級）就先把
 	// 「這個資料夾有哪些檔案／最近改了什麼」送上知識庫，**不等 LLM 萃取、不受額度影響**
 	// ——走 rag_ingest_card（零 LLM 的機械收口），所以刻意放在：
@@ -1792,6 +1841,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				res.Status, res.Error = "failed", "讀檔失敗："+rerr.Error()
 				m.MarkFailed(ev.Path, now, res.Error) // t195：讀不到的檔也退避（權限／被鎖／壞掉的外接碟）
 				saveManifest()
+				liveReport("failed") // #200
 				results = append(results, res)
 				exit = 1
 				continue
@@ -1866,6 +1916,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 漏記的話（連不上知識庫、金鑰壞、模型錯）照樣每輪重撞。
 					m.MarkFailed(ev.Path, now, res.Error)
 					saveManifest()
+					liveReport("failed") // #200
 					results = append(results, res)
 					exit = 1
 					continue
@@ -1959,6 +2010,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					exit = 1
 				}
 				saveManifest()
+				liveReport(res.Status) // #200：送上去的那一刻，畫面上的分子就要跟著動
 				results = append(results, res)
 				continue
 			}
@@ -1994,6 +2046,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				qs.DailyCount++
 			}
 			saveManifest()
+			liveReport(res.Status) // #200
 			results = append(results, res)
 
 		case "removed":
@@ -2037,6 +2090,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// （不是 Scan() rebuild 時就拿掉——那時只是「偵測到不見了」，不是「已下架」）。
 				delete(m.Entries, ev.Path)
 				saveManifest()
+				liveReport("removed") // #200
 				// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡，保持本地與雲端一致。
 				// arcrun-rag#60：清除路徑必須跟落卡路徑**同一個函式**算出來（cardRelFor）——
 				// 目錄或檔名任一邊不同步就清不到卡、留下孤兒檔。第一輪對齊了目錄，
@@ -2098,7 +2152,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 
 	// t210：manifest 走到這裡已經是本輪最終狀態（每個事件處理完就地更新），
 	// 原地數一次就是對的（同 SkippedDocCount 那套「現況快照」邏輯，不必另外維護計數器）。
-	rp := rootProgress{Progress: m.Progress(), Tree: tree}
+	// #200：Tree 用**最後重算的那一棵**（沒處理任何檔時就是開工那棵）。
+	// 以前這裡是開工前那棵 ⇒ 收工合併進 folder-trees.json 的分子永遠是開工前的數字。
+	rp := rootProgress{Progress: m.Progress(), Tree: latestTree}
 	for _, e := range m.Entries {
 		if e != nil && e.FailCount >= MaxFailBeforeSkip {
 			// LastError 原文交給呼叫端彙總後過 ClassifyFailure——分類判斷只住那一個接縫，

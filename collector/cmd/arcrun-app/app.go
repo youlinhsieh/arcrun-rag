@@ -126,6 +126,8 @@ type syncStatus struct {
 	// 同上：形狀定義在 collector/progress.go／sync_status.go，這裡原樣接住。
 	// 這是資料夾那一列打不打勾的**唯一**依據（見 folder_badge.go）。
 	FolderProgress map[string]collector.SyncProgress `json:"folder_progress,omitempty"`
+	// arcrun-rag#200：一輪還沒跑完時做到哪（形狀定義在 collector/sync_status.go）。
+	InRound *collector.RoundProgress `json:"in_round,omitempty"`
 }
 
 type skippedDoc struct {
@@ -649,7 +651,7 @@ func describeStatus(s syncStatus) (syncing bool, big, sub string) {
 		return false, "同步引擎沒有在跑", sub
 	}
 	if collectorSyncing() {
-		return true, "同步中… 正在讀檔並整理成知識卡", "請稍候，完成後會顯示整理了幾份"
+		return true, "同步中… 正在讀檔並整理成知識卡", syncingSub(s.InRound, time.Now(), accountLabelFor)
 	}
 	if s.ExtractorError != "" && !s.ExtractorOK {
 		return false, "需要你處理一下", "⚠ " + s.ExtractorError

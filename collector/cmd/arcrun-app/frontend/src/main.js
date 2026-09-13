@@ -1140,7 +1140,39 @@ function render(s) {
   if (first && page === 'apps' && (s.accounts || []).length) loadApps(appsAccIdx);
 }
 
-async function tick() { try { render(await go.GetState()); } catch (e) {} }
+async function tick() { try { render(await go.GetState()); } catch (e) {} refreshOpenTrees(); }
+
+// 🔴 `inkstone/arcrun-rag#200`：展開著的樹要跟著同步進度走。
+//
+// 以前樹第一次展開讀一次就一直留在記憶體裡——而 collector 一輪途中每送上一份就會
+// 重寫 folder-trees.json。leo 2026-09-13 看著 ISEP 每層 0 / N 等了一整晚，
+// 雲端那時已經收到 11 份：**就算檔案更新了，畫面也不會去讀**。
+//
+// 只重讀「現在展開著」的那幾棵，每 3 秒一次（不是每秒——樹上限 300 個節點，
+// GetFolderTree 註解 ③ 講過為什麼不掛在每秒的 GetState 上）。內容沒變就不重畫，
+// 使用者正在點開的節點與「為什麼」不會因為重讀而跳掉。讀失敗不吵，下一次再試。
+let treeRefreshAt = 0;
+let treeRefreshing = false;
+async function refreshOpenTrees() {
+  const now = Date.now();
+  if (treeRefreshing || now - treeRefreshAt < 3000) return;
+  treeRefreshAt = now;
+  treeRefreshing = true;
+  try {
+    for (const path of Object.keys(treeState.open)) {
+      if (!treeState.open[path] || treeState.data[path] === undefined) continue;
+      try {
+        const next = (await go.GetFolderTree(path)) || null;
+        if (JSON.stringify(next) !== JSON.stringify(treeState.data[path])) {
+          treeState.data[path] = next;
+          renderFolderTree(path);
+        }
+      } catch (e) { /* 下一次再試 */ }
+    }
+  } finally {
+    treeRefreshing = false;
+  }
+}
 
 // ── 動作 ──
 $('btnSync').onclick = async () => { await go.SyncNow(); tick(); };
