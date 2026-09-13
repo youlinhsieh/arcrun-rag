@@ -247,6 +247,18 @@ function cardQuota(q, p) {
   if (!q) return '';
   const pending = p && p.pending > 0
     ? `<div class="d" style="margin-top:6px">還有 <b>${p.pending}</b> 份排隊中——會自動接著跑，你不用重丟。</div>` : '';
+  // arcrun-rag#197：雲端資料庫（D1）額度用完是另一種卡——沒有「成就」可講，
+  // 用戶要的是：哪一種額度、上限多少／用到哪、幾點恢復、要不要自己做事。文字全來自後端。
+  if (q.kind === 'd1_read' || q.kind === 'd1_write') {
+    return `
+    <div class="card" data-quota-kind="${esc(q.kind)}">
+      <h3>${esc(q.headline)}</h3>
+      <div class="d" style="margin-top:6px">${esc(q.usage)}。</div>
+      <div class="d" style="margin-top:6px"><b>${esc(q.guarantee)}</b>。</div>
+      ${pending}
+      <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
+    </div>`;
+  }
   return `
     <div class="card">
       <h3>${esc(q.achievement)} 🎉</h3>

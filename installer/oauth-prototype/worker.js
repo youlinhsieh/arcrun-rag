@@ -83,10 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@c491922ee119d2569973ff16e927a895383e5b97';
-const BUNDLE_BUILT = '2026-08-27'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
-// 安裝器自身補丁標記（bundle 沒動、只改安裝器邏輯時遞增；顯示在首頁按鈕，部署驗證用）
-const INSTALLER_PATCH = '2026-08-10b'; // b＝拆掉帳號選擇頁（CF 授權屏已有 Select account(s)），只留 fail-closed
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@de2f11f9480a0e58d3a9e6357e32664e1af9fc88';
+const BUNDLE_BUILT = '2026-08-29'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -120,9 +118,12 @@ function bundleBuiltOf(env) {
 async function releaseOf(env) {
   const base = bundleBase(env);
   const cacheKey = new Request(`https://internal.arcrun/release?base=${encodeURIComponent(base)}`);
-  const cache = caches.default;
+  // typeof 判斷放最前面：Node 離線測試環境沒有全域 `caches`（存取 `caches.default` 本身
+  // 就會先丟 ReferenceError），要在進 try 之前就擋掉——同 manifestCountsOf 的既有寫法。
+  // （#169：沒有這一行，`/api/latest` 這條路整條**離線測不動**，而那正是要驗版本線的地方。）
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
   try {
-    const hit = await cache.match(cacheKey);
+    const hit = cache ? await cache.match(cacheKey) : null;
     if (hit) return await hit.text();
   } catch { /* caches 不可用（本機測試）就直接抓 */ }
 
@@ -139,9 +140,11 @@ async function releaseOf(env) {
   if (!version) version = `${bundleBuiltOf(env)}+${bundleCommitOf(env)}`;
 
   try {
-    await cache.put(cacheKey, new Response(version, {
-      headers: { 'cache-control': 'max-age=86400', 'content-type': 'text/plain; charset=utf-8' },
-    }));
+    if (cache) {
+      await cache.put(cacheKey, new Response(version, {
+        headers: { 'cache-control': 'max-age=86400', 'content-type': 'text/plain; charset=utf-8' },
+      }));
+    }
   } catch { /* 寫快取失敗不影響回傳 */ }
   return version;
 }
@@ -233,6 +236,17 @@ import { planResources, applyResourcePlan, ResourcePlanBlocked, bindingKey } fro
 import { createCloudflareResourceApi } from './shared/resource-rule/cf-resource-api.mjs';
 // 版本＋commit 兩個印記的唯一產地（Arcrun#106 另一半）——見 version-stamp.mjs 檔頭。
 import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from './version-stamp.mjs';
+// 🔴 安裝器自己那條版本線（inkstone/arcrun-rag#169）。這個檔是機器產生的：
+//   `installer/scripts/installer-line.mjs` 依安裝器原始碼的內容指紋算出號碼寫進去，
+//   出貨線的 version 站呼叫它、release-check 站回頭查證它。
+//   ⇒ 改這顆 worker 的任何行為碼，這個號碼必定跟著動；不動就出不了貨。
+//   它取代了 2026-08-13 那個手填的 INSTALLER_PATCH（那次已經發現「leo 看不出安裝器改過」，
+//   但補的是一行寫在摺疊區裡的**手打字串** ⇒ 三週後它停在 2026-08-10b，而安裝器改了 1640 行）。
+//   ⇒ 同一個檔也烙著這棵樹的原始碼指紋（`INSTALLER_SRC_SHA`）——`/api/latest` 回的就是它。
+//     🔴 2026-09-01（comment 5959）：那一格以前讀 `env.INSTALLER_SRC_SHA`（wrangler.toml 的 vars），
+//     而那個值靠「部署的人記得改」⇒ 實測 prod（1.0.3）與 uncle6 staging（1.0.4）回同一串，
+//     兩個都對不上原始碼。指紋跟著程式碼走，就不再有第二處要記得。
+import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
 
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
@@ -258,10 +272,32 @@ const COMPAT_DATE = '2026-01-01';
 // 每輪最多新部署幾顆。受 waitUntil 30 秒與免費層 50 subrequests/invocation 雙重限制
 // （每顆約 4 個 subrequest）。6 顆≈24 subrequests，留餘裕給前置步驟。
 const DEPLOY_BUDGET_PER_RUN = 6;
+// #179：收尾硬檢查（帳號上真的每一顆都在）發現缺件時，最多自動補裝幾輪。
+// 為什麼要有上限：某顆若是**每次都真的部署失敗**（配額、bundle 壞、名稱被佔），
+// 無上限的補裝會變成永久接力，用戶看到的是一個永遠走不完的進度條——
+// 那比誠實說「少了這幾個」更糟。用完就把缺的名字直接講給用戶。
+const DEPLOY_VERIFY_MAX_ROUNDS = 2;
 // ⚠️ **絕對不可超過 waitUntil 的 ~30 秒牆鐘上限**（見上方註解；超過＝整輪被靜默掐死）。
 // 07-29 總管一度改成 45000＝把護欄拆了，會讓每輪必死——leo 點破「兩個獨立帳號同時卡
 // ⇒ 只有提供方（安裝器 worker 本身）爆掉才會同時」才發現。20 秒留 10 秒餘裕給收尾。
 const DEPLOY_TIME_BUDGET_MS = 20000;
+
+// --- e2「等專屬網址生效」的預算（`inkstone/Arcrun#190` comment 6056 ⑤／6069 裁決）------
+// 🔴 **等待不准在單一輪裡硬等三分鐘。** 1.0.6 那一版在 e2 直接吃 waitForWorkerLive 的
+//   預設 26 次（≈3 分鐘）。牆鐘不是問題（t138 已把安裝搬進請求生命週期，牆鐘無限），
+//   **subrequests 才是**：它是**每次 invocation 各自計費**，而免費層只有 50 個。
+//   同一輪裡 deploy 迴圈可能已吃掉 ≈24（6 顆 × 約 4），e2 自己還要
+//   init/seed 1＋金鑰 3＋credential ≈2＋8 支 skill ≈8-16＋4 條工作流 4 ≈ 18-26
+//   ⇒ 再塞 26 次健檢探測就會把**免費層用戶**那一輪打爆。
+//   🔴 而 leo 的帳號是付費 1000 ⇒ **我們自己怎麼測都測不出來**——這跟本票
+//   「我測的路徑跟真實新用戶不同」是同一個坑，只是換成額度那一格。
+// ⇒ 改成**一輪只等一小段，等不到就交給既有的分批接力**（前端看到 paused_continue 立刻
+//   再打一次，瀏覽器關了還有 cron */2 接手）。**新的一輪＝新的 subrequest 額度**，
+//   總等待時間照樣拉得長。這不是新機制：deploy 迴圈的分批接力就是這一套。
+const WORKFLOW_WAIT_ATTEMPTS_PER_RUN = 4;   // 每輪最多探幾次（＝4 個 subrequest；前 10 次間隔 3 秒 ⇒ 一輪 ≈10 秒）
+const WORKFLOW_WAIT_MAX_ROUNDS = 15;        // 最多接力幾輪 ⇒ 總等待 ≈2.5-3 分鐘（與 1.0.6 的量級一致）
+// 為什麼要有輪數上限：跟 DEPLOY_VERIFY_MAX_ROUNDS 同一個理由——無上限的等待會變成
+// 一個永遠走不完的進度條，那比誠實說「你的專屬網址還在生效中，等一下再按重新安裝」更糟。
 
 // ---------------------------------------------------------------------------
 // 小工具
@@ -500,6 +536,23 @@ class InstallError extends Error {
     this.hint = opts.hint || null;      // 給用戶看的「可以怎麼辦」
     this.detail = opts.detail || null;  // 技術細節（摺疊區）
     this.status = opts.status || null;
+    // inkstone/Arcrun#190：CF 的 error code（例如 10007＝這個帳號從沒註冊過 workers.dev 子網域）。
+    // 以前整包被丟掉，於是「用戶沒設過」和「我們讀不到」在上層長得一模一樣，
+    // 只能猜一個講出來——那句猜測就是這張票的病根。
+    this.code = opts.code == null ? null : opts.code;
+    // 🔴 inkstone/Arcrun#191：Cloudflare 講的**原文**，沒被翻譯、沒被改寫。
+    //
+    //    `message` 是**給用戶看的那一句**（已經過 translateCfError 中文化）。
+    //    **任何程式判斷都不准讀 `message`**——那正是這張票的病根：
+    //      translateCfError 先把 `already exists` 翻成「這個名稱已經被使用過了」，
+    //      ensureVectorizeMetadataIndexes 再拿英文去比對 ⇒ 永遠比不中
+    //      ⇒ 四個明明建好的 metadata index 被算成「沒建齊」
+    //      ⇒ **每一台裝完都看到一條假警告**。
+    //    判斷寫在翻譯的下游，而翻譯把它要比對的字擦掉了。
+    //
+    //    ⇒ 判斷一律走**結構化欄位**：先問 `code`（CF 的機器碼，翻譯動不到），
+    //      真的只有字串可用時讀 `cfMessage`（原文）。`message` 只給人看。
+    this.cfMessage = opts.cfMessage == null ? null : String(opts.cfMessage);
     // #45：{ href, label }——這個錯的正解不是「重試」而是「去某一頁做一件事」時，
     // 讓錯誤卡片畫得出一顆按得到的按鈕（見 fail() 與 renderError）。
     this.action = opts.action || null;
@@ -541,9 +594,14 @@ async function cfFetch(token, path, init = {}) {
     const first = errs[0] || {};
     const msg = first.message || `HTTP ${res.status}`;
     throw new InstallError(translateCfError(res.status, first.code, msg), {
-      hint: cfErrorHint(res.status, first.code),
+      hint: cfErrorHint(res.status, first.code, msg),
       detail: `HTTP ${res.status} ${path}\n${JSON.stringify(body && body.errors ? body.errors : body).slice(0, 800)}`,
       status: res.status,
+      code: first.code == null ? null : first.code,
+      // Arcrun#191：`msg` 的原文要一起帶走。上面第一個參數已經被 translateCfError
+      // 中文化了，而**下游有人需要比對 CF 到底說了什麼**——只留翻譯版就等於
+      // 把判斷的依據擦掉（`ensureVectorizeMetadataIndexes` 就是這樣壞了一個月）。
+      cfMessage: msg,
     });
   }
 
@@ -554,16 +612,276 @@ function translateCfError(status, code, msg) {
   if (status === 401) return '你的授權已經過期或被撤銷';
   if (status === 403) return '目前的授權沒有足夠的權限完成這一步';
   if (status === 429) return 'Cloudflare 暫時限制了請求頻率';
-  if (code === 10014 || /already exists/i.test(msg)) return '這個名稱已經被使用過了';
+  if (code === CF_ERR_NAME_TAKEN || /already exists/i.test(msg)) return '這個名稱已經被使用過了';
+  if (isD1DailyLimit(msg)) return '你的 Cloudflare 免費帳號今天的資料庫額度已經用完了';
   return `Cloudflare 回報：${msg}`;
 }
 
-function cfErrorHint(status, code) {
+/**
+ * D1 免費層「每日讀取／寫入列數」撞頂（inkstone/InkStoneCo#132 c7144）。
+ *
+ * 🔴 為什麼要單獨認出它：1.0.10 起更新會替知識庫補三支索引（0009），
+ *   資料量大的免費帳號在建索引時可能把當天的寫入額度用完。
+ *   舊行為落到最後那條「Cloudflare 回報：<英文原文>」＋「請按重新安裝再試一次」
+ *   ——而**當天重按一定再撞同一面牆**，那是假出路。
+ *   真相只有一個：等 Cloudflare 在 UTC 午夜重置額度。
+ * 判斷讀 CF 原文（`msg` 就是 cfFetch 傳進來的原文，不是譯文）。
+ * 查過（2026-09-13）：所有分支都沒有處理過這個錯（git log --all -S"free tier daily" 為空）。
+ */
+function isD1DailyLimit(msg) {
+  // ⚠️ 用 `.?` 不用撇號：resource-rule-gate 的 blankComments 是簡易切詞器，
+  //    regex 字面裡的單引號會被當成字串開頭，後面的註解剝不乾淨 ⇒ 閘誤判「有呼叫規則」。
+  return /exceeded D1.?s free tier daily/i.test(String(msg || ''));
+}
+
+function cfErrorHint(status, code, msg) {
+  if (isD1DailyLimit(msg)) {
+    return '這不是安裝壞掉，是 Cloudflare 每天給免費帳號的資料庫讀寫額度到頂了，今天再按也會停在同一步。'
+      + '額度在台北時間早上 8 點（UTC 午夜）重置，之後再按一次「重新安裝」。';
+  }
   if (status === 401) return '請回到首頁重新連結你的 Cloudflare 帳號。';
-  if (status === 403) return '請回到首頁重新授權，並在 Cloudflare 頁面上確認所有權限都有勾選。';
+  // 🔴 Arcrun#191：舊文案是「請回到首頁重新授權，並在 Cloudflare 頁面上確認所有權限都有勾選」。
+  //    那句話**叫用戶去做一件他做不到的事**：要哪些 scope 是我們寫死在授權網址裡的
+  //    （`OAUTH_SCOPES` 六項 → :3689 直接塞進 authUrl），Cloudflare 的授權屏只讓他選**帳號**，
+  //    沒有逐項勾權限這個 UI。他會在那一頁找一個不存在的東西，找不到就以為是自己弄錯了
+  //    ——**假出路比沒有出路更貴**（同 :4038 那段自己寫過的「不給假出路」）。
+  //    403 的真相只有一個：**我們要的權限不夠**，那是我們這邊的事。
+  if (status === 403) return '這是我們的授權範圍不夠，不是你的設定問題。'
+    + '請按「重新安裝」再試一次；如果還是這樣，請把技術細節回報給我們，我們來處理。';
   if (status === 429) return '請稍等一下再按「重新安裝」。';
-  if (code === 10014) return '請按「重新安裝」，系統會換一組新的名稱重試。';
+  if (code === CF_ERR_NAME_TAKEN) return '請按「重新安裝」，系統會換一組新的名稱重試。';
   return '請按「重新安裝」再試一次；若持續失敗，請把技術細節回報給我們。';
+}
+
+/**
+ * 「這個東西已經有了」——**唯一准用的判斷法**（inkstone/Arcrun#191）。
+ *
+ * 🔴 為什麼要有這支，而不是每個 catch 自己寫一行 regex：
+ *    每個 catch 自己寫，就每個 catch 都可能寫在**翻譯的下游**。這張票就是活生生的例子——
+ *    `ensureVectorizeMetadataIndexes` 拿 `e.message` 比對 `/already exists/`，
+ *    而 `e.message` 早在 `translateCfError` 被換成「這個名稱已經被使用過了」
+ *    ⇒ 那行 regex **從 2026-08-15 寫下的那一刻就沒有命中過一次**
+ *    ⇒ 四個明明建好的 metadata index 每次都被算成「沒建齊」
+ *    ⇒ 每一台裝完都看到「語意搜尋的篩選欄位沒有建齊」這條假警告。
+ *
+ * 順序照本檔 #190 已經立下的規矩（見下方子網域段落）：
+ *   **判斷一律以 error code 為準，字串只在「CF 沒給 code」時才拿來當退路。**
+ *   而字串要讀 `cfMessage`（CF 原文），**不是** `message`（給人看的譯文）。
+ *
+ * @param {unknown} e 任何被 catch 到的東西
+ * @returns {boolean} CF 是不是在說「這個已經存在了」
+ */
+function isAlreadyExistsError(e) {
+  if (!e || typeof e !== 'object') return false;
+  if (e.code === CF_ERR_NAME_TAKEN) return true;
+  // 退路：CF 沒給 code 時才看字串，而且只看原文。
+  return /already exists|duplicate/i.test(cfRawMessage(e));
+}
+
+/**
+ * 拿一個錯誤的**未經翻譯**的文字（inkstone/Arcrun#191）。
+ *
+ * 🔴 這支存在的唯一理由：**程式判斷不准讀 `e.message`。**
+ *    `cfFetch` 丟出來的 `message` 是 `translateCfError` 的產物（中文、給人看），
+ *    拿它去比對英文關鍵字必然比不中。
+ *
+ * 規則兩行：
+ *   ① 有 `cfMessage`（＝這是 `cfFetch` 丟的）⇒ 用它，那是 CF 的原話。
+ *   ② 沒有 ⇒ 退回 `message`。**這個退路是安全的**：沒有 `cfMessage` 就代表
+ *      這個錯不是從 `cfFetch` 出來的，也就沒經過 `translateCfError`
+ *      ⇒ 它的 `message` 本來就是原文。
+ *
+ * ⚠️ 給人看的字串請直接讀 `e.message`（要譯文），不要用這支。
+ *
+ * @param {unknown} e
+ * @returns {string} 原文（拿不到就回空字串）
+ */
+function cfRawMessage(e) {
+  if (!e) return '';
+  if (typeof e === 'object' && e.cfMessage) return String(e.cfMessage);
+  return String((e && e.message) || e);
+}
+
+// ---------------------------------------------------------------------------
+// workers.dev 子網域：沒有就**我們自己幫他開**（inkstone/Arcrun#190）
+// ---------------------------------------------------------------------------
+//
+// 病史（2026-08-31 真實用戶，leo 拍照）：一個從沒開通過 workers.dev 的乾淨帳號按下安裝，
+// 卡在第 5 步「部署你的專屬服務」，畫面叫他「請到 Cloudflare 後台設定一個子網域，
+// 再回來按重新安裝」。那句話有兩個病：
+//   ① 它是**猜的**——舊寫法 `GET /workers/subdomain` 外面包 `.catch(() => null)`，
+//      401／403／429 全被吞成 null，於是「我們沒權限讀」也會被講成「你還沒開通」。
+//      用戶照著去後台設了也不會好，因為問題根本不在他身上。
+//   ② 🔴 leo 2026-08-31 定調：**安裝流程裡不存在「請你去某個地方做某件事，再回來按重新安裝」
+//      這種出口**。用戶按下安裝之後，要嘛裝完，要嘛我們說清楚是**我們這邊**的什麼問題。
+//      「你的帳號還沒 X，請去開 X」整個形狀被禁掉——連帶 accountId 的直達連結也不行。
+//
+// ⇒ 現在的形狀只有兩段：**有就用**／**沒有就我們開**。沒有第三段。
+//    開不成的時候給的不是「你去做什麼」，而是「我們這邊出了什麼事、我們會怎麼辦」。
+//
+// 判斷依據是 Cloudflare 給的 error code，不是我們的猜測：
+//   10007 ＝ 這個帳號真的沒註冊過子網域  ⇒ 只有這一碼才走「幫他開」
+//   其他（401／403／429／…）             ⇒ 照原樣往上拋，用 translateCfError 的誠實訊息
+//
+// 🔴 **下面每一組 status/code 都是 2026-09-01 對真的 Cloudflare 打出來量到的**，
+//    不是從文件抄的、也不是推的（inkstone/Arcrun#190 驗收條件「實打才算數」）。
+//    帳號 1129efd7…（youlin stage）實測紀錄：
+//
+//      GET  /accounts/{id}/workers/subdomain            → 200 {"subdomain":"youlin-hsieh-dev"}
+//      GET  /accounts/{id}/workers/subdomains/{自己的}   → **200** {"subdomain":"…"}
+//      GET  /accounts/{id}/workers/subdomains/{沒人要的} → **404** code 10032（可以註冊）
+//      GET  /accounts/{id}/workers/subdomains/{別人的}   → **403** code 10031（已被占用）
+//      PUT  /accounts/{id}/workers/subdomain            → **409** code 10036（這個帳號已經有了）
+//
+// 🔴 這裡有一個**離線測試看不出來的陷阱，而它會讓整個安裝掛掉**：
+//    「名字被占用」CF 回的是 **403**，跟「我們沒權限」同一個 HTTP status。
+//    先前的寫法把 `status === 403 → throw` 排在 `code === 10031 → 換下一個` 前面，
+//    ⇒ **第一順位名字只要被別人用過，安裝就當場中止**，而且對用戶講的是
+//      「這是我們的授權範圍不夠」——又一次把一句假話寫到畫面上，正是本票要根治的病。
+//    離線測試沒抓到，是因為那份替身把 10031 寫成 409（猜的），而真的 CF 用 403。
+//    ⇒ **判斷一律以 error code 為準，status 只在「CF 沒給 code」時才拿來當退路。**
+const CF_ERR_NO_SUBDOMAIN = 10007;     // 帳號從沒註冊過 workers.dev 子網域
+const CF_ERR_SUBDOMAIN_TAKEN = 10031;  // 這個名字已被占用（實測：HTTP 403）
+const CF_ERR_SUBDOMAIN_FREE = 10032;   // 這個名字可以註冊（實測：HTTP 404；「好消息」也是用 error 回的）
+const CF_ERR_HAS_SUBDOMAIN = 10036;    // PUT 時發現這個帳號早就有子網域了（實測：HTTP 409）
+// Arcrun#191：「這個名字／這個東西已經有了」。metadata index 重複建、KV 撞名都回這一碼。
+// 它不是失敗——是「這台先前已經建過」。判斷請用 isAlreadyExistsError()，不要各自寫 regex。
+const CF_ERR_NAME_TAKEN = 10014;
+const SUBDOMAIN_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const SUBDOMAIN_TRIES = 5;
+
+/**
+ * 這個帳號的 workers.dev 子網域要叫什麼名字。
+ *
+ * 🔴 這是**會永久留在用戶 Cloudflare 帳號上、之後改不掉**的東西（他日後所有 worker 的網址
+ *    都在它底下），所以名字怎麼來的必須說得出理由：
+ *
+ *  ① `arcrun-` 前綴：用戶一眼看得出這個子網域是誰開的。
+ *  ② 後面接 `slugFromEmail(email)` 的 8 碼——**跟這次安裝其他資源用的是同一組短碼**
+ *     （`arcrun-rag-<suffix>-kv-…`／`-db`），所以它跟他的實例是同一個身分，
+ *     而且**重裝會算出同一個名字**（斷點續傳／換一台重來都收斂到同一個）。
+ *  ③ 🔴 **不用 email 的帳號名當名字**。`leo21c.workers.dev` 比較好記，但那是把個資
+ *     永久寫進一個公開的 DNS 名稱，而這件事**改不回來**。短碼是 email 的 SHA-256 雜湊，
+ *     倒不回去，也一樣穩定。可讀性換隱私，在「不可逆」面前選隱私。
+ *
+ * 撞名時（10031）才往後拿備選：加一段隨機碼，不動前面的身分段。
+ */
+function subdomainCandidates(suffix, rand) {
+  const base = ('arcrun-' + String(suffix || '').toLowerCase()).replace(/[^a-z0-9-]/g, '').slice(0, 55);
+  const out = [];
+  if (SUBDOMAIN_NAME_RE.test(base)) out.push(base);
+  const draw = rand || (() => {
+    const b = crypto.getRandomValues(new Uint8Array(3));
+    return Array.from(b, (x) => 'abcdefghjkmnpqrstuvwxyz23456789'[x % 31]).join('');
+  });
+  for (let i = out.length; i < SUBDOMAIN_TRIES; i++) {
+    const n = (base + '-' + draw(i)).slice(0, 63).replace(/-+$/, '');
+    if (SUBDOMAIN_NAME_RE.test(n) && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * 拿到（必要時替用戶開通）這個帳號的 workers.dev 子網域。
+ *
+ * @param {(name:string) => Promise<void>} opts.announce
+ *   🔴 **在真的開下去之前**呼叫一次，參數是即將被永久註冊的名字。
+ *   紅線「開之前讓用戶知道」就靠這個回呼落地——runInstall 在裡面把告知寫進 progress
+ *   並落庫，前端下一次輪詢（1.5 秒）就會把它畫成卡片。
+ * @returns {{subdomain:string, created:boolean, trail:string[]}}
+ *   `trail` ＝每一步的 HTTP status／CF code，原封不動存進 progress 的技術細節。
+ *   （舊寫法整條路只留一句 'GET /workers/subdomain returned no subdomain'，
+ *     連 HTTP status 都沒有 ⇒ 事後完全追不到到底發生什麼事。）
+ */
+async function ensureWorkersSubdomain(token, accountId, opts = {}) {
+  const { suffix, announce, rand } = opts;
+  const trail = [];
+  const mark = (e, what) =>
+    trail.push(`${what} → HTTP ${(e && e.status) || '?'} code=${(e && e.code) == null ? '-' : e.code}`);
+
+  // ① 已經有了就直接用（絕大多數帳號走這條）
+  try {
+    const sub = await cfFetch(token, `/accounts/${accountId}/workers/subdomain`);
+    if (sub && sub.subdomain) {
+      trail.push(`GET /workers/subdomain → 已有「${sub.subdomain}」`);
+      return { subdomain: sub.subdomain, created: false, trail };
+    }
+    trail.push('GET /workers/subdomain → 200，但回應沒有 subdomain ⇒ 視同尚未註冊');
+  } catch (e) {
+    mark(e, 'GET /workers/subdomain');
+    // 🔴 只有 10007 代表「用戶真的沒設過」。其他一律原樣往上拋——
+    //    401／403／429 在 translateCfError 各有誠實的講法，不准被改口講成「你還沒開通」。
+    if (!e || e.code !== CF_ERR_NO_SUBDOMAIN) throw e;
+  }
+
+  // ② 我們自己開。名字的由來見 subdomainCandidates。
+  const candidates = subdomainCandidates(suffix, rand);
+  let taken = 0;
+  for (const name of candidates) {
+    // 可用性預檢（複數的 subdomains）：10032 ＝ 可註冊、10031 ＝ 被占用。
+    // 只拿來「跳過明顯會撞的名字」，**不當最終裁決**——回意料外的東西就照樣往下打 PUT，
+    // 由 PUT 說了算。少一個「我們猜錯就整個裝不起來」的環節。
+    //
+    // 🔴 這支端點**不在 Cloudflare 官方的 openapi.json 裡**（2026-09-01 用 24.6 MB 那份
+    //    schema 查過，`workers/subdomains` 一條都沒有）⇒ 它沒有任何契約保證，
+    //    隨時可能改行為。所以它的回應只准用來「跳過」，**永遠不准用來中止安裝**。
+    try {
+      await cfFetch(token, `/accounts/${accountId}/workers/subdomains/${name}`);
+      // 實測：200 ＝ 這個名字已經登記在**這個帳號**底下。走到這裡代表上面的 GET 說沒有、
+      // 這裡卻說有 ⇒ 兩支端點打架，交給 PUT 當裁判（PUT 會用 10036 說實話）。
+      trail.push(`預檢 ${name} → HTTP 200＝這個名字已經是本帳號的（與上一步矛盾，交給 PUT 裁決）`);
+    } catch (e) {
+      mark(e, `預檢 ${name}`);
+      // 🔴 順序是有意義的，不要調回去：CF 用 **403** 表示「名字被占用」（code 10031），
+      //    跟「我們沒權限」撞同一個 status。先看 code、再看 status，
+      //    否則「別人用過這個名字」會被誤報成「我們的授權範圍不夠」並中止安裝。
+      if (e && e.code === CF_ERR_SUBDOMAIN_TAKEN) { taken++; continue; }
+      if (e && e.code === CF_ERR_SUBDOMAIN_FREE) { trail.push(`預檢 ${name} → 可以註冊`); }
+      else if (e && (e.status === 401 || e.status === 403)) {
+        // 不是 10031、也不是 10032，卻回 401／403 ＝ 真的是授權層的問題，換名字治不了。
+        throw e;
+      }
+      // 可註冊、或任何我們不認得的回應：往下打 PUT，由它說了算
+    }
+
+    // 🔴 開之前先告訴用戶：這個名字會永久留在他的帳號上。
+    if (announce) await announce(name);
+
+    try {
+      await cfFetch(token, `/accounts/${accountId}/workers/subdomain`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subdomain: name }),
+      });
+      trail.push(`PUT /workers/subdomain {${name}} → 開通成功`);
+      return { subdomain: name, created: true, trail };
+    } catch (e) {
+      mark(e, `PUT /workers/subdomain {${name}}`);
+      if (e && e.code === CF_ERR_SUBDOMAIN_TAKEN) { taken++; continue; } // 被搶走，換下一個
+      // 🔴 10036（實測 HTTP 409）＝「這個帳號已經有子網域了」。
+      //    我們是因為上一步的 GET 說沒有才走到這裡，所以這代表**中途變了**：
+      //    用戶自己在後台開了、或另一個分頁的安裝先開好了。
+      //    這種時候正確的動作是**去把它讀回來用**，不是把安裝停掉——
+      //    停掉的話用戶會看到「開通失敗」，可是他的帳號其實已經好了。
+      if (e && e.code === CF_ERR_HAS_SUBDOMAIN) {
+        const again = await cfFetch(token, `/accounts/${accountId}/workers/subdomain`);
+        if (again && again.subdomain) {
+          trail.push(`PUT 回 10036（帳號已有子網域）→ 重讀拿到「${again.subdomain}」，直接用`);
+          return { subdomain: again.subdomain, created: false, trail };
+        }
+      }
+      throw e; // 401／403／其他：換名字治不了，照原樣往上拋
+    }
+  }
+
+  // ③ 備選名字全被占用。這是我們的取名問題，不是用戶的設定問題——
+  //    所以這裡**不叫他去任何地方做任何事**，只說我們這邊發生什麼、我們會怎麼辦。
+  throw new InstallError('我們沒能替你的帳號開通專屬網址', {
+    hint: '這是我們這邊的問題，不是你的設定。請按「重新安裝」，系統會換一組新的名字再試一次；'
+      + '如果一直失敗，請把下面的技術細節傳給我們，我們來處理。',
+    detail: `subdomain registration exhausted after ${candidates.length} candidates (${taken} taken)\n`
+      + trail.join('\n'),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -952,10 +1270,16 @@ async function ensureVectorizeMetadataIndexes(token, accountId, indexName) {
         body: JSON.stringify({ propertyName: prop, indexType: 'string' }),
       });
     } catch (e) {
-      const msg = String((e && e.message) || e);
-      // 已經有了＝這台先前建過，是好事不是錯誤。
-      if (/already exists|duplicate/i.test(msg)) continue;
-      failures.push(`${prop}: ${msg}`);
+      // 🔴 已經有了＝這台先前建過，**是好事不是錯誤**（inkstone/Arcrun#191）。
+      //    這一行原本寫成 `/already exists|duplicate/i.test(e.message)`，
+      //    而 `e.message` 早在 `translateCfError` 被換成「這個名稱已經被使用過了」
+      //    ⇒ **從 2026-08-15 寫下起沒有命中過一次** ⇒ 四個建好的 index 全被算成失敗
+      //    ⇒ 每一台裝完都看到「語意搜尋的篩選欄位沒有建齊」這條假警告。
+      //    現在問結構化欄位（code 10014 / CF 原文），翻譯改不到它。
+      if (isAlreadyExistsError(e)) continue;
+      // 留痕的字用**給人看的那一句**（含 CF 原文的 fallback），因為它會被寫進
+      // progress、最後畫到完成頁的「技術細節」給人讀。
+      failures.push(`${prop}: ${String((e && e.message) || e)}`);
     }
   }
   return failures;
@@ -1146,23 +1470,27 @@ function reorderForServiceBindings(manifest) {
  * ⚠️ 帶 wasm 的多模組上傳（part 名 ↔ import specifier 解析）須首次真部署驗。
  */
 /**
- * D36 第1步（leo 07-29 拍板「安裝器代寫」）：把 credential 種進用戶實例。
+ * D36：把 credential 種進用戶實例。**目錄與值分兩家，安裝器只擁有「值」那一半。**
  *
- * 為什麼由安裝器代寫，而不是讓 cypher 自己寫：
+ * 為什麼「值」那一半由安裝器代寫（leo 07-29 拍板）：
  *   cypher 的 POST /credentials 走 CF Workers Secrets API，需要 CF_SECRETS_API_TOKEN
  *   + CF_ACCOUNT_ID。但安裝器手上的 OAuth **access token 16 小時就過期**、refresh token
  *   還會 rotation ⇒ 兩者都不能存進用戶 worker 當長期憑證（存了會靜默壞掉）。
  *   ⇒ 改由安裝器在安裝當下、用自己還有效的 token 直接寫；**cypher 身上不留任何 CF token**。
  *   accountId 是既有流程 GET /accounts 就拿到的，不需要新機制。
  *
- * 寫兩個地方（與 cypher credentials.ts 同語意，命名規則必須一致否則 WASM 找不到）：
- *   ① CF Workers per-script secret：名稱 CRED_<NAME大寫>_<sha256(api_key)前8碼大寫>
- *   ② D1 credentials 表的目錄列（只存 ref 不存值）
+ * 🔴 為什麼「目錄」那一半改成呼叫端點（inkstone/Arcrun#196，2026-09-02）：
+ *   舊寫法直接 `INSERT INTO credentials …` 打用戶的 D1，而那張表**在安裝器自己套的
+ *   migration `0006_drop_credentials_table.sql` 就被 DROP 了**（D38 圍牆修復，拆得對）。
+ *   ⇒ 乾淨帳號上那句 SQL **保證**噴 `no such table: credentials`
+ *   ⇒ 每一台安裝完的完成頁都出現「金鑰沒有存進金鑰保管處」，而值那一半其實是成功的。
+ *   目錄現在住 KBDB 的 `entries`（虛擬表 `tpl-credential`，零新表零 SQL），
+ *   由實例自己的 `POST /credentials/directory` 寫（Arcrun main `510c696`）。
+ *
+ *   同時拿掉「安裝器自己算 secret_ref」那一行：命名規則只准有一份真相源。
+ *   它一漂移，WASM 就照著錯的名字去 secret_get 取不到，而畫面只會說「fallback 了」
+ *   ——正是 #196 在追的那種安靜的失敗。現在 ref 一律由端點回。
  */
-async function sha256Prefix8(input) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 8);
-}
 
 /**
  * D36 第2步：獨立寫入 per-script secret（不走 code 上傳路徑）。
@@ -1176,27 +1504,35 @@ async function putWorkerSecretDirect(token, accountId, scriptName, name, value) 
   });
 }
 
-async function seedCredential(token, accountId, dbId, apiKey, name, value, service, sensitivity) {
-  const ref = `CRED_${name.toUpperCase()}_${(await sha256Prefix8(apiKey)).toUpperCase()}`;
-  // ① 明文進 CF Workers secret（掛在 cypher script 上，唯寫 API）
-  await cfFetch(token, `/accounts/${accountId}/workers/scripts/arcrun-cypher-executor/secrets`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: ref, text: value, type: 'secret_text' }),
-  });
-  // ② D1 目錄列（不存值，只存 ref；ON CONFLICT 冪等）
-  const now = Math.floor(Date.now() / 1000);
-  await cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
+/**
+ * 兩步，**順序不可顛倒**（契約見 inkstone/Arcrun#196 comment 5973）：
+ *   ① POST <cypherBase>/credentials/directory  → 只寫目錄、不收值，回 secret_ref + secret_script
+ *   ② putWorkerSecretDirect(…, secret_script, secret_ref, 明文)  → 值那一半，一字沒改
+ *
+ * ⚠️ 端點帶值的欄位會 400（不是安靜忽略）⇒ 這裡**永遠只送 name/service/sensitivity**。
+ * 冪等：同一組 (api_key, name) 重打＝upsert 同一列，重裝照打不必先查。
+ */
+async function seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity) {
+  // 網址還沒定案就別瞎猜——說出真話比丟一個 `undefined/credentials/directory` 好
+  if (!cypherBase) throw new Error('還不知道這台實例的網址，目錄寫不進去');
+  // ① 目錄（走實例端點，零 SQL）
+  const res = await fetch(`${String(cypherBase).replace(/\/+$/, '')}/credentials/directory`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      sql: 'INSERT INTO credentials (api_key, name, service, sensitivity, secret_ref, created_at, last_used_at)'
-         + ' VALUES (?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(api_key, name) DO UPDATE SET'
-         + ' service = excluded.service, sensitivity = excluded.sensitivity, secret_ref = excluded.secret_ref',
-      params: [apiKey, name, service, sensitivity, ref, now],
-    }),
+    headers: { 'content-type': 'application/json', 'X-Arcrun-API-Key': apiKey },
+    body: JSON.stringify({ name, service, sensitivity }),
+    signal: AbortSignal.timeout(30000),
   });
-  return ref;
+  if (!res.ok) {
+    // 保留端點原文（同 #191「判斷不准讀譯文」的形狀）——它會說是 401 還是 502
+    throw new Error(`目錄端點回 HTTP ${res.status}${await briefBody(res)}`);
+  }
+  const j = await res.json().catch(() => null);
+  if (!j || !j.success || !j.secret_ref || !j.secret_script) {
+    throw new Error(`目錄端點回了看不懂的內容（缺 secret_ref/secret_script）：${JSON.stringify(j)}`);
+  }
+  // ② 值（只有安裝器做得到；secret 名稱用端點回的 ref，不自己算）
+  await putWorkerSecretDirect(token, accountId, j.secret_script, j.secret_ref, value);
+  return j.secret_ref;
 }
 
 /**
@@ -1378,16 +1714,73 @@ export async function probeInstanceStale({ healthUrl, uiVersionUrl, wantVer, wan
 }
 
 /**
+ * 這個帳號上**現在真的有哪些 worker**——問 Cloudflare，不問帳本。
+ *
+ * 🔴 inkstone/arcrun-rag#179（2026-09-01 實撞）：安裝器過去所有「跳過」的判準
+ *    都只看 KV 帳本裡的 sha 與實例健康探測，**沒有任何一句在問「這顆在不在帳號上」**。
+ *    ⇒ 帳本一旦說了謊就會自我延續：跳過 → 用 manifest 重寫帳本 → 下次更確信。
+ *    實測那天 youlin：帳本 workers{} 23 個名字、帳號實際 16 顆
+ *    （缺 arcrun-mcp / set / string-ops / switch / try-catch / validate-json / wait），
+ *    連 `force:true` 都回「23 個服務都沒有變動，直接沿用」⇒ **重裝也修不回來**，
+ *    而 `arcrun-mcp` 就在缺的那七顆裡 ⇒ 用戶拿到「畫面說裝好了、但 MCP 不存在」的實例。
+ *
+ * 一次列表就夠（省 subrequests）：CF 回的每一筆 `result[].id` 就是 script 名。
+ *
+ * ⚠️ **列不到 ≠ 不存在**。呼叫端要把「這次問不到」與「問到了但不在清單上」分開處理：
+ *    前者只能退回舊判準並留痕（不可拿它當「不存在」的證據），後者一律不准跳過。
+ *    ⇒ 所以這裡**讓錯誤往外拋**，不自己吞成空集合。
+ *
+ * @returns {Promise<Set<string>>} 帳號上現存的 worker script 名字
+ */
+async function listAccountWorkerNames(token, accountId) {
+  // cfFetch 已經幫我們剝掉 CF 的信封（它回的就是 `body.result`），也已經把
+  // !ok / success:false 轉成 InstallError 拋出來——所以這裡拿到的直接是陣列。
+  const rows = (await cfFetch(token, `/accounts/${accountId}/workers/scripts`)) || [];
+  const out = new Set();
+  for (const r of rows) {
+    const name = r && (r.id || r.script_name || r.name);
+    if (name) out.add(String(name));
+  }
+  return out;
+}
+
+/**
+ * 這一輪該有的名字裡，**哪幾個不在帳號上**（純函式，好測）。
+ *
+ * `present` 傳 null／undefined ＝「這次列不到」⇒ 回空陣列（不製造假的「缺件」報告），
+ * 由呼叫端另外處理「無法確認」這個狀態——這兩件事不可以講成同一句（#179）。
+ *
+ * @param {string[]} wantNames 這一輪 manifest 要求的名字
+ * @param {Set<string>|null} present 帳號現實（listAccountWorkerNames 的回傳）
+ * @returns {string[]} 不在帳號上的名字（維持 wantNames 的順序）
+ */
+export function missingFromAccount(wantNames, present) {
+  if (!present) return [];
+  return (wantNames || []).filter((n) => !present.has(n));
+}
+
+/**
  * 這一顆這次**能不能靠「內容沒變」跳過**——判斷收在一處，別散回迴圈裡。
  *
  * `probeInstanceStale` 只回答「這台實例哪裡舊」，**要不要推某一顆是另一個問題**：
  * 它同時取決於那顆的 sha256 有沒有變、以及它是不是印記的載體。
  * 兩件事混在呼叫點寫，就是 #157 那個 `!instanceStale && …` 布林的由來。
  *
- * @param {{name:string, entrySha:string, prevSha:string, scope:'none'|'stamp'|'all'}} o
- * @returns {boolean} true＝這顆可以略過（內容沒變且沒被強迫重推）
+ * 🔴 #179（2026-09-01）補上**第三個問題**：這顆現在**在不在這個帳號上**。
+ * 前兩個問題（sha 有沒有變、是不是印記載體）問的都是**帳本**，而帳本會說謊——
+ * 那天 youlin 的帳本記著 23 顆、帳號上只有 16 顆，缺的七顆每一輪都因為
+ * 「sha 沒變」被略過，`force` 也一樣（見 listAccountWorkerNames 檔頭）。
+ * ⇒ `presentOnAccount === false` ＝ Cloudflare 說它不在 ⇒ **一律不准跳過**，
+ *   這一票否決在 sha／scope 之前先投。
+ * ⇒ `presentOnAccount == null` ＝ 這次列不到（不是「不存在」）⇒ 退回舊判準，
+ *   由呼叫端負責留痕；不可以把「問不到」當成「不在」。
+ *
+ * @param {{name:string, entrySha:string, prevSha:string, scope:'none'|'stamp'|'all', presentOnAccount?:boolean|null}} o
+ * @returns {boolean} true＝這顆可以略過（內容沒變、沒被強迫重推、且帳號上確實有它）
  */
-export function canSkipWorker({ name, entrySha, prevSha, scope }) {
+export function canSkipWorker({ name, entrySha, prevSha, scope, presentOnAccount }) {
+  // #179：帳號現實優先於帳本。Cloudflare 明說沒有這顆 ⇒ 不管帳本怎麼寫都要推。
+  if (presentOnAccount === false) return false;
   // 帳本沒記過這顆／manifest 沒給 sha ⇒ 沒有「沒變」的證據，只能推。
   if (!prevSha || !entrySha || prevSha !== entrySha) return false;
   if (scope === 'all') return false;                       // 帳本整份不可信
@@ -1571,15 +1964,22 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}`, { method: 'PUT', body: form });
 
   // 4. 開 workers.dev 子域（cypher 靠 URL 找零件，component worker 也要對外可達）
+  // 🔴 inkstone/Arcrun#190：這裡本來是空的 `catch {}`，註解寫「caller 記 note」——**而 caller 從來沒記**。
+  //    後果不是抽象的：這顆 worker 對外不可達，可是安裝照樣走完、畫面照樣說「安裝完成」。
+  //    現在把失敗原因回傳給 caller，由它收進 progress.result.routeWarnings（會被畫出來）。
+  let routeWarning = null;
   try {
     await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}/subdomain`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ enabled: true }),
     });
-  } catch { /* 子域開通失敗不擋（可能官方帳號無 subdomain），caller 記 note */ }
+  } catch (e) {
+    routeWarning = `${entry.name}：${(e && e.message) || e}`
+      + ((e && e.status) ? `（HTTP ${e.status}${e.code == null ? '' : ' code=' + e.code}）` : '');
+  }
 
-  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback };
+  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning };
 }
 
 /** 佔位代換：整棵 JSON stringify → 逐一 replace → parse（等價 push-demo-workflow.sh sed 段）。 */
@@ -1591,6 +1991,91 @@ function applySubs(obj, subs) {
 
 /** 推一條 workflow 到（新裝好的）實例：/cypher/search 編圖 → config 合節點 → /webhooks/named。
  *  手法逐字對齊工地主任 pushWorkflow（installer/src/index.js）＝push-demo-workflow.sh 的 API 復刻。 */
+/**
+ * HTTP 失敗時把 response body 壓成一行可讀短句，附在錯誤訊息後面。
+ *
+ * 🔴 為什麼要有這支（inkstone/Arcrun#190，2026-08-14 診斷／2026-09-02 第二次撞）：
+ *   `pushWorkflowTo` 原本只記 `HTTP <狀態碼>`，**body 直接丟掉**——而那個 body 裡
+ *   就寫著 `error code: 1042`（＝這個 workers.dev 主機名此刻路由不到 worker）。
+ *   少了它，`404`／`530` 看起來像「程式沒這條路由」，實際是「這台機器還不存在」，
+ *   **兩者的處置完全相反**（一個要修碼、一個只要等）。
+ */
+async function briefBody(res) {
+  try {
+    const raw = await res.text();
+    if (!raw) return '';
+    const oneLine = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return oneLine ? `：${oneLine.slice(0, 200)}` : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * 等這個 workers.dev 網址真的生效——**單一真相**（e2 開工前 ＋ f. 自檢共用）。
+ *
+ * 🔴 inkstone/Arcrun#190：新帳號沒有子網域時我們自己幫他開，而**剛建好的
+ *   `*.workers.dev` 主機名要 1-2 分鐘才路由得到**。六顆 worker 十幾秒就部署完，
+ *   工作流緊接著推 ⇒ CF 邊緣回 `404 + error code 1042`（2026-08-14）／`530`（2026-09-02），
+ *   畫面卻只說「有 4 條 AI 工作流沒裝成」。
+ *
+ *   病根不是「沒有等待邏輯」——安裝器本來就有一段驗過的等待，寫死在 f. 自檢裡，
+ *   **只保護到最後一步**；而第一個真正打那個網址的動作（`/init/seed` → 種 skills
+ *   → 推工作流）**零等待、零重試**。這支就是把那段等待抽出來保護第一步。
+ *
+ * 🔴 判準是「**body 是不是 JSON**」，不是比對狀態碼清單：
+ *   cypher `/health` 一律回 JSON；主機名還沒生效時回話的是 CF 邊緣的 HTML。
+ *   兩次事故的碼不同（1042／530）而形狀相同 ⇒ 列舉碼一定會再漏第三次。
+ *
+ * 節奏沿用 f. 自檢那組驗過的參數：最多 26 次，前 10 次間隔 3 秒、之後 10 秒（≈3 分鐘）。
+ * 長間隔切成 5 秒一段並回心跳——`STALL_MS` 是 5 分鐘（那個門檻當初就是為這組參數調的，
+ * 見本檔 :73），心跳不回寫就會被外層判死。
+ *
+ * @param {string} workerUrl 實例的 base URL
+ * @param {{until?:'routed'|'healthy', onAttempt?:(n:number)=>Promise<void>,
+ *          onHeartbeat?:()=>Promise<void>, sleep?:(ms:number)=>Promise<void>,
+ *          maxAttempts?:number}} [opts]
+ * @returns {Promise<{ok:boolean, routed:boolean, attempts:number, health:any, error:string|null}>}
+ */
+async function waitForWorkerLive(workerUrl, opts = {}) {
+  const until = opts.until || 'healthy';
+  const onAttempt = opts.onAttempt || (async () => {});
+  const onHeartbeat = opts.onHeartbeat || (async () => {});
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const maxAttempts = opts.maxAttempts || 26;
+  let lastErr = null;
+  let health = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    let routed = false;
+    try {
+      const res = await fetch(`${workerUrl}/health`, { cf: { cacheTtl: 0 }, signal: AbortSignal.timeout(10000) });
+      const raw = await res.text();
+      let body = null;
+      try { body = JSON.parse(raw); } catch (_) { body = null; }
+      if (body && typeof body === 'object') {
+        routed = true; // 回應是 worker 自己發的 ⇒ 主機名確定路由得到
+        health = body;
+        if (body.ok || body.status === 'ok') return { ok: true, routed: true, attempts: i + 1, health, error: null };
+        lastErr = `健檢回報未通過（HTTP ${res.status}）：${JSON.stringify(body).slice(0, 300)}`;
+      } else {
+        // 不是 JSON ⇒ 講話的是 CF 邊緣不是你的服務 ⇒ 主機名還沒生效。原文要留著（1042／530 就在裡面）
+        lastErr = `你的專屬網址還在生效中（HTTP ${res.status}）：${String(raw).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)}`;
+      }
+    } catch (e) {
+      lastErr = String((e && e.message) || e);
+    }
+    // 路由通了就夠的情境（e2 開工前）：健檢不過是別的毛病，再等也不會好
+    if (routed && until === 'routed') return { ok: false, routed: true, attempts: i + 1, health, error: lastErr };
+    await onAttempt(i + 1);
+    const waitMs = i < 10 ? 3000 : 10000;
+    for (let w = 0; w < waitMs; w += 5000) {
+      await sleep(Math.min(5000, waitMs - w));
+      await onHeartbeat();
+    }
+  }
+  return { ok: false, routed: false, attempts: maxAttempts, health, error: lastErr };
+}
+
 async function pushWorkflowTo(cypherBase, ns, subs, wf) {
   const name = wf.name;
   try {
@@ -1609,7 +2094,7 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
     } else {
       const cres = await fetch(`${cypherBase}/cypher/search`, { method: 'POST', headers: hdr, body: JSON.stringify({ triplets: flow, mode: 'compile' }), signal: AbortSignal.timeout(20000) });
       const compiled = await cres.json().catch(() => ({}));
-      if (!cres.ok) return { name, ok: false, error: `/cypher/search HTTP ${cres.status}` };
+      if (!cres.ok) return { name, ok: false, error: `/cypher/search HTTP ${cres.status}${await briefBody(cres)}` };
       g = compiled.cypher;
     }
     const nodes = (g.nodes || []).map((node) => {
@@ -1626,7 +2111,7 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
       body: JSON.stringify({ name, graph: { id: name, name, nodes, edges: g.edges || [] }, config: cfg, description: wf.description || '' }),
       signal: AbortSignal.timeout(20000),
     });
-    if (!dres.ok) return { name, ok: false, error: `/webhooks/named HTTP ${dres.status}` };
+    if (!dres.ok) return { name, ok: false, error: `/webhooks/named HTTP ${dres.status}${await briefBody(dres)}` };
     return { name, ok: true };
   } catch (e) {
     return { name, ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -1699,7 +2184,21 @@ export {
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
   seedSkillsTo, // skills 種入（本班）
+  waitForWorkerLive, briefBody, // #190：「等網址生效」單一真相＋失敗訊息保留 CF 原文
+  // inkstone/Arcrun#190 workers.dev 子網域自動開通 ＋ 靜默降級可見化
+  ensureWorkersSubdomain, subdomainCandidates, installWarnings,
+  // inkstone/Arcrun#196 comment 6144：警告的收件人（用戶／我們）分流
+  userFacingWarnings, internalOnlyWarnings,
+  // inkstone/Arcrun#191：「判斷不准讀譯文」這條規矩的兩支載體。
+  // 匯出是為了讓測試能直接證明「CF 回已存在 ⇒ 不算失敗」，不必繞整個 runInstall。
+  isAlreadyExistsError, cfRawMessage, translateCfError, CF_ERR_NAME_TAKEN,
+  // InkStoneCo#132：D1 每日額度撞頂要說人話——測試直接走 cfFetch 證明畫面上那一句與提示
+  cfFetch,
   manifestCountsOf, homePage, // 授權頁「技術細節」數量與建置識別——供離線測試證明「換 manifest 數字會跟著變」
+  listAccountWorkerNames, // #179 帳號現實：這個帳號上現在真的有哪些 worker
+  // inkstone/Arcrun#196：目錄那一半改走實例端點。匯出是為了讓測試直接證明
+  // 「它打的是 /credentials/directory、而且一次都沒碰 D1」，不必繞整個 runInstall。
+  seedCredential,
 };
 
 /**
@@ -1839,9 +2338,18 @@ async function runInstall(env, sid, progress, force) {
       await setStep('account', 'running');
       const accounts = await cfFetch(token, '/accounts');
       if (!accounts || accounts.length === 0) {
-        throw new InstallError('你的 Cloudflare 帳號底下沒有可用的空間', {
-          hint: '請先到 Cloudflare 官網完成帳號設定，再回來重新安裝。',
-          detail: 'GET /accounts returned empty array',
+        // 🔴 Arcrun#191：舊文案是「請先到 Cloudflare 官網完成帳號設定，再回來重新安裝」
+        //    ——跟 subdomain 那句是同一個病的第二例：**把「我們讀不到」講成「你沒設好」**。
+        //    事實是：能走完 OAuth 就代表帳號存在（授權屏本身要選帳號才給得出 token）。
+        //    `/accounts` 回空陣列幾乎只有一種可能——**這把 token 看不到任何帳號**
+        //    （授權當下一個帳號都沒勾）。用戶照舊文案跑去官網「完成帳號設定」會什麼都找不到，
+        //    因為他的帳號本來就是好的 ⇒ 那是一條**假出路**。
+        //    出路改成我們頁面上的一顆按鈕（與 #45 多帳號那條同形狀，leo 已核准的講法）。
+        throw new InstallError('我們用你的授權查不到任何 Cloudflare 帳號', {
+          hint: '這不是你的帳號有問題——是我們拿到的授權沒有涵蓋到任何一個帳號。'
+            + '請回到首頁重新連結一次，在 Cloudflare 的授權畫面勾選你要安裝的那個帳號。',
+          action: { href: '/', label: '回首頁重新連結' },
+          detail: 'GET /accounts returned empty array — token carries no account scope',
         });
       }
       // 🔴 #45（2026-08-09）：多個帳號時**不准默默取第一個**（`GET /accounts` 排序不保證，
@@ -2028,15 +2536,20 @@ async function runInstall(env, sid, progress, force) {
       try {
         await runSql(MIGRATION_SQL);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        // 🔴 Arcrun#191 第二處同款：這裡原本也是讀 `e.message`（＝譯文）去比對英文。
+        //    它**今天還沒壞，是運氣**——D1 的錯落在 translateCfError 最後那條
+        //    `Cloudflare 回報：${msg}`，原文剛好被原封不動接在後面，所以比得中。
+        //    只要哪天 D1 的這個錯改成帶 code、或走到 401/403/429 那三條翻譯分支，
+        //    這一行就會跟 metadata index 那一行一樣安靜地永遠比不中
+        //    ⇒ 已套過 migration 的實例再裝一次就整步失敗（就是 #159 那個病復發）。
+        //    ⇒ 改成讀原文，不留這顆定時炸彈。
         // 只有「這一句本來就套過了」才退回逐句；其他錯照樣往上拋，不吞。
-        if (!/duplicate column/i.test(msg)) throw e;
+        if (!/duplicate column/i.test(cfRawMessage(e))) throw e;
         for (const stmt of MIGRATIONS.statements) {
           try {
             await runSql(stmt);
           } catch (e2) {
-            const m2 = e2 instanceof Error ? e2.message : String(e2);
-            if (/duplicate column/i.test(m2)) { tolerated++; continue; }
+            if (/duplicate column/i.test(cfRawMessage(e2))) { tolerated++; continue; }
             throw e2;
           }
         }
@@ -2058,18 +2571,38 @@ async function runInstall(env, sid, progress, force) {
   } else {
     try {
       await setStep('deploy', 'running');
-      // 子網域先行：零件靠 URL 互打（cypher→component），沒有 workers.dev 子網域整套不通＝fail-closed
+      // 子網域先行：零件靠 URL 互打（cypher→component），沒有 workers.dev 子網域整套不通。
+      // 🔴 inkstone/Arcrun#190：以前這裡是 fail-closed ＋「請去 Cloudflare 後台自己設一個」。
+      //    現在是 fail-**forward**：沒有就我們幫他開（見 ensureWorkersSubdomain 檔頭）。
       let subdomain = progress.result.subdomain;
       if (!subdomain) {
-        const sub = await cfFetch(token, `/accounts/${accountId}/workers/subdomain`).catch(() => null);
-        subdomain = sub && sub.subdomain;
-        if (!subdomain) {
-          throw new InstallError('你的 Cloudflare 帳號還沒開通 workers.dev 專屬網址', {
-            hint: '請到 Cloudflare 後台 Workers 頁面設定一個子網域（免費），再回來按「重新安裝」。',
-            detail: 'GET /workers/subdomain returned no subdomain',
-          });
-        }
+        const sub = await ensureWorkersSubdomain(token, accountId, {
+          suffix,
+          // 紅線「開之前讓用戶知道」：在 PUT 真的打下去之前先落庫，
+          // 前端下一次輪詢（1.5 秒）就把它畫成卡片 ⇒ 用戶是在事前看到名字，不是事後。
+          announce: async (name) => {
+            progress.result.subdomainPlanned = name;
+            progress.subdomainNotice = '你的 Cloudflare 帳號還沒有 workers.dev 專屬網址，'
+              + '我們正在幫你開通：' + name + '.workers.dev\n'
+              + '這個名字會永久留在你的 Cloudflare 帳號上（一個帳號只能設定一次，之後不能修改），'
+              + '你日後所有服務的網址都會在它底下。'
+              + '名字由「arcrun-」加上你 Email 的一組代碼組成——那組代碼是雜湊，不含你的個人資料。';
+            await writeProgress(env, sid, progress);
+          },
+        });
+        subdomain = sub.subdomain;
         progress.result.subdomain = subdomain;
+        // 事後追得到：每一步的 HTTP status 與 CF error code 都留著
+        //（舊寫法只留一句沒有 status 的 'returned no subdomain'）。
+        progress.result.subdomainTrail = sub.trail.join('\n');
+        if (sub.created) {
+          progress.result.subdomainCreated = subdomain;
+          progress.subdomainNotice = '我們幫你的 Cloudflare 帳號開通了專屬網址：'
+            + subdomain + '.workers.dev\n'
+            + '（你的帳號原本還沒有這個設定。它會永久留在你的帳號上，之後不能修改；'
+            + '你日後所有服務的網址都會在它底下。）';
+        }
+        await writeProgress(env, sid, progress);
       }
       // 語意搜尋：index 該用哪一顆（沿用或新建）已經在上面由共用規則決定完了。
       // 這裡補 metadata 欄位。
@@ -2095,6 +2628,18 @@ async function runInstall(env, sid, progress, force) {
       if (!force) {
         prevDeployState = await env.INSTALLER_KV.get(deployedKey, 'json').catch(() => null);
       }
+      // 🔴 #179：先問一次**帳號現實**，再決定任何一顆要不要跳過。
+      //    一次列表（1 個 subrequest）就夠，下面三處都吃它：整批跳過的前提／逐顆跳過的一票否決／
+      //    接力游標的可信度。列不到就留 null——**null ＝「這次問不到」，不是「不存在」**，
+      //    這兩件事講成同一句就是在騙人（同檔 listAccountWorkerNames 檔頭）。
+      let accountScripts = null;
+      try {
+        accountScripts = await listAccountWorkerNames(token, accountId);
+        progress.result.accountScriptCount = accountScripts.size;
+      } catch (e) {
+        progress.result.accountScriptListError = String((e && e.message) || e);
+      }
+      const accountHas = (name) => (accountScripts ? accountScripts.has(name) : null);
       // t157（07-31 實錄）：同帳號雙通道互蓋偵測——youlin 先被 staging（Gitea 釘點）裝了 24 顆，
       // leo 又用 prod（jsDelivr 釘點）裝到 9/27 ⇒ 混血實例。bundleBase 的 host 不同＝另一通道。
       // 只告知不擋：警告寫進 progress.channelWarning，前端進度頁頂部顯示黃卡。
@@ -2178,7 +2723,18 @@ async function runInstall(env, sid, progress, force) {
         progress.result.uiFingerprint = probe.uiFingerprint;
         progress.result.staleReason = probe.reason;
       }
-      if (!force && !instanceStale && prevFingerprint && prevFingerprint === manifestFingerprint) {
+      // 🔴 #179：整批跳過**多一個前提**——帳號上真的每一顆都在。
+      //    舊條件只有「沒 force、實例不舊、指紋一致」三項，全部都是問帳本；
+      //    而那天 youlin 三項全成立、帳號上卻少七顆 ⇒ 直接跳到「都沒有變動，直接沿用」。
+      //    列不到清單（accountScripts === null）時**也不准走這條快路徑**：
+      //    無法確認就沒有資格宣告「都沒有變動」，改走下面逐顆那條（它會逐顆再判一次）。
+      const missingAll = missingFromAccount(manifest.core.map((c) => c.name), accountScripts);
+      const accountAllPresent = !!accountScripts && missingAll.length === 0;
+      if (accountScripts && missingAll.length) {
+        // 留痕：這一輪為什麼沒有整批跳過。少了什麼要看得見，不是安靜地多推幾顆。
+        progress.result.accountMissingAtStart = missingAll;
+      }
+      if (!force && !instanceStale && accountAllPresent && prevFingerprint && prevFingerprint === manifestFingerprint) {
         progress.result.deployedNames = manifest.core.map((c) => c.name);
         progress.result.deployed = progress.result.deployedNames.length;
         progress.result.skippedAll = true;
@@ -2194,8 +2750,13 @@ async function runInstall(env, sid, progress, force) {
         // ⇒ 過期條目永遠無法自我修正。leo 實例實證（08-01）：同一筆記錄裡
         // fingerprint 已含新 sha 26440bb4…，workers['arcrun-rag-ui'] 卻仍是舊 sha 30ea4769…，
         // 且殘留 3 個孤兒（arcrun-claude-api / arcrun-kbdb-upsert-block / arcrun-km-writer）。
+        // 🔴 #179：這裡**只准寫「這一輪真的確認存在的那些」**。
+        //    舊寫法是「用當前 manifest 的 sha 整份重寫」——於是帳本每跳過一次就更確信一次
+        //    （同檔 :2434 的舊註解自己記過這個病：「紀錄說裝了實際沒裝＝比重裝更危險」）。
+        //    走到這裡時 accountAllPresent 已成立，兩者理應等值；照帳號現實過濾一次，
+        //    是為了讓「帳本永遠不會宣告比帳號更多」這件事**成為程式碼的性質**，不是巧合。
         const rebuiltShas = {};
-        for (const c of manifest.core) { if (c.sha256) rebuiltShas[c.name] = c.sha256; }
+        for (const c of manifest.core) { if (c.sha256 && accountScripts.has(c.name)) rebuiltShas[c.name] = c.sha256; }
         await env.INSTALLER_KV.put(deployedKey, JSON.stringify({
           bundleBase: bundleBase(env), fingerprint: manifestFingerprint, workers: rebuiltShas,
         }), { expirationTtl: 180 * 86400 }).catch(() => {});
@@ -2205,7 +2766,13 @@ async function runInstall(env, sid, progress, force) {
       // tier1 先、tier2 後（manifest 已排序）；逐顆回寫進度＋游標（deployedNames）
       for (let i = 0; i < manifest.core.length; i++) {
         const entry = manifest.core[i];
-        if (progress.result.deployedNames.includes(entry.name)) continue; // 接力續跑：上一輪已裝過這顆
+        if (progress.result.deployedNames.includes(entry.name)) {
+          // #179：游標同樣是帳本。上一輪可能是「被跳過」而不是「真的裝了」
+          //（整批跳過那條路就會把整份 manifest 寫進游標）⇒ 帳號上沒有就不准信它。
+          if (accountHas(entry.name) !== false) continue; // 接力續跑：上一輪已裝過這顆
+          progress.result.deployedNames = progress.result.deployedNames.filter((n) => n !== entry.name);
+          delete deployedShaNow[entry.name];
+        }
         // 註：以下 budget/牆鐘判斷放在「真的要部署」之前——跳過的顆不打 CF API，
         // 不該消耗額度，也不該觸發接力暫停（07-29 leo 卡在 27/27 的真因之一）。
         // t132: sha256 比對——相同且 bundleBase 未變就跳過，計入完成數讓進度條正常走
@@ -2225,7 +2792,9 @@ async function runInstall(env, sid, progress, force) {
         //    實測 1.4.54→1.4.55：23 顆裡只有 arcrun-kbdb 的 sha 變了，其餘 22 顆全被白推一次。
         //    ⇒ 改問 canSkipWorker：只有「印記載體」與「帳本整份不可信」兩種情況才強迫重推。
         //    t146 那道保險**沒有被關掉**——cypher 是印記載體，版號一落後它一定會被重推。
-        if (canSkipWorker({ name: entry.name, entrySha: entry.sha256, prevSha, scope: staleScope })) {
+        //    🔴 #179 三修：再多問一句「它在不在帳號上」——sha 與 scope 問的都是帳本，
+        //    而缺的那七顆正是「sha 沒變、又不是印記載體」⇒ 舊判準必定放它們過。
+        if (canSkipWorker({ name: entry.name, entrySha: entry.sha256, prevSha, scope: staleScope, presentOnAccount: accountHas(entry.name) })) {
           const s2skip = progress.steps.find((x) => x.id === 'deploy');
           if (s2skip) s2skip.note = `${progress.result.deployedNames.length + 1}/${manifest.core.length}：${entry.name}（未變動，略過）`;
           progress.result.deployedNames.push(entry.name);
@@ -2257,7 +2826,13 @@ async function runInstall(env, sid, progress, force) {
           return;
         }
         const s2 = progress.steps.find((x) => x.id === 'deploy');
-        if (s2) s2.note = `${progress.result.deployedNames.length + 1}/${manifest.core.length}：${entry.name}`;
+        // #179：補裝的顆**不要套進度計數器**。游標被污染時 `deployedNames.length + 1`
+        //    會算出「23/23」並且對每一顆補裝的都印同一個數字（實測 youlin：修好後的第一輪
+        //    在補第 2 顆時畫面顯示「23/23：arcrun-set」）⇒ 那行字本身就在騙人，
+        //    而這張票整個講的就是「不要對用戶說不成立的話」。
+        if (s2) s2.note = accountHas(entry.name) === false
+          ? `補裝 ${entry.name}（你的帳號上沒有這一顆）`
+          : `${progress.result.deployedNames.length + 1}/${manifest.core.length}：${entry.name}`;
         // 保底：先把 state 標成 paused_continue 再開始這一顆——萬一被 waitUntil 硬砍，
         // KV 裡留下的仍是「接力中」而不是「running」，前端就會自動接手（不會永久卡住）。
         progress.state = 'paused_continue';
@@ -2266,6 +2841,12 @@ async function runInstall(env, sid, progress, force) {
         progress.result.deployedNames.push(r.name);
         progress.state = 'running'; // 這一顆平安做完，恢復 running（上面是被砍時的保底）
         if (r.usedFallback) progress.result.bundleFallbackUsed = true;
+        // inkstone/Arcrun#190：對外路由沒開起來＝這顆零件別人打不到。不擋安裝，但**必須看得見**
+        //（舊寫法是空 catch，用戶會拿到一台「安裝成功」但零件互相打不通的實例）。
+        if (r.routeWarning) {
+          if (!Array.isArray(progress.result.routeWarnings)) progress.result.routeWarnings = [];
+          progress.result.routeWarnings.push(r.routeWarning);
+        }
         if (entry.sha256) deployedShaNow[entry.name] = entry.sha256;
         try {
           await env.INSTALLER_KV.put(deployedKey, JSON.stringify({ bundleBase: bundleBase(env), fingerprint: manifestFingerprint, workers: deployedShaNow }), { expirationTtl: 365 * 86400 });
@@ -2292,6 +2873,46 @@ async function runInstall(env, sid, progress, force) {
         await writeProgress(env, sid, progress);
         return;
       }
+      // 🔴 #179 收尾硬檢查：在對用戶說「裝好了」之前，**向 Cloudflare 問一次清單**。
+      //    上面每一個「已裝」都是我們自己記的（部署回傳成功、或被判定沒變動），
+      //    而 2026-09-01 實撞證明那份紀錄會與帳號現實整整差七顆，而且沒有任何一步會紅燈。
+      //    ⇒ 這道檢查的判準只有一句：**清單上的每一顆都真的在帳號上，少一顆就不准說裝好了。**
+      let verifyMissing = [];
+      try {
+        const nowOnAccount = await listAccountWorkerNames(token, accountId);
+        progress.result.accountScriptCountAfter = nowOnAccount.size;
+        verifyMissing = missingFromAccount(manifest.core.map((c) => c.name), nowOnAccount);
+      } catch (e) {
+        // 問不到 ≠ 缺件。誠實記下「這一輪沒能確認」，不要編一個「都在」出來，
+        // 也不要把它講成「少了東西」——兩種都是拿猜測冒充事實（#179）。
+        progress.result.deployVerifyError = String((e && e.message) || e);
+      }
+      if (verifyMissing.length) {
+        progress.result.accountMissingAfterDeploy = verifyMissing;
+        // 帳本不准繼續說謊：缺的那幾顆從游標與 sha 帳本裡**拔掉**再寫回 KV，
+        // 否則下一輪又會因為「紀錄說裝了」而跳過它們（這就是自我延續的那個迴路）。
+        progress.result.deployedNames = progress.result.deployedNames.filter((n) => !verifyMissing.includes(n));
+        for (const n of verifyMissing) delete deployedShaNow[n];
+        progress.result.deployed = progress.result.deployedNames.length;
+        try {
+          await env.INSTALLER_KV.put(deployedKey, JSON.stringify({ bundleBase: bundleBase(env), fingerprint: manifestFingerprint, workers: deployedShaNow }), { expirationTtl: 365 * 86400 });
+        } catch (_) { /* 紀錄寫入失敗不炸安裝 */ }
+        const verifyRounds = (progress.result.deployVerifyRounds || 0) + 1;
+        progress.result.deployVerifyRounds = verifyRounds;
+        if (verifyRounds <= DEPLOY_VERIFY_MAX_ROUNDS) {
+          // 先補裝（要嘛補裝，要嘛明確告訴用戶少了什麼——這裡走前者）。
+          progress.state = 'paused_continue';
+          const sv = progress.steps.find((x) => x.id === 'deploy');
+          if (sv) sv.note = `還差 ${verifyMissing.length} 個服務沒真的裝上你的帳號，正在補裝…（${verifyMissing.join('、')}）`;
+          await writeProgress(env, sid, progress);
+          return;
+        }
+        // 補裝也補不上來 ⇒ 走後者：**明確告訴用戶少了什麼**，不准標 done。
+        throw new InstallError(`有 ${verifyMissing.length} 個服務沒有成功裝到你的 Cloudflare 帳號`, {
+          hint: '請按「重新安裝」再試一次。如果每次都是同幾個服務失敗，請把下方技術細節回報給我們。',
+          detail: 'missing on account after ' + verifyRounds + ' verify rounds: ' + verifyMissing.join(', '),
+        });
+      }
       await setStep('deploy', 'done', progress.result.deployedNames.length + ' 個服務已部署' + fallbackNote);
       }
     } catch (e) {
@@ -2312,6 +2933,53 @@ async function runInstall(env, sid, progress, force) {
     // ⇒ 總圖永遠空白。這是**每個新用戶都會中**的 bug，不是 leo 實例特有。
     // /init/seed 不需 session、冪等（回 created/existing），是種 template 的正確入口。
     // 實測手動打一次即建立 triplet：{"created":["triplet"],"existing":[...]}。
+    // 🔴 inkstone/Arcrun#190：**在還沒生效的網址上開工，就是這張票第二次撞的那個 bug。**
+    //   新帳號的子網域是我們剛剛才幫他開的，而剛建好的 `*.workers.dev` 要 1-2 分鐘
+    //   才路由得到。下面這三件（/init/seed → 種 skills → 推 4 條工作流）是**第一個
+    //   真正打那個網址的動作**，原本零等待 ⇒ CF 邊緣回 404(1042)／530 ⇒ 畫面說
+    //   「有 4 條 AI 工作流沒裝成」，而其實只是還沒好。
+    //   ⇒ 用 f. 自檢那段**已經驗過**的等待（waitForWorkerLive）先保護這一步。
+    //   `until:'routed'`：拿到 worker 自己回的 JSON 就夠——健檢不過是別的毛病，
+    //   再等也不會好，且不該讓 cypher 冷啟炸掉安裝（t158）。
+    let live = { ok: false, routed: false, attempts: 0, error: '沒有公開網址', health: null };
+    if (workerUrl) {
+      const wfStep = progress.steps.find((x) => x.id === 'workflows');
+      const waitRound = Number(progress.result.workflowsWaitRounds || 0) + 1;
+      live = await waitForWorkerLive(workerUrl, {
+        until: 'routed',
+        // 🔴 一輪只探這麼多次（見 WORKFLOW_WAIT_ATTEMPTS_PER_RUN 檔頭）：
+        //    不帶這個參數就會吃預設 26 次，把免費層用戶那一輪的 subrequest 額度打爆。
+        maxAttempts: WORKFLOW_WAIT_ATTEMPTS_PER_RUN,
+        onAttempt: async (n) => {
+          progress.result.routedAttempt = n;
+          if (wfStep) wfStep.note = `等你的專屬網址生效中…（第 ${(waitRound - 1) * WORKFLOW_WAIT_ATTEMPTS_PER_RUN + n} 次，新網址通常 1-2 分鐘）`;
+          await writeProgress(env, sid, progress);
+        },
+        onHeartbeat: async () => {
+          progress.updatedAt = Date.now();
+          await writeProgress(env, sid, progress);
+        },
+      });
+      progress.result.workflowsWaitRounds = waitRound;
+      // 留痕：跨輪累計（單輪的次數會被下一輪蓋掉，累計的才看得出「總共等了多久」）
+      progress.result.routedAttempts = Number(progress.result.routedAttempts || 0) + live.attempts;
+      if (!live.routed) {
+        // 等不到 ⇒ 誠實說「還在生效中」，**不准說成工作流裝失敗**（那是把一個
+        // 會自己好的狀況講成壞掉，用戶只會一直按重新安裝）。
+        progress.result.notRoutedYet = live.error || '你的專屬網址還在生效中';
+        await writeProgress(env, sid, progress);
+      }
+      // 🔴 這一輪還等不到 ⇒ **這不是失敗，是「還沒好」**：交回既有的分批接力
+      //    （deploy 迴圈同一套）。下一輪是新的 invocation ⇒ 新的 subrequest 額度。
+      //    等滿 WORKFLOW_WAIT_MAX_ROUNDS 才往下走，由結算誠實講出來。
+      if (!live.routed && waitRound < WORKFLOW_WAIT_MAX_ROUNDS) {
+        progress.state = 'paused_continue';
+        if (wfStep) wfStep.note = `等你的專屬網址生效中…（已等約 ${waitRound * 10} 秒，新網址通常 1-2 分鐘）`;
+        progress.updatedAt = Date.now();
+        await writeProgress(env, sid, progress);
+        return;
+      }
+    }
     try {
       const seedRes = await fetch(`${workerUrl}/init/seed`, {
         method: 'POST',
@@ -2351,12 +3019,19 @@ async function runInstall(env, sid, progress, force) {
       progress.result.secretSyncError = String((e && e.message) || e);
     }
 
-    // D36 第1步（leo 07-29 拍板「安裝器代寫」）：把金鑰種進 credential 中心。
+    // D36：把金鑰種進 credential 中心。
     // 種完後 workflow 只帶名稱 {{credential.kbdb_internal_token}}，執行期才由
-    // auth_static_key WASM resolve_credentials 取值回填 ⇒ **祕密不落在 workflow 定義上**。
+    // resolveSecretsFromNewHome／auth_static_key WASM 取值回填
+    // ⇒ **祕密不落在 workflow 定義上**。
     // 這同時根治 t145：金鑰不再隨 code 上傳（差異更新跳過部署也不影響金鑰同步）。
+    //
+    // 🔴 inkstone/Arcrun#196：目錄那一半改打實例的 /credentials/directory，
+    //    所以這裡傳的是 `workerUrl`（cypher 的網址）而不是 `dbId`——
+    //    安裝器從此不碰 credentials 那張表（它在 migration 0006 就被 DROP 了）。
+    //    時序：必須排在上面 KBDB_INTERNAL_TOKEN 同步之後（端點要打 KBDB 才寫得成目錄），
+    //    而它本來就在那個 secretsSynced 區塊後面，順序不用動。
     try {
-      await seedCredential(token, accountId, dbId, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high');
+      await seedCredential(token, accountId, workerUrl, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high');
       progress.result.credentialSeeded = true;
     } catch (e) {
       // 不擋安裝：種失敗就退回舊路（workflow 帶明文 token），但記下來讓驗收看得到。
@@ -2419,10 +3094,29 @@ async function runInstall(env, sid, progress, force) {
     const bad = pushed.filter((x) => !x.ok);
     progress.result.workflows = pushed;
     if (bad.length) {
-      throw new InstallError(`有 ${bad.length} 條 AI 工作流沒裝成`, {
-        hint: '請按「重新安裝」再試一次（已裝好的不會重複）。',
-        detail: bad.map((b) => `${b.name}: ${b.error}`).join('; '),
-      });
+      // 🔴 `inkstone/Arcrun#190` 的紅線：**「網址還在生效中」和「工作流裝失敗」是兩件事，
+      //    不准講成同一句。** 前者會自己好（用戶只要等一下再按一次），後者才是壞掉。
+      //    舊文案一律說「有 N 條 AI 工作流沒裝成」，於是把一個會自己好的狀況講成壞掉
+      //    ——leo 2026-09-02 畫面上看到的就是這一句。判準走 `live.routed`（結構化事實），
+      //    不是去比對錯誤訊息裡的字。
+      throw new InstallError(
+        live.routed
+          ? `有 ${bad.length} 條 AI 工作流沒裝成`
+          : '你的專屬網址還在生效中，所以 AI 工作流還沒裝進去',
+        {
+          hint: live.routed
+            ? '請按「重新安裝」再試一次（已裝好的不會重複）。'
+            : '這不是安裝失敗——新的專屬網址第一次啟用要一點時間，這是正常的。'
+              + '請稍等一下再按「重新安裝」（已經裝好的不會重複裝）。',
+          detail: [
+            `workerUrl=${workerUrl || '(無)'}`,
+            `網址檢查：${live.routed
+              ? `第 ${progress.result.routedAttempts} 次路由得到`
+              : `分 ${progress.result.workflowsWaitRounds} 輪共探測 ${progress.result.routedAttempts} 次仍未路由到 worker（${live.error}）`}`,
+            ...bad.map((b) => `${b.name}: ${b.error}`),
+          ].join('\n'),
+        },
+      );
     }
     await setStep('workflows', 'done', `${pushed.length} 條工作流已就緒`);
   } catch (e) {
@@ -2671,7 +3365,11 @@ ${noticeHtml}
   <div style="height:20px"></div>
   <!-- t133 三修（leo 07-29：「install.arcrun.dev 裡面的「開始安裝/更新」，
        也要把版本號寫在按鈕裡面，你只改了首頁」）：版本寫進按鈕本身，不另起一行。 -->
-  <button class="btn" type="submit" title="釘點 ${escapeHtml(bundleCommitOf(env))}／建置 ${escapeHtml(bundleBuiltOf(env))}／安裝器 ${escapeHtml(INSTALLER_PATCH)}">開始安裝／更新<span style="opacity:.75;font-size:12px;font-weight:400;margin-left:8px">版本：${escapeHtml(bundleVer)}</span></button>
+  <!-- 🔴 inkstone/arcrun-rag#169：安裝器的號碼**印在按鈕上**，不是藏在 hover title、
+       也不是藏在下面摺疊的「技術細節」裡。2026-08-13 那一輪就是把它補在摺疊區
+       （commit 423dc3d），結果三週後它停在一個手打的日期字串而沒有任何人發現。
+       判準沿用 leo 07-29 對零件包版本說的同一句：「版本號寫在按鈕裡面」。 -->
+  <button class="btn" type="submit" title="釘點 ${escapeHtml(bundleCommitOf(env))}／建置 ${escapeHtml(bundleBuiltOf(env))}">開始安裝／更新<span style="opacity:.75;font-size:12px;font-weight:400;margin-left:8px">版本：${escapeHtml(bundleVer)}｜安裝器 ${escapeHtml(INSTALLER_VERSION)}</span></button>
   <p class="hint" style="text-align:center;margin-top:8px">第一次裝、或要更新到最新版，都是按這裡。</p>
   <p class="hint" style="text-align:center;margin-top:14px">按下後會跳到 Cloudflare 的官方頁面請你確認授權，確認完會自動跳回來。</p>
 </form>
@@ -2703,9 +3401,11 @@ ${noticeHtml}
           判準是「這顆服務現在實際綁的是哪一個」，不是看名字對不對得上；
           只有確定你完全還沒裝過任何東西時才會新建，新建才用
           arcrun-rag-&lt;email 推導 8 碼&gt; 這個名字（見 shared/resource-rule/，PR #87）
-安裝器版本：${escapeHtml(INSTALLER_PATCH)}（這頁本身的邏輯版本，只有改本安裝器程式碼才會動；
-          與上面「版本：${escapeHtml(bundleVer)}」是兩件事——那個是零件包版本，
-          零件沒動、只改安裝器邏輯時，只有這個數字會變）
+安裝器版本：${escapeHtml(INSTALLER_VERSION)}（這頁本身是哪一版；按鈕上也有，這裡重複一次給對照用）
+          它是機器從安裝器原始碼的內容指紋算出來的，不是人填的——改安裝器而號碼沒動，
+          出貨線會當場中止（installer/scripts/installer-line.mjs）。
+          與上面「版本：${escapeHtml(bundleVer)}」是兩條互不重疊的線：那個是零件包
+          （裝進你自己帳號的那些東西），零件沒動、只改安裝器時只有這個數字會變。
 bundle 依據：建置日 ${escapeHtml(bundleBuiltOf(env))}／釘點 ${escapeHtml(bundleCommitOf(env))}
 token 保存：access_token 存在本安裝器的 KV，隨 session 過期自動清除；
           refresh_token 為 rotation 制，每次更新都會寫回新的一把</pre>
@@ -2774,6 +3474,7 @@ const errorEl = document.getElementById('error');
 let stopped = false;
 let failures = 0;
 let channelWarned = false; // t157：雙通道互蓋警告只插一次
+let subdomainNoticed = false; // inkstone/Arcrun#190：專屬網址告知卡只插一次（但插了就留著，直到完成頁）
 var forceMode = new URLSearchParams(window.location.search).get('force') === '1';
 
 function esc(s){
@@ -2812,8 +3513,13 @@ function renderSteps(steps){
 }
 
 function renderDone(p){
+  var warns = p.warnings || [];
   titleEl.textContent = '安裝完成';
-  subEl.textContent = '你的知識庫已經準備好了。';
+  // inkstone/Arcrun#190：**有東西沒裝起來的時候，這句話不准照樣講「準備好了」**。
+  // leo 2026-08-31 的判準：用戶拿到「安裝成功」卻其實少了東西，不准只寫在變數裡。
+  subEl.textContent = warns.length
+    ? '你的知識庫可以用了，但有 ' + warns.length + ' 件事沒有裝起來（下面有說明）。'
+    : '你的知識庫已經準備好了。';
   var r = p.result || {};
   var html = '';
 
@@ -2839,6 +3545,21 @@ function renderDone(p){
     html += '<div class="card"><h3>關於你的網址</h3><p style="margin:0;color:var(--muted)">' + esc(r.urlNote) + '</p></div>';
   }
 
+  // inkstone/Arcrun#190：靜默降級可見化。放在網址下面——網址仍是這一頁的主角（t79），
+  // 但「你少拿到什麼」跟版本號、裝在哪個帳號同一性質：都是**這次安裝的結果**，
+  // 不是「之後還要做的事」（那類該去 portal）。話術在後端 installWarnings()，這裡只畫。
+  if (warns.length) {
+    html += '<div class="card" style="border-color:var(--warn)">'
+      + '<h3 style="color:var(--warn)">有 ' + warns.length + ' 件事沒有裝起來</h3>'
+      + warns.map(function(w){
+          return '<p style="margin:0 0 4px"><b>' + esc(w.title) + '</b></p>'
+            + '<p style="margin:0 0 14px;color:var(--muted)">' + esc(w.body) + '</p>';
+        }).join('')
+      + '<details><summary>技術細節（回報問題時請附上這段）</summary><pre>'
+      + esc(warns.map(function(w){ return w.title + '\\n' + (w.detail || ''); }).join('\\n\\n'))
+      + '</pre></details></div>';
+  }
+
   // t152（leo 07-31 原話「現在立刻拿掉這一塊」）：t151 曾在此顯示 MCP 屋主密碼卡＝
   // **又一次違反 t79「完成頁只給網址」**（同類第 3 次：t76 下載小幫手卡→t151 密碼卡→本次拔）。
   // 且密碼已作廢——b8ca98c 起 MCP 認證改 portal 帳密（daa047a bundle 即新版），用戶不需要這串。
@@ -2862,8 +3583,22 @@ function renderDone(p){
     快取空間: r.cacheName,
     服務名稱: r.scriptName,
     健檢結果: r.health,
-    健檢提醒: r.healthWarning
+    健檢提醒: r.healthWarning,
+    專屬網址: r.subdomain,
+    專屬網址是這次幫你開的嗎: r.subdomainCreated ? '是（' + r.subdomainCreated + '）' : '否（你的帳號本來就有）',
+    專屬網址處理過程: r.subdomainTrail
   };
+  // inkstone/Arcrun#196 comment 6144（leo 2026-09-02）：有一類壞消息用戶什麼都不能做
+  // ——那類不畫成上面那張卡（不嚇人、也不算進「有 N 件事沒有裝起來」），
+  // 但**一定要印在這一段**。不然它就從「講得太用力」變成「靜默失敗」，
+  // 那是同一週在抓的另一個病，換掉一個不是為了換來另一個。
+  var internal = p.internalNotes || [];
+  if (internal.length) {
+    detail['沒有顯示給用戶的內部狀況'] = internal.map(function(w){
+      return w.title + '：' + fmtDetail(w.detail);
+    });
+  }
+
   html += '<details><summary>技術細節（給工程師看的）</summary><pre>'
     + esc(JSON.stringify(detail, null, 2)) + '</pre></details>';
 
@@ -2955,6 +3690,15 @@ async function poll(){
     const p = await res.json();
     failures = 0;
     // t157：同帳號另一通道（staging↔prod）已裝過 → 進度頁頂部黃卡告知（不擋安裝）
+    // inkstone/Arcrun#190 紅線「開之前讓用戶知道」：後端在真的 PUT 下去之前就把這段落庫了，
+    // 所以這張卡是**事前**出現的，不是事後補報。名字為什麼長那樣也一起講。
+    if (p.subdomainNotice && !subdomainNoticed) {
+      subdomainNoticed = true;
+      errorEl.innerHTML = '<div class="err-card" style="border-color:var(--warn)">'
+        + '<h3 style="color:var(--warn)">關於你的專屬網址</h3>'
+        + '<p style="margin:0;color:var(--muted);white-space:pre-line">' + esc(p.subdomainNotice) + '</p></div>'
+        + errorEl.innerHTML;
+    }
     if (p.channelWarning && !channelWarned) {
       channelWarned = true;
       errorEl.innerHTML = '<div class="err-card" style="border-color:var(--warn)">'
@@ -3290,13 +4034,27 @@ async function handleLatest(request, env) {
     //    release（雲端知識庫）與 daemon（桌面同步器）是**兩條版本線**；
     //    以前只吐前者 ⇒ 用戶手上那支同步器新不新，全站沒有任何地方看得出來。
     daemon,                               // { version, notes, downloads: { mac, win } }
+    // 🔴 2026-09-01（inkstone/arcrun-rag#169）：**第三條版本線＝安裝器自己。**
+    //   release／daemon 講的是「你會拿到什麼」，這一格講的是「發給你的這台機器是哪一版」。
+    //   它的值來自本 worker 自己 import 的常數 ⇒ 這裡回什麼，就真的是線上跑的那份碼，
+    //   不是出貨線宣告的期望值（verify 站拿這一格跟這趟要出的號碼對，對不上就不算送達）。
+    installer: { version: INSTALLER_VERSION },
     install_url: 'https://install.arcrun.dev/',
     // 🔴 2026-08-13（arcrun-rag#95）：出貨線的「線上已是這版就不重推」判準，以前只比
     //   release／pin（bundle 內容），對**這個 worker 自己的原始碼**是隱形的——改了安裝
     //   器邏輯、bundle 沒動，管線就判「沒變」跳過部署，改動永遠送不出去。
     //   這裡把安裝器原始碼的內容指紋也吐出來，讓 ship.mjs 能拿它跟這次要出的那份比對，
-    //   不吻合就強制重部署。值由部署腳本注入（env.INSTALLER_SRC_SHA），不落地也不影響行為。
-    installer_sha: (env && env.INSTALLER_SRC_SHA) ? String(env.INSTALLER_SRC_SHA) : null,
+    //   不吻合就強制重部署。
+    //
+    //   🔴 2026-09-01（inkstone/arcrun-rag#169 comment 5959）：值改成**本 worker 自己
+    //   import 的常數**，不再讀 `env.INSTALLER_SRC_SHA`。
+    //   舊寫法量出來是錯的：prod 跑 1.0.3、uncle6 staging 跑 1.0.4，兩條線回同一串
+    //   `5ada702b…`，而且都對不上 main 的 `bc899878…`——因為那個值住在 wrangler.toml 的
+    //   vars 裡，只有出貨線的 pin 站會寫，而**手部署不經過那一站**，
+    //   `ship.targets.json` 裡也根本沒有 youlin-stage 這條線 ⇒ 它結構上只能靠人記得填。
+    //   現在它跟版本號同住 `version.mjs`（機器產、`--check` 守著）⇒ 部署動作只有一種：
+    //   把這棵樹推上去，推上去的那份必然自帶自己的指紋。**沒有可以忘記的那一步。**
+    installer_sha: INSTALLER_SRC_SHA,
   }), {
     headers: {
       ...cors,
@@ -3337,9 +4095,10 @@ async function daemonOf(env) {
   // Cache API 的內容存在邊緣節點，**不會**因為重新 deploy 就失效，舊 key 底下
   // 還卡著修復前的錯誤 JSON（24h TTL）。換一個新 key 保證這次部署後立刻是 cache miss。
   const cacheKey = new Request(`https://internal.arcrun/daemon?v=2&base=${encodeURIComponent(base)}`);
-  const cache = caches.default;
+  // 同 releaseOf：離線測試沒有全域 `caches`，先擋掉才不會丟 ReferenceError。
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
   try {
-    const hit = await cache.match(cacheKey);
+    const hit = cache ? await cache.match(cacheKey) : null;
     if (hit) return await hit.json();
   } catch { /* caches 不可用（本機測試）就直接抓 */ }
 
@@ -3371,9 +4130,11 @@ async function daemonOf(env) {
 
   if (out) {
     try {
-      await cache.put(cacheKey, new Response(JSON.stringify(out), {
-        headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=86400' },
-      }));
+      if (cache) {
+        await cache.put(cacheKey, new Response(JSON.stringify(out), {
+          headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=86400' },
+        }));
+      }
     } catch { /* 存不進快取不影響正確性 */ }
   }
   return out;
@@ -3621,6 +4382,15 @@ async function handleInstallStart(request, env, ctx) {
   if (existing && (existing.state === 'paused_continue' || existing.state === 'error')) {
     progress = existing;
     progress.error = null;
+    // 🔴 `inkstone/Arcrun#190`：「等專屬網址生效」的輪數計數器要在**重新來一次**時歸零。
+    //    不歸零的話，上一次等滿 WORKFLOW_WAIT_MAX_ROUNDS 的計數會留在 progress.result 裡
+    //    ⇒ 用戶照著我們的提示「稍等一下再按重新安裝」，這一次卻**一秒都不等**就再報同一個錯
+    //    ⇒ 我們親手把自己給的逃生口堵死（而那個逃生口就是這張票的正題）。
+    //    分批接力（paused_continue 自動續跑）**不歸零**——那是同一次安裝的下一輪。
+    if (progress.result && (existing.state === 'error' || body.restart || body.force)) {
+      progress.result.workflowsWaitRounds = 0;
+      progress.result.routedAttempts = 0;
+    }
   } else {
     progress = freshProgress();
   }
@@ -3671,6 +4441,155 @@ async function handleInstallStart(request, env, ctx) {
   });
 }
 
+/**
+ * 「安裝成功了，但用戶其實少拿到東西」——把這件事從變數裡挖出來（inkstone/Arcrun#190）。
+ *
+ * 🔴 判準（leo 2026-08-31）：**用戶拿到「安裝成功」卻其實少了東西，這件事不准只寫在變數裡。**
+ *
+ * 病史：這些警告本來全都有人**寫**、沒有人**畫**——
+ *   - `vectorizeWarning`（降級成關鍵字搜尋）：全檔只有一個寫入點，零個 render
+ *   - `vectorizeMetadataWarning`（篩選欄位沒建齊）：同上
+ *   - 每顆 worker 的對外路由開通失敗：直接被空 `catch {}` 吞掉
+ *   於是用戶拿到一台「安裝完成」的實例，語意搜尋永遠零命中，而畫面一個字都不提。
+ *   本票只是最刺眼的一次（因為它擋住安裝所以被看見）；這三條不擋安裝，所以到今天都沒人看見。
+ *
+ * 寫在後端而不是前端：**話術只有一份**。前端只負責畫。
+ * 純函式（吃 result 吐陣列），所以測得起來。
+ *
+ * ── `audience`：這條警告是講給誰聽的（inkstone/Arcrun#196 comment 6144）──────
+ * leo 2026-09-02 走完 stage 安裝、看到「金鑰沒有存進金鑰保管處」那張卡之後：
+ *
+ *   「成功了，但跳出這個警訊。**你可以默默修復，但不要跳出這段會嚇到使用者**」
+ *
+ * 🔴 **判準是「用戶有沒有出路」，不是「看起來嚇不嚇人」。**
+ *   `'user'`（預設）＝用戶做得了什麼：按重新安裝會好、或那是他帳號／設定的事
+ *                     ⇒ 照畫，而且要算進「有 N 件事沒有裝起來」
+ *   `'internal'`     ＝用戶**什麼都不能做**，它講的是**我們的出貨還沒到位**
+ *                     ⇒ 完成頁不畫、也不計數；但**仍然原樣留在安裝結果與
+ *                       「技術細節（給工程師看的）」那一段裡**給我們自己看
+ *
+ * ⚠️ `'internal'` 不是「藏起來」的許可證——藏成靜默失敗正是這幾天在抓的病。
+ *   它是把收件人講明白：**看得到的人從「用戶」換成「我們」**，不是沒有人看。
+ *   要新增一條 `'internal'`，得同時加進 `copy-rules.mjs` 的
+ *   `WARNING_AUDIENCE_ALLOWLIST`（附理由），否則出貨的文案契約閘當場紅。
+ */
+function installWarnings(result) {
+  const r = result || {};
+  const out = [];
+  if (r.vectorizeWarning) {
+    out.push({
+      title: '語意搜尋沒有裝起來',
+      body: '你的知識庫可以用，但只能做關鍵字比對——換個說法、或用意思相近的問法會找不到東西。'
+        + '其餘功能都正常。',
+      detail: r.vectorizeWarning,
+      audience: 'user',
+    });
+  }
+  if (r.vectorizeMetadataWarning) {
+    out.push({
+      title: '語意搜尋的篩選欄位沒有建齊',
+      body: '搜尋本身可以用，但依來源、日期這類條件篩選時可能篩不出東西。',
+      detail: r.vectorizeMetadataWarning,
+      audience: 'user',
+    });
+  }
+  if (Array.isArray(r.routeWarnings) && r.routeWarnings.length) {
+    out.push({
+      title: '有 ' + r.routeWarnings.length + ' 個服務沒有對外開通',
+      body: '這些服務已經部署好了，但沒有對外的網址。它們之間需要互相呼叫，'
+        + '所以有些功能可能會失敗。',
+      detail: r.routeWarnings.join('\n'),
+      audience: 'user',
+    });
+  }
+  if (r.healthWarning) {
+    out.push({
+      title: '裝完的自我檢查沒有全部通過',
+      body: '安裝步驟都做完了，但最後那次自我檢查沒有回報成功。你的網址可能還要等一下才會通。',
+      detail: String(r.healthWarning),
+      audience: 'user',
+    });
+  }
+
+  // ── 以下四條是 Arcrun#191 全面清查才挖出來的（母票只點名上面三條）──────────
+  // 🔴 共同特徵，比上面三條更嚴重：這四個欄位在全檔**只有一個寫入點、零個讀取點**
+  //    ——連「技術細節（給工程師看的）」那一坨 JSON 都沒收錄它們。
+  //    也就是說它們不是「畫得不明顯」，是**寫下來就沒有任何人、任何畫面會再碰它們**。
+  //    其中 secretSyncError 的寫入點旁邊，08-10 的註解自己就寫著「**也沒人在看**」
+  //    ——那句話從那天到今天都是對的，沒有人回來把它變成看得見的東西。
+
+  if (r.seedError || (typeof r.seedTemplates === 'string' && /^HTTP\s/.test(r.seedTemplates))) {
+    // `/init/seed` 沒種進去 ⇒ triplet template 不存在 ⇒ 三元組寫入 400 ⇒ **總圖永遠空白**。
+    // 寫入點旁的註解（t147）自己認證過這是「每個新用戶都會中的 bug」。
+    out.push({
+      title: '知識圖譜的基本設定沒有種進去',
+      body: '你的知識庫可以收東西，但「概念之間怎麼連起來」這份底稿沒有建立，'
+        + '關係圖可能一直是空白的。',
+      detail: 'seed: ' + String(r.seedError || r.seedTemplates),
+      audience: 'user',
+    });
+  }
+  if (r.secretSyncError) {
+    // 內部金鑰沒同步到各 worker ⇒ kbdb fail-closed 一律 401 ⇒ AI 工具整組不能用。
+    out.push({
+      title: '服務之間的內部金鑰沒有同步完成',
+      body: '各個服務之間互相認證用的金鑰沒有寫齊，AI 助理的工具可能會回「沒有權限」。',
+      detail: String(r.secretSyncError),
+      audience: 'user',
+    });
+  }
+  if (r.credentialSeedError) {
+    // 金鑰沒進 credential 中心 ⇒ 退回舊路（workflow 帶明文），能動但違反 D36。
+    //
+    // 🔴 收件人是**我們**，不是用戶（leo 2026-09-02，inkstone/Arcrun#196 comment 6144）。
+    //    這一條套「用戶有沒有出路」是全滿的否：
+    //      · 不是他的帳號、不是他的設定，按「重新安裝」也不會好
+    //      · 它說的是**我們的出貨還沒到位**（實例上還沒有 /credentials/directory
+    //        那支端點，見同票 comment 6084 的改法）——不是他的實例壞了
+    //      · 「不如原本設計的安全」對非技術用戶只剩恐嚇效果
+    //    ⇒ 它是 copy-rules.mjs 說的那種**幽靈指示**的近親：
+    //      講了一件用戶無法行動的壞消息。
+    //
+    // ⚠️ 這不是把它關掉：`credentialSeedError` 一字未動地留在 progress.result 裡，
+    //    完成頁的「技術細節（給工程師看的）」也仍然印得出這一整段。
+    //    真正的修法在票上（端點上線＋零件包重打），這裡只是不拿它嚇人。
+    out.push({
+      title: '金鑰沒有存進金鑰保管處',
+      body: '功能還是可以用，但金鑰是用比較舊的方式帶著跑的，不如原本設計的安全。',
+      detail: String(r.credentialSeedError),
+      audience: 'internal',
+    });
+  }
+  if (r.skillsSeedError) {
+    // skills 沒種入 ⇒ 實例的 AI 拿不到 playbook。
+    out.push({
+      title: 'AI 的操作手冊沒有裝進去',
+      body: '知識庫本身正常，但實例裡的 AI 少了一份「怎麼幫你做事」的說明書，'
+        + '它可能不知道有哪些進階功能可以用。',
+      detail: String(r.skillsSeedError),
+      audience: 'user',
+    });
+  }
+  return out;
+}
+
+/**
+ * 用戶面看得到的那些（inkstone/Arcrun#196 comment 6144）。
+ * 沒標 `audience` 的一律當 `'user'`——**預設是給用戶看的**，要藏必須明講。
+ */
+function userFacingWarnings(list) {
+  return (list || []).filter((w) => w.audience !== 'internal');
+}
+
+/**
+ * 只給我們自己看的那些。它們**不消失**，只是換一個出口：
+ * `/api/install/status` 的 `internalNotes` ＋完成頁「技術細節（給工程師看的）」。
+ * 這一支存在就是為了證明「不畫」不等於「不見了」。
+ */
+function internalOnlyWarnings(list) {
+  return (list || []).filter((w) => w.audience === 'internal');
+}
+
 async function handleInstallStatus(request, env) {
   const sid = getCookie(request, SESSION_COOKIE);
   if (!sid) return json({ error: 'no_session' }, 401);
@@ -3701,7 +4620,16 @@ async function handleInstallStatus(request, env) {
     }
   }
 
-  return json(progress);
+  // inkstone/Arcrun#190：警告在回應時才算，**不落庫**——話術改了不必等舊 progress 過期。
+  // inkstone/Arcrun#196 comment 6144：分兩袋送。`warnings` 是完成頁畫的那些
+  // （也是「有 N 件事沒有裝起來」數的那些）；`internalNotes` 是用戶做不了任何事、
+  // 講的是我們自己的出貨的那些——不畫成卡，但仍原樣送出去給技術細節那一段印。
+  const allWarnings = installWarnings(progress.result);
+  return json({
+    ...progress,
+    warnings: userFacingWarnings(allWarnings),
+    internalNotes: internalOnlyWarnings(allWarnings),
+  });
 }
 
 // --- 帳密精靈（t20④d-3）-----------------------------------------------------

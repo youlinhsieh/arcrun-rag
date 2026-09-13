@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 import {
-  repoForLine, livesInOwnRepo, declarationProblems, syncSourceRepo, repoExists, normRemote, expandHome,
+  repoForLine, hostForLine, livesInOwnRepo, declarationProblems, syncSourceRepo, repoExists, normRemote, expandHome,
   copyTrackedFiles, destIgnored,
 } from './line-source-repo.mjs';
 
@@ -54,6 +54,9 @@ const GOOD = {
       remote: 'https://git.uncle6.me/inkstone/arcrun-collector.git',
       workDir: '~/.arcrun-ship/arcrun-collector',
     },
+    // #169（leo 2026-09-02 裁決）：安裝器那條線也要宣告落點——它照樣發一筆版本物件，
+    // 只是發在**內部那一側**（所以連 prod 那個目標也是這一格）。
+    installer: { repoSlug: 'inkstone/arcrun-rag', host: 'gitea', baseUrl: 'https://git.uncle6.me' },
   },
 };
 
@@ -66,11 +69,47 @@ test('① 完全沒宣告 lineRepos ⇒ 丟，而且**不退回 repoSlug**', () 
 });
 
 test('② 宣告了但少一條線 ⇒ 丟，訊息指名是哪一條', () => {
-  const half = { host: 'gitea', repoSlug: 'inkstone/arcrun-rag', lineRepos: { bundle: { repoSlug: 'inkstone/arcrun-rag' } } };
+  const half = JSON.parse(JSON.stringify(GOOD));
+  delete half.lineRepos.daemon;
   assert.throws(() => repoForLine('daemon', half), /daemon/);
   const problems = declarationProblems(LINES, half);
   assert.equal(problems.length, 1);
   assert.match(problems[0], /daemon/);
+});
+
+test('②b 【#169】少了安裝器那條線 ⇒ 也要報（它不再是「沒有落點的線」）', () => {
+  const half = JSON.parse(JSON.stringify(GOOD));
+  delete half.lineRepos.installer;
+  const problems = declarationProblems(LINES, half);
+  assert.equal(problems.length, 1, `應該只少安裝器那一條：${problems.join('｜')}`);
+  assert.match(problems[0], /installer/);
+  // 🔴 前一版在這裡是**放它過**的（當時宣告它「不發版本頁 ⇒ 沒有落點」）。
+  //   leo 2026-09-02 裁掉那個前提之後，漏宣告就必須在登錄簿驗證階段炸，
+  //   否則症狀會變成「出貨走完了，而那筆版本物件不知道該發到哪去」。
+});
+
+test('②c 【#169】主機是逐條線問的：安裝器連在 prod（host=github）那個目標也發回內部 Gitea', () => {
+  const prodish = {
+    host: 'github',
+    repoSlug: 'youlinhsieh/arcrun-rag',
+    lineRepos: {
+      bundle: { repoSlug: 'youlinhsieh/arcrun-rag' },
+      daemon: { repoSlug: 'youlinhsieh/arcrun-port', sourceDir: 'collector', remote: 'x', workDir: 'y' },
+      installer: { repoSlug: 'inkstone/arcrun-rag', host: 'gitea', baseUrl: 'https://git.uncle6.me' },
+    },
+  };
+  assert.equal(hostForLine('bundle', prodish).host, 'github', '沒宣告 host 的線跟著目標走（既有行為不變）');
+  const inst = hostForLine('installer', prodish);
+  assert.equal(inst.host, 'gitea');
+  assert.equal(inst.baseUrl, 'https://git.uncle6.me');
+  assert.equal(inst.repoSlug, 'inkstone/arcrun-rag');
+  // 拿目標的 host 一路套到底的話，prod 出貨會跑去 GitHub 找 `installer-1.0.x`，
+  // 找不到 ⇒ 一個**必然為假**的紅燈（或更糟：查失敗被當成「這條線沒發」）。
+});
+
+test('②d 兩邊都沒宣告 host ⇒ 丟（不猜——猜錯的症狀是「發成功了，但發在另一邊」）', () => {
+  const noHost = { repoSlug: 'x/y', lineRepos: { bundle: { repoSlug: 'x/y' } } };
+  assert.throws(() => hostForLine('bundle', noHost), /哪台主機/);
 });
 
 test('③ 宣告了 sourceDir 卻缺 remote／workDir ⇒ 登錄簿驗證階段就報（不等到第 21 站）', () => {
@@ -141,6 +180,7 @@ test('⑧ 宣告齊全 ⇒ 過，且 repoForLine 拿得到各自的 repo', () =>
   assert.deepEqual(declarationProblems(LINES, GOOD), []);
   assert.equal(repoForLine('bundle', GOOD).repoSlug, 'inkstone/arcrun-rag');
   assert.equal(repoForLine('daemon', GOOD).repoSlug, 'inkstone/arcrun-collector');
+  assert.equal(repoForLine('installer', GOOD).repoSlug, 'inkstone/arcrun-rag');
   assert.equal(livesInOwnRepo(repoForLine('bundle', GOOD)), false);
   assert.equal(livesInOwnRepo(repoForLine('daemon', GOOD)), true);
 });

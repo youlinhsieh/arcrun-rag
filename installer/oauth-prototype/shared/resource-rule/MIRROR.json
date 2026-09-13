@@ -7,16 +7,16 @@
   ],
   "upstream": "Leo/Arcrun",
   "upstream_dir": "shared/resource-rule",
-  "upstream_commit": "9ad95ee3a6f374cbdcf881cdbc4309b8032b5ec5",
+  "upstream_commit": "03833405d71928e230c2d81863c0b48236059e8b",
   "files": {
-    "README.md": "6f35dc9f0c22237fa5627b614a26ba79b87f91eb6e1c7740dfabc0f45319d8d2",
+    "README.md": "0e957ce2655c5ffeee6bad4682f0fbd85a0c5882494e2b74a70777b89d1e3bb9",
     "cf-resource-api.mjs": "6fd5e08d2d80a8c70499d8a75d68752d4b494871f536d68a6088eaa668a1dd2d",
-    "installer-entry.mjs": "5a397a23e7b014462aacbb7eaae0a18d084688670df78383b773e7dc2d8b510a",
-    "rule.mjs": "b9e51c91d87711694ba67143ab707d68820d73dfc8158bbb0dc4e87f90767273",
+    "installer-entry.mjs": "348c3db7080bd9c98c7983a4fcf4be22a4639fb4ab7b7f89bb01a17a3c49d0ad",
+    "rule.mjs": "559ea9d5cf4e9f2669bc192699ce66e7292b4223aa1b6b75ac7716a5f691707b",
     "tests/demo.mjs": "0a0c1fe6cd62b535876842b8599cedfc7fdd73287c830e304691a5e9560b31e0",
     "tests/fixture-account.mjs": "bcb216d615b6d62bc31ee7d8f9b7bdb5089f5a82e6b8594ff9e7c86bfb9733ce",
     "tests/half-finished-install.mjs": "c9da0b38084b23ddca64429246831ba9add92bdc56382340b2fe91e643c86873",
-    "tests/list-pagination.mjs": "2119a9b77f85ba9ef9bc8ad17dd221b6f18fa72e37fd09d32d1585184a95eed1",
+    "tests/list-pagination.mjs": "89eeaf31772622471d9c9b194a52aa845922292fdd060c55fd7328f90e045fc2",
     "tests/verify-against-real-account.mjs": "8f2c39621fea96e739a674af3795321ee63014e2978a764858f43e68d03e6637"
   }
 }

@@ -265,11 +265,15 @@ func syncInventory(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, dr
 		res.Status = "planned"
 		return res
 	}
-	pace() // 觸發雲端前一律節流（2026-08-07 pacing 慣例）
 	wf := cfg.CardIngestWF
 	if wf == "" {
 		wf = "rag_ingest_card"
 	}
+	// #121：收卡那條路正在退避 ⇒ 這輪不送，也不記失敗（這一發根本沒打出去）。
+	if cfg.routeNote(cfg.triggerURL(wf)) != "" {
+		return nil
+	}
+	pace() // 觸發雲端前一律節流（2026-08-07 pacing 慣例）
 	// machine（`inkstone/mira#6`）：總覽卡的 path 是**合成**的（inventoryCardPath），
 	// 只帶 library ⇒ 兩台機器上同名的資料夾會生出一模一樣的鍵，後同步的那台會把
 	// 前一台的總覽卡蓋掉。這裡與逐檔卡走同一組欄位，不另開一種。

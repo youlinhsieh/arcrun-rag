@@ -58,8 +58,13 @@ import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { LINES, linesFrom, tagMatches, undeclaredVersionFields, bareVersion } from './release-lines.mjs';
+import {
+  LINES, linesFrom, tagMatches, undeclaredVersionFields, bareVersion,
+  publishesRelease, releaseVisibility, whyInternal, tagPrefixFor,
+} from './release-lines.mjs';
+import { hostForLine } from './line-source-repo.mjs';
 import { giteaWriteCredentialsFromRemote } from './gitea-release.mjs';
+import { installerChangelogSection } from './installer-line.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(here, '..', '..');
@@ -124,22 +129,33 @@ export function checkDestination(targetName, target) {
     }
   }
 
-  // 🔴 兩條線發到同一個 repo ＝ leo D95 指出的那個扭曲本身。
+  // 🔴 兩條線發到同一個 repo **而且 tag 混在同一個命名空間** ＝ leo D95 指出的那個扭曲。
   //   實況（2026-08-18 總管實測 inkstone/arcrun-rag 的版本發布頁）：
   //     桌面小幫手 0.18.33／0.18.30 與雲端引擎 1.4.49／1.4.48 並排，且每出一次貨就多疊一筆。
   //   ⇒ 這一項不是風格潔癖：**兩個產品共用一條版本歷史，「最新版是哪一個」就沒有答案。**
-  const bySlug = new Map();
+  //
+  // ── 2026-09-02 改成問「命名空間」而不是問「repo」（#169，leo 裁決）──────────────
+  //   leo：「安裝器線不獨立發版本，**它是 arcrun 的一部分**，不然你把 install 放在哪個 repo？」
+  //   ⇒ 安裝器的版本物件本來就該跟零件包住同一個 repo（原始碼、票、PR 都在那裡）。
+  //   那麼上面那個病要怎麼繼續擋？回到它真正的判準：**「最新版是哪一個」有沒有答案。**
+  //   兩條線的 tag 落在不同命名空間（`installer-1.0.5` vs `1.4.63`）時，那個問題答得出來；
+  //   落在同一個命名空間時答不出來——**所以要比的是前綴，不是 repo。**
+  //   （前綴宣告在 release-lines.mjs 的 `tagPrefix`，不是在這裡猜名字。）
+  const byNamespace = new Map();
   for (const [lineId, slug] of dests) {
-    const k = norm(slug);
-    bySlug.set(k, [...(bySlug.get(k) || []), lineId]);
+    const k = `${norm(slug)}\u0000${tagPrefixFor(lineId)}`;
+    byNamespace.set(k, [...(byNamespace.get(k) || []), lineId]);
   }
-  for (const [slug, ids] of bySlug) {
+  for (const [k, ids] of byNamespace) {
     if (ids.length > 1) {
+      const [slug, prefix] = k.split('\u0000');
       problems.push(
-        `版本線 ${ids.map((i) => `\`${i}\``).join('、')} 全部發到同一個 repo（${slug}）。\n`
-        + `         ⇒ 兩個產品的版本疊在同一條歷史上，那正是 leo 2026-08-18 指著版本發布頁說的\n`
+        `版本線 ${ids.map((i) => `\`${i}\``).join('、')} 發到同一個 repo（${slug}）`
+        + `${prefix ? `、而且 tag 前綴都是 \`${prefix}\`` : '、而且 tag 都是裸號（沒有前綴分開）'}。\n`
+        + `         ⇒ 兩條線的版本疊在同一條歷史上、號碼還混在一起，那正是 leo 2026-08-18 說的\n`
         + `           「**我強調了不要扭曲，這就是扭曲，把一個差很多的東西塞進去別人的歷史裡**」。\n`
-        + `         → 在 installer/ship.targets.json 的 releaseRecord.lineRepos 給每條線各自的 repo。`);
+        + `         → 給其中一條各自的 repo，或在 release-lines.mjs 給它一個 tagPrefix\n`
+        + `           （安裝器走的是後者：它是 arcrun 的一部分，用 \`installer-\` 前綴分開）。`);
     }
   }
 
@@ -159,6 +175,9 @@ export function checkDestination(targetName, target) {
 export function destinationsOf(releaseRecord) {
   const map = (releaseRecord && releaseRecord.lineRepos) || {};
   return LINES
+    // 只發內部的線（安裝器）**照樣算一條**——它一樣有落點、一樣要被查證有沒有發。
+    // 只有 `publishes:'none'` 才沒有落點（今天一條都沒有）。
+    .filter((l) => publishesRelease(l.id))
     .map((l) => [l.id, map[l.id] && map[l.id].repoSlug])
     .filter(([, slug]) => Boolean(slug));
 }
@@ -204,6 +223,14 @@ export function checkPublished(lines, tagsByRepo, releaseRecord) {
   const hit = [];
   const map = (releaseRecord && releaseRecord.lineRepos) || {};
   for (const line of lines) {
+    // 🔴 2026-09-02（#169，leo 裁決）：**只發內部的線在這裡不再被跳過。**
+    //   前一版對它印一行「不發版本頁」就放行了——而那正是 leo 點掉的那條錯誤宣告的
+    //   最後一段路：機制照著錯的宣告，安靜地放它過。現在它跟另外兩條問同一個問題
+    //   （「有沒有一筆可以打開來看的版本物件」），只有**發在哪一側**不同。
+    if (!publishesRelease(line.id)) {
+      hit.push(`${line.id} ${line.version} → 完全不發（宣告 publishes:'none'）`);
+      continue;
+    }
     const slug = map[line.id] && map[line.id].repoSlug;
     if (!slug) {
       problems.push(
@@ -216,8 +243,24 @@ export function checkPublished(lines, tagsByRepo, releaseRecord) {
       problems.push(`查不到 ${slug} 的 release 清單 ⇒ 無從判斷 ${line.product} ${line.version} 發了沒。不猜，直接擋。`);
       continue;
     }
-    const found = tags.find((t) => tagMatches(t, line.version));
-    if (found) { hit.push(`${line.id} ${line.version} → ${slug}:${found}`); continue; }
+    // 🔴 前綴要餵進去：`installer-1.0.5` 與 `1.0.5` 不是同一筆。少了它，
+    //   零件包哪天走到 `1.0.5` 就會被當成「安裝器發過了」⇒ 假綠。
+    const prefix = line.tagPrefix || tagPrefixFor(line.id);
+    const found = tags.find((t) => tagMatches(t, line.version, prefix));
+    if (found) {
+      hit.push(`${line.id} ${line.version} → ${slug}:${found}${releaseVisibility(line.id) === 'internal' ? '（內部）' : ''}`);
+      continue;
+    }
+    if (releaseVisibility(line.id) === 'internal') {
+      problems.push(
+        `「${line.product}」送出了 ${line.version}，但 ${slug} 上沒有 \`${prefix}${bareVersion(line.version)}\` 這筆版本物件。\n`
+        + `         ⇒ leo 只有版本這一個驗收介面，而這一版**沒有任何東西可以打開來看**\n`
+        + `           ——2026-09-01 的實害就是這個：\`1.0.3\` 上了 prod，Gitea 上一筆都沒有。\n`
+        + `         → release-record 站會自己建它（不需要人手動補）。走到這裡還沒有，\n`
+        + `           就是那一站沒跑到或建失敗了，不是「這條線本來就不用發」。\n`
+        + `           （這條線為什麼只發內部：${whyInternal(line.id)}）`);
+      continue;
+    }
     problems.push(
       `「${line.product}」這條線送出了 ${line.version}，但 ${slug} 上沒有對應的版本發佈。\n`
       + `         ⇒ 使用者拿到這一版，卻查不到「這版改了什麼」——${line.label}\n`
@@ -228,6 +271,49 @@ export function checkPublished(lines, tagsByRepo, releaseRecord) {
     ok: problems.length === 0,
     problems,
     detail: hit.length ? `已對上：${hit.join('、')}` : '一條都沒對上',
+  };
+}
+
+// ── 3.5 只發內部的線：版本物件的**內文**要交得出「這一版改了什麼」───────────────
+
+/**
+ * 只發內部的線（今天只有安裝器），每一版都必須有一段使用者看得懂的更新說明。
+ *
+ * 🔴 這一節與 3 那一節問的是**兩件不同的事**，不是同一件的兩種寫法：
+ *   3   ：那一筆版本物件**在不在**（tag 找不到就擋）
+ *   3.5 ：那一筆版本物件**打開來有沒有東西**（changelog 那一段就是它的內文來源）
+ *   缺前者＝leo 找不到版本；缺後者＝找到了一個空頁面。#88／#169 各撞過一次。
+ *
+ * @param {object[]} lines linesFrom() 的產物
+ * @param {Record<string,string|null>} notes lineId → 那一版的 changelog 內文（null＝沒有）
+ *        由呼叫端查好傳進來（本檔全部純函式，不碰磁碟）。
+ */
+export function checkInternalNotes(lines, notes) {
+  const problems = [];
+  const hit = [];
+  const targets = lines.filter((l) => releaseVisibility(l.id) === 'internal');
+  for (const line of targets) {
+    const body = notes && Object.prototype.hasOwnProperty.call(notes, line.id) ? notes[line.id] : undefined;
+    if (body === undefined) {
+      problems.push(
+        `版本線 \`${line.id}\`（${line.product}）只發內部版本物件，而呼叫端沒有交出「這一版的更新說明」。\n`
+        + `         ⇒ 那筆版本物件的內文就是它——沒有它，打開來是一個空頁面。不放行。`);
+      continue;
+    }
+    if (!body) {
+      problems.push(
+        `「${line.product}」送出了 ${line.version}，但它的更新說明裡沒有這一版。\n`
+        + `         ⇒ ${line.label} 改了，而使用者與 leo 查不到「這版改了什麼」。\n`
+        + `         → 補一段 \`## ${line.version}（<日期>）\`，用一兩句使用者看得懂的話寫，再重跑。\n`
+        + `           （這條線為什麼只發內部：${whyInternal(line.id)}）`);
+      continue;
+    }
+    hit.push(`${line.id} ${line.version}：${String(body).split('\n')[0].slice(0, 40)}`);
+  }
+  return {
+    ok: problems.length === 0,
+    problems,
+    detail: targets.length === 0 ? '沒有這種線' : (hit.length ? `更新說明都在：${hit.join('；')}` : '一條都沒對上'),
   };
 }
 
@@ -242,16 +328,19 @@ export function checkPublished(lines, tagsByRepo, releaseRecord) {
  * @param {Record<string,string[]>|null} o.publishedTags repoSlug → 該 repo 現有的 release tag；
  *        null＝離線模式，跳過第三項
  */
-export function runGate({ targetName, target, latestPayload, publishedTags }) {
+export function runGate({ targetName, target, latestPayload, publishedTags, internalNotes = {} }) {
   const R = target && target.releaseRecord;
   const dest = checkDestination(targetName, target);
   const cov = checkCoverage(latestPayload);
   const lines = linesFrom(latestPayload, 'latest');
+  const nonPub = checkInternalNotes(lines, internalNotes);
   const where = destinationsOf(R).map(([id, s]) => `${id}→${s}`).join('、') || '(未宣告)';
 
   const sections = [
     { name: '每條版本線各自發在自己的產品 repo', ok: dest.ok, problems: dest.problems, detail: dest.detail },
     { name: '交付面每個版本號都有人負責發佈', ok: cov.ok, problems: cov.problems, detail: cov.detail },
+    // #169：只發內部的線，那筆版本物件的**內文**要交得出「這一版改了什麼」。
+    { name: '只發內部的線，每一版都有更新說明（＝版本物件的內文）', ok: nonPub.ok, problems: nonPub.problems, detail: nonPub.detail },
   ];
 
   if (publishedTags === null) {
@@ -329,7 +418,12 @@ export async function fetchLatestPayload(target, { fetchImpl = fetch } = {}) {
   if (mPath && existsSync(mPath)) {
     const m = JSON.parse(readFileSync(mPath, 'utf8'));
     return {
-      payload: { release: m.release, daemon: m.daemon ? { version: m.daemon.version } : undefined },
+      payload: {
+        release: m.release,
+        daemon: m.daemon ? { version: m.daemon.version } : undefined,
+        // #169：安裝器那條線在 manifest 裡的同一個座標（離線時的同一個事實）。
+        installer: m.installer ? { version: m.installer.version } : undefined,
+      },
       source: `${mPath}（本機 bundle manifest；live 交付面打不到，已降級）`,
     };
   }
@@ -341,6 +435,23 @@ function expandHome(p) {
 }
 
 /**
+ * 查「只發內部的線」這一版的更新說明（本檔唯一碰磁碟的地方，且只有 CLI 與 ship.mjs 用）。
+ * 交付面上沒有那條線就不放進去——`checkInternalNotes` 只問它清單裡真的有的線。
+ * @param {object} latestPayload
+ * @param {string} root repo 根
+ * @returns {Record<string,string|null>}
+ */
+export function internalNotesFrom(latestPayload, root = REPO_ROOT) {
+  const out = {};
+  for (const line of linesFrom(latestPayload, 'latest')) {
+    if (releaseVisibility(line.id) !== 'internal') continue;
+    // 今天只有安裝器這一條。多一條時在這裡加它自己的查法（別做成「猜檔名」）。
+    out[line.id] = line.id === 'installer' ? installerChangelogSection(root, line.version) : undefined;
+  }
+  return out;
+}
+
+/**
  * 抓**每條版本線各自那個 repo** 目前所有 release 的 tag。
  * GitHub 走匿名唯讀（D20：讀一律放行）。
  *
@@ -349,27 +460,41 @@ function expandHome(p) {
  */
 export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl = fetch } = {}) {
   const R = target.releaseRecord;
-  const slugs = [...new Set(destinationsOf(R).map(([, s]) => s))];
-  if (slugs.length === 0) {
+  // 🔴 2026-09-02（#169）：**主機是逐條線問的，不是一個目標一個。**
+  //   安裝器的版本物件永遠發在內部 Gitea（連 prod 出貨也一樣）⇒ 拿目標的 host 去問，
+  //   prod 這一趟會跑去 GitHub 找 `installer-1.0.5`，找不到 ⇒ 一個**必然為假**的紅燈
+  //   （更糟的變體：查失敗被當成「這條線沒發」）。
+  const homes = new Map();   // slug → host/baseUrl（同一個 slug 兩種 host ＝宣告自相矛盾）
+  for (const [lineId, slug] of destinationsOf(R)) {
+    const home = hostForLine(lineId, R);
+    const prev = homes.get(slug);
+    if (prev && (prev.host !== home.host || prev.baseUrl !== home.baseUrl)) {
+      throw new Error(
+        `${slug} 被兩條線宣告在不同主機上（${prev.host} vs ${home.host}）——同一個 repo 不可能同時在兩台主機上。\n` +
+        `     ⇒ installer/ship.targets.json 的 releaseRecord.lineRepos 宣告自相矛盾，先改對再出貨。`);
+    }
+    if (!prev) homes.set(slug, home);
+  }
+  if (homes.size === 0) {
     throw new Error('登錄簿沒宣告任何版本線的落點（releaseRecord.lineRepos）⇒ 沒有東西可查。不猜，直接停。');
   }
   const out = {};
-  for (const slug of slugs) {
-    if (R.host === 'github') {
+  for (const [slug, home] of homes) {
+    if (home.host === 'github') {
       const r = await fetchImpl(`https://api.github.com/repos/${slug}/releases?per_page=100`,
         { headers: { 'user-agent': 'release-line-gate', accept: 'application/vnd.github+json' } });
       if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
       out[slug] = (await r.json()).map((x) => x.tag_name);
-    } else if (R.host === 'gitea') {
+    } else if (home.host === 'gitea') {
       const cred = giteaWriteCredentialsFromRemote(root);
       const headers = { accept: 'application/json' };
       if (cred) headers.authorization = `token ${cred.token}`;
-      const base = (R.baseUrl || 'https://git.uncle6.me').replace(/\/$/, '');
+      const base = (home.baseUrl || 'https://git.uncle6.me').replace(/\/$/, '');
       const r = await fetchImpl(`${base}/api/v1/repos/${slug}/releases?limit=100`, { headers });
       if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
       out[slug] = (await r.json()).map((x) => x.tag_name);
     } else {
-      throw new Error(`不認得的 releaseRecord.host：${R.host}`);
+      throw new Error(`不認得的落點主機：${home.host}（${slug}）`);
     }
   }
   return out;
@@ -395,7 +520,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const { payload, source } = await fetchLatestPayload(target);
   const publishedTags = offline ? null : await fetchPublishedTags(target);
-  const result = runGate({ targetName, target, latestPayload: payload, publishedTags });
+  const result = runGate({
+    targetName, target, latestPayload: payload, publishedTags,
+    internalNotes: internalNotesFrom(payload, REPO_ROOT),
+  });
 
   console.log(`交付面來源：${source}`);
   for (const s of result.sections) {

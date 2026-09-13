@@ -211,6 +211,32 @@ function msg(e) {
 }
 
 /**
+ * 每一則 blocker 的**同一個結尾**：一個可回報的錯誤碼 ＋ 一條出路。
+ *
+ * ── 為什麼要有這支（inkstone/Arcrun#193）────────────────────────────────────
+ * 本檔原本兩種寫法並存：`RES-NAME-TAKEN` 那則給錯誤碼、把事情收回我們身上（對的），
+ * 其餘六則各寫各的結尾，其中「綁著的資源不見了」那則甚至寫成
+ * 「**請先確認那顆資源是被刪掉了，還是這把 API token 看不到它**」
+ * ——把我們自己該做的判斷改寫成使用者的待辦，而他手上根本沒有那把 token。
+ *
+ * 違反 leo 2026-08-31 的鐵律「**叫用戶自己去開通是完全不准的**」。
+ * 而「為什麼只有那一則寫對」也不是巧合：**結尾各寫各的，就一定會漂**
+ * （2026-07-29「AI 天然偏向新增一種做法，而非找出既有做法」的同款）。
+ *
+ * ⇒ 所以結尾**只有這一份實作**。要改口氣就改這裡，六則一起改，漂不了。
+ *   `cli/tests/blocker-copy.test.ts` 會掃本檔每一個 `blockers.push(`，
+ *   少接一支 `reportable()` 就紅——規約寫在註解裡而沒有閘，等於不存在。
+ *
+ * @param {string} code 可回報的錯誤碼，形如 `RES-XXX/<kind>/<binding>`
+ * @param {{retry?: boolean}} [opts] `retry: true` ＝ 這是暫時性的 IO 失敗，再按一次可能就好了
+ * @returns {string}
+ */
+export function reportable(code, opts) {
+  const again = opts?.retry ? `可以再試一次；一直是這樣的話，` : '';
+  return `${again}請把這則訊息回報給我們（錯誤碼 ${code}），這需要我們處理。`;
+}
+
+/**
  * 決定每個 binding 要沿用哪顆資源／要不要新建，**不寫入任何東西**。
  *
  * @param {ResourceApi} api
@@ -247,7 +273,8 @@ export async function planResources(api, requirements, mode) {
       readFailed = true;
       blockers.push(
         `讀不到已部署的 worker「${script}」目前綁著哪些資源（${msg(e)}）。` +
-          `不確定它現在用的是哪一顆，就不能重新綁——整趟更新停手，沒有動任何東西。`,
+          `不確定它現在用的是哪一顆，就不能重新綁——整趟更新停手，沒有動任何東西。` +
+          reportable(`RES-READ-FAILED/${script}`, { retry: true }),
       );
     }
   }
@@ -255,11 +282,16 @@ export async function planResources(api, requirements, mode) {
   // 「這台照定義已經裝過了，卻一顆 worker 都找不到」= 我對不上它的實例（名字不同／token 看不到）。
   // 這種時候繼續走下去，等於把一整套資源重新生一遍再綁上去——正是 #97 的形狀，只是換一道門進來。
   if (mode === 'update' && !readFailed && live.size === 0 && scripts.length > 0) {
+    // 🔴 舊文案在這裡列了兩個**我們自己的猜測**（「可能是 token 看得到的帳號不對，
+    //    或這台的 worker 用了別的名字」）就結束。使用者分不出是哪一種，也沒有工具去分
+    //    ——那兩句話對他是死路。而且它寫「acr update」，但走到這裡的有一半是安裝器的
+    //    使用者，他從來沒打過那個指令（#193）。
+    //    ⇒ 只講我們確定的事（找過哪幾顆、都不在），出路交回我們。
     blockers.push(
       `在這個 Cloudflare 帳號上找不到任何一顆要更新的 worker（找過：${scripts.join('、')}）。` +
-        `acr update 的前提是「這台已經裝好了」——對不上就不猜：` +
-        `可能是 API token 看得到的帳號不對，或這台實例的 worker 用了別的名字。` +
-        `已停手，沒有新建任何資源。`,
+        `更新的前提是「這台已經裝好了」，而我們對不上這台實例——不猜，` +
+        `已停手，沒有新建任何資源。` +
+        reportable('RES-NO-WORKERS'),
     );
   }
 
@@ -311,7 +343,8 @@ export async function planResources(api, requirements, mode) {
       blockers.push(
         `綁定「${binding}」在不同 worker 上指向不同的 ${KIND_LABEL[kind]}` +
           `（${found.map((f) => `${f.script} → ${f.value}`).join('、')}）。` +
-          `分不出哪一顆才是你在用的，不猜——停手。`,
+          `分不出哪一顆才是你在用的，不猜——停手，沒有動任何東西。` +
+          reportable(`RES-BIND-CONFLICT/${kind}/${binding}`),
       );
       continue;
     }
@@ -326,17 +359,35 @@ export async function planResources(api, requirements, mode) {
       } catch (e) {
         blockers.push(
           `查不到帳號上的 ${KIND_LABEL[kind]} 清單，無法確認「${binding}」綁著的 ${value} 還在不在` +
-            `（${msg(e)}）。不確定就不動——停手。`,
+            `（${msg(e)}）。不確定就不動——停手，沒有動任何東西。` +
+            reportable(`RES-LIST-FAILED/${kind}/${binding}`, { retry: true }),
         );
         continue;
       }
       if (![...existing.values()].includes(value)) {
         // 這正是 #97 的入口：舊版在這裡會安靜地新建一顆空的頂上去。
+        //
+        // ── 為什麼這裡敢把話講死（inkstone/Arcrun#193）──────────────────────
+        // 舊文案結尾是「**請先確認那顆資源是被刪掉了，還是這把 API token 看不到它**」。
+        // 那句話在當年是誠實的：`cfListAll` 還不存在，三支清單方法只打第一頁
+        // ⇒ 清單真的可能不完整 ⇒ 我們真的分不出「被刪了」和「我沒看到」。
+        //
+        // 但 #123 的續集把那個洞補掉了（README §1.2）：清單一律翻到底，
+        // 翻不完、或數量對不上 CF 自己回報的 `total_count`，`cfListAll` 就 **throw**
+        // ⇒ 那種情況會在上面那個 catch 變成 `RES-LIST-FAILED` 而停在那裡，走不到這一行。
+        // 而 CF 的 KV／D1／Vectorize 清單端點是**帳號層級**的：token 有讀權限就看得到全部，
+        // 沒有就整支 403 ⇒ 也是 throw。**沒有「列得成功、但漏看一顆」這種中間狀態。**
+        //
+        // ⇒ 走到這一行 ＝ 我們已經把整份清單讀完，而它不在裡面。這是**我們的結論**，
+        //   不是要使用者去確認的事——他手上沒有那把 token，也沒有工具可以確認。
+        //   舊文案是**修法之前留下的化石**：洞補好了，那句免責聲明卻沒有人回來拆。
         blockers.push(
           `worker「${found[0].script}」的「${binding}」綁著 ${KIND_LABEL[kind]} ${value}，` +
-            `但這顆在你的 Cloudflare 帳號上找不到了。` +
-            `這裡**不會**幫你新建一顆空的頂上去（Arcrun#97 的災情就是那樣來的）——` +
-            `請先確認那顆資源是被刪掉了，還是這把 API token 看不到它。`,
+            `但它已經不在你的 Cloudflare 帳號上了` +
+            `（你帳號上的 ${KIND_LABEL[kind]} 清單我們整份讀完了——共 ${existing.size} 顆，沒有這一顆）。` +
+            `這裡**不會**幫你新建一顆空的頂上去（Arcrun#97 的災情就是那樣來的），` +
+            `所以停手了——沒有建立或改動任何資源。` +
+            reportable(`RES-BOUND-MISSING/${kind}/${binding}`),
         );
         continue;
       }
@@ -368,7 +419,8 @@ export async function planResources(api, requirements, mode) {
     } catch (e) {
       blockers.push(
         `查不到帳號上的 ${KIND_LABEL[kind]} 清單，無法確認「${reqs[0].createName}」這個名字是不是已經被用掉了` +
-          `（${msg(e)}）。不確定就不建——停手。`,
+          `（${msg(e)}）。不確定就不建——停手，沒有動任何東西。` +
+          reportable(`RES-LIST-FAILED/${kind}/${binding}`, { retry: true }),
       );
       continue;
     }
@@ -380,11 +432,13 @@ export async function planResources(api, requirements, mode) {
         // 名字被佔走，而呼叫端證明不了那顆是我們的 ⇒ 接管它可能蓋掉使用者自己的東西。
         // #97 的反向災情（安靜地接管一顆別人的）跟正向一樣糟 ⇒ fail-closed。
         // 訊息不准叫使用者自己去 Cloudflare 後台動手（#121／D88：機器做得到的事不要丟回給人）。
+        // 本則的結尾原本是全檔唯一寫對的一份；#193 把它抽成 `reportable()` 之後，
+        // 這裡的輸出**逐字不變**，只是不再是「唯一寫對的那則」——六則現在共用同一支。
         blockers.push(
           `你的 Cloudflare 帳號上已經有一個叫「${createName}」的 ${KIND_LABEL[kind]}，` +
             `但沒有任何 worker 綁著它，我也無法證明那顆是這次安裝建的。` +
             `直接拿來用有可能蓋掉你自己的東西，所以停手了——沒有建立或改動任何資源。` +
-            `請把這則訊息回報給我們（錯誤碼 RES-NAME-TAKEN/${kind}/${binding}），這需要我們處理。`,
+            reportable(`RES-NAME-TAKEN/${kind}/${binding}`),
         );
         continue;
       }
@@ -494,10 +548,17 @@ export async function applyResourcePlan(api, plan) {
     } catch (e) {
       // 半途失敗：已經建出來的那幾顆還沒被綁到任何 worker 上。**要講出來**——
       // 不講的話它們就是帳號上一批沒人認得的孤兒，而且下次重跑會再建一批。
+      // 🔴 舊文案寫「（重跑前可先刪掉，或留著讓下次沿用）」——那是叫使用者自己去
+      //    Cloudflare 上刪資源，同一條鐵律（#193）。而且它已經過時了：#123 修好之後，
+      //    下次重跑會自己判斷這幾顆該不該接回（README §1.1），輪不到使用者動手。
       const orphans = madeSoFar.length > 0
-        ? `\n  已經建好但還沒綁上任何 worker 的：${madeSoFar.join('、')}（重跑前可先刪掉，或留著讓下次沿用）`
+        ? `\n  這一趟已經建好、但還沒綁到任何 worker 上的：${madeSoFar.join('、')}` +
+          `（你不必去動它們——下次重試時我們會自己判斷哪一顆該接回來）`
         : '';
-      throw new Error(`建 ${KIND_LABEL[c.kind]}「${c.createName}」失敗：${msg(e)}${orphans}`);
+      throw new Error(
+        `建 ${KIND_LABEL[c.kind]}「${c.createName}」失敗：${msg(e)}${orphans}\n  ` +
+          reportable(`RES-CREATE-FAILED/${c.kind}/${c.binding}`, { retry: true }),
+      );
     }
     madeSoFar.push(`${KIND_LABEL[c.kind]} ${c.createName}`);
     for (const binding of [c.binding, ...c.alsoBind]) {

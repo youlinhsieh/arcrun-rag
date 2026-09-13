@@ -521,9 +521,20 @@ func countsAsDocument(r DirectResult) bool {
 //（收卡那條路，可能是使用者剛存的新檔，也可能是在補修舊筆記的出處）——
 // 所以 step 由呼叫端給，不從網址反推，反推出來的名字會說謊。
 func (c *DirectConfig) postJSON(step callStep, url string, body any) (int, string, error) {
+	return c.postJSONAs(step, url, body, false)
+}
+
+// postJSONAs＝postJSON，多帶一個 retry：這份內容先前就失敗過。
+// 它只影響「這一發失敗算不算這條路壞了」（`inkstone/arcrun-rag#121`，見 routebackoff.go 檔頭）。
+func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry bool) (int, string, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return 0, "", err
+	}
+	// 🔴 `inkstone/arcrun-rag#121`：這條路正在退避 ⇒ 連打都不打（見 routebackoff.go）。
+	// 放在這裡而不是各呼叫端：所有寫雲端的路都經過這一個函式，「忘了接」不該存在。
+	if note := c.routeNote(url); note != "" {
+		return 0, "", &routeBackoffError{note: note}
 	}
 	gate := c.openGate(step)
 	defer gate.release() // context 要活到下面讀完回應為止，所以是 defer 不是就地釋放
@@ -539,10 +550,12 @@ func (c *DirectConfig) postJSON(step callStep, url string, body any) (int, strin
 	req.Header.Set("X-Arcrun-API-Key", c.APIKey)
 	resp, err := directHTTP.Do(req)
 	if err != nil {
+		cloudRoutes.record(url, directNow(), 0, err, retry) // #121：連不上／逾時也算這條路失敗
 		return 0, "", gate.record(err)
 	}
 	gate.ok() // #153：回來了就把「連續逾時」的計數歸零——否則「連續」兩個字是假的
 	defer resp.Body.Close()
+	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記一次失敗，2xx 歸零
 	// 🔴 讀 64KB 而不是 1KB：觸發端點的回應是一層外殼包著工作流的輸出，
 	// 而**失敗的證據住在殼裡面**（見 triggeroutcome.go）。1KB 會把 JSON 切斷 ⇒
 	// 永遠解析不了 ⇒ 每一次失敗都被讀成「看不出來」⇒ 下面那道閘等於不存在。
@@ -552,6 +565,11 @@ func (c *DirectConfig) postJSON(step callStep, url string, body any) (int, strin
 		snippet = snippet[:1024]
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// arcrun-rag#197：雲端把 D1 額度用完的原文傳回來了（新舊雲端不一定都會）⇒ 記下，
+		// 下一發起整個帳號停打，不必等下一分鐘的 /health。
+		if k := d1QuotaKind(string(full)); k != "" {
+			noteD1Quota(c.CypherURL, k, directNow())
+		}
 		return resp.StatusCode, string(snippet), fmt.Errorf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	// 🔴 2xx 只證明「請求送到了」，不證明「東西寫進知識庫了」。
@@ -621,6 +639,11 @@ func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 	return &sub
 }
 
+// directNow＝一輪的「現在」。正式執行就是 time.Now；
+// 測試要模擬「雲端持續失敗 N 分鐘」時換成假時鐘（`inkstone/arcrun-rag#121` 的量測），
+// 否則所有退避窗口都得真的等上幾分鐘才看得到效果。
+var directNow = time.Now
+
 // RunDirectOnce 對每個帳號的每個監看根掃一輪並彙總結果（t104 多帳號同時看守）。
 // 單帳號行為與舊制完全相同（含 manifest 路徑）。回傳彙總結果與退出碼建議（任一根失敗＝1）。
 // 額外：
@@ -631,7 +654,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	results := []DirectResult{}
 	exit := 0
 	var lastPayload *TriggerPayload
-	now := time.Now() // 2026-08-07 pacing task：整輪共用同一個時間點（排序/冷卻判斷一致、好測試）
+	now := directNow() // 2026-08-07 pacing task：整輪共用同一個時間點（排序/冷卻判斷一致、好測試）
 
 	// 🔴 `inkstone/arcrun-rag#153`：這一輪的「等待閘」。每輪換一份新的——斷路器只管
 	// 這一輪，下一輪一律從零開始重新試（同步是 level-triggered 的，沒有什麼要記住）。
@@ -771,7 +794,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		accHost := instanceHostOf(acc.CypherURL)
 
 		// t103：per-account 雲端版本偵測
-		cloudVer, cloudOK := fetchCloudVersion(accCfg.CypherURL)
+		cloudVer, cloudOK := cloudVersionThrottled(accCfg.CypherURL, cfg.ForceSync) // #121：一分鐘問一次，見 cloudcheck.go
 		// 🔴 `inkstone/arcrun-rag#159`：**一次探測失敗 ≠ 這台知識庫連不上。**
 		//
 		// leo 2026-08-28 的畫面上，`youlin.hsieh.dev` 那行紅字寫「目前連不上這個
@@ -939,6 +962,17 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		}
 		// 冷卻已過且本輪沒有新命中 ⇒ QuotaCooldownUntil/QuotaMessage 維持零值，
 		// 自然清除舊訊息（accSt 每輪重建，不會殘留上一輪的冷卻通知）。
+
+		// arcrun-rag#197：雲端資料庫額度用完**蓋過** AI 額度那張卡——資料庫讀不到時，
+		// 萃取、收卡、下架全部做不成，講 AI 額度只會讓用戶以為換個模型就好。
+		// 不寫 QuotaCooldownUntil：那一格是 Workers AI 冷卻的跨輪紀錄，混用會讓 D1 恢復後
+		// 萃取還被多擋一段；D1 的狀態每分鐘由 /health 重新確認（cloudquota.go）。
+		if st, ok := activeD1Quota(accCfg.CypherURL, now); ok {
+			notice := buildD1QuotaNotice(st.kind, now, st.until)
+			accSt.QuotaMessage = &notice
+			extractorOK = false
+			extractorError = notice.Headline + "。" + notice.Guarantee
+		}
 
 		accountDetails[accHost] = accSt
 	}
@@ -1166,18 +1200,39 @@ func saveDirectConfig(configPath string, cfg *DirectConfig) error {
 // 相同 ⇒ 撤除其中一個會連坐另一個。library 是逐根導出的（libraryFor），把它一起送上去，
 // 雲端才有辦法只殺對的那一份。這與 ingest 送的 library 是**同一個函式**算出來的，
 // 守 2026-07-24 那條教訓：成對操作（上架/下架）要用同一把鍵。
+//
+// maxPerRun（arcrun-rag#104 comment 6309）：單輪最多撤幾筆，0＝不限。
+// 以前這份清單只裝改名留下的舊頁（一輪一兩筆），撤完為止沒問題；現在資料夾卡
+// 消失也排進來（leo21c 的 KB 光 `logseq/bak/` 底下就是上千個資料夾），
+// 一輪全撤會撞單輪等待上限（stallguard）與雲端 subrequest 額度。
+// 排隊的照 removed 事件同一個單輪上限走，沒撤到的下一輪接著撤——清單本來就是持久的。
 func drainPendingTakedowns(
 	cfg *DirectConfig, m *Manifest, absRoot, resultType, failPrefix string,
-	pace func(), dryRun bool, saveManifest func(),
+	pace func(), dryRun bool, saveManifest func(), maxPerRun int,
 ) ([]DirectResult, int) {
 	var results []DirectResult
 	exit := 0
 	if len(m.PendingTakedowns) == 0 {
 		return results, exit
 	}
+	// 固定順序：map 走訪是隨機的，套上限之後若不排序，同一批會隨機輪流被跳過。
+	pending := make([]string, 0, len(m.PendingTakedowns))
+	for oldPath := range m.PendingTakedowns {
+		pending = append(pending, oldPath)
+	}
+	sort.Strings(pending)
+	deferred := 0
+	if maxPerRun > 0 && len(pending) > maxPerRun {
+		deferred = len(pending) - maxPerRun
+		pending = pending[:maxPerRun]
+	}
 	if dryRun {
-		for oldPath := range m.PendingTakedowns {
+		for _, oldPath := range pending {
 			results = append(results, DirectResult{Type: resultType, Path: oldPath, Status: "planned"})
+		}
+		if deferred > 0 {
+			results = append(results, DirectResult{Type: "info", Status: "skipped",
+				Error: fmt.Sprintf("還有 %d 筆待撤，下一輪接著撤", deferred)})
 		}
 		return results, exit
 	}
@@ -1187,7 +1242,13 @@ func drainPendingTakedowns(
 	if resultType == "folder_takedown" {
 		step = stepRetire
 	}
-	for oldPath, pageName := range m.PendingTakedowns {
+	for _, oldPath := range pending {
+		// #121：下架那條路正在退避 ⇒ 整批停手（清單是持久的，下一輪接著撤）。
+		if note := cfg.routeNote(cfg.triggerURL(cfg.RemovedWF)); note != "" {
+			results = append(results, DirectResult{Type: "info", Status: "skipped", Error: note})
+			break
+		}
+		pageName := m.PendingTakedowns[oldPath]
 		pace()
 		res := DirectResult{Type: resultType, Path: oldPath}
 		mach := cfg.machineIdentity()
@@ -1221,6 +1282,10 @@ func drainPendingTakedowns(
 		}
 		saveManifest()
 		results = append(results, res)
+	}
+	if deferred > 0 {
+		results = append(results, DirectResult{Type: "info", Status: "skipped",
+			Error: fmt.Sprintf("還有 %d 筆待撤，下一輪接著撤", deferred)})
 	}
 	return results, exit
 }
@@ -1299,7 +1364,7 @@ func retireRootOnce(cfg *DirectConfig, root string, dryRun bool) (
 		}
 	}
 	dr, de := drainPendingTakedowns(cfg, m, absRoot, "folder_takedown",
-		"移除資料夾後的雲端撤除失敗（下輪重試）：", pace, dryRun, saveManifest)
+		"移除資料夾後的雲端撤除失敗（下輪重試）：", pace, dryRun, saveManifest, 0)
 	results = append(results, dr...)
 	exit = de
 
@@ -1683,6 +1748,31 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				results = append(results, res)
 				continue
 			}
+			// 🔴 `inkstone/arcrun-rag#121`：這個檔要送去的那條雲端路正在退避 ⇒ 連萃取都不做。
+			// 與上面兩道閘同一層、同一個理由：路壞了不是這個檔的錯，不記 FailCount；
+			// 而且先擋在萃取之前——送不出去的卡，萃了只是白燒一份 AI 額度。
+			{
+				routeURL := cfg.triggerURL(cfg.IngestWF)
+				if cfg.Extractor != "" {
+					routeURL = cfg.triggerURL(cfg.CardIngestWF)
+				}
+				if note := cfg.routeNote(routeURL); note != "" {
+					res.Status = "skipped"
+					res.Error = note
+					results = append(results, res)
+					continue
+				}
+				// 萃取本身也是一條路（workers-ai 打的正是這台知識庫的 /portal/daemon/extract），
+				// 2026-09-13 真機上打最多的就是它——同一道閘。gemma 打 Google，不在這裡。
+				if cfg.Extractor == "workers-ai" {
+					if note := cfg.routeNote(workersAIExtractURL(cfg.CypherURL)); note != "" {
+						res.Status = "skipped"
+						res.Error = note
+						results = append(results, res)
+						continue
+					}
+				}
+			}
 			// 🔴 t195 止血點：這個檔剛失敗過且還在退避窗口內 → 這輪跳過。
 			//   沒有這道閘時的實測災情：`小果被AFTEE詐貸.pdf` 因雲端 401 失敗，
 			//   每輪重掃又被當成新檔 ⇒ **1387 輪、跨 11 小時**，且它排在佇列前面，
@@ -1745,7 +1835,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 掛上去的話，Google 慢會被算成「你的知識庫沒有回應」——
 					// 誤導的訊息比沒有訊息更貴（會害人往錯的方向查）。
 					xgate := cfg.openGate(stepExtractDoc)
-					cards, xerr = ExtractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin)
+					prior := m.Entries[ev.Path] // #121：先前失敗過的檔再失敗，不算「路壞了」
+					cards, xerr = extractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin,
+						prior != nil && prior.FailCount > 0)
 					xgate.release()
 					if xerr == nil {
 						xgate.ok()
@@ -1779,6 +1871,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					continue
 				}
 				ok := true
+				routeSkipped := false // #121：卡是被「路在退避」擋下的（沒打出去）
 				// InkStoneCo#44 ④（2026-08-15）：gemma 路現在一份文件產「文件卡＋N 張
 				// 概念卡」（cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert、
 				// 下架以原稿頁名比對 ⇒ N 張卡都送會互相蓋寫同一頁。
@@ -1831,10 +1924,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						cardBody["quality"] = "low"
 						cardBody["quality_warnings"] = warns
 					}
-					status, _, perr := cfg.postJSON(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody)
+					// #121：這個檔先前失敗過 ⇒ 這一發再失敗不算「路壞了」（見 routebackoff.go 檔頭）。
+					prior := m.Entries[ev.Path]
+					status, _, perr := cfg.postJSONAs(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody,
+						prior != nil && prior.FailCount > 0)
 					res.HTTPStatus = status
 					if perr != nil {
 						res.Status, res.Error = "failed", perr.Error()
+						if isRouteBackoff(perr) {
+							res.Status = "skipped" // #121：沒打出去，不是這個檔的失敗
+							routeSkipped = true
+						}
 						ok = false
 						break
 					}
@@ -1850,6 +1950,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						m.MarkNoCloudCard(ev.Path)
 					}
 					qs.DailyCount++ // 2026-08-07：今天的成就數（額度訊息「今天已經幫你整理了 N 份」用）
+				} else if routeSkipped {
+					// #121：這一發根本沒打出去 ⇒ 不記病歷（同額度冷卻／帳號沒回應的處理）。
 				} else {
 					// t195：記下失敗並排定退避，否則下輪又把它當新檔重試
 					//（實撞：1387 輪 × 11 小時全在撞同一面 401 的牆，還拖住整個佇列）。
@@ -1898,6 +2000,12 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			res := DirectResult{Type: ev.Type, Path: ev.Path}
 			if dryRun {
 				res.Status = "planned"
+				results = append(results, res)
+				continue
+			}
+			// #121：下架那條路正在退避 ⇒ 這輪不打，維持「暫時放回」，下一輪自然重試。
+			if note := cfg.routeNote(cfg.triggerURL(cfg.RemovedWF)); note != "" {
+				res.Status, res.Error = "skipped", note
 				results = append(results, res)
 				continue
 			}
@@ -1962,7 +2070,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 上面排進去的，以及之前輪次失敗留下的（同一個待辦清單,一次處理完)。
 	// 與 orderedEvents 共用同一個節流器（pace）,避免一輪多筆改名瞬間打爆雲端。
 	dr, de := drainPendingTakedowns(cfg, m, absRoot, "renamed_takedown",
-		"改名/搬移後舊頁下架失敗（下輪重試）：", pace, dryRun, saveManifest)
+		"改名/搬移後舊頁下架失敗（下輪重試）：", pace, dryRun, saveManifest, perRunCap)
 	results = append(results, dr...)
 	if de != 0 {
 		exit = de

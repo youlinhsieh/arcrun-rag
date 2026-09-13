@@ -117,10 +117,21 @@ export function readReleaseState(repoRoot) {
   } catch { return null; }
 }
 
+/**
+ * 寫共用版本狀態。**先讀既有的再覆蓋自己那幾格，不整份重寫。**
+ *
+ * 🔴 2026-09-01（inkstone/arcrun-rag#169）：舊版是 `JSON.stringify(state)`，
+ *   於是**任何不在呼叫端手上的欄位每寫一次就被靜默丟掉**。安裝器那條版本線
+ *   （`installer: { fingerprint, version }`）就住在同一個檔裡 ⇒ 零件包每出一次貨
+ *   就會把它抹掉 ⇒ 下一趟「上一版是什麼」讀成 null ⇒ 安裝器版本無聲倒退。
+ *   這跟本檔下面記的「syncManifest 列舉六個欄位重建，吃掉 daemon 欄」是**同一個病**
+ *   （列舉重建 vs 展開既有再覆蓋），所以照那次已經驗證過的解法辦。
+ */
 export function writeReleaseState(repoRoot, state) {
   const p = join(repoRoot, RELEASE_STATE_FILE);
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 1) + '\n');
+  const prev = readReleaseState(repoRoot) || {};
+  writeFileSync(p, JSON.stringify({ ...prev, ...state }, null, 1) + '\n');
 }
 
 /**

@@ -53,15 +53,21 @@ type CloudAIState struct {
 //   - 401 代表 route 在、只是金鑰不對 ⇒ route 存在，同樣算「雲端有這功能」，
 //     金鑰問題由既有的連線流程去報，不混在這裡講。
 func ProbeWorkersAI(ctx context.Context, cypherURL, apiKey string) (CloudAIState, error) {
+	state, _, err := probeWorkersAIWithStatus(ctx, cypherURL, apiKey)
+	return state, err
+}
+
+// probeWorkersAIWithStatus＝ProbeWorkersAI，多回 HTTP 狀態碼（0＝沒拿到回應）給路由退避用（#121）。
+func probeWorkersAIWithStatus(ctx context.Context, cypherURL, apiKey string) (CloudAIState, int, error) {
 	base := strings.TrimSuffix(strings.TrimSpace(cypherURL), "/")
 	if base == "" {
-		return CloudAIState{Ready: false, Note: "還沒連上知識庫"}, nil
+		return CloudAIState{Ready: false, Note: "還沒連上知識庫"}, 0, nil
 	}
 
 	body, _ := json.Marshal(map[string]string{"page_name": "", "text": ""})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/portal/daemon/extract", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workersAIExtractURL(base), bytes.NewReader(body))
 	if err != nil {
-		return CloudAIState{Ready: false, Note: "雲端 AI 狀態查不到"}, nil
+		return CloudAIState{Ready: false, Note: "雲端 AI 狀態查不到"}, 0, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Arcrun-API-Key", strings.TrimSpace(apiKey))
@@ -72,7 +78,7 @@ func ProbeWorkersAI(ctx context.Context, cypherURL, apiKey string) (CloudAIState
 		// 前者要記進斷路器，後者不該（不然一次斷網就把帳號判成停機）。
 		// 連不上（離線／網路問題）≠ 雲端沒裝。講「查不到」而不是「還沒通」，
 		// 免得把網路問題誤報成「你沒更新」讓用戶白跑一趟。
-		return CloudAIState{Ready: false, Note: "連不上你的知識庫，雲端 AI 狀態查不到"}, err
+		return CloudAIState{Ready: false, Note: "連不上你的知識庫，雲端 AI 狀態查不到"}, 0, err
 	}
 	defer resp.Body.Close()
 
@@ -81,15 +87,15 @@ func ProbeWorkersAI(ctx context.Context, cypherURL, apiKey string) (CloudAIState
 		return CloudAIState{
 			Ready: false,
 			Note:  "雲端 AI 還沒通 ⇒ 你的知識庫是舊版，請到 portal 按「立即更新」重裝一次",
-		}, nil
+		}, resp.StatusCode, nil
 	case resp.StatusCode < 500:
 		// 200/400/401… 都代表這條 route 存在＝雲端有這個功能。
-		return CloudAIState{Ready: true}, nil
+		return CloudAIState{Ready: true}, resp.StatusCode, nil
 	default:
 		return CloudAIState{
 			Ready: false,
 			Note:  fmt.Sprintf("雲端 AI 暫時有狀況（HTTP %d），稍後會自動再試", resp.StatusCode),
-		}, nil
+		}, resp.StatusCode, nil
 	}
 }
 
@@ -103,8 +109,23 @@ func (c *DirectConfig) probeWorkersAI() CloudAIState {
 	if note := c.unreachableNote(); note != "" {
 		return CloudAIState{Ready: false, Note: note}
 	}
+	// #121：萃取那條路正在退避 ⇒ 探測也不打（打的是同一個端點），直接講退避的原因。
+	extractURL := workersAIExtractURL(c.CypherURL)
+	if note := c.routeNote(extractURL); note != "" {
+		return CloudAIState{Ready: false, Note: note}
+	}
+	// #121：一分鐘內問過就沿用（見 cloudcheck.go）——路由退避讓一輪變短之後，
+	// 這一發原本會變成每 5 秒打一次。
+	if st, ok := cachedAI(c.CypherURL, c.ForceSync); ok {
+		return st
+	}
 	gate := c.openGate(stepProbeAI)
-	state, err := ProbeWorkersAI(gate.ctx, c.CypherURL, c.APIKey)
+	state, status, err := probeWorkersAIWithStatus(gate.ctx, c.CypherURL, c.APIKey)
+	// #121：探測**只記失敗、不記成功**。空 text 的探測通了，不代表真的萃取通了——
+	// 讓它歸零的話，每輪開頭一發探測就會把萃取累積的失敗清掉，退避永遠不會生效。
+	if err != nil || status >= 500 || status == 429 {
+		cloudRoutes.record(extractURL, directNow(), status, err, false)
+	}
 	gate.release()
 	if err == nil {
 		gate.ok()
@@ -113,6 +134,9 @@ func (c *DirectConfig) probeWorkersAI() CloudAIState {
 		// 等到超時 ⇒ 講的是「沒有回應」，不是「你的雲端沒裝好」。
 		// 把等待誤報成「你沒更新」會害使用者白跑一趟去按重裝。
 		return CloudAIState{Ready: false, Note: perr.Error()}
+	}
+	if err == nil {
+		rememberAI(c.CypherURL, state)
 	}
 	return state
 }

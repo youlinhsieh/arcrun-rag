@@ -27,7 +27,7 @@
  * **不必再編一次、不必貼一份、也就不會有第二種答案。**
  */
 
-import { planResources, applyResourcePlan, parseWranglerRequirements, ResourcePlanBlocked } from './rule.mjs';
+import { planResources, applyResourcePlan, parseWranglerRequirements, ResourcePlanBlocked, reportable } from './rule.mjs';
 import { createCloudflareResourceApi } from './cf-resource-api.mjs';
 
 /**
@@ -69,14 +69,22 @@ export async function resolveInstanceResources({ accountId, apiToken, wranglerTo
   const stop = (blockers) => ({ blocked: true, blockers, bindings: {}, origin: {}, liveVars: {} });
 
   if (requirements.length === 0) {
-    return stop(['這批 wrangler.toml 裡讀不到任何資源綁定需求——不確定要裝什麼，停手。']);
+    // 這兩則跟 rule.mjs 的六則走同一條路到使用者眼前（`r.blockers` 原文顯示），
+    // 所以結尾也用同一支 `reportable()`——結尾各寫各的就會漂（#193）。
+    return stop([
+      '這批 wrangler.toml 裡讀不到任何資源綁定需求——不確定要裝什麼，停手，沒有動任何東西。' +
+        reportable('RES-NO-REQUIREMENTS'),
+    ]);
   }
 
   let plan;
   try {
     plan = await planResources(api, requirements, mode);
   } catch (e) {
-    return stop([`資源解析失敗（${e instanceof Error ? e.message : String(e)}）。沒有建立任何資源。`]);
+    return stop([
+      `資源解析失敗（${e instanceof Error ? e.message : String(e)}）。沒有建立任何資源。` +
+        reportable('RES-PLAN-FAILED', { retry: true }),
+    ]);
   }
   if (plan.blockers.length > 0) return stop(plan.blockers);
 

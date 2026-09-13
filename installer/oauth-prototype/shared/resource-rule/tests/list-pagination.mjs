@@ -89,7 +89,10 @@ section('② 修法「前」那一面：已裝好的實例，不准因為看不�
 
   check(plan.blockers.length === 0, `不該有任何 blocker（實得 ${plan.blockers.length} 條）`);
   if (plan.blockers.length) console.log(plan.blockers.map((b) => `      · ${b}`).join('\n'));
-  check(!plan.blockers.join('\n').includes('找不到了'), '不准出現「這顆在你的帳號上找不到了」這種誣告');
+  // #193 把那句話改寫了（舊：「這顆在你的帳號上找不到了…請先確認是被刪掉還是 token 看不到」）。
+  // 這裡跟著改成認**錯誤碼**——碼是機器介面，不會因為文案再修一次就讓這條守衛變成空的。
+  check(!plan.blockers.join('\n').includes('RES-BOUND-MISSING'),
+    '不准出現「你綁著的資源不見了」這種誣告（清單只是被截斷，資源好好的）');
   check(plan.create.length === 0, `一顆都不該新建（實得 ${plan.create.length}）`);
   check(plan.adopt.length === 11, `11 個綁定全部沿用（實得 ${plan.adopt.length}）`);
 }

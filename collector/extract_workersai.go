@@ -96,6 +96,19 @@ func tooBigForWorkersAI(srcText, relPath string) string {
 // cypherURL/apiKey 用的是 daemon 既有的連線憑證（送卡片上雲時同一把，見 direct.go）。
 // 回傳產出的卡片相對路徑（單檔一卡），與 ExtractWithGemma 契約一致。
 func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin SourceOrigin) ([]string, error) {
+	return extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath, origin, false)
+}
+
+// workersAIExtractURL＝萃取端點。探測（probe_workersai.go）與萃取打的是同一條路，
+// 退避（routebackoff.go）也用這一個網址當鍵。
+func workersAIExtractURL(cypherURL string) string {
+	return strings.TrimSuffix(strings.TrimSpace(cypherURL), "/") + "/portal/daemon/extract"
+}
+
+// extractWithWorkersAI＝ExtractWithWorkersAI，多帶 retry：這個檔先前就失敗過。
+// `inkstone/arcrun-rag#121`：這條路不經 postJSON，所以在這裡自己把結果記進路由退避——
+// 2026-09-13 真機上對 youlin 打最多的正是這一條。
+func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin SourceOrigin, retry bool) ([]string, error) {
 	if strings.TrimSpace(cypherURL) == "" {
 		return nil, fmt.Errorf("workers-ai 萃取路需要 cypher_url（config）")
 	}
@@ -130,7 +143,7 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		"prompt":    wikiExtractPrompt(pageName, srcText),
 	})
 
-	url := strings.TrimSuffix(strings.TrimSpace(cypherURL), "/") + "/portal/daemon/extract"
+	url := workersAIExtractURL(cypherURL)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
@@ -140,9 +153,11 @@ func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 
 	resp, err := workersAIHTTP.Do(req)
 	if err != nil {
+		cloudRoutes.record(url, directNow(), 0, err, retry) // #121
 		return nil, fmt.Errorf("連不上你的知識庫：%w", err)
 	}
 	defer resp.Body.Close()
+	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記失敗，2xx 歸零
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 
 	if resp.StatusCode == http.StatusNotFound {

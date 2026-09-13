@@ -51,6 +51,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 //   `inkstone/arcrun-collector` 的 main 推壞的（刪掉 main.go、把 22 行的 .gitignore 洗成 1 行），
 //   而殼層的 PreToolUse hook 看不見 node 子行程 ⇒ 當時沒有任何閘反應（InkStoneCo#56）。
 import { assertPushAllowed } from './main-push-guard.mjs';
+// #169：哪些線會產生版本物件（含只發內部的那種——它一樣要宣告落點）。
+import { publishesRelease } from './release-lines.mjs';
 
 /** `~/x` → `$HOME/x`。與 ship.mjs 的 expandHome 同一個理由：不准寫死 `/Users/<誰>/`。 */
 export function expandHome(p) {
@@ -88,6 +90,34 @@ export function repoForLine(lineId, releaseRecord) {
 }
 
 /**
+ * 這條版本線的版本物件要發到**哪台主機**（含 base url）。
+ *
+ * ── 為什麼這件事要能逐條不同（#169，leo 2026-09-02）────────────────────────────
+ * 在此之前「發到哪台主機」是**出貨目標**的屬性（`releaseRecord.host`：stage→gitea、
+ * prod→github），因為那時候每條線的可見度都一樣。安裝器打破了那個前提：
+ * 它是**內部**版本物件（leo：「不獨立發版本⋯⋯但內部所有開發都要有版本」）
+ * ⇒ 不論這趟出貨是 stage 還是 prod，它都發在內部 Gitea。
+ *
+ * 🔴 預設仍是「跟著目標」——既有兩條線一個字都不必改；只有明確宣告了 `host` 的線才不同。
+ * 這與 D95 同一個方向：把「一個目標一種答案」的假設，換成「每條線各自宣告」。
+ *
+ * @param {string} lineId
+ * @param {object} releaseRecord `ship.targets.json` 裡該目標的 releaseRecord
+ * @returns {{host:string, baseUrl:string|undefined, repoSlug:string, entry:object}}
+ */
+export function hostForLine(lineId, releaseRecord) {
+  const entry = repoForLine(lineId, releaseRecord);
+  const host = entry.host || (releaseRecord && releaseRecord.host);
+  if (!host) {
+    throw new Error(
+      `版本線 \`${lineId}\` 不知道要發到哪台主機：該線沒宣告 host，目標也沒有 releaseRecord.host。\n` +
+      `     不猜（猜錯的症狀是「發成功了，但發在另一邊」）⇒ 在 installer/ship.targets.json 補一個。`);
+  }
+  const baseUrl = entry.baseUrl || (releaseRecord && releaseRecord.baseUrl);
+  return { host, baseUrl, repoSlug: entry.repoSlug, entry };
+}
+
+/**
  * 這條線的源碼是不是**住在別的 repo**（＝需要先同步過去才有 commit 可以指）。
  * 判準是「有沒有宣告 sourceDir」，不是猜名字。
  */
@@ -114,6 +144,12 @@ export function declarationProblems(lines, releaseRecord) {
     return problems;
   }
   for (const line of lines) {
+    // 🔴 #169 第二輪（leo 2026-09-02 裁決）：**安裝器那條線現在也要宣告落點。**
+    //   前一版在這裡把它跳過，理由是「不發版本頁的線本來就沒有落點」——
+    //   而那個前提被裁掉了：它照樣發一筆版本物件，只是發在內部那一側
+    //   ⇒ 它有落點，而且**落點必須被宣告**，否則就回到「沒人知道那筆會發到哪去」。
+    //   （`publishes:'none'` 的線才跳過；今天一條都沒有，留著是不讓「不發」變成預設。）
+    if (!publishesRelease(line.id)) continue;
     const entry = map[line.id];
     if (!entry || !entry.repoSlug) {
       problems.push(`版本線 \`${line.id}\`（${line.product}）沒宣告 lineRepos.${line.id}.repoSlug。`);
@@ -130,7 +166,8 @@ export function declarationProblems(lines, releaseRecord) {
     }
   }
   // `_` 開頭是這份登錄簿一路以來的註解鍵（`ship.targets.json` 到處都是），不是版本線。
-  const extra = Object.keys(map).filter((k) => !k.startsWith('_') && !lines.some((l) => l.id === k));
+  const extra = Object.keys(map).filter((k) => !k.startsWith('_')
+    && !lines.some((l) => l.id === k && publishesRelease(l.id)));
   if (extra.length) {
     problems.push(
       `lineRepos 宣告了不存在的版本線：${extra.join('、')}。\n` +

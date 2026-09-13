@@ -56,80 +56,174 @@
  * ⇒ 現在兩者都現讀同一個檔，**沒有寫死的預設值可以頂**——
  *   與本檔對 namespace 已經採用的原則一致：「不再猜一個值頂著」。
  * 換實例走環境變數 `ARCRUN_SHIP_BASE`，不改程式碼。
+ *
+ * ── 🔴 2026-09-01：這條規則整個搬去 Arcrun 了（inkstone/Arcrun#195）────────────
+ * 上面那段講的道理一個字都沒變，變的是**它住在哪裡**。
+ *
+ * 病：上面那個「現讀 `~/.arcrun/config.yaml`」的解法，把座標綁在**某個人的家目錄**上。
+ * 家目錄不隨 clone 走 ⇒ 一台乾淨的雲端 container 出不了貨，而原因跟它的能力無關。
+ * leo 2026-09-01：「**只要它的環境有能力，它就要可以做到，我不是用限制讓它變笨。**」
+ * 並指定歸屬：「（`ARCRUN_SHIP_*` 住哪）**你決定，總之會在 Arcrun，而不是 Arcrun RAG。**」
+ *
+ * ⇒ 規則的原稿現在在 `<Arcrun>/shared/instance-coordinates/`（形態同
+ *   `shared/resource-rule/`：零依賴、誰都可以 import）：
+ *     · 非機敏的一半（誰是誰、網址）**隨 Arcrun repo 走** ⇒ 乾淨機器不必有人放檔案
+ *     · 機敏的一半（namespace）走環境變數，目錄裡只寫變數的名字 ⇒ 值不進版控
+ *     · 兩者**成對取用**——上面那段講的分家事故，現在是那支模組的硬規則
+ *
+ * 🔴 本檔不再自己判斷座標，只**轉接**：`ARCRUN_SHIP_BASE` / `ARCRUN_SHIP_NS` /
+ *   `ARCRUN_SHIP_CONFIG` 三個環境變數的行為一字未改（上游把它們收在第一層），
+ *   本機那條路（讀 `~/.arcrun/config.yaml`）也一字未改。
+ *   **不准在這裡加第二套判斷**——那正是這張票要拔掉的東西。
  */
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { findArcrunRoot } from './resource-rule-sync.mjs';
+import { fill as fillFromEnvFiles } from './credential-store.mjs';
 
 /**
- * 讀 `~/.arcrun/config.yaml`（`ARCRUN_SHIP_CONFIG` 可覆寫路徑）。
- * `resolveArcrunBase()` 與 `resolveNamespace()` 共用這一支——**同源才不會分家**。
- * 不快取：路徑本身也現讀，測試才能在同一個 process 裡切不同的假設定檔。
+ * 座標規則的原稿在 Arcrun repo 裡（見檔頭 2026-09-01 那段）。
+ *
+ * 找法**沿用既有的那一支**（`resource-rule-sync.mjs` 的 `findArcrunRoot`：
+ * 環境變數 `ARCRUN_REPO_ROOT` → `ship.targets.json` 的 `source.arcrunRepo` → 並列位置）
+ * ——這條線已經有一套「上游 repo 在哪」的答案了，不要再發明第二套。
+ *
+ * 🔴 載入失敗**不在 import 時炸**：本檔還有別的匯出（`describeChecks` 等）不需要座標，
+ *   而 import 期丟例外會讓整個出貨線在「還沒決定要不要用 Arcrun」之前就死掉。
+ *   ⇒ 記下失敗原因，等真的有人要座標時才丟出來。
  */
-function readArcrunConfig() {
-  const path = process.env.ARCRUN_SHIP_CONFIG || join(homedir(), '.arcrun', 'config.yaml');
-  if (!existsSync(path)) return { path, value: null };
-  try {
-    const raw = readFileSync(path, 'utf8');
-    const out = execFileSync('python3', ['-c', 'import sys,yaml,json; json.dump(yaml.safe_load(sys.stdin.read()), sys.stdout, ensure_ascii=False)'], {
-      input: raw, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
-    });
-    return { path, value: JSON.parse(out) };
-  } catch (e) {
-    throw new Error(`${path} 讀不動：${(e.stderr || e.message || '').toString().trim().split('\n').slice(-3).join(' / ')}`);
+const UPSTREAM_REL = join('shared', 'instance-coordinates', 'resolve.mjs');
+let upstream = null;
+let upstreamError = null;
+try {
+  const root = findArcrunRoot();
+  const file = join(root, UPSTREAM_REL);
+  if (!existsSync(file)) {
+    throw new Error(
+      `找到 Arcrun repo（${root}），但裡面沒有 ${UPSTREAM_REL}\n` +
+      `     ⇒ 那個 clone 比 inkstone/Arcrun#195 舊。到那個目錄 \`git pull\` 到最新 main 再跑一次。`);
   }
+  upstream = await import(pathToFileURL(file).href);
+} catch (e) {
+  upstreamError = e instanceof Error ? e.message : String(e);
 }
 
 /**
- * 實例網址：`ARCRUN_SHIP_BASE` > `~/.arcrun/config.yaml` 的 `cypher_executor_url` > 丟例外。
- * 與 `resolveNamespace()` 讀同一個檔、同一套規則 ⇒ 兩個值不可能分家。
- * 不快取（理由同 resolveNamespace）。
+ * 取座標；上游模組載不到就在**這一刻**說清楚為什麼。
+ * `need` ＝這次真的需要哪幾格——問 namespace 的人不該收到「缺實例網址」。
+ * @param {Array<'base'|'namespace'>} need
+ */
+function coordinates(need) {
+  if (!upstream) {
+    throw new Error(
+      `讀不到 Arcrun 的實例座標規則（${UPSTREAM_REL}）：${upstreamError}\n` +
+      `     → 出貨線本來就需要 Arcrun 的工作區（\`build\` 那一站的輸入就是它），\n` +
+      `       設 ARCRUN_REPO_ROOT=/path/to/Arcrun 或確認 ship.targets.json 的 source.arcrunRepo 指得對。`);
+  }
+  return upstream.resolveInstanceCoordinates({ require: need });
+}
+
+/**
+ * 實例網址：轉接上游 `<Arcrun>/shared/instance-coordinates/resolve.mjs`。
+ *
+ * 回傳形狀（`{ base, source }`）與呼叫端一字未改——`source` 現在由上游填，
+ * 它會說出「這個值是環境變數給的、還是目錄給的、還是設定檔給的」，
+ * 讀錯誤訊息的人不必自己猜（本檔原本就是為了這件事才回傳 source）。
+ *
+ * 不快取：上游每次現讀（含 `ARCRUN_SHIP_CONFIG` 路徑本身），
+ * 測試才能在同一個 process 裡切不同的假設定檔。
  */
 export function resolveArcrunBase() {
-  if (process.env.ARCRUN_SHIP_BASE) {
-    return { base: process.env.ARCRUN_SHIP_BASE.replace(/\/+$/, ''), source: '環境變數 ARCRUN_SHIP_BASE' };
-  }
-  const cfg = readArcrunConfig();
-  const url = cfg.value?.cypher_executor_url;
-  if (!url) {
-    throw new Error(
-      `不知道要打哪台實例：沒有設 ARCRUN_SHIP_BASE，${cfg.path} 裡也沒有 cypher_executor_url\n` +
-      `     → 這裡**刻意沒有寫死的預設值**：舊版寫死 leo21c，而 leo 2026-08-20 訂正\n` +
-      `       「出貨跟 leo21c 無關，它只是一個普通用戶」⇒ 猜一個值頂著就是這次的病根。\n` +
-      `     → AI 的 stage 是 youlin：https://arcrun-cypher-executor.youlin-hsieh-dev.workers.dev`);
-  }
-  return { base: String(url).replace(/\/+$/, ''), source: cfg.path };
+  const r = coordinates(['base']);
+  return { base: r.base, source: r.sources.base };
 }
 
 /**
- * namespace 從哪裡來：`ARCRUN_SHIP_NS` 環境變數 > `~/.arcrun/config.yaml` 的
- * `api_key` 欄位 > 丟例外。回傳 `{ ns, source }`，`source` 給錯誤訊息用，
- * 讓讀訊息的人知道「這個值是哪裡來的」，不必自己猜。
+ * namespace（self-hosted 的身分明碼）：同上，轉接上游。
  *
- * 不快取：每次呼叫都現讀（含 config 檔案路徑本身——`ARCRUN_SHIP_CONFIG` 也現讀，
- * 不是 import 時就固定死，測試才能在同一個 process 裡切換不同的假設定檔）。
- * 換 namespace 不必重開 process、也不必記得清快取。檔案 I/O 很便宜，
- * 出貨管線一次執行頂多讀個位數次。
+ * 🔴 這裡**不再有任何自己的判斷**。舊版在本檔裡排了一套順序
+ * （環境變數 → `~/.arcrun/config.yaml` → 丟例外），而那套順序漏掉了
+ * 「這台機器上根本沒有那個檔」這一格——它正是雲端 container 的常態。
+ * 現在那個順序住在上游，而且**網址與 namespace 是成對取的**（見上游 README §2.1）。
  */
 export function resolveNamespace() {
-  if (process.env.ARCRUN_SHIP_NS) {
-    return { ns: process.env.ARCRUN_SHIP_NS, source: '環境變數 ARCRUN_SHIP_NS' };
-  }
-  const { path: ARCRUN_CONFIG_PATH, value: cfg } = readArcrunConfig();
-  if (!cfg) {
+  const r = coordinates(['namespace']);
+  return { ns: r.namespace, source: r.sources.namespace };
+}
+
+/**
+ * 把實例目錄宣告的 namespace 環境變數（`namespace_env`）從 `.env` 補進本行程——**只補空的**。
+ *
+ * ── 為什麼要有這支（2026-09-13，inkstone/arcrun-rag#27 comment 7121）───────────────
+ * 實撞：`node installer/scripts/ship.mjs --target stage` 在第一站之前就 exit 2——
+ * 「連不上 leo 的 Arcrun 實例：fetch failed」。
+ *   · 上游解析順序是 ①環境變數覆寫 ②實例目錄＋該實例的 namespace 環境變數 ③`~/.arcrun/config.yaml`
+ *   · 實例目錄早已改指 youlin 09-02 重裝後的子網域 `arcrun-yuga3bse`（inkstone/Arcrun#196 `22c314b`）
+ *   · 但 `ARCRUN_NS_YOULIN` 只住在頂層 `.env`，**一般 shell 裡沒有它** ⇒ 第②層不出手
+ *     ⇒ 落到第③層 ⇒ 那份家目錄設定還寫著舊子網域 `youlin-hsieh-dev`（CF API 實查：
+ *     帳號子網域現為 `arcrun-yuga3bse`；舊主機名在本機／1.1.1.1／8.8.8.8 都查無 DNS）。
+ * ⇒ **目錄是對的，只是走不到**。這不是座標判斷錯，是「值在 `.env`、管線沒去拿」——
+ *   與 #102（出貨金鑰由管線自己去 `.env` 取）同一個病，所以**沿用同一支 `credential-store.fill`**，
+ *   不另開一條路。
+ *
+ * ── 2026-09-13 同晚第二段（comment 7168）：要打哪一台由登錄簿**指名**，不再靠「環境裡剛好只有一台」──
+ * leo：「**這應該是測試環境，應該用 uncle6 的帳號是主要服務**」。舊版把目錄裡**每一台**的 namespace
+ * 都補進來、交給上游「環境裡只有一台就是它」去挑——目錄只有 youlin 時等於永遠挑 youlin（stage），
+ * 目錄一加 uncle6 就變成兩台都有值 ⇒ 上游拒絕替你挑。⇒ 改成呼叫端傳 `instance`
+ * （出貨線從 `ship.targets.json` 的 `workflowHost.instance` 讀），這支把 `ARCRUN_SHIP_INSTANCE`
+ * 設成它、**只補那一台**的 namespace 變數。別台的 namespace 一個都不碰（D36：只取被點名的鍵）。
+ *
+ * 🔴 本檔檔頭「不准加第二套判斷」照樣成立：這裡**不讀網址、不推斷**——「用哪一台」是登錄簿的宣告，
+ *   網址與 namespace 仍由上游 `resolveInstanceCoordinates` 從目錄成對取出（`ARCRUN_SHIP_INSTANCE`
+ *   本來就是上游第②層認得的指名變數）。
+ *
+ * 不動的三條（同 #102）：
+ *   ① 操作者在 shell 已給任何覆寫（網址／namespace／指名實例）⇒ **整支不出手**，他的選擇贏
+ *   ② 已有值的鍵不覆蓋（`fill` 本來就只填空的）
+ *   ③ D36：只取被點名的鍵，回傳值裡沒有真身
+ *
+ * @param {{ instance: string, startDir?: string, env?: Record<string, string|undefined>, stopAt?: string,
+ *           catalog?: { path?: string, instances: Record<string, { namespace_env?: string }> } }} opts
+ * @returns {{ instance: string|null, names: string[], resolved: Array<{name: string, source: string}>,
+ *             missing: string[], searched: string[], skipped: string|null }}
+ */
+export function fillInstanceNamespaces({ instance, startDir, env = process.env, stopAt, catalog } = /** @type {any} */ ({})) {
+  const empty = (skipped, names = []) => ({ instance: null, names, resolved: [], missing: [], searched: [], skipped });
+  const overrideNames = [
+    ...(upstream?.BASE_ENV_NAMES || ['ARCRUN_SHIP_BASE', 'ARCRUN_CYPHER_EXECUTOR_URL']),
+    ...(upstream?.NAMESPACE_ENV_NAMES || ['ARCRUN_SHIP_NS', 'ARCRUN_NAMESPACE', 'NAMESPACE', 'ARCRUN_API_KEY']),
+    ...(upstream?.INSTANCE_ENV_NAMES || ['ARCRUN_SHIP_INSTANCE', 'ARCRUN_INSTANCE']),
+  ];
+  const given = overrideNames.filter((n) => env[n] !== undefined && String(env[n]).trim() !== '');
+  if (given.length) return empty(`操作者已在 shell 指定 ${given.join('、')}（不代補）`);
+
+  if (typeof instance !== 'string' || !instance.trim()) {
     throw new Error(
-      `不知道要問哪個 namespace：沒有設 ARCRUN_SHIP_NS，也讀不到 ${ARCRUN_CONFIG_PATH}\n` +
-      `     → namespace 沒有安全的寫死預設值可以頂（上一版寫死 'leo'，使用者換過 namespace 後\n` +
-      `       整條出貨管線就打不通，這正是這次要修的事故）。\n` +
-      `     → 裝 acr 並登入過一次會產生這個檔案；或用 ARCRUN_SHIP_NS=<namespace> 覆寫。`);
+      '出貨線沒有指名要打哪一台 Arcrun 實例（ship.targets.json 的 workflowHost.instance 是空的）。\n' +
+      '     → 那一格填實例目錄裡的名字（leo 2026-09-13：出貨線用 uncle6，inkstone/arcrun-rag#27 c7168）。');
   }
-  const ns = cfg && cfg.api_key ? String(cfg.api_key) : '';
-  if (!ns) {
-    throw new Error(`${ARCRUN_CONFIG_PATH} 裡沒有 api_key 這個欄位（self-hosted 模式的 namespace 就放在這裡）\n` +
-      `     → 用 ARCRUN_SHIP_NS 覆寫，或重新跑一次 acr 的安裝/登入流程把它補上。`);
+  let cat = catalog;
+  if (!cat) {
+    if (!upstream) return empty(`讀不到 Arcrun 的實例目錄（${upstreamError}）`);
+    cat = upstream.readCatalog();
   }
-  return { ns, source: ARCRUN_CONFIG_PATH };
+  const entry = (cat.instances || {})[instance];
+  if (!entry || !entry.namespace_env) {
+    throw new Error(
+      `ship.targets.json 指名出貨線打「${instance}」，但 Arcrun 的實例目錄裡沒有這一台` +
+      `（${cat.path || 'instances.json'} 現有：${Object.keys(cat.instances || {}).join('、') || '（空的）'}）。\n` +
+      '     → 那份目錄隨 Arcrun repo 走：到 Arcrun 工作區 `git pull` 到含這一台的 main，或設 ARCRUN_REPO_ROOT 指到含它的 clone。');
+  }
+  env.ARCRUN_SHIP_INSTANCE = instance;
+  const names = [entry.namespace_env];
+  return { instance, names, ...fillFromEnvFiles(names, { startDir, env, stopAt }), skipped: null };
+}
+
+/** 日誌用：namespace 只露前兩碼與長度（出貨線的輸出會被貼進票裡）。 */
+export function maskNamespace(ns) {
+  const s = String(ns ?? '');
+  return `${s.slice(0, 2)}${'*'.repeat(Math.max(0, s.length - 2))}（長度 ${s.length}）`;
 }
 
 const headers = () => ({ 'content-type': 'application/json', 'X-Arcrun-API-Key': resolveNamespace().ns });

@@ -60,8 +60,8 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@c491922ee119d2569973ff16e927a895383e5b97"
-BUNDLE_BUILT = "2026-08-27"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@de2f11f9480a0e58d3a9e6357e32664e1af9fc88"
+BUNDLE_BUILT = "2026-08-29"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
 # LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
@@ -91,7 +91,6 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 #   - BUNDLE_BUILT＝釘點 manifest.built（D37 單一真相源：換釘點時跟著 manifest 改）
 #   - DEPLOY_ENV=staging → 首頁版本字串帶 +staging，一眼分辨
 # ---------------------------------------------------------------------------
-INSTALLER_SRC_SHA = "83313d68b4fd7d84216afacb3e2d7b065f11520ace5adc74a4a90474d3c432ea"
 [env.staging]
 name = "arcrun-rag-installer-staging"
 # P10（2026-08-07）：允許本 worker（在 workers.dev 上）直接 fetch 同帳號其他
@@ -111,8 +110,8 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/404b682"
-BUNDLE_BUILT = "2026-08-29"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/92aa857"
+BUNDLE_BUILT = "2026-09-13"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
 # SIGNUPS——prod 報名 19 筆裡 8 筆 @example.com 就是這樣污染進去的。
@@ -134,9 +133,62 @@ DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
 # 實測見本次交付回報（curl /auth/start?code=<真碼> 直接拿到 CF OAuth 302，
 # 而不是 error=code_unreachable）。
 
-INSTALLER_SRC_SHA = "5ada702b0d3f3baed7f6141e129bdb270f15b5a2669a98a666bb74d35e3f951f"
 [env.staging.observability]
 enabled = true
 
 [env.staging.triggers]
 crons = ["*/2 * * * *"]  # t156 自續保底（同 prod）
+
+# ---------------------------------------------------------------------------
+# youlin stage（inkstone/Arcrun#190，2026-09-01）
+#
+# 為什麼要有第三個環境：上面兩個（prod／staging）**都住在 uncle6 帳號**，
+# 而 uncle6 的憑證只有 leo 的機器有。雲端這台只有 youlin 的 token
+# （`CLOUDFLARE_API_TOKEN_YOULIN_CC_USE`，帳號 1129efd7df2e8899d537e9c8fbabb6cb）
+# ⇒ 沒有這一段，雲端做的安裝器改動**一次都部不出去、也就一次都測不到**，
+#   只能交「離線測試綠了」——而本 repo 的紅線第一條就是「HTTP 200 不算驗過」。
+#
+# youlin 是 D37 定的 AI stage（`system-dev/wiki/agent-memory.md`：
+# 「youlin 🟢 預設：AI 的 stage — AI 做實驗、跑整合測試、部署驗證的地方」）。
+#
+# 🔴 它跟 prod／staging 的差別只有「身分」（帳號、worker 名、KV、環境標記），
+#    **行為設定一模一樣**（compatibility_flags、cron、observability 全部照抄）——
+#    這是 D90 的規則：stage 與 prod 不准差行為，否則測過的跟出貨的不是同一個東西。
+#
+# 部署：
+#   CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN_YOULIN_CC_USE \
+#   CLOUDFLARE_ACCOUNT_ID=1129efd7df2e8899d537e9c8fbabb6cb \
+#   npx wrangler deploy --env youlin-stage --config installer/oauth-prototype/wrangler.toml
+#
+# ⚠️ 這個環境的 callback 網址**沒有**註冊進 Cloudflare OAuth client 79b44eac
+#    （註冊要 uncle6 那邊動手）⇒ 走到授權那一步會被 CF 拒。
+#    所以它現在能驗的是「授權**之前**的整頁」與「部署本身」，不是完整安裝。
+#    這件事誠實記在 inkstone/Arcrun#190 的回報裡，不要當成已經驗過。
+# ---------------------------------------------------------------------------
+[env.youlin-stage]
+name = "arcrun-installer-youlin-stage"
+compatibility_flags = ["global_fetch_strictly_public"]
+
+[[env.youlin-stage.kv_namespaces]]
+binding = "INSTALLER_KV"
+id = "fdc2cee16c1544a5a66fb5c586684cf8"  # arcrun-installer-youlin-stage-INSTALLER_KV（2026-09-01 建）
+
+# 對方通道偵測（t157）在 youlin 沒有真正的「對方」——給一顆空的自己的 KV，
+# 而不是指向 uncle6 的 namespace（跨帳號綁不上，而且那是別人家的資料）。
+[[env.youlin-stage.kv_namespaces]]
+binding = "PEER_INSTALLER_KV"
+id = "18d858b18c1049a4853d2236aca54b3c"  # arcrun-installer-youlin-stage-PEER_KV（2026-09-01 建）
+
+[env.youlin-stage.vars]
+DEPLOY_ENV = "youlin-stage"
+BUNDLE_BASE = "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/a40af26"
+BUNDLE_BUILT = "2026-08-29"
+LANDING_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
+SITE_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
+DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
+
+[env.youlin-stage.observability]
+enabled = true
+
+[env.youlin-stage.triggers]
+crons = ["*/2 * * * *"]

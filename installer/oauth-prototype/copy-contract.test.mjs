@@ -2,6 +2,7 @@
 // 2026-07-28 立。deploy-web.sh 在部署前跑本檔，任一違反＝拒絕部署。
 // 新增禁句：leo 說「拿掉 X」時，在 FORBIDDEN 加一行＋註明日期，那句就永遠回不來。
 import fs from 'node:fs';
+import { checkCopy, checkWarningAudience, WARNING_AUDIENCE_ALLOWLIST } from './copy-rules.mjs';
 const src = fs.readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 // 只驗會送到瀏覽器的內容：去掉 // 註解行（註解裡允許引用原句說明歷史）
 const body = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
@@ -34,6 +35,45 @@ for (const [str, why] of REQUIRED) {
 }
 if (fail) { console.error(`\n${fail} 項違反文案契約——拒絕部署。`); process.exit(1); }
 console.log(`✅ 文案契約通過（禁句 ${FORBIDDEN.length} 項全 0、必句 ${REQUIRED.length} 項全在）`);
+
+// ── 結構閘：「叫用戶自己去做」這條鐵律（inkstone/Arcrun#191）─────────────────
+// 上面那份 FORBIDDEN 是逐句黑名單——leo 拍板拿掉的句子，一句一行。它擋得住「同一句話
+// 又回來」，但擋不住「換個寫法的同一件事」。本段是它的結構版：規則寫在 copy-rules.mjs，
+// 判準是**出路**與**用戶的控制權**（兩者都可枚舉），不是禁詞。
+// 🔴 接在這裡而不是 worker.test.mjs，因為出貨 preflight 只跑本檔（ship.mjs:822）。
+const { hints, violations } = checkCopy(src);
+// 防「檢查了 0 句卻通過」——抽不到文案時閘要當場壞掉，不是安靜放行。
+if (hints.length < 20) {
+  console.error(`❌ 只抽到 ${hints.length} 句用戶文案，抽取器可能壞了——拒絕部署。`);
+  process.exit(1);
+}
+if (violations.length) {
+  for (const v of violations) {
+    console.error(`❌ [規則 ${v.rule}]「${v.hint}」\n   → ${v.why}`);
+  }
+  console.error(`\n${violations.length} 句文案把我們的問題丟回給用戶——拒絕部署。`);
+  process.exit(1);
+}
+console.log(`✅ 文案結構閘通過（${hints.length} 句用戶文案，每一句都給得出出路、沒有站外指示、沒有幽靈指示）`);
+
+// ── 警告收件人閘（inkstone/Arcrun#196 comment 6144，2026-09-02）─────────────
+// leo：「你可以默默修復，但不要跳出這段會嚇到使用者」。
+// 但「不給用戶看」跟「沒有人看」只差一步，而那一步正是 #190／#191 兩張票在治的病
+// ⇒ 這個閘擋兩個方向：沒審核就藏（機制被掏空）／審核過的又被掀出來（那句話回到用戶臉上）。
+const audit = checkWarningAudience(src);
+if (audit.cards.length < 6) {
+  console.error(`❌ 只抽到 ${audit.cards.length} 張警告卡，抽取器可能壞了——拒絕部署。`);
+  process.exit(1);
+}
+if (audit.violations.length) {
+  for (const v of audit.violations) {
+    console.error(`❌ [規則 ${v.rule}]「${v.hint}」\n   → ${v.why}`);
+  }
+  console.error(`\n${audit.violations.length} 項警告收件人不對——拒絕部署。`);
+  process.exit(1);
+}
+console.log(`✅ 警告收件人閘通過（${audit.cards.length} 張警告卡，`
+  + `其中 ${WARNING_AUDIENCE_ALLOWLIST.length} 條經審核不對用戶顯示、其餘照畫）`);
 
 // ── workflows.json 編譯漂移閘（t112 2026-07-28）──────────────────────────
 // rag_ingest_card 的 blocks.map 與 post_block.metadata_json 必須含 library，

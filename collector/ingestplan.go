@@ -521,12 +521,65 @@ func (p IngestPlan) SkipsDirWhy(relSlash, absPath string) (bool, string) {
 	if ambiguousBuildDirNames[name] && looksGenerated(absPath) {
 		return true, "這是建置工具產生的目錄（旁邊就是產生它的專案檔）"
 	}
+	// ④ 筆記軟體自己的資料夾（`inkstone/arcrun-rag#104` comment 6309，leo 2026-09-05：「bak 是不要的」）。
+	//    Logseq graph 底下的 `logseq/` 裝的是它的設定（config.edn）、每次編輯自動留的備份
+	//    （`bak/`）與版本檔（`version-files/`）——**筆記本體在 `pages/`／`journals/`**。
+	//    實據（leo21c，2026-09-05）：`~/Documents/KB` 4,193 份文件裡 **3,620 份**是 `logseq/bak/`
+	//    的殘影，同一頁的每一個歷史版本都被當成一份新知識收進 `kb`；08-13 早就判過是垃圾
+	//    （48 萬筆廢資料的三重放大之一），D82 重灌後又吃回來。
+	//    判準用 vault.go 既有的那一套（要有佐證才算 Logseq graph）：一個碰巧叫 `logseq`
+	//    的普通資料夾（旁邊沒有 pages／journals／config.edn）照收——漏判只是多收一個資料夾，
+	//    誤判是把使用者的東西弄不見。
+	if name == "logseq" && logseqCorroborated(filepath.Dir(absPath)) {
+		return true, "這是 Logseq 自己的設定與備份資料夾（bak／version-files），你的筆記本體在 pages 與 journals 裡，備份不是新知識"
+	}
 	if IsLinkedWorktree(absPath) {
 		return true, "這是同一個專案的第二份簽出（git worktree），內容與主資料夾重複"
 	}
 	// 巢狀 repo：監看根自己不算（relSlash == "." 走不到這裡，Scan 只對子目錄呼叫）。
 	if IsRepoRoot(absPath) {
 		return true, "這是另一個獨立的專案，要收請把它自己加進看守清單"
+	}
+	return false, ""
+}
+
+// ExcludesPathWhy 回答「這個檔**在現在的策略下**收不收」——給 Scan 判斷「manifest 裡有、
+// 現況卻沒走到」的路徑用：它是**真的不見了**（資料夾沒掛載、同步半途），還是
+// **我們自己決定不再收了**（策略變了、排除規則補了一條）。
+//
+// 🔴 為什麼要分（`inkstone/arcrun-rag#104` comment 6309）：補上「`logseq/` 不收」那一條之後，
+// leo21c 的 `~/Documents/KB` manifest 裡 4,193 份有 3,620 份會在同一輪從現況消失——
+// 86%，遠超 mass_delete_guard 的 40%。那道閘擋的是「資料夾未掛載」這種**意外**；
+// 策略排除是**確定的決定**，被它擋住的結果是：警告每輪都響、殘影永遠留在雲端、
+// 而且畫面上看起來像資料夾壞了。分開之後：意外照擋，決定照下架。
+//
+// 回 (true, 理由)＝這條路徑上有一層被 SkipsDirWhy 剪掉、或檔案本身被 KeepsFile 拒收；
+// 理由就是講給使用者聽的那一句。走訪器自己擋的隱藏目錄（`.git`、`.obsidian`…）也算。
+func (p IngestPlan) ExcludesPathWhy(relSlash, absRoot string) (bool, string) {
+	relSlash = strings.ReplaceAll(relSlash, "\\", "/")
+	segs := strings.Split(relSlash, "/")
+	dir := ""
+	for _, seg := range segs[:len(segs)-1] {
+		if dir == "" {
+			dir = seg
+		} else {
+			dir += "/" + seg
+		}
+		if strings.HasPrefix(seg, ".") {
+			return true, "這是隱藏資料夾，不收"
+		}
+		if skip, why := p.SkipsDirWhy(dir, filepath.Join(absRoot, filepath.FromSlash(dir))); skip {
+			return true, why
+		}
+	}
+	if strings.HasPrefix(segs[len(segs)-1], ".") {
+		return true, "這是隱藏檔，不收"
+	}
+	if !p.KeepsFile(relSlash) {
+		if _, why := p.CollectsDirWhy(folderOfRel(relSlash)); why != "" {
+			return true, why
+		}
+		return true, "這一層的檔案不在這次的收檔範圍裡"
 	}
 	return false, ""
 }

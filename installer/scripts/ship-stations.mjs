@@ -67,10 +67,25 @@ export function isArcrunStation(st) {
   return w !== '' && w !== '本機';
 }
 
-/** 這張站表總共動用了哪些 Arcrun 工作流（含 `也調用`），去重後排序。 */
-export function arcrunWorkflows(doc) {
+/**
+ * 這張站表動用了哪些 Arcrun 工作流（含 `也調用`），去重後排序。
+ *
+ * @param {object} doc 站表
+ * @param {string[]|null} stepIds **這一趟真的會跑哪幾站**（null＝全部，＝既有行為）。
+ *
+ * 🔴 為什麼要能篩（#169，2026-09-02）：`ship.mjs` 用這份清單去確認「宣告的工作流真的在
+ * 那台實例上」，而它以前一律問**整張站表**。於是 `--release-record-only`
+ * （整個存在理由就是單獨跑「留一筆版本發佈」那一站，而那一站宣告 `用什麼: 本機`）
+ * 也必須先連得上 Arcrun 實例才跑得起來——**連不上的機器就補不出版本物件**，
+ * 而「版本物件生不出來」正是本票要解的病。
+ * ⇒ 判準回到它本來要問的事：**這一趟會用到的工作流，在不在。** 不會用到的不問。
+ * （全程模式 stepIds 就是全部的站 ⇒ 清單與行為與過去逐字相同。）
+ */
+export function arcrunWorkflows(doc, stepIds = null) {
+  const only = stepIds ? new Set(stepIds) : null;
   const names = new Set();
   for (const st of doc['站'] || []) {
+    if (only && !only.has(String(st.id))) continue;
     if (isArcrunStation(st)) names.add(String(st['用什麼']).trim());
     for (const extra of st['也調用'] || []) {
       const n = String(extra).trim();

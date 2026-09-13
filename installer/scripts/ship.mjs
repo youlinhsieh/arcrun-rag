@@ -132,17 +132,24 @@ import {
   uploadReleaseAsset as giteaUploadAsset, listReleaseAssets as giteaListAssets, listReleases as giteaListReleases,
 } from './gitea-release.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
-import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow } from './ship-arcrun.mjs';
+import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow, fillInstanceNamespaces, maskNamespace } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
 import { deliveryInvariantProblems, deliveryPlan, confirmDelivery, notConvergedError, DRILL_ENV } from './ship-delivery.mjs';
 import { runGate as runResourceRuleGate } from './resource-rule-gate.mjs';
 // 版本印記閘（Arcrun#106 另一半）：凡烙版號的部署路徑，必須一起烙 commit。
 import { runGate as runVersionStampGate } from './version-stamp-gate.mjs';
-import { LINES, linesFrom, assetsFor } from './release-lines.mjs';
-// D95：每條版本線發到**自己的 repo**（桌面小幫手不再疊進雲端引擎的歷史）。
 import {
-  declarationProblems, repoForLine, livesInOwnRepo, syncSourceRepo, repoExists,
+  LINES, linesFrom, assetsFor, publishesRelease, publishesToUsers, releaseVisibility, whyInternal,
+} from './release-lines.mjs';
+// D95：每條版本線發到**自己的 repo**（桌面小幫手不再疊進雲端引擎的歷史）。
+// #169：`hostForLine` ＝ 連**哪台主機**都是逐條線的屬性（安裝器只發內部 Gitea）。
+import {
+  declarationProblems, repoForLine, hostForLine, livesInOwnRepo, syncSourceRepo, repoExists,
 } from './line-source-repo.mjs';
+// #169：安裝器那筆**內部版本物件**長什麼樣（純函式，測得動）。
+import {
+  installerReleaseBody, installerReleaseTitle, installerReleaseBodyProblems, deliveredProblem,
+} from './installer-release.mjs';
 import {
   formatInternalVersion, nextSequence, shortCodeFor, dateStamp,
   mappingSection, withMappingSection,
@@ -150,7 +157,14 @@ import {
 import {
   runGate as runReleaseLineGate, appendGateLog as appendReleaseLineGateLog, localStamp as releaseLineGateStamp,
   fetchPublishedTags, GATE_LOG_REL as RELEASE_LINE_GATE_LOG_REL, destinationsOf as releaseDestinations,
+  internalNotesFrom,
 } from './release-line-gate.mjs';
+// 🔴 安裝器自己那條版本線（inkstone/arcrun-rag#169）——見 installer-line.mjs 檔頭「三條線各是什麼」。
+import {
+  syncInstallerVersion, verifyInstallerVersion, installerFingerprint, readInstallerVersion,
+  readInstallerLine, installerChangelogSection, readInstallerSrcSha,
+  INSTALLER_CHANGELOG_REL, INSTALLER_SRC_REL, INSTALLER_VERSION_REL,
+} from './installer-line.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
@@ -472,6 +486,8 @@ const ctx = {
   built: null,   // manifest.built＝使用者在 /api/latest 看到的建置日（見 version／pin／verify）
   headSha: null, pinUrl: null,
   installerSrcHash: null, // 安裝器原始碼指紋（arcrun-rag#95）——見 pin／deploy／verify 三站
+  installerSrcChanged: false, // 指紋跟上一版比有沒有動（#169 comment 5959）——deploy 站的 belt
+  installerVersion: null, // 安裝器自己的版本號（#169）——見 version／docs-changelog／release-check／verify 四站
   liveBefore: null,
   pinChanged: false, pushed: false,
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
@@ -518,6 +534,189 @@ function ensureExpectationsFromDisk() {
 // 步驟表 —— 固定順序、無分支。每一步回傳 { status:'done'|'skip', detail }
 //           丟例外＝這一步斷了，**後面全部不跑**（不變式：失敗即停）。
 // ══════════════════════════════════════════════════════════════════════════
+/**
+ * ── 只發內部的版本線，這一趟的版本物件（#169，leo 2026-09-02 裁決）───────────────
+ *
+ * leo 原話：「留着補開，**安裝器線不獨立發版本，它是 arcrun 的一部分**，
+ * 不然你把 install 放在哪個 repo？⋯⋯不獨立發版本，但那是用戶，
+ * **我不能沒有版本，內部所有開發都要有版本**」
+ *
+ * 🔴 **它與 `release-record` 主體做同一件事，只有三處不同——每一處都是宣告，不是特例：**
+ *   ① **落點不跟著出貨目標走**：`hostForLine` 讀 `lineRepos.installer.host`（gitea），
+ *      所以 prod 出貨時這一筆照樣發在內部 Gitea。這是本函式存在的唯一理由——
+ *      主體那兩半是照 `releaseRecord.host` 分岔的，內部線不屬於任何一半。
+ *   ② **沒有附檔**（`assetKeys: []`）：這條線的成品是線上跑著的那個網站。
+ *      ⇒ 「打得開」由**內文**負責（原始碼指紋 ＋ 怎麼驗），不是掛一包原始碼快照
+ *        （leo 2026-08-18 指著 release 頁問過那件事）。
+ *   ③ **不用內外號對應表**：`formatInternalVersion` 明文拒絕「沒有成品的內部號」，
+ *      而那條判準是對的，這裡不繞過它 ⇒ 換成另一種可測性：線上那份碼自己會回報
+ *      自己的指紋（`version.mjs` 烙的那串），內文把它寫進去，任何人都能當場比對。
+ *
+ * 其餘一律**照主體的規矩**：先查存在（冪等）、changelog 缺段就中止、
+ * commit 一定要在那個 repo 上看得到（否則「票→PR→commit→version」那條鏈是斷的）、
+ * 建完回頭再讀一次（不聽 create 說它成功了）。
+ *
+ * ── 這條線的版本號從**這棵樹**讀，不從 bundle manifest 讀（2026-09-02）───────────
+ * 另外兩條線的版本住在 manifest 裡，因為 manifest 就是**要送出去的那份東西**。
+ * 安裝器不是：要送出去的是這棵樹（`installer/oauth-prototype/`），
+ * 而 `version.mjs` 是**跟著它一起被部署**的那個常數——線上 `/api/latest` 回的就是它。
+ * manifest 裡那一格是 `version` 站寫進去的**投影**（給離線對帳用），不是真相源。
+ * ⇒ 讀投影會讓「工作區沒重建過」變成一個**安靜的錯誤版本號**
+ *   （實撞：這台 container 的 bundles-stage 停在 `1.0.1`，而線上與這棵樹都是 `1.0.5`）。
+ * 投影對不上就在報告上講出來，不吞掉——但版本物件以這棵樹與**線上實測**為準。
+ *
+ * ── 送達之後才留紀錄（沿用這一站本來的規矩）─────────────────────────────────
+ * 建之前**去線上問一次**：`/api/latest` 的 `installer.version` 與 `installer_sha`
+ * 必須跟這棵樹逐字元相同。對不上就中止——不然會建出一筆內文寫著
+ * 「這一版部到 <網址>」而那個網址上根本不是它的版本物件，**那比沒有更貴**。
+ *
+ * @param {object} o
+ * @returns {Promise<{detail:string[], created:number}>} 明細＋**這一趟真的建了幾筆**。
+ *   🔴 `created` 不是統計數字：呼叫端要靠它分辨「這一站沒事可做」與「這一站做了事」。
+ *   少了它，建出一筆版本物件的那一趟會被印成 `⏭ 跳過（不需要做）`
+ *   ——「安靜地做對」與「安靜地做錯」在報告上長得一模一樣，那正是這條管線在治的病。
+ */
+async function recordInternalReleases({ R, manifest }) {
+  const internalLines = LINES.filter((l) => releaseVisibility(l.id) === 'internal');
+  if (!internalLines.length) return { detail: [], created: 0 };
+  const detail = [];
+  let created = 0;
+  const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+  if (!cred) {
+    throw new Error(
+      '讀不到 Gitea 寫入權杖，發不出內部版本物件（來源＝本機 `gitea` remote 網址內嵌的帳密）。\n' +
+      '     不跳過：跳過的結果就是 2026-09-01 那件事——東西上線了，而 leo 找不到任何版本可以打開。');
+  }
+  const headSha = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
+  const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD'], REPO_ROOT);
+
+  for (const decl of internalLines) {
+    if (decl.id !== 'installer') {
+      throw new Error(
+        `版本線 \`${decl.id}\` 宣告只發內部，但這裡不知道它的版本號、更新說明與原始碼識別要去哪裡拿。\n` +
+        `     ⇒ 多一條這種線時，在 recordInternalReleases 裡加它自己的查法。\n` +
+        `     **不准讓它安靜套用安裝器那一套**——那會發出一筆內容指著別條線的版本物件。`);
+    }
+    // 這棵樹說自己是哪一版（＝會被部署上去、會被 /api/latest 回報的那個常數）。
+    const instProblems = verifyInstallerVersion(REPO_ROOT);
+    if (instProblems.length) {
+      throw new Error('安裝器版本線機械閘不過，不建版本物件：\n' + instProblems.map((x) => `       • ${x}`).join('\n'));
+    }
+    const version = readInstallerVersion(REPO_ROOT);
+    const line = {
+      id: decl.id, product: decl.product, label: decl.label, version,
+      tag: `${decl.tagPrefix || ''}${version}`,
+    };
+    const projected = manifest.installer && manifest.installer.version;
+    if (projected && projected !== version) {
+      detail.push(
+        `⚠️ bundle manifest 的安裝器版本是 ${projected}，這棵樹是 ${version}`
+        + `（這個工作區沒跟著重建）⇒ 版本物件以這棵樹與線上實測為準`);
+    }
+    const home = hostForLine(line.id, R);
+    if (home.host !== 'gitea') {
+      throw new Error(
+        `版本線 \`${line.id}\` 是內部版本物件，落點卻宣告在 ${home.host} 上。\n` +
+        `     內部那一側＝Gitea（D73）；發到對外主機就等於對使用者宣告一個他不該去選的版本。\n` +
+        `     → 改 installer/ship.targets.json 的 releaseRecord.lineRepos.${line.id}.host。`);
+    }
+    const slug = home.repoSlug;
+    const opts = { token: cred.token, baseUrl: home.baseUrl };
+
+    const existing = await giteaReleaseExists(slug, line.tag, opts).catch((e) => {
+      throw new Error(`查詢 ${slug} 是否已有 ${line.tag} 失敗（不放行，寧可手動確認也不要建出重複的）：${e.message}`);
+    });
+    if (existing) {
+      detail.push(`⏭ 內部版本物件｜${line.product} ${line.version} 已存在：${existing.html_url}`);
+      continue;
+    }
+
+    const changelog = installerChangelogSection(REPO_ROOT, line.version);
+    if (!changelog) {
+      throw new Error(
+        `${line.product} ${line.version} 沒有更新說明（該補在 ${INSTALLER_CHANGELOG_REL}）。\n` +
+        `     那一段就是這筆版本物件的內文 ⇒ 少了它，打開來是一個空頁面。\n` +
+        `     🔴 而「先發、之後再補」正是 daemon 斷更四版的走法（#88）。`);
+    }
+    const srcSha = readInstallerSrcSha(REPO_ROOT);
+    if (!srcSha) {
+      throw new Error(
+        `${INSTALLER_VERSION_REL} 讀不到 INSTALLER_SRC_SHA ⇒ 這筆版本物件答不出「這是哪一份原始碼」。\n` +
+        `     （version 站的機械閘本來就會擋這件事；走到這裡還沒有＝那一站被跳過了。）`);
+    }
+
+    // 🔴 **送達之後才留紀錄**（這一站本來的規矩：「只有使用者真的拿得到這一版，
+    //   才留下那一筆紀錄——不然等於對使用者宣告一個沒送達的版本」）。
+    //   內文會寫「這一版部到 <網址>」⇒ 那句話必須是真的，所以去問那個網址。
+    const liveUrl = T.verify && T.verify.installerBase;
+    if (!liveUrl) {
+      throw new Error(
+        `目標 ${TARGET_NAME} 沒宣告 verify.installerBase ⇒ 沒有網址可以問「這一版到了沒」，`
+        + `也沒有東西可以寫進版本物件的驗法一節。`);
+    }
+    const live = await getJson(`${liveUrl}/api/latest?${cb()}`).catch((e) => {
+      throw new Error(
+        `讀不到 ${liveUrl}/api/latest（${e.message}）⇒ 不知道線上是哪一版。\n` +
+        `     不猜：猜錯就會建出一筆內文指著錯誤網址的版本物件。`);
+    });
+    const notDelivered = deliveredProblem({ version, srcSha, live, liveUrl });
+    if (notDelivered) throw new Error(notDelivered);
+    detail.push(`線上實測 ${liveUrl}/api/latest → 安裝器 ${live.installer.version}`
+      + `｜指紋 ${String(live.installer_sha).slice(0, 12)}…（與這棵樹逐字元相同）`);
+
+    // commit 要在**那個 repo** 上看得到——形狀與主體那一半刻意一模一樣。
+    let onServer = await giteaCommitExists(slug, headSha, opts);
+    if (!onServer) {
+      if (/^(main|master|HEAD)$/.test(branch)) {
+        throw new Error(
+          `這一版的原始碼 commit（${headSha.slice(0, 7)}）在 ${slug} 上找不到，而目前分支是 \`${branch}\`。\n` +
+          `     出貨線**不代推 main**（那道閘是人的同意，不能被腳本繞過）⇒ 請先把它併上去再出貨。`);
+      }
+      pushGiteaQuietly(branch);
+      detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
+      onServer = await giteaCommitExists(slug, headSha, opts);
+      if (!onServer) throw new Error(`推完了，但 ${slug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本物件。`);
+    } else {
+      detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}（${slug}）`);
+    }
+
+    const bundleRelease = typeof manifest.release === 'string' ? manifest.release : undefined;
+    const title = installerReleaseTitle(line.version, { bundleRelease });
+    const body = installerReleaseBody({
+      version: line.version,
+      srcSha,
+      commit: headSha,
+      repoSlug: slug,
+      changelog,
+      liveUrl,
+      targetName: TARGET_NAME,
+      bundleRelease,
+    });
+    const rel = await giteaCreateRelease({
+      repoSlug: slug, tag: line.tag, name: title, body,
+      target: headSha, token: cred.token, baseUrl: home.baseUrl,
+    });
+    // 🔴 回頭查證，不聽 create 說「我成功了」（同 release-check 站的形狀）。
+    //   要抓的是最壞那種狀態：**頁面建好了，但打開來答不出問題**——那比沒有更貴，
+    //   因為它看起來像答案，leo 會拿它去對帳。
+    const back = await giteaReleaseExists(slug, line.tag, opts);
+    if (!back) throw new Error(`建完了，但 ${slug} 上查不到 ${line.tag}——不宣告一筆問不到的版本物件。`);
+    const probs = installerReleaseBodyProblems(back.body, { version: line.version, srcSha });
+    if (probs.length) {
+      throw new Error(
+        `${title} 的版本物件建好了，但打開來答不出問題：\n` +
+        probs.map((x) => `       • ${x}`).join('\n') + '\n' +
+        `     頁面在 ${back.html_url} ⇒ 請補正或刪掉那一筆，不要留一個看起來像答案的空殼。`);
+    }
+    created += 1;
+    detail.push(
+      `內部版本物件｜${title} → ${slug}：${rel.html_url}\n`
+      + `　└ 無附檔（成品是線上那個網站）；內文帶原始碼指紋 ${String(srcSha).slice(0, 12)}… 與驗法`);
+  }
+  return { detail, created };
+}
+
+
 const STEPS = [
 
 // ── 1. preflight：在動任何東西之前，確認「我要打的是不是我以為的那個目標」──
@@ -624,12 +823,18 @@ const STEPS = [
     //
     //   讀取一律匿名／唯讀（D20 2026-08-10：讀放行、不計次）；Gitea 私有 repo 才帶權杖。
     if (R) {
-      const cred = R.host === 'gitea' ? giteaWriteCredentialsFromRemote(REPO_ROOT) : null;
+      const giteaCred = giteaWriteCredentialsFromRemote(REPO_ROOT);
       for (const line of LINES) {
-        const entry = repoForLine(line.id, R);
+        // 🔴 #169 第二輪（leo 2026-09-02 裁決）：**安裝器那條線現在也要查。**
+        //   前一版在這裡把它跳過，因為當時宣告它「不發版本頁 ⇒ 沒有落點」。
+        //   那個宣告被裁掉了：它照樣發一筆版本物件，只是發在**內部那一側**
+        //   ⇒ 主機逐條線問（hostForLine），不是拿這個目標的 host 一路套到底。
+        const home = hostForLine(line.id, R);
+        const entry = home.entry;
+        const cred = home.host === 'gitea' ? giteaCred : null;
         let ok;
         try {
-          ok = await repoExists(R.host, entry.repoSlug, { token: cred && cred.token, baseUrl: R.baseUrl });
+          ok = await repoExists(home.host, entry.repoSlug, { token: cred && cred.token, baseUrl: home.baseUrl });
         } catch (e) {
           // 🔴 分清楚兩件事：**「這個 repo 不存在」與「我連不到那台主機」不是同一個結論。**
           //   2026-08-18 實測撞到一次 `UND_ERR_CONNECT_TIMEOUT`（同一個指令重跑兩次都過），
@@ -645,13 +850,14 @@ const STEPS = [
         }
         if (!ok) {
           throw new Error(
-            `版本線 \`${line.id}\`（${line.product}）宣告要發到 \`${entry.repoSlug}\`，但${R.host}上**沒有這個 repo**。\n` +
+            `版本線 \`${line.id}\`（${line.product}）宣告要發到 \`${entry.repoSlug}\`，但${home.host}上**沒有這個 repo**。\n` +
             `     宣告在 installer/ship.targets.json → targets.${TARGET_NAME}.releaseRecord.lineRepos.${line.id}.repoSlug\n` +
             `     🔴 **不會自動退回 ${R.repoSlug}**：那樣做會把「${line.product}」的版本又疊進別人的歷史裡，\n` +
             `        而且是安靜地疊——那正是 D95 leo 指出的那個扭曲（「把一個差很多的東西塞進去別人的歷史裡」）。\n` +
             `     → 要嘛把這個 repo 建起來（GitHub 側屬 D20 管制寫入，需 leo 開閘），要嘛改宣告。`);
         }
-        lines.push(`版本線 ${line.id}（${line.product}）→ ${entry.repoSlug}`
+        lines.push(`版本線 ${line.id}（${line.product}）→ ${home.host} ${entry.repoSlug}`
+          + (releaseVisibility(line.id) === 'internal' ? '（內部版本物件：不對使用者那一側發）' : '')
           + (livesInOwnRepo(entry) ? `（源碼住那邊：本 repo 的 ${entry.sourceDir}/ 每次出貨同步過去）` : ''));
       }
     }
@@ -1318,7 +1524,33 @@ const STEPS = [
   const { release } = syncManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT, quiet: true, sharedState: shared });
   const problems = verifyManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT });
   if (problems.length) throw new Error('manifest 機械閘不過：\n' + problems.map((p) => `       • ${p}`).join('\n'));
-  const m = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+  const m0 = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+
+  // ── 安裝器那條線（inkstone/arcrun-rag#169）───────────────────────────────
+  // 🔴 為什麼跟零件包同一站算：**它們是同一件事的兩半**——「這一趟送出去的東西是幾號」。
+  //   拆成兩站的話，只跑到其中一站的模式會讓兩個號碼各說各話。
+  //   演算法在 installer-line.mjs：安裝器原始碼的內容指紋一變就 +1，沒變就不動。
+  //   ⚠️ 這裡**不可能長出 9962525 那種自鎖**（「宣告新版本這個動作本身在改指紋涵蓋的樹」）：
+  //     宣告落在 installer/CHANGELOG.md 與 version.mjs，兩者都在指紋定義域之外，
+  //     所以寫完宣告再量指紋，量到的還是同一份。測試 ④ 就是釘這件事的。
+  const inst = syncInstallerVersion(REPO_ROOT, { quiet: true });
+  const instProblems = verifyInstallerVersion(REPO_ROOT);
+  if (instProblems.length) {
+    throw new Error('安裝器版本線機械閘不過：\n' + instProblems.map((p) => `       • ${p}`).join('\n'));
+  }
+  ctx.installerVersion = inst.version;
+  // 🔴 2026-09-01（comment 5959）：指紋現在烙在 version.mjs 裡（跟著程式碼一起部署），
+  //   不再由 pin 站寫進 wrangler.toml ⇒ 「安裝器原始碼變了，deploy 站不准跳過」這道 belt
+  //   從「toml 有沒有被改」搬到這裡。suspenders 仍是 deploy 站拿線上實回的 installer_sha 比對。
+  ctx.installerSrcChanged = inst.fingerprintChanged;
+
+  // 交付面的三條線要能離線對得起來 ⇒ 安裝器的號碼也寫進 manifest（同 daemon 那條的作法）。
+  // 🔴 它**不進 contentFingerprint**（那支只認 manifest.core[]）⇒ 寫它不會讓 1.4.x 跳號。
+  //   這正是「不准兩條同時是真相」：改安裝器不該讓每一台既有實例被誤報「有新版」。
+  const mPath = join(ctx.bundlesDir, 'manifest.json');
+  const m = { ...m0, installer: { ...(m0.installer || {}), version: inst.version } };
+  if (JSON.stringify(m) !== JSON.stringify(m0)) writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
+
   ctx.release = release;
   ctx.daemonVersion = m.daemon && m.daemon.version;
   ctx.built = m.built;   // 使用者在 /api/latest 看到的建置日；verify 會拿它跟線上對
@@ -1327,6 +1559,9 @@ const STEPS = [
   return { status: 'done', detail: [
     bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1，${shared ? '跨目標共用狀態' : '本機獨立計數'}）`
            : `版本 ${release}（內容與上一版一致 ⇒ 不動）`,
+    !inst.previous ? `安裝器 ${inst.version}（這條線第一次有號碼）`
+      : inst.changed ? `安裝器 ${inst.previous} → ${inst.version}（原始碼有變 ⇒ patch +1）`
+      : `安裝器 ${inst.version}（原始碼未變 ⇒ 不動）`,
     `${m.core.length} 顆｜built ${m.built}｜source ${m.source}｜daemon ${ctx.daemonVersion}`,
   ] };
 }},
@@ -1359,7 +1594,22 @@ const STEPS = [
       `用一兩句使用者看得懂的話描述這版改了什麼，再重跑本指令。\n` +
       `     （leo 2026-08-09：「你不列入就沒寫，兩邊脫鉤」——這道閘就是不准兩邊脫鉤）`);
   }
-  return { status: 'done', detail: [`${CHANGELOG_REL} 有 ${ctx.release} 這一版：${line}`] };
+  // 🔴 #169：**這一站要問這一趟送出去的每一條線，不是只問零件包那一條。**
+  //   安裝器有自己的更新說明（installer/CHANGELOG.md），漏了它就等於「安裝器改了，
+  //   而使用者查不到改了什麼」——跟上面那條 leo 的判準是同一句話，只是換一條線。
+  const instSection = ctx.installerVersion ? installerChangelogSection(REPO_ROOT, ctx.installerVersion) : null;
+  if (ctx.installerVersion && !instSection) {
+    throw new Error(
+      `${INSTALLER_CHANGELOG_REL} 裡沒有安裝器 ${ctx.installerVersion} 這一版。\n` +
+      `     安裝器的原始碼變了（所以號碼跳到 ${ctx.installerVersion}），但沒有人寫這版改了什麼。\n` +
+      `     先補一段 \`## ${ctx.installerVersion}（${new Date().toISOString().slice(0, 10)}）\` 再重跑本指令。`);
+  }
+  return { status: 'done', detail: [
+    `${CHANGELOG_REL} 有 ${ctx.release} 這一版：${line}`,
+    ctx.installerVersion
+      ? `${INSTALLER_CHANGELOG_REL} 有安裝器 ${ctx.installerVersion} 這一版：${String(instSection).split('\n')[0].slice(0, 50)}`
+      : '（這一趟沒算過安裝器版本＝version 站沒跑到，見該站）',
+  ] };
 }},
 
 // ── 3.7 readme：bundle repo 的 README 由零件清單算出來，不留會過期的手寫數字 ──
@@ -1475,13 +1725,16 @@ const STEPS = [
 }},
 
 // ── 6. pin：換釘子。**寫進所有真身**，不靠人記得改哪幾處 ────────────────────
-// 🔴 08-13（arcrun-rag#95）：這裡順便寫一根「安裝器原始碼指紋」的釘子——
-//   deploy 站的跳過判準原本只認這裡寫的 BUNDLE_BASE／BUNDLE_BUILT 有沒有動，
-//   對「安裝器自己的邏輯改了，但沒動 bundle 釘子」完全瞎眼（連兩次跨 stage／prod
-//   實撞：改了 worker.js → 併 main → 出貨 → deploy 站印「跳過」→ 線上原封不動）。
-//   INSTALLER_SRC_SHA 一變，下面 `toml !== before` 就成立 ⇒ 沿用既有的
-//   「toml 變了＝pinChanged＝deploy 站不准跳過」機制，不必另開一條比對路。
-{ id: 'pin', title: '換安裝器釘子（真身是 wrangler.toml 的 vars；含安裝器原始碼指紋）', mutates: true, async run() {
+// 🔴 08-13（arcrun-rag#95）曾在這裡順便寫一根「安裝器原始碼指紋」的釘子
+//   （`[vars].INSTALLER_SRC_SHA`），為的是讓 deploy 站的跳過判準看得見「安裝器邏輯改了
+//   但 bundle 釘子沒動」。
+// 🔴 2026-09-01（inkstone/arcrun-rag#169 comment 5959）**那根釘子拔掉了**：
+//   它是**部署參數裡的一份手抄本** ⇒ 只有走這一站的目標才會被寫對，而
+//   `ship.targets.json` 裡沒有 `youlin-stage`、手部署又整條路不經過這裡
+//   ⇒ 實測 prod（1.0.3）與 uncle6 staging（1.0.4）回同一串 sha，兩個都對不上原始碼。
+//   現在指紋由 `installer-line.mjs` 烙進 `version.mjs`（跟程式碼一起被部署），
+//   「不准跳過」的 belt 改由 version 站的 `ctx.installerSrcChanged` 帶下來。
+{ id: 'pin', title: '換安裝器釘子（真身是 wrangler.toml 的 vars）', mutates: true, async run() {
   if (!T.pin || !T.installer) return { status: 'skip', detail: ['本目標沒有安裝器（登錄簿宣告）'] };
   ctx.headSha = ctx.headSha || sh('git', ['rev-parse', 'HEAD'], ctx.bundlesDir);
   const sha = T.pin.shaLen === 40 ? ctx.headSha : ctx.headSha.slice(0, T.pin.shaLen);
@@ -1496,14 +1749,13 @@ const STEPS = [
   const migLines = arcrunRoot
     ? assertMigrationsComplete(join(REPO_ROOT, T.installer.cwd), arcrunRoot)
     : ['⚠️ 找不到 Arcrun repo，這一趟沒能複驗 migration 帶齊了沒（設 ARCRUN_REPO_ROOT 可複驗）'];
-  ctx.installerSrcHash = installerSourceHash(jsPath);
+  ctx.installerSrcHash = installerSourceHash(join(REPO_ROOT, T.installer.cwd));
 
   const tomlPath = join(REPO_ROOT, T.installer.cwd, T.installer.config);
   let toml = readFileSync(tomlPath, 'utf8');
   const before = toml;
   toml = setTomlVar(toml, T.installer.varsSection, 'BUNDLE_BASE', ctx.pinUrl);
   toml = setTomlVar(toml, T.installer.varsSection, 'BUNDLE_BUILT', built);
-  toml = setTomlVar(toml, T.installer.varsSection, 'INSTALLER_SRC_SHA', ctx.installerSrcHash);
 
   // 🔴 08-07 白部署一次的病：釘子有**兩份手抄本**（wrangler.toml [vars] 與 worker.js 常數），
   //    只改一份就是「改了但沒生效」。這裡兩份一起寫 ⇒ 結構上不可能只改一半。
@@ -1518,7 +1770,7 @@ const STEPS = [
     // 🔴 migration 覆蓋率那一行**跳過時也要印**：閘在上面已經跑過（帶不齊會 throw），
     //   但如果只在「有動」的那一趟才顯示，盤點的人會以為這一趟沒驗——
     //   而「只在單邊執行的站是共同盲區」正是 2026-08-25 這整件事的形狀之一。
-    return { status: 'skip', detail: [`釘子與安裝器原始碼都沒動（built ${built}，src ${ctx.installerSrcHash.slice(0, 12)}）`, ...migLines] };
+    return { status: 'skip', detail: [`釘子沒動（built ${built}）；安裝器原始碼指紋 ${ctx.installerSrcHash.slice(0, 12)}（烙在 version.mjs，不寫這裡）`, ...migLines] };
   }
   writeFileSync(tomlPath, toml);
   if (js !== jsBefore) writeFileSync(jsPath, js);
@@ -1526,7 +1778,6 @@ const STEPS = [
   return { status: 'done', detail: [
     `[${T.installer.varsSection}] BUNDLE_BASE = ${ctx.pinUrl}`,
     `[${T.installer.varsSection}] BUNDLE_BUILT = ${built}`,
-    `[${T.installer.varsSection}] INSTALLER_SRC_SHA = ${ctx.installerSrcHash.slice(0, 12)}…`,
     T.installer.mirrorConstants ? 'worker.js 的兩個常數同步寫入（不留第二份手抄本）' : 'worker.js 常數不鏡射（本目標靠 vars 覆蓋）',
     ...migLines,
   ] };
@@ -1535,23 +1786,25 @@ const STEPS = [
 // ── 7. deploy：帳號來自登錄簿，不吃環境裡飄來的 CLOUDFLARE_ACCOUNT_ID ────────
 // 🔴 08-13（arcrun-rag#95）：跳過判準以前只認 release／pin，對安裝器自己的原始碼瞎眼
 //   ——連兩次跨 stage／prod 實撞：只改 worker.js、bundle 沒動，這裡照樣印「跳過」，
-//   線上頁面原封不動。`ctx.pinChanged` 現在已經因為 pin 站寫入 INSTALLER_SRC_SHA
-//   而涵蓋這種情況（belt）；這裡再多比一次線上實際回報的 installer_sha 當第二道
-//   （suspenders）——就算哪天 pin 站的邏輯被改壞，這裡仍然攔得住。
+//   線上頁面原封不動。belt ＝ version 站算出「指紋動了」時帶下來的 `ctx.installerSrcChanged`
+//   （2026-09-01 之前這件事靠 pin 站寫 toml 間接達成，見 pin 站註解為什麼拔掉）；
+//   suspenders ＝這裡再比一次線上實際回報的 installer_sha——而它現在回的是**線上那份碼
+//   自己 import 的常數**，不是部署腳本宣告的期望值 ⇒ 這一道從「大致可信」變成「精確」。
 { id: 'deploy', title: '部署安裝器（帳號由登錄簿釘死）', mutates: true, async run() {
   if (!T.installer) return { status: 'skip', detail: ['本目標沒有安裝器（登錄簿宣告）'] };
   ctx.installerSrcHash = ctx.installerSrcHash
-    || installerSourceHash(join(REPO_ROOT, T.installer.cwd, 'worker.js')); // --verify-only 等模式沒跑過 pin 站
+    || installerSourceHash(join(REPO_ROOT, T.installer.cwd)); // --verify-only 等模式沒跑過 pin 站
   const srcOk = ctx.liveBefore && ctx.liveBefore.installerSrcHash === ctx.installerSrcHash;
   const liveOk = ctx.liveBefore
     && ctx.liveBefore.release === ctx.release
     && ctx.headSha && String(ctx.liveBefore.pin || '').startsWith(ctx.headSha.slice(0, 7))
     && srcOk;
-  if (!ctx.pinChanged && liveOk) {
+  if (!ctx.pinChanged && !ctx.installerSrcChanged && liveOk) {
     return { status: 'skip', detail: [`線上已是 ${ctx.release}／pin ${ctx.liveBefore.pin}／安裝器原始碼 ${ctx.installerSrcHash.slice(0, 12)} 未變，且釘子沒動 ⇒ 不重複部署`] };
   }
-  // 走到這裡＝要部署。兩種情況都會落到這裡：pin 站已經宣告釘子動了（ctx.pinChanged），
-  // 或者 pin 站沒動但這裡比對出線上安裝器原始碼其實對不上（srcOk 為 false）
+  // 走到這裡＝要部署。三種情況都會落到這裡：pin 站已經宣告釘子動了（ctx.pinChanged）、
+  // version 站算出安裝器原始碼指紋動了（ctx.installerSrcChanged），
+  // 或者前兩者都沒動但這裡比對出線上安裝器原始碼其實對不上（srcOk 為 false）
   // ——寧可多部署一次，也不要讓「該做的事沒做」悄悄過關。
   const args = ['wrangler', 'deploy', '--config', T.installer.config];
   if (T.installer.wranglerEnv) args.push('--env', T.installer.wranglerEnv);
@@ -1738,7 +1991,7 @@ const STEPS = [
     || T.pin.template.replace('{sha7}', ctx.headSha.slice(0, 7)).replace('{sha40}', ctx.headSha);
   // 同理：安裝器原始碼指紋（arcrun-rag#95）——`--verify-only` 沒跑過 pin 站也要能算。
   ctx.installerSrcHash = ctx.installerSrcHash
-    || (T.installer && installerSourceHash(join(REPO_ROOT, T.installer.cwd, 'worker.js')));
+    || (T.installer && installerSourceHash(join(REPO_ROOT, T.installer.cwd)));
 
   // ① 安裝器對外宣告的版本＝新用戶會裝到的版本
   //
@@ -1771,6 +2024,10 @@ const STEPS = [
     { label: 'win 下載網址', path: 'daemon.downloads.win' },
     // arcrun-rag#95：驗收也要看得到「安裝器自己這次真的換過內容」，不是只看 bundle 那條線。
     { label: '安裝器原始碼指紋', path: 'installer_sha', expected: ctx.installerSrcHash },
+    // 🔴 #169：**指紋治「該不該重部署」，版本號治「leo 看不看得出你改了什麼」，是兩件事。**
+    //   線上這一格的值是安裝器自己 import 的常數 ⇒ 它回什麼，就真的是線上跑的那份碼；
+    //   跟這一趟算出來的號碼對不上 ＝ 這一版沒送達（或送了舊的），不是顯示問題。
+    { label: '安裝器版本', path: 'installer.version', expected: ctx.installerVersion },
   ];
   if (want) liveChecks.push({ label: '釘子指向本次 bundle HEAD', mode: 'contains', expected: want });
 
@@ -1793,7 +2050,18 @@ const STEPS = [
   if (!latest) { fails.push(`/api/latest 讀不到${seen && seen.fetch_error ? `（Arcrun 回報：${seen.fetch_error}）` : ''}`); }
   else {
     lines.push(`↑ 這一段由 Arcrun 工作流 ship_check_live 去看並比對（不是本機 curl）`);
-    lines.push(`/api/latest → release ${latest.release}｜pin ${latest.pin}｜daemon ${latest.daemon && latest.daemon.version}`);
+    lines.push(`/api/latest → release ${latest.release}｜pin ${latest.pin}｜daemon ${latest.daemon && latest.daemon.version}｜安裝器 ${chk('安裝器版本').actual || '(無)'}`);
+    // #169：安裝器那條線的送達判定。**沒有這一段，這條線就只是多了一個字串。**
+    if (ctx.installerVersion) {
+      const liveInstaller = chk('安裝器版本').actual;
+      if (!liveInstaller) {
+        fails.push(`線上的 /api/latest 沒有 installer.version 這一格`
+          + `——那表示線上跑的還是「安裝器沒有版本線」的舊碼（或這次沒部署成功）`);
+      } else if (liveInstaller !== ctx.installerVersion) {
+        fails.push(`安裝器宣告版本 ${liveInstaller}，本次是 ${ctx.installerVersion}`
+          + `——leo 從安裝頁看到的號碼不是這一版的（等了 60 秒仍沒收斂）`);
+      }
+    }
     if (latest.release !== ctx.release) fails.push(`安裝器宣告 ${latest.release}，本次是 ${ctx.release}（等了 60 秒仍沒收斂）`);
     if (want && !String(latest.pin || '').startsWith(want)) {
       fails.push(`安裝器釘子 ${latest.pin}，本次 bundle HEAD 是 ${want}（等了 60 秒仍沒收斂）`);
@@ -1956,11 +2224,28 @@ const STEPS = [
   // 這趟出貨送了哪幾條版本線——讀**真的要送出去的那份 bundle manifest**，不是憑 ctx 推。
   const manifestPath = join(ctx.bundlesDir, 'manifest.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const lines = linesFrom(manifest, 'manifest');
-  if (lines.length === 0) {
+  const allLines = linesFrom(manifest, 'manifest');
+
+  if (allLines.length === 0) {
     throw new Error(
-      `${manifestPath} 裡讀不到任何版本線（release／daemon.version 都沒有）。\n` +
+      `${manifestPath} 裡讀不到任何版本線（release／daemon.version／installer.version 都沒有）。\n` +
       `     「檢查了 0 條卻通過」是假綠的經典形狀 ⇒ 不放行。`);
+  }
+
+  // ── 只發內部的線（#169，今天只有安裝器）──────────────────────────────────
+  // 🔴 2026-09-02 leo 裁決：**這裡以前只問「changelog 有沒有那一段」就放它過。**
+  //   leo 原話：「**你的宣告有誤**⋯⋯什麼東西改了不用聲明？**那是說不用告訴用戶。**」
+  //   實害：`1.0.3` 2026-09-01 上了 prod，而他當晚去 Gitea 找版本**一個都找不到**。
+  //   ⇒ 現在它跟另外兩條線做同一件事——建一筆打得開的版本物件——
+  //     差別只在**發在哪一側**（內部 Gitea，不論這趟出貨的目標是 stage 還是 prod）。
+  const internal = await recordInternalReleases({ R, manifest });
+  const internalDetail = internal.detail;
+
+  const lines = allLines.filter((l) => publishesToUsers(l.id));
+  if (lines.length === 0) {
+    // 今天不會發生（每個目標都送零件包）。真的發生時**要說出來**，不是靜靜結束——
+    // 「這一站什麼都沒做」與「這一站沒事可做」在報告上長得一模一樣，那是假綠的形狀。
+    return { status: 'done', detail: [...internalDetail, '對外那一側這一趟沒有版本線要發（只有內部線）'] };
   }
   // 冪等：既有 tag 帶 v、新的裸號，過渡期兩種並存（leo 2026-08-17 明說舊的不回頭改）
   // ⇒ 查的時候兩種都查，不然同一版會被建第二筆。
@@ -2080,10 +2365,14 @@ const STEPS = [
       todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
     }
     if (todo.every((t) => t.existing)) {
-      return { status: 'skip', detail: todo.map((t) => `Gitea 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
+      // 🔴 內部那一筆是這一趟**真的建出來的東西** ⇒ 不准把整站印成「跳過／不需要做」。
+      return {
+        status: internal.created ? 'done' : 'skip',
+        detail: [...internalDetail, ...todo.map((t) => `Gitea 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`)],
+      };
     }
 
-    const detail = fromDisk ? [fromDisk] : [];
+    const detail = fromDisk ? [fromDisk, ...internalDetail] : [...internalDetail];
 
     // ① 讓這一版的原始碼 commit **在它自己那個 repo 上**看得到（＝交貨，D73）。
     //   一筆 release 要指到一顆 commit；指到一顆那個 repo 看不到的 sha，
@@ -2220,7 +2509,10 @@ const STEPS = [
     todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
   }
   if (todo.every((t) => t.existing)) {
-    return { status: 'skip', detail: todo.map((t) => `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`) };
+    return {
+      status: internal.created ? 'done' : 'skip',
+      detail: [...internalDetail, ...todo.map((t) => `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`)],
+    };
   }
 
   // ① 先把公開鏡像（.github-public/）更新到目前 HEAD——scripts/publish-github.sh 本來就有
@@ -2328,7 +2620,7 @@ const STEPS = [
     made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
   }
 
-  return { status: 'done', detail: [...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
+  return { status: 'done', detail: [...internalDetail, ...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
 }},
 
 // ── release-check：`release-record` 的**後置條件驗證**（inkstone/arcrun-rag#88，2026-08-18）──
@@ -2356,10 +2648,20 @@ const STEPS = [
   const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
   // 交付面投影：只取使用者端真的會讀到的那兩個欄位（＝/api/latest 的形狀），
   // 不整份餵——manifest 裡的 `promoted_from.release` 是歷史帳，餵進去會被誤判成第三條線。
-  const latestPayload = { release: m.release, daemon: m.daemon ? { version: m.daemon.version } : undefined };
+  const latestPayload = {
+    release: m.release,
+    daemon: m.daemon ? { version: m.daemon.version } : undefined,
+    // #169：第三條線。**這一格從 manifest 讀，不從 ctx 讀**——與上面兩條同一個理由：
+    // 要驗的是「真的要送出去的那份東西宣告了什麼」，不是「這支腳本記得自己算過什麼」。
+    installer: m.installer ? { version: m.installer.version } : undefined,
+  };
 
   const publishedTags = CONFIRM ? await fetchPublishedTags(T, { root: REPO_ROOT }) : null;
-  const result = runReleaseLineGate({ targetName: TARGET_NAME, target: T, latestPayload, publishedTags });
+  const result = runReleaseLineGate({
+    targetName: TARGET_NAME, target: T, latestPayload, publishedTags,
+    // 只發內部的線，那筆版本物件的內文從哪來（見 release-line-gate 的 checkInternalNotes）。
+    internalNotes: internalNotesFrom(latestPayload, REPO_ROOT),
+  });
 
   // 留痕：擋下與放行都記（InkStoneCo#48——36 支閘只有 2 支會記錄自己擋了什麼，
   // 沒有成效紀錄就無法知道這道閘到底有沒有在運作）。
@@ -2381,22 +2683,17 @@ const STEPS = [
 ];
 
 // ── 安裝器原始碼的內容指紋（arcrun-rag#95）────────────────────────────────
-// 排除 DEFAULT_BUNDLE_BASE／BUNDLE_BUILT 這兩個「本站自己會改寫」的常數——
-// 不排除的話指紋會被自己這次要寫入的值影響，變成每次出貨都在追自己的尾巴
-// （跟 release.mjs 排除 built/release/source 自己是同一個理由：見該檔檔頭）。
-// 其餘所有邏輯／文案／流程改動都會反映在這裡，這正是**跳過判準少看的那一塊**。
-function installerSourceHash(jsPath) {
-  const src = readFileSync(jsPath, 'utf8')
-    .replace(/const DEFAULT_BUNDLE_BASE = '[^']*'/, "const DEFAULT_BUNDLE_BASE = ''")
-    .replace(/const BUNDLE_BUILT = '[^']*'/, "const BUNDLE_BUILT = ''");
-  const h = createHash('sha256').update(src);
-  // 🔴 2026-08-25（inkstone/Arcrun#159）：這裡原本**只雜湊 worker.js**。
-  //   但安裝器實際執行的 D1 schema 來自它 import 的 `migrations.json`
-  //   ⇒ migration 改了、指紋不變 ⇒ deploy 站判定「安裝器原始碼未變、不用重部」
-  //   ⇒ **新的 migration 永遠上不了線**。把它一起算進指紋。
-  const migPath = join(dirname(jsPath), 'migrations.json');
-  if (existsSync(migPath)) h.update(readFileSync(migPath, 'utf8'));
-  return h.digest('hex');
+// 🔴 2026-09-01（inkstone/arcrun-rag#169）：**實作搬去 installer-line.mjs，這裡只剩一層轉呼叫。**
+//   為什麼一定要同一支算：安裝器的**版本號**與**該不該重部署**現在讀的是同一份指紋。
+//   兩份各算各的話，會長出最壞的那種狀態——號碼跳了、deploy 卻判「沒變不用部」
+//   ⇒ 線上仍是舊碼，而畫面上寫著新號碼。**那比沒有版本線更糟：它會說謊。**
+//
+//   同一次也把定義域從「worker.js ＋ migrations.json」擴到整個 `oauth-prototype/`
+//   （扣掉測試與版本檔本身）。舊的定義域漏掉 `shared/resource-rule/rule.mjs`（決定資源沿用）、
+//   `version-stamp.mjs`（決定烙什麼印記）、`workflows.json`／`skills.json`（決定種什麼進去）
+//   ——改它們，舊指紋一動也不動 ⇒ 同一個病的另一種長法（2026-08-25 那次是 migrations.json）。
+function installerSourceHash(installerDir) {
+  return installerFingerprint(installerDir);
 }
 
 /**
@@ -2482,14 +2779,36 @@ console.log(`站表　${STATIONS['站'].length} 站　✓ 與步驟表逐項相�
 console.log(`　　　這條線宣告**單機走完**（stage 與 prod 同一台）——換機器接力會在出貨前被擋下`);
 // 站表宣告的工作流**必須真的在 leo 那台實例上**——不然「用什麼: ship_check_live」
 // 只是一句話，工作流被刪掉了管線照跑照綠（D70 要擋的正是宣告與現實脫節）。
-const ARCRUN_WFS = arcrunWorkflows(STATIONS);
+// 🔴 只問**這一趟真的會跑的那幾站**要用的工作流（#169，2026-09-02）：
+//   單站模式（--release-record-only／--verify-only／--delivery-only）以前也得先連上
+//   Arcrun 實例，即使那一站宣告 `用什麼: 本機` ⇒ 連不到實例的機器連版本物件都補不出來。
+//   全程模式的 RUN_STEPS 就是整張步驟表，清單與行為與過去逐字相同。
+const ARCRUN_WFS = arcrunWorkflows(STATIONS, RUN_STEPS.map((s) => s.id));
 let arcrunNote = '（無）';
 if (ARCRUN_WFS.length) {
+  // 🔴 2026-09-13（inkstone/arcrun-rag#27）：實例目錄的 namespace 變數只住在 `.env`，
+  //   一般 shell 沒有 ⇒ 上游落到 `~/.arcrun/config.yaml`（寫著已經不存在的舊子網域）
+  //   ⇒ 出貨線在第一站之前 fetch failed。先把目錄點名的那個變數從 `.env` 補進來（只補空的）。
+  // 🔴 同晚 c7168：**打哪一台由登錄簿指名**（`workflowHost.instance`），不再靠「環境裡剛好只有一台」
+  //   ——leo：「這應該是測試環境，應該用 uncle6 的帳號是主要服務」。指名錯／目錄沒這台 ⇒ 當場斷。
+  let nsSourceLines = [];
   try {
-    const { base, ns } = await assertWorkflowsExist(ARCRUN_WFS);
-    arcrunNote = `${ARCRUN_WFS.join('、')}　✓ 都在 ${base}（namespace ${ns}）`;
+    const nsFill = fillInstanceNamespaces({ instance: cfg.workflowHost?.instance, startDir: REPO_ROOT });
+    nsSourceLines = nsFill.skipped
+      ? [`實例 namespace：${nsFill.skipped}`]
+      : [`實例：${nsFill.instance}（ship.targets.json 的 workflowHost 指名）`, ...describeSources(nsFill)];
   } catch (e) {
     console.error(`\n❌ ${e.message}\n`);
+    process.exit(2);
+  }
+  try {
+    const { base, ns } = await assertWorkflowsExist(ARCRUN_WFS);
+    arcrunNote = `${ARCRUN_WFS.join('、')}　✓ 都在 ${base}（namespace ${maskNamespace(ns)}）`;
+    for (const l of nsSourceLines) arcrunNote += `\n　　　${l}`;
+  } catch (e) {
+    console.error(`\n❌ ${e.message}`);
+    for (const l of nsSourceLines) console.error(`     ${l}`);
+    console.error('');
     process.exit(2);
   }
 }
@@ -2625,6 +2944,16 @@ if (RELEASE_RECORD_ONLY) {
   // 裸號（leo 2026-08-17「不要 v」）——這行印的是**出貨線自己對 leo 的回報**，
   // 帶著 v 就是在他的驗收介面上重新製造那個他剛要求拿掉的東西。
   console.log(`\n✅ 發佈紀錄就位｜${TARGET_NAME} 的 ${T.releaseRecord.host} ${T.releaseRecord.repoSlug} 上有 ${ctx.release} 這一版`);
+  {
+    // #169：安裝器那條線的版本物件也印一行——leo 的驗收介面上看不到，就等於沒有。
+    const v = readInstallerVersion(REPO_ROOT);
+    const inst = LINES.find((l) => l.id === 'installer');
+    if (v && inst) {
+      const home = hostForLine('installer', T.releaseRecord);
+      console.log(`   ＋安裝器 ${v}（內部版本物件）：`
+        + `${(home.baseUrl || '').replace(/\/$/, '')}/${home.repoSlug}/releases/tag/${inst.tagPrefix || ''}${v}`);
+    }
+  }
   console.log(`   （只留紀錄，沒有出貨、沒有建 bundle、沒有部署任何東西）`);
   process.exit(0);
 }

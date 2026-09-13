@@ -68,6 +68,48 @@ CF 的 KV 上限是每帳號 1,000 顆，所以「超過一頁」不是理論狀
 | `/d1/database` | `{page, per_page, count, total_count}` | 真分頁，但**沒有 `total_pages`** ⇒ 不准拿它當終止條件 |
 | `/vectorize/v2/indexes` | `null` | **不分頁**，`page`／`per_page` 被忽略，一次回全部 |
 
+### 1.3 停手的時候對使用者說什麼——形狀只有一種（inkstone/Arcrun#193）
+
+第 3 條說「把話說清楚讓人來判斷」。**但「讓人來判斷」不等於「把判斷丟給使用者」**。
+
+leo 2026-08-31：「**叫用戶自己去開通是完全不准的。**」
+`blockers[]` 是**原文顯示給使用者的**（§4 的契約），所以它就是產品文案。
+
+本票之前，七則裡只有 `RES-NAME-TAKEN` 一則寫對；最糟的一則結尾是：
+
+> 但這顆在你的 Cloudflare 帳號上找不到了…**請先確認那顆資源是被刪掉了，還是這把 API token 看不到它。**
+
+使用者手上沒有那把 token，也沒有工具可以確認。而**我們分得出來**：
+§1.2 之後，清單讀不完整時 `cfListAll` 會 throw ⇒ 那條路在上一步就變成 `RES-LIST-FAILED` 停下，
+**走不到那一行**；而 CF 的三支清單端點是帳號層級的（有讀權限就看得到全部，沒有就整支 403）
+⇒ **沒有「列得成功、但漏看一顆」這種中間狀態**。
+⇒ 那句免責聲明是 §1.2 修好**之前**留下的化石：洞補起來了，話卻沒有人回來改。
+
+現在的規約：**每一則 blocker 都以同一支 `reportable()` 收尾**——
+
+```
+<我們查到什麼、我們做了什麼決定、我們沒有動任何東西>
+＋（暫時性失敗才有）可以再試一次；一直是這樣的話，
+＋ 請把這則訊息回報給我們（錯誤碼 RES-XXX/<kind>/<binding>），這需要我們處理。
+```
+
+| 錯誤碼 | 什麼情況 |
+|---|---|
+| `RES-READ-FAILED/<script>` | 讀不到某顆已部署 worker 現在綁著什麼 |
+| `RES-NO-WORKERS` | 說是更新，帳號上卻一顆該更新的 worker 都沒有 |
+| `RES-BIND-CONFLICT/<kind>/<binding>` | 同一個 binding 在不同 worker 上指向不同資源 |
+| `RES-LIST-FAILED/<kind>/<binding>` | 列不出帳號上的資源清單（沿用前／新建前共用同一個碼） |
+| `RES-BOUND-MISSING/<kind>/<binding>` | 清單整份讀完了，worker 綁著的那顆確實不在 |
+| `RES-NAME-TAKEN/<kind>/<binding>` | 名字被佔走，而我們證明不了那顆是自己的 |
+| `RES-CREATE-FAILED/<kind>/<binding>` | 建到一半失敗 |
+| `RES-NO-REQUIREMENTS` / `RES-PLAN-FAILED` | `installer-entry.mjs` 那兩個入口 |
+
+🔴 **為什麼要有一道閘**：「只有一則寫對、其餘六則各寫各的」本身就是證據——
+**結尾各寫各的就一定會漂**。`cli/tests/blocker-copy.test.ts` 掃原始碼裡每一個使用者出口，
+少接一支 `reportable()` 就紅；並實跑九個停手分支，驗每一則的形狀
+（對使用者的「請…」只准是「請把這則訊息回報給我們」，且不准把人推去站外後台）。
+判準與安裝器那側的 `copy-rules.mjs` 同源：**封出路的形狀，不封措辭。**
+
 ---
 
 ## 2. 為什麼在這裡，不在 cypher-executor 的 API
@@ -162,7 +204,7 @@ if (r.blocked) {
 ## 6. 驗收
 
 ```bash
-cd cli && npm test          # 73 項，含下列三組
+cd cli && npm test          # 105 項，含下列四組
 node shared/resource-rule/tests/demo.mjs                # 安裝器那條路，零依賴獨立跑
 node shared/resource-rule/tests/half-finished-install.mjs   # #123
 node shared/resource-rule/tests/list-pagination.mjs         # #123 續集（清單分頁）
@@ -173,6 +215,7 @@ node shared/resource-rule/tests/list-pagination.mjs         # #123 續集（清�
 | `cli/tests/two-paths-agree.test.ts` | 同一個帳號狀態餵給 `acr` 那條與安裝器那條，**選出的 resource id 相同**、建的東西相同、停手的理由相同 |
 | `cli/tests/single-implementation.test.ts` | ①規則的 7 支函式全 repo 只有這裡有實作 ②鏡射逐位元組相同 ③共用層零依賴 |
 | `cli/tests/resource-adoption.test.ts` | #97 本身的迴歸（沿用／不多建／四種停手情境），改共用層後照樣全過 |
+| `cli/tests/blocker-copy.test.ts` | §1.3 的閘：①掃原始碼，每個使用者出口都接了 `reportable()` ②實跑九個停手分支驗文案形狀 ③反證——把 #193 的舊文案放回來，三條判準都要抓到 |
 
 四種情境（`tests/fixture-account.mjs` 的 `SCENARIOS`）：
 

@@ -234,7 +234,15 @@ access token 過期判斷留了 5 分鐘安全邊際。
 node --experimental-sqlite --test worker.test.mjs   # 需 Node ≥ 22，零依賴、不觸網
 ```
 
-`worker.test.mjs` 把「README 宣稱已修」變成可重跑證據（22 案例，全綠）：
+`worker.test.mjs` 把「README 宣稱已修」變成可重跑證據（**102 案例，全綠；2026-08-29 實跑**）：
+
+> 🔴 **這支測試的價值在於「紅的時候是真的有事」**（#164）。2026-08-29 之前它常態 7 紅，
+> 全部是**測試自己落後於產品**——常數漂了（`STALL_MS` 120s vs 產品 300s、
+> `DEPLOY_BUDGET_PER_RUN` 3 vs 6）、假物件沒跟上新分支（skills 內容比對）、
+> 斷言還在守已被 leo 拔掉的畫面（t79 完成頁只給網址）。
+> ⇒ 改測試時**先問「是產品壞了，還是這條測試落後了」**；落後就把它接回產品的真實契約，
+> 能從 `worker.js` 讀的常數就別在測試裡再抄一份。
+
 - **P0-1 辨識碼閘**：`verifyInviteCode` fail-closed（缺參/429/500/連不上/非 JSON 全拒）＋
   `/auth/start` 驗不過不進 OAuth、通過才記 `inviteVerified:true`＋`/api/install/start` 未驗 403。
 - **P0-2 冪等**：`slugFromEmail` 可重現/正規化、`ensureKv/D1` 同名取用不重建、

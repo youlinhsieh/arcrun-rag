@@ -24,10 +24,10 @@ import { tmpdir } from 'node:os';
 
 import {
   linesFrom, versionFieldsIn, undeclaredVersionFields, tagMatches, bareVersion,
-  releaseTagFor, releaseTitleFor, assetsFor,
+  releaseTagFor, releaseTitleFor, assetsFor, releaseVisibility, tagPrefixFor,
 } from './release-lines.mjs';
 import {
-  slugOfRemote, checkDestination, checkCoverage, checkPublished, runGate,
+  slugOfRemote, checkDestination, checkCoverage, checkPublished, checkInternalNotes, runGate,
   appendGateLog, loadTargets,
 } from './release-line-gate.mjs';
 
@@ -69,6 +69,9 @@ const T_PRODUCT = {
     lineRepos: {
       bundle: { repoSlug: 'youlinhsieh/arcrun-rag' },
       daemon: { repoSlug: 'youlinhsieh/arcrun-collector', sourceDir: 'collector' },
+      // #169：安裝器那條線是**內部**版本物件 ⇒ 連 prod 出貨也發在內部 Gitea，
+      // 而且與零件包共用一個 repo（tag 前綴分開）。這一格照真實登錄簿寫。
+      installer: { repoSlug: 'inkstone/arcrun-rag', host: 'gitea', baseUrl: 'https://git.uncle6.me' },
     },
   },
 };
@@ -406,4 +409,151 @@ test('assetsFor：daemon 區塊缺檔案欄 → 回空陣列（呼叫端該擋�
   const m = { release: '1.4.46', daemon: { version: '0.18.29' } };
   const [, daemon] = linesFrom(m, 'manifest');
   assert.deepEqual(assetsFor(daemon, m), []);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 第三條線：安裝器（inkstone/arcrun-rag#169）
+//
+// 🔴 2026-09-02 leo 裁決把這一節整個翻過來。原本這裡釘的是「不發版本頁 ≠ 沒人管」，
+//   而 leo 直接點掉那條宣告：「**你的宣告有誤**，安裝器是 arcrun 的一部分，
+//   **什麼東西改了不用聲明？那是說不用告訴用戶。**」
+//   「不獨立發版本，但那是用戶，**我不能沒有版本，內部所有開發都要有版本**」
+//   實害：`1.0.3` 2026-09-01 上了 prod，而他當晚去 Gitea 找版本一個都找不到。
+//
+// ⇒ 現在釘的是：**它照樣要有一筆版本物件，只是發在內部那一側。**
+//   ⑨   露在交付面卻沒被宣告成線 → 照樣要擋（本票最初的病）
+//   ⑩   宣告成線之後，**沒有 `installer-1.0.0` 那筆就要擋**（＝leo 找不到版本）
+//   ⑩b  裸號 `1.0.0` 不算數（tag 命名空間分開，不然零件包的號碼會冒充它）
+//   ⑪   那筆物件打開來要有東西（changelog 那一段就是它的內文）
+//   ⑫   呼叫端根本沒問內文 → 也要擋
+//   ⑬   三條都齊 ⇒ 放行；⑬b **只少了安裝器那一筆 ⇒ 擋**（本輪驗收條件的機械閘）
+// ═══════════════════════════════════════════════════════════════════════════
+
+const LATEST_3 = { ...LIVE_LATEST, installer: { version: '1.0.0' } };
+const INSTALLER_HOME = 'inkstone/arcrun-rag';
+
+test('⑨ 交付面多一個沒人宣告的版本號 → 擋（這是安裝器在 #169 之前的處境）', () => {
+  const stray = { ...LIVE_LATEST, mystery: { version: '2.0.0' } };
+  const r = checkCoverage(stray);
+  assert.equal(r.ok, false);
+  assert.match(r.problems[0], /mystery\.version = 2\.0\.0/);
+});
+
+test('⑩ 安裝器送出去了，而內部 repo 沒有那筆版本物件 ⇒ 擋（leo 找不到版本的那個狀態）', () => {
+  const cov = checkCoverage(LATEST_3);
+  assert.equal(cov.ok, true, `安裝器那條線沒被認出來：${cov.problems.join('；')}`);
+  assert.match(cov.detail, /installer=1\.0\.0/);
+
+  const lines = linesFrom(LATEST_3, 'latest');
+  assert.equal(lines.length, 3);
+  assert.equal(releaseVisibility('installer'), 'internal');
+
+  const missing = checkPublished(lines, {
+    [RAG]: ['v1.4.46'],
+    [COLLECTOR]: ['0.18.28'],
+    [INSTALLER_HOME]: ['1.4.63'],          // 內部 repo 上只有零件包的 tag
+  }, T_PRODUCT.releaseRecord);
+  assert.equal(missing.ok, false, '安裝器沒有版本物件卻放行 ⇒ 就是 2026-09-01 那件事再來一次');
+  assert.match(missing.problems[0], /沒有 `installer-1\.0\.0` 這筆版本物件/);
+  assert.match(missing.problems[0], /1\.0\.3/, '訊息要帶得出那次實害，不然它只是一句抽象的話');
+
+  const ok = checkPublished(lines, {
+    [RAG]: ['v1.4.46'],
+    [COLLECTOR]: ['0.18.28'],
+    [INSTALLER_HOME]: ['1.4.63', 'installer-1.0.0'],
+  }, T_PRODUCT.releaseRecord);
+  assert.equal(ok.ok, true, ok.problems.join('；'));
+  assert.match(ok.detail, /installer 1\.0\.0 → inkstone\/arcrun-rag:installer-1\.0\.0（內部）/);
+});
+
+test('⑩b tag 命名空間分開：裸號不算安裝器的，帶前綴的也不算零件包的', () => {
+  assert.equal(tagPrefixFor('installer'), 'installer-');
+  assert.equal(tagPrefixFor('bundle'), '');
+  assert.equal(tagMatches('installer-1.0.5', '1.0.5', 'installer-'), true);
+  assert.equal(tagMatches('1.0.5', '1.0.5', 'installer-'), false,
+    '裸號算數的話，零件包哪天走到 1.0.5 就會被當成「安裝器發過了」⇒ 假綠');
+  assert.equal(tagMatches('installer-1.0.5', '1.0.5'), false,
+    '帶前綴的不准冒充沒有前綴的那條線');
+
+  const lines = linesFrom(LATEST_3, 'latest');
+  const fooled = checkPublished(lines, {
+    [RAG]: ['v1.4.46'],
+    [COLLECTOR]: ['0.18.28'],
+    [INSTALLER_HOME]: ['1.0.0'],           // 裸號：不是安裝器那一筆
+  }, T_PRODUCT.releaseRecord);
+  assert.equal(fooled.ok, false, '裸號 1.0.0 被當成安裝器的版本物件 ⇒ 假綠');
+});
+
+test('⑪ 只發內部的線沒寫更新說明 → 當場擋（那筆物件會是空頁面）', () => {
+  const lines = linesFrom(LATEST_3, 'latest');
+  const bad = checkInternalNotes(lines, { installer: null });
+  assert.equal(bad.ok, false);
+  assert.match(bad.problems[0], /「安裝器」送出了 1\.0\.0/);
+  assert.match(bad.problems[0], /## 1\.0\.0/, '要說得出該補什麼、補在哪');
+
+  const good = checkInternalNotes(lines, { installer: '- 安裝頁現在說得出自己是哪一版' });
+  assert.equal(good.ok, true);
+  assert.match(good.detail, /installer 1\.0\.0/);
+});
+
+test('⑫ 呼叫端沒問更新說明（缺鍵）→ 也要擋，不准默默放行', () => {
+  const lines = linesFrom(LATEST_3, 'latest');
+  const r = checkInternalNotes(lines, {});
+  assert.equal(r.ok, false);
+  assert.match(r.problems[0], /沒有交出/);
+});
+
+test('⑬ 整道閘吃三條線的交付面：三條都有版本物件、內部那條也有內文 ⇒ 放行', () => {
+  const r = runGate({
+    targetName: 'prod',
+    target: T_PRODUCT,
+    latestPayload: LATEST_3,
+    publishedTags: {
+      [RAG]: ['v1.4.46'],
+      [COLLECTOR]: ['0.18.28'],
+      [INSTALLER_HOME]: ['installer-1.0.0'],
+    },
+    internalNotes: { installer: '- 第一版' },
+  });
+  assert.equal(r.ok, true, r.sections.filter((s) => !s.ok).flatMap((s) => s.problems).join('\n'));
+  assert.equal(r.sections.length, 4, '第三條線那一節要出現在報告上（不是靜靜跳過）');
+  assert.equal(r.lines.length, 3);
+});
+
+test('⑬b 整道閘：另外兩條發了、只少了安裝器那一筆 ⇒ 擋（本輪要立的那道閘）', () => {
+  const r = runGate({
+    targetName: 'prod',
+    target: T_PRODUCT,
+    latestPayload: LATEST_3,
+    publishedTags: {
+      [RAG]: ['v1.4.46'],
+      [COLLECTOR]: ['0.18.28'],
+      [INSTALLER_HOME]: [],
+    },
+    internalNotes: { installer: '- 第一版' },   // 內文有寫，缺的是**版本物件本身**
+  });
+  assert.equal(r.ok, false, '安裝器改了、出貨了，卻沒有任何東西可以打開來看，而閘是綠的');
+  const blocked = r.sections.filter((x) => !x.ok);
+  assert.equal(blocked.length, 1, `擋的該是「每條版本線都已發佈」那一節：${blocked.map((x) => x.name).join('、')}`);
+  assert.match(blocked[0].problems.join('\n'), /installer-1\.0\.0/);
+});
+
+test('⑬c 兩條線共用一個 repo：tag 前綴分開 ⇒ 放行；混在同一個命名空間 ⇒ 擋', () => {
+  // 前者＝leo 2026-09-02 要的形狀（「安裝器是 arcrun 的一部分，不然你把 install 放在哪個 repo？」）
+  const shared = {
+    bundles: { remote: 'github.com/youlinhsieh/arcrun-rag-bundles' },
+    releaseRecord: {
+      host: 'gitea',
+      repoSlug: 'inkstone/arcrun-rag',
+      lineRepos: {
+        bundle: { repoSlug: 'inkstone/arcrun-rag' },
+        daemon: { repoSlug: 'inkstone/arcrun-collector', sourceDir: 'collector' },
+        installer: { repoSlug: 'inkstone/arcrun-rag' },
+      },
+    },
+  };
+  assert.equal(checkDestination('stage', shared).ok, true,
+    '安裝器與零件包共用一個 repo 但 tag 前綴不同 ⇒ 「最新版是哪一個」答得出來，不該擋');
+  // 後者＝D95 那個扭曲（兩條線的號碼混在一條歷史上，沒有前綴分開）
+  assert.equal(checkDestination('prod', T_MIXED).ok, false);
 });

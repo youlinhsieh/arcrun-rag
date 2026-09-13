@@ -51,6 +51,11 @@ type QuotaNotice struct {
 	ExitOptions string `json:"exit_options"` // 可以換一個模型，或升級 Cloudflare（每月 5 美元）
 	Guarantee   string `json:"guarantee"`    // 不花錢也沒關係，今天/明天早上 8:00 會自動恢復
 	ResumeAt    string `json:"resume_at"`    // RFC3339，預期恢復時間（供機器判斷冷卻是否結束）
+	// arcrun-rag#197：哪一種額度。空＝Workers AI（舊的三句話，status.json 向後相容）；
+	// d1_read／d1_write＝雲端資料庫（見 cloudquota.go）。畫面依它決定標題，不猜字串。
+	Kind     string `json:"kind,omitempty"`
+	Headline string `json:"headline,omitempty"` // 一句話講「哪一種額度用完了」
+	Usage    string `json:"usage,omitempty"`    // 上限多少、用了多少（查得到時；查不到也照講上限）
 }
 
 // Combined 把三句話接成一句完整訊息（給只有單一 error 欄位可用的地方，如 DirectResult.Error）。

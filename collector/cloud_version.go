@@ -77,12 +77,20 @@ func fetchBundleVersion(cypherURL string) (version string, ok bool) {
 		return "", false
 	}
 	defer resp.Body.Close()
+	// 16KB：#197 起還要讀 data_layer 區塊（youlin 1.4.63 實測整份約 1.3KB，留足餘裕）。
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+	if err != nil {
+		return "", false
+	}
 	var payload struct {
 		BundleVersion string `json:"bundle_version"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&payload); err != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return "", false
 	}
+	// arcrun-rag#197：同一份回應順便看「雲端資料庫額度是不是用完了」（見 cloudquota.go）。
+	// 只有拿到看得懂的回應才更新——連不上時保留上一次親眼看到的狀態，重置時間一到自然失效。
+	noteD1Quota(cypherURL, d1QuotaFromHealth(raw), directNow())
 	return payload.BundleVersion, true
 }
 

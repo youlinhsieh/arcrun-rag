@@ -108,6 +108,12 @@ func repairCardSourceBlocks(cfg *DirectConfig, absRoot string, m *Manifest, dryR
 	if m == nil || (!force && m.SourceOriginRepairedAt > 0) {
 		return nil // 這個根已經修完，不再每輪掃
 	}
+	// 🔴 `inkstone/arcrun-rag#121`：收卡那條路正在退避 ⇒ 這輪整個不修。
+	// 2026-09-13 實撞：這支每輪最多重推 20 份，而那條路每一發都是雲端全表掃，
+	// 失敗時又沒有任何閘 ⇒ 每 5 秒 20 發，是燒光 youlin D1 的主力。
+	if !dryRun && !force && cfg.routeNote(cfg.triggerURL(cfg.CardIngestWF)) != "" {
+		return nil
+	}
 	wm := loadWikiManifest(absRoot)
 	if len(wm.Docs) == 0 {
 		if !dryRun {
@@ -181,7 +187,9 @@ func repairCardSourceBlocks(cfg *DirectConfig, absRoot string, m *Manifest, dryR
 				res.Err = "重推知識庫失敗（HTTP " + itoa(status) + "）"
 			}
 			remaining++ // 這一份沒推成功 ⇒ 本機不動（留著舊形當重試訊號）、這個根不能蓋章
-			continue
+			// #121：一份失敗就停手——後面那幾份打的是同一條路，繼續只是把同一面牆撞 20 次
+			//（同 folderindex.go 的 t195 教訓）。沒修到的下一輪接著修。
+			break
 		}
 
 		// ② 推成功了才寫本機（文件卡＋概念卡）。

@@ -535,8 +535,22 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 
 	// 3) 先配對 renamed（design §3 順序 1）：removed×added 以 content_hash 配對，
 	//    配上＝只更新路徑映射，不 retire、不重萃、不重傳。同 hash 多候選→排序後貪婪配對（確定性）。
+	// arcrun-rag#104（comment 6309）：先把「manifest 有、現況沒有」的路徑分成兩種——
+	//   retired ＝ 它還在磁碟上（或不在），但**現在的策略不收它**（例：補了「logseq/ 不收」那條）
+	//   vanished＝ 策略會收它，它卻不見了（真的刪了、資料夾沒掛載）
+	// 兩種都要下架，差別在下面第 6 步：只有 vanished 受大量刪除防呆管；
+	// retired 是我們自己的決定，不是意外，要照下架，而且要講出為什麼（票上的紅線：排除規則要看得見）。
+	retiredWhy := map[string]string{}
+	for _, p := range removedPaths {
+		if excluded, why := opts.Plan.ExcludesPathWhy(p, root); excluded {
+			retiredWhy[p] = why
+		}
+	}
 	removedByHash := map[string][]string{}
 	for _, p := range removedPaths {
+		if _, retired := retiredWhy[p]; retired {
+			continue // 不再收的檔不是「搬走了」，不准跟新檔配成 renamed（那會讓殘影換個名字留在雲端）
+		}
 		h := orig[p].ContentHash
 		removedByHash[h] = append(removedByHash[h], p)
 	}
@@ -604,9 +618,15 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	}
 
 	// 6) removed（扣掉已配對走的）＋大量刪除防呆（R6）。
-	var finalRemoved []string
+	var finalRemoved []string // 真的不見了的（受防呆管）
+	var retired []string      // 策略不再收的（不受防呆管，一律下架）
 	for _, p := range removedPaths {
-		if !pairedOld[p] {
+		if pairedOld[p] {
+			continue
+		}
+		if _, ok := retiredWhy[p]; ok {
+			retired = append(retired, p)
+		} else {
 			finalRemoved = append(finalRemoved, p)
 		}
 	}
@@ -627,6 +647,34 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 		for _, p := range finalRemoved {
 			events = append(events, Event{Type: "removed", Path: p, SourceHash: orig[p].ContentHash})
 		}
+	}
+	// arcrun-rag#104（comment 6309）：策略不再收的檔照下架，不看防呆——那道閘擋的是意外，
+	// 這是決定。實據：leo21c 的 KB 4,193 份裡 3,620 份是 `logseq/bak/` 殘影（86%），
+	// 防呆若管到它們，殘影就永遠留在雲端、警告每輪都響、而且看起來像資料夾壞了。
+	// 但一定要講出來（同一張票的紅線「不要讓用戶猜」）：多少份、為什麼、會發生什麼。
+	if len(retired) > 0 {
+		reasonCount := map[string]int{}
+		for _, p := range retired {
+			reasonCount[retiredWhy[p]]++
+			events = append(events, Event{Type: "removed", Path: p, SourceHash: orig[p].ContentHash})
+		}
+		topReason, topN := "", 0
+		for why, n := range reasonCount {
+			if n > topN || (n == topN && why < topReason) {
+				topReason, topN = why, n
+			}
+		}
+		msg := fmt.Sprintf("有 %d 份先前收過的檔，依現在的收檔規則不再收，會從知識庫下架（%d 份的理由：%s）",
+			len(retired), topN, topReason)
+		if len(reasonCount) > 1 {
+			msg += fmt.Sprintf("；另有 %d 種其他理由", len(reasonCount)-1)
+		}
+		warnings = append(warnings, Warning{
+			Code:          "plan_retired",
+			Message:       msg,
+			RemovedCount:  len(retired),
+			ManifestCount: manifestCountBefore,
+		})
 	}
 
 	// 7) 更新 manifest（rebuild）：現況檔全數收錄；ingested_* 由舊 entry（或 renamed 的舊路徑）搬運。

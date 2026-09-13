@@ -258,14 +258,18 @@ func syncFolderCards(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, 
 	}
 	lib := cfg.libraryFor(absRoot)
 	cards := BuildFolderCards(absRoot, m.Entries, lib)
-	if len(cards) == 0 {
-		return nil
-	}
 	if m.FolderCardHashes == nil {
 		m.FolderCardHashes = map[string]string{}
 	}
 
 	// 先刪掉「這輪已經不存在的資料夾」的記帳，避免雜湊表無限長大。
+	//
+	// 🔴 arcrun-rag#104（comment 6309）：以前這裡**只刪本機的記帳**，雲端那張
+	// 「資料夾：KB/logseq/bak/pages/…」的卡沒有人去撤——leo21c 的 `kb` 庫核心實體裡就有
+	// 「資料夾：KB/logseq/bak/system-dev/wiki/cards」（degree 44）、`part_of` 三元組 3,610 條，
+	// 全是已經不該存在的資料夾留下的。現在資料夾從樹上消失＝那張卡排進待撤清單，
+	// 走跟改名同一條下架路（drainPendingTakedowns，成功一筆清一筆，失敗下輪重試）。
+	// 這一段刻意放在「一張卡都沒有」的提早返回**之前**——整棵樹都不收了才更要撤。
 	live := map[string]bool{}
 	for _, c := range cards {
 		live[c.Rel] = true
@@ -273,7 +277,11 @@ func syncFolderCards(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, 
 	for rel := range m.FolderCardHashes {
 		if !live[rel] {
 			delete(m.FolderCardHashes, rel)
+			m.QueueTakedown(folderCardPath(lib, rel), folderCardPageName(absRoot, rel))
 		}
+	}
+	if len(cards) == 0 {
+		return nil
 	}
 
 	// 🔴 先挑「這輪真的要送的」，**再**套上限——順序反過來就會變成永遠只重試前 200 個，
@@ -307,6 +315,10 @@ func syncFolderCards(cfg *DirectConfig, absRoot string, m *Manifest, hasEvents, 
 	wf := cfg.CardIngestWF
 	if wf == "" {
 		wf = "rag_ingest_card"
+	}
+	// #121：收卡那條路正在退避 ⇒ 這輪不送（雜湊沒記，下一輪自然補送）。
+	if !dryRun && cfg.routeNote(cfg.triggerURL(wf)) != "" {
+		return nil
 	}
 	mach := cfg.machineIdentity()
 	for _, t := range todo {

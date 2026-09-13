@@ -47,6 +47,21 @@
     "uiDir": "console-ui/public"
   },
 
+  "workflowHost": {
+    "_": [
+      "出貨線把活派給 Arcrun 工作流（站表 `用什麼: ship_check_live` 那幾站）時，**打的是哪一台**（所有目標共用）。",
+      "",
+      "leo 2026-09-13（inkstone/arcrun-rag#27 comment 7168）：「**這應該是測試環境，應該用 uncle6 的帳號是主要服務**」。",
+      "由來：出貨線原本靠「環境裡剛好只有 youlin 的 namespace」讓上游挑到 youlin（stage）⇒ 當晚 youlin D1",
+      "讀取額度用盡，stage 與 prod 的出貨一起卡住。**測試環境的死活不該擋出貨。**",
+      "",
+      "`instance` 是 Arcrun `shared/instance-coordinates/instances.json` 裡的**名字**，網址與 namespace 變數名",
+      "都在那份目錄（隨 Arcrun repo 走），這裡不重抄——抄一份就是第二份會漂的真相。",
+      "操作者在 shell 給了 `ARCRUN_SHIP_INSTANCE`／`ARCRUN_SHIP_BASE`／`ARCRUN_SHIP_NS` 等覆寫時，他的選擇贏。"
+    ],
+    "instance": "uncle6"
+  },
+
   "targets": {
     "selftest": {
       "label": "selftest（本機臨時目標；只建、只算版本、不推不部署）",
@@ -196,6 +211,34 @@
               "  而且同步前會檢查它們還在不在（不見了＝先前某次同步蓋掉了，當場停）。"
             ],
             "destOwned": ["README.md", ".gitignore"]
+          },
+          "installer": {
+            "_": [
+              "🔴 安裝器（1.0.x），2026-09-02 加（inkstone/arcrun-rag#169，leo 裁決）。",
+              "",
+              "leo 原話：「留着補開，**安裝器線不獨立發版本，它是 arcrun 的一部分**，",
+              "不然你把 install 放在哪個 repo？⋯⋯不獨立發版本，但那是用戶，",
+              "**我不能沒有版本，內部所有開發都要有版本**」",
+              "「**你的宣告有誤**，安裝器是 arcrun 的一部分，什麼東西改了不用聲明？",
+              "**那是說不用告訴用戶。**」",
+              "",
+              "⇒ 三個宣告，每一個都是那段裁決的直接後果：",
+              "  · `repoSlug` ＝ 這個 repo 自己（安裝器的原始碼就住在 `installer/` 底下，",
+              "    票與 PR 也在這裡 ⇒ 「install 放在哪個 repo」的答案就是它）",
+              "  · `host: gitea` ＝ **內部那一側**。不論這趟出貨的目標是 stage 還是 prod，",
+              "    這條線都發在內部 Gitea——因為它是給 leo 驗收的內部版本物件，",
+              "    不是使用者會去選版本的產品線。**這是本欄唯一與目標 host 不同的地方。**",
+              "    （2026-09-01 的實害：`1.0.3` 上了 prod，而 Gitea 上一個版本物件都沒有。）",
+              "  · `baseUrl` 跟著 host 走（prod 那個目標的 releaseRecord.baseUrl 是 GitHub 的",
+              "    語意，所以這裡明寫，不從目標繼承）",
+              "",
+              "tag 帶 `installer-` 前綴（宣告在 release-lines.mjs）⇒ 它與零件包的 `1.4.x`",
+              "住同一個 repo 也分得出誰是誰。release-line-gate 的「兩條線不准共用一個 repo」",
+              "那一項因此改成問「**tag 命名空間有沒有分開**」，見該檔 checkDestination。"
+            ],
+            "repoSlug": "inkstone/arcrun-rag",
+            "host": "gitea",
+            "baseUrl": "https://git.uncle6.me"
           }
         }
       },
@@ -343,6 +386,23 @@
             "branch": "main",
             "_destOwned": "同 stage：目的 repo 自己的門面檔不覆蓋、不刪除（理由見 stage 那一欄）。",
             "destOwned": ["README.md", ".gitignore"]
+          },
+          "installer": {
+            "_": [
+              "🔴 **prod 這一欄與 stage 那一欄逐字相同，而那不是複製貼上的疏漏，是本題的答案。**",
+              "",
+              "安裝器的版本物件是**內部**的（leo 2026-09-02：「不獨立發版本⋯⋯但那是用戶，",
+              "我不能沒有版本，內部所有開發都要有版本」）⇒ 它的落點不跟著出貨目標變：",
+              "prod 出貨時，這一筆照樣發在內部 Gitea 的 arcrun-rag。",
+              "",
+              "為什麼不宣告成「prod 發到 youlinhsieh/…」：那會變成對使用者宣告一個",
+              "他不會、也不該去選的版本——而 leo 明說那一面是對內的。",
+              "為什麼不寫成「prod 不發」：那正是 2026-09-01 的實害本身",
+              "（`1.0.3` 上了 prod，Gitea 上一個版本物件都沒有，leo 當晚找不到任何東西可以打開）。"
+            ],
+            "repoSlug": "inkstone/arcrun-rag",
+            "host": "gitea",
+            "baseUrl": "https://git.uncle6.me"
           }
         }
       },

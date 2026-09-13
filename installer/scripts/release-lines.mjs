@@ -75,8 +75,134 @@ export const LINES = [
     // ——那正是本輪要治的病（「看起來能下載、點下去給錯東西」）的另一種長法。
     // 加平台就在這裡加一個鍵，跟 REPO_SHORT_CODES 同一種明列哲學。
     assetKeys: ['mac', 'win', 'msix'],
+    publishes: true,
+  },
+  {
+    // ── 第三條線（inkstone/arcrun-rag#169，2026-09-01）────────────────────────
+    // 由來：2026-08-31 安裝器被改掉 1640 行（`inkstone/Arcrun#190`／`#191`），
+    // 而 leo 會看的每一個畫面上版本號一動也沒動——因為安裝器在出貨線上是**產出物**
+    // （pin／deploy／verify 三站碰它），不是**版本線**。上面兩條的指紋都認不得它。
+    id: 'installer',
+    product: '安裝器',
+    label: '安裝器（install.arcrun.dev 那個網站自己——按「開始安裝／更新」的那一頁）',
+    latestPath: ['installer', 'version'],
+    manifestPath: ['installer', 'version'],
+    // 🔴 `[]` 不是 `null`：**明說這條線沒有可掛的檔**（見下面那段宣告）。
+    //   寫 `null` 的話它會去掛 manifest.json——那是零件包這一版的定義，跟安裝器無關。
+    assetKeys: [],
+
+    // 🔴 **內部版本物件：照樣發，但發在內部那一側，而且不對使用者宣告。**
+    //
+    // ── 2026-09-02 leo 裁決，推翻本檔前一版的宣告（原文留在版控裡）─────────────
+    // 前一版寫 `publishes: false`，理由是「安裝器是一個網站不是一份下載物，
+    // 使用者不會選版本、也沒有成品可以掛」。leo 原話（兩段）：
+    //   「**你的宣告有誤**，安裝器是 arcrun 的一部分，**什麼東西改了不用聲明**？
+    //     **那是說不用告訴用戶。**」
+    //   「留着補開，安裝器線不獨立發版本，它是 arcrun 的一部分，不然你把 install 放在哪個 repo？
+    //     ⋯⋯不獨立發版本，但那是用戶，**我不能沒有版本，內部所有開發都要有版本**」
+    //
+    // 🔴 那條宣告的錯在**把兩件事講成同一句**：
+    //     「使用者不會選版本」（真）　⇒　「不用發版本物件」（假）
+    //   版本物件不是給使用者下載的，**是給 leo 驗收的**（規則三點七：交貨就是版本）。
+    //   前一版換來的兩道閘（號碼跟得上原始碼、有寫 changelog）只保證**號碼誠實**，
+    //   不保證**有一個東西可以打開來驗**——而「可以打開來驗」正是版本的定義。
+    //   實害已經發生：`1.0.3` 2026-09-01 上了 prod，而 leo 當晚去 Gitea 找版本
+    //   **一個都找不到**（那筆 `installer-1.0.3` 是隔天照裁決手動補開的）。
+    //
+    // ⇒ 現在的形狀：`publishes: 'internal'`
+    //   · **發**——release-record 站照樣建一筆版本物件，不需要任何人手動補
+    //   · **只發在內部主機（Gitea）**——不論這趟出貨的目標是 stage 還是 prod。
+    //     「發到哪個 repo／哪台主機」照 D95 宣告在 `ship.targets.json` 的
+    //     `releaseRecord.lineRepos.installer`（兩個目標都指 `inkstone/arcrun-rag` + gitea）。
+    //   · **tag 帶前綴**（`installer-1.0.5`）——它跟 `1.4.63` 住同一個 repo，
+    //     前綴就是「這條歷史是誰的」那個答案。leo：「不然你把 install 放在哪個 repo？」
+    //   · **沒有附檔**，而這一次是**宣告的**而不是碰巧的：`assetKeys: []`。
+    //     它的成品是線上跑著的那個網站 ⇒ 驗法寫進版本物件的內文（打開那頁比對
+    //     版本號與原始碼指紋），不是掛一包沒有人裝得起來的原始碼快照
+    //     （leo 2026-08-18 指著 release 頁問過那件事）。
+    //
+    // 什麼時候才需要改成 `publishes: true`（對外那一側也發）：安裝器哪天變成
+    // **使用者會下載、會選版本**的東西（例如出一支離線安裝程式）。那是一件要先開票、
+    // 由 leo 決定的事，不是改一個字串。
+    publishes: 'internal',
+    tagPrefix: 'installer-',
+    whyInternal: '安裝器是 arcrun 的一部分，不是使用者會選版本的獨立產品線（leo 2026-09-02）'
+      + ' ⇒ 版本物件發在內部 Gitea 的 arcrun-rag（tag 帶 `installer-` 前綴），不進對外那一側；'
+      + '它沒有下載物可掛，要驗就打開線上那頁比對版本號與原始碼指紋。',
   },
 ];
+
+/**
+ * 這條線的版本物件**發給誰看**。三種，缺一種就會有人把「不對外」講成「不存在」
+ * ——2026-09-02 leo 裁決點掉的那條錯誤宣告就是這樣長出來的。
+ *   `public`   對外那一側也發（bundle／daemon）——使用者點得到、會掛成品
+ *   `internal` 只發在內部主機，給 leo 與開發驗收用（installer）
+ *   `none`     完全不發（今天一條都沒有；留著是讓「不發」必須被明確宣告，不是預設）
+ */
+export function releaseVisibility(line) {
+  const id = line && line.id ? line.id : line;
+  const decl = LINES.find((l) => l.id === id);
+  if (!decl) return 'public';                       // 未宣告＝照既有兩條的行為
+  if (decl.publishes === false) return 'none';
+  if (decl.publishes === 'internal') return 'internal';
+  return 'public';
+}
+
+/** 這條線會不會產生一筆版本物件（內部的也算——它一樣是「打得開的版本」）。 */
+export function publishesRelease(line) {
+  return releaseVisibility(line) !== 'none';
+}
+
+/** 這條線的版本物件會不會送到**使用者**那一側（＝要掛成品、要發到對外主機）。 */
+export function publishesToUsers(line) {
+  return releaseVisibility(line) === 'public';
+}
+
+/** 這條線為什麼只發內部（`publishes:'internal'` 才有值）。錯誤訊息與留痕都印它。 */
+export function whyInternal(line) {
+  const id = line && line.id ? line.id : line;
+  const decl = LINES.find((l) => l.id === id);
+  return (decl && decl.whyInternal) || '';
+}
+
+/**
+ * 這條線的 tag 前綴（沒宣告＝沒有前綴，＝既有兩條的行為）。
+ * 🔴 它不是裝飾：前綴是「同一個 repo 裡兩條歷史誰是誰」的**唯一**分辨依據，
+ * 也是 release-line-gate 願意讓兩條線共用一個 repo 的條件（見該檔 checkDestination）。
+ */
+export function tagPrefixFor(line) {
+  const id = line && line.id ? line.id : line;
+  const decl = LINES.find((l) => l.id === id);
+  return (decl && decl.tagPrefix) || '';
+}
+
+/**
+ * 三條線的 MAJOR.MINOR **必須互不相同**。
+ *
+ * 為什麼要一道機械閘：`notesFromChangelog()` 是「拿版號去三份 changelog 裡找那一段」，
+ * 靠的就是三條線的號碼形狀互斥（`0.18.x`／`1.0.x`／`1.4.x`）。哪天有人把
+ * `installer/INSTALLER_LINE` 改成 `1.4`，出貨線會**安靜地**去零件包的 changelog 撈到
+ * 別條線的段落，而且 release tag 也會撞號——兩種都不會報錯，只會給錯答案。
+ * @param {Record<string,string>} lines 例 { bundle:'1.4', daemon:'0.18', installer:'1.0' }
+ * @returns {string[]} 問題清單（空＝通過）
+ */
+export function lineCollisionProblems(lines) {
+  const seen = new Map();
+  const problems = [];
+  for (const [id, v] of Object.entries(lines)) {
+    const k = String(v == null ? '' : v).trim();
+    if (!k) { problems.push(`版本線 \`${id}\` 沒宣告 MAJOR.MINOR——沒有線就分不出哪一段 changelog 是誰的。`); continue; }
+    if (seen.has(k)) {
+      problems.push(
+        `版本線 \`${seen.get(k)}\` 與 \`${id}\` 都宣告成 ${k}。\n`
+        + `         ⇒ 兩條線的號碼形狀不再互斥：出貨線會去別條線的 changelog 撈到那一段，\n`
+        + `           而 release tag 也會撞號——兩種都不報錯，只會給錯答案。`);
+      continue;
+    }
+    seen.set(k, id);
+  }
+  return problems;
+}
 
 /**
  * 這條版本線這一趟**該掛哪些檔**（路徑相對於 bundle 工作區）。
@@ -93,7 +219,11 @@ export const LINES = [
 export function assetsFor(line, manifest, { manifestFileName = 'manifest.json' } = {}) {
   const decl = LINES.find((l) => l.id === line.id);
   if (!decl) return [];
-  if (!decl.assetKeys) return [manifestFileName];
+  // 🔴 `null` 與 `[]` 是兩個不同的宣告，不是同一件事的兩種寫法：
+  //   `null` ＝ 這條線沒有逐檔清單，掛 manifest（零件包）
+  //   `[]`   ＝ **明說沒有可掛的檔**（安裝器：成品是線上跑著的網站）
+  //   ⇒ 呼叫端拿到空陣列時要看這條線的可見度再決定怎麼做，不是一律當成「宣告漏了」。
+  if (decl.assetKeys === null || decl.assetKeys === undefined) return [manifestFileName];
   const block = at2(manifest, decl.manifestPath.slice(0, -1));
   if (!block) return [];
   const out = [];
@@ -129,9 +259,12 @@ export function bareVersion(v) {
   return String(v == null ? '' : v).replace(/^v/, '');
 }
 
-/** 新 release 的 tag：一律裸號。 */
-export function releaseTagFor(version) {
-  return bareVersion(version);
+/**
+ * 新 release 的 tag：裸號（leo 2026-08-17「不要 v」），**內部線在前面加宣告的前綴**。
+ * 前綴的用途只有一個：同一個 repo 裡分得出「這條歷史是誰的」（`installer-1.0.5` vs `1.4.63`）。
+ */
+export function releaseTagFor(version, prefix = '') {
+  return `${prefix}${bareVersion(version)}`;
 }
 
 /** 新 release 的標題：產品名 ＋ 裸號（兩條線並排在同一頁，沒有產品名就分不出誰是誰）。 */
@@ -144,8 +277,16 @@ export function releaseTitleFor(product, version) {
  * 🔴 `v1.4.46` 與 `1.4.46` 都算數——既有 10 個舊 tag 帶 `v` 且不回頭改，
  * 不認它們的話這道閘會把**已經發過的版本**判成沒發，變成永遠擋著的假警報。
  */
-export function tagMatches(tag, version) {
-  return bareVersion(tag) === bareVersion(version) && bareVersion(version) !== '';
+export function tagMatches(tag, version, prefix = '') {
+  const t = String(tag == null ? '' : tag);
+  // 有前綴的線：**一定要帶那個前綴才算**。少了這一條，`1.0.5`（如果哪天零件包走到這個號碼）
+  // 會被當成安裝器已經發過 ⇒ 假綠；反過來 `installer-1.0.5` 也不准冒充零件包的 `1.0.5`
+  // （沒有前綴的線走下面那條路，`bareVersion('installer-1.0.5')` 本來就對不上）。
+  if (prefix) {
+    if (!t.startsWith(prefix)) return false;
+    return bareVersion(t.slice(prefix.length)) === bareVersion(version) && bareVersion(version) !== '';
+  }
+  return bareVersion(t) === bareVersion(version) && bareVersion(version) !== '';
 }
 
 /**
@@ -165,7 +306,11 @@ export function linesFrom(payload, kind = 'latest') {
       product: line.product,
       label: line.label,
       version,
-      tag: releaseTagFor(version),
+      // 前綴與可見度**跟著這條線一起交出去**：呼叫端不必再回頭查 LINES，
+      // 也就不會出現「有的地方記得加前綴、有的地方忘了」這種只在某一站現形的漂移。
+      tagPrefix: line.tagPrefix || '',
+      visibility: releaseVisibility(line.id),
+      tag: releaseTagFor(version, line.tagPrefix || ''),
       title: releaseTitleFor(line.product, version),
       path: line[key].join('.'),
     });
