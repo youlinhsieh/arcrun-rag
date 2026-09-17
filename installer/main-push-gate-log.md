@@ -71,3 +71,8 @@
 | 2026-09-14 07:05:34 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | preflight 已按閘（git.uncle6.me/inkstone/arcrun-collector，這一趟剩 0 次） |
 | 2026-09-14 07:28:03 | git.uncle6.me/leo/arcrun-rag-bundles-staging | main | ✅ 放行 | preflight 已按閘（git.uncle6.me/leo/arcrun-rag-bundles-staging，這一趟剩 0 次） |
 | 2026-09-14 07:31:56 | git.uncle6.me/inkstone/arcrun-rag | ship/2026-09-14-1.4.66 | ✅ 放行 | 目標不是 main／master |
+| 2026-09-14 07:46:47 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 0 次） |
+| 2026-09-14 07:51:58 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 0 次） |
+| 2026-09-14 07:52:01 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 0 次） |
+| 2026-09-17 11:08:50 | git.uncle6.me/leo/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 566b9f1→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-17 11:27:45 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward e4327ec→HEAD，10 個檔有變、沒有刪檔、.gitignore 沒變短 |

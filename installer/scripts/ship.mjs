@@ -166,6 +166,14 @@ import {
   INSTALLER_CHANGELOG_REL, INSTALLER_SRC_REL, INSTALLER_VERSION_REL,
 } from './installer-line.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
+// 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
+//   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
+//   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
+import { installConsoleRedaction, redactError, redactSecrets, gitHeaderEnv } from './secret-redact.mjs';
+// 同一趟抓到的另一半：新 worktree 的 .github-public/ 是全新歷史 ⇒ push 公開鏡像被拒（fetch first）。
+import { alignMirrorWithRemote } from './mirror-align.mjs';
+
+installConsoleRedaction();
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -389,14 +397,20 @@ if (RELEASE_RECORD_ONLY && T.publish) {
 }
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
-const sh = (cmd, args, cwd, env) =>
-  execFileSync(cmd, args, { cwd, encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env }).trim();
+const sh = (cmd, args, cwd, env) => {
+  try {
+    return execFileSync(cmd, args, { cwd, encoding: 'utf8', env: env ? { ...process.env, ...env } : process.env }).trim();
+  } catch (e) {
+    // execFileSync 的錯誤訊息是 `Command failed: <整行 argv>` ＋ stderr ⇒ 先遮再丟（#202 c7599）
+    throw redactError(e);
+  }
+};
 
 function shLive(cmd, args, cwd, env) {
   const r = spawnSync(cmd, args, {
     cwd, stdio: 'inherit', env: env ? { ...process.env, ...env } : process.env,
   });
-  if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} 失敗（exit ${r.status}）`);
+  if (r.status !== 0) throw new Error(redactSecrets(`${cmd} ${args.join(' ')} 失敗（exit ${r.status}）`));
 }
 
 /**
@@ -415,7 +429,7 @@ function pushGiteaQuietly(branch) {
   //   哪天它變成 main，就需要一枚總管的戳記。
   assertPushAllowed({
     args: ['push', 'gitea', `HEAD:refs/heads/${branch}`],
-    cwd: REPO_ROOT, who: 'ship.mjs／推出貨分支到 Gitea', grants: ctx.mainPushGrants,
+    cwd: REPO_ROOT, who: 'ship.mjs／推出貨分支到 Gitea', ...pushGuardOpts(),
   });
   const r = spawnSync('git', ['push', 'gitea', `HEAD:refs/heads/${branch}`], {
     cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
@@ -495,6 +509,19 @@ const ctx = {
   sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
   arcrunHeadSha: null, // 來源 repo 的完整 40 碼 HEAD（見 preflight／source-pin）——釘子分支比對用全碼，不用前綴
 };
+
+/**
+ * 每一次推送交給 main-push-guard 的判準（inkstone/arcrun-rag#202，裁定在 inkstone/ISEP#30 c7553）。
+ *   · 會發佈給用戶的目標（prod）→ 照舊要「總管決定了」的戳記（preflight 領走的授權）
+ *   · 不發佈的目標（stage／selftest）→ 不要戳記，改成機械檢查：只准 fast-forward、
+ *     不准刪檔（--allow-deletions 才放）、不准把 .gitignore 變短——08-18 那一筆的形狀本身
+ */
+const MAIN_PUSH_POLICY = T.publish ? 'stamp' : 'mechanical';
+function pushGuardOpts() {
+  return MAIN_PUSH_POLICY === 'stamp'
+    ? { grants: ctx.mainPushGrants }
+    : { policy: 'mechanical', allowDeletions: ALLOW_DELETIONS };
+}
 
 // 🔴 「提升」（promoteFrom）已拆掉，改成 git 分支模型（2026-08-11，D65 三次補述，
 //   arcrun-rag#73 缺③）——理由與細節見 `source-pin.mjs` 檔頭 ＋ `installer/ship.targets.json`
@@ -874,6 +901,12 @@ const STEPS = [
     const dests = mainPushDestinations();
     if (!dests.length) {
       lines.push('這一趟不會覆寫任何 repo 的 main');
+    } else if (MAIN_PUSH_POLICY === 'mechanical') {
+      // stage：不要人工戳記（inkstone/ISEP#30 c7553）。每一次推 main 當場做機械檢查，
+      //   擋的是 08-18 那個形狀（刪檔／.gitignore 變短／改寫歷史），不是「有沒有人蓋章」。
+      lines.push(`這一趟會推 main 的目的地（${dests.length}）：${dests.join('、')}`);
+      lines.push(`（${TARGET_NAME} 不發佈給用戶 ⇒ 不要戳記；每次推送當場檢查：只准 fast-forward、`
+        + `不准刪檔${ALLOW_DELETIONS ? '（本趟帶 --allow-deletions，刪檔放行）' : ''}、.gitignore 不准變短）`);
     } else if (!CONFIRM) {
       lines.push(`這一趟會覆寫 main 的目的地（${dests.length}）：${dests.join('、')}`);
       lines.push(`（預演不必先按閘。真的 --confirm 之前，總管逐筆看過那些 commit 再貼：${armCommand(dests)}）`);
@@ -1697,7 +1730,7 @@ const STEPS = [
   assertPushAllowed({
     args: ['push', 'origin', T.bundles.branch], cwd: ctx.bundlesDir,
     remoteUrl: T.bundles.remote, who: `ship.mjs／推產物倉庫（${TARGET_NAME}）`,
-    grants: ctx.mainPushGrants,
+    ...pushGuardOpts(),
   });
   // 大 zip 推 GitHub 會 remote hung up（wiki agent-memory:805）⇒ 一律帶 postBuffer
   sh('git', ['-c', 'http.postBuffer=157286400', 'push', 'origin', T.bundles.branch], ctx.bundlesDir);
@@ -2401,7 +2434,7 @@ const STEPS = [
           branch: t.entry.branch || 'main',
           destOwned: t.entry.destOwned || [],
       // preflight 領到的推 main 授權（InkStoneCo#56）——沒有它這一步會當場被閘擋下
-      guardOpts: { grants: ctx.mainPushGrants },
+      guardOpts: pushGuardOpts(),
           message: `sync: ${t.entry.sourceDir}/ 同步自 ${R.repoSlug}@${headSha.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
         });
         const onServer = await giteaCommitExists(t.slug, sync.sha, opts);
@@ -2519,6 +2552,10 @@ const STEPS = [
   //   這個機制，只是出貨管線從沒呼叫過它，鏡像因此停在最後一次有人手動跑的那天。
   shLive('bash', [join(REPO_ROOT, 'scripts', 'publish-github.sh')], REPO_ROOT);
   const mirrorDir = join(REPO_ROOT, G.mirrorDir);
+  // ①.5 鏡像要接在遠端 main 後面（#202 c7599）：在新 worktree 出貨時 .github-public/ 是
+  //   publish-github.sh 現場 `git init` 的全新歷史，跟 GitHub 上的不相干 ⇒ push 必被拒。
+  //   匿名讀遠端（D20：讀不帶憑證），不包含就把這一版的快照改接上去、壓成一筆；不 force push。
+  const align = alignMirrorWithRemote({ mirrorDir, remote: G.mirrorRemote, branch: 'main' });
   const mirrorSha = sh('git', ['rev-parse', 'HEAD'], mirrorDir);
 
   // ② 保險（未過期）＋ push 鏡像＋自己留痕——與 `push` 步驟同一套規矩，理由同它的註解。
@@ -2538,10 +2575,11 @@ const STEPS = [
   assertPushAllowed({
     args: ['push', G.mirrorRemote, 'HEAD:refs/heads/main'], cwd: mirrorDir,
     remoteUrl: G.mirrorRemote, who: 'ship.mjs／推 GitHub 公開鏡像',
-    grants: ctx.mainPushGrants,
+    ...pushGuardOpts(),
   });
-  sh('git', ['-c', `http.${G.mirrorRemote}.extraheader=Authorization: Basic ${authB64}`,
-    'push', G.mirrorRemote, 'HEAD:refs/heads/main'], mirrorDir);
+  // 標頭走環境變數（GIT_CONFIG_*）不走 argv：argv 會進錯誤訊息、`ps` 與留痕（#202 c7599 實洩）
+  sh('git', ['push', G.mirrorRemote, 'HEAD:refs/heads/main'], mirrorDir,
+    gitHeaderEnv(G.mirrorRemote, `Authorization: Basic ${authB64}`, process.env));
   try {
     logGithubContact(INKSTONE_ROOT, mission, `push 公開鏡像 → ${G.repoSlug}（HEAD ${mirrorSha.slice(0, 7)}）`);
   } catch (e) {
@@ -2571,7 +2609,7 @@ const STEPS = [
       branch: t.entry.branch || 'main',
       destOwned: t.entry.destOwned || [],
       // preflight 領到的推 main 授權（InkStoneCo#56）——沒有它這一步會當場被閘擋下
-      guardOpts: { grants: ctx.mainPushGrants },
+      guardOpts: pushGuardOpts(),
       message: `sync: ${t.entry.sourceDir}/ 同步自 ${G.repoSlug}@${headShaFull.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
     });
     try {
@@ -2620,7 +2658,7 @@ const STEPS = [
     made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
   }
 
-  return { status: 'done', detail: [...internalDetail, ...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}`] };
+  return { status: 'done', detail: [...internalDetail, ...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}（${align.note}）`] };
 }},
 
 // ── release-check：`release-record` 的**後置條件驗證**（inkstone/arcrun-rag#88，2026-08-18）──
@@ -2864,7 +2902,7 @@ for (const [i, step] of RUN_STEPS.entries()) {
     });
   } catch (e) {
     console.log(`   ❌ 斷在這一步`);
-    console.log(String(e.message).split('\n').map((l) => `     ${l}`).join('\n'));
+    console.log(redactSecrets(e.message).split('\n').map((l) => `     ${l}`).join('\n'));
     results.push({ id: step.id, title: step.title, status: 'failed' });
     failedAt = step.id;
   }

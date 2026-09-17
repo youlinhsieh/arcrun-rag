@@ -342,6 +342,11 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 			s.setState(func(st *Status) { st.State = StateSyncing; st.Waiting = "" })
 			continue
 		}
+		if r.Phase != "" && r.Phase != "done" && r.Phase != "waiting" {
+			// #201：「route_failure」等純紀錄用的行（落 log 就夠了），**不是一輪跑完**。
+			// 以前除了 start／waiting 以外一律當「done」，多印一種行就會讓托盤誤以為這輪結束。
+			continue
+		}
 		if r.Phase == "waiting" {
 			// #153：還在等某一發回覆 ⇒ 仍在同步中，**不算跑完一輪**。
 			// 把「哪個帳號、哪件事、等了多久」留在狀態上，托盤才講得出來

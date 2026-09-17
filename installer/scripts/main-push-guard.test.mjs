@@ -333,3 +333,117 @@ test('⑦ 端到端：同步步驟推目的 repo 的 main——沒戳記 ⇒ 擋
     assert.notEqual(git(['rev-parse', 'refs/heads/main'], bare), before, '補了戳記就該推得進去');
   } finally { sb.cleanup(); }
 });
+
+// ── ⑳ stage 目標：不要戳記，改機械檢查（inkstone/arcrun-rag#202，裁定 inkstone/ISEP#30 c7553）──
+//
+// 🔴 要證明兩件事，缺一不可：
+//   · 08-18 那一筆的形狀（刪 main.go、.gitignore 22→1 行、改寫歷史）**沒有戳記也擋得下**，且遠端不動
+//   · 正常的 stage 出貨（只新增／修改）**沒有戳記也推得進去**——否則等於又叫 leo 開口
+const gitT = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+const commitAll = (cwd, msg) => { gitT(['add', '-A'], cwd); gitT(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', msg], cwd); };
+
+/** 目的 repo（bare）＋一份 clone 好的工作區，main 上有 main.go 與 22 行 .gitignore。 */
+function destRepo(sb) {
+  const bare = join(sb.dir, 'dest.git');
+  const work = join(sb.dir, 'work');
+  mkdirSync(bare);
+  gitT(['init', '-q', '--bare', '-b', 'main'], bare);
+  gitT(['clone', '-q', bare, work], sb.dir);
+  gitT(['checkout', '-q', '-B', 'main'], work);
+  mkdirSync(join(work, 'cmd', 'collector'), { recursive: true });
+  writeFileSync(join(work, 'cmd', 'collector', 'main.go'), 'package main\n');
+  writeFileSync(join(work, '.gitignore'), Array.from({ length: 22 }, (_, i) => `build-artifact-${i}/`).join('\n') + '\n');
+  commitAll(work, 'seed');
+  gitT(['push', '-q', 'origin', 'HEAD:refs/heads/main'], work);
+  return { bare, work, tip: () => gitT(['rev-parse', 'refs/heads/main'], bare) };
+}
+function stagePush(sb, work, extra = {}) {
+  return assertPushAllowed({
+    args: ['push', 'origin', 'HEAD:refs/heads/main'], cwd: work, remoteUrl: 'git.uncle6.me/inkstone/arcrun-collector',
+    stampPath: sb.stampPath, logPath: sb.logPath, pendingDir: sb.pendingDir, policy: 'mechanical', ...extra,
+  });
+}
+
+test('⑳a stage：08-18 那一筆（刪 main.go＋.gitignore 22→1 行）沒戳記 ⇒ 擋，遠端不動', () => {
+  const sb = sandbox();
+  try {
+    const d = destRepo(sb);
+    const before = d.tip();
+    rmSync(join(d.work, 'cmd', 'collector', 'main.go'));
+    writeFileSync(join(d.work, '.gitignore'), 'node_modules/\n');
+    commitAll(d.work, 'sync: 演 08-18');
+    assert.throws(() => stagePush(sb, d.work), (e) => e instanceof MainPushBlocked && /刪掉.*main\.go/.test(e.message));
+    assert.equal(d.tip(), before);
+    // 就算帶了 --allow-deletions，.gitignore 被砍短照樣擋（這條沒有旗標可放）
+    assert.throws(() => stagePush(sb, d.work, { allowDeletions: true }), (e) => /\.gitignore 從 22 行砍到 1 行/.test(e.message));
+    assert.match(sb.log(), /⛔ 擋下 \| 機械檢查/);
+  } finally { sb.cleanup(); }
+});
+
+test('⑳b stage：正常出貨（只新增／修改）沒戳記 ⇒ 放行，真的推得進去', () => {
+  const sb = sandbox();
+  try {
+    const d = destRepo(sb);
+    writeFileSync(join(d.work, 'CHANGELOG.md'), '# 0.18.55\n');
+    writeFileSync(join(d.work, '.gitignore'), readFileSync(join(d.work, '.gitignore'), 'utf8') + 'dist/\n');
+    commitAll(d.work, 'sync: 0.18.55');
+    const r = stagePush(sb, d.work);
+    assert.equal(r.reason, '機械檢查');
+    gitT(['push', '-q', 'origin', 'HEAD:refs/heads/main'], d.work);
+    assert.equal(d.tip(), gitT(['rev-parse', 'HEAD'], d.work));
+    assert.equal(existsSync(sb.stampPath), false, '全程沒有任何戳記');
+  } finally { sb.cleanup(); }
+});
+
+test('⑳c stage：不是 fast-forward（會改寫遠端歷史）⇒ 擋；強推旗標 ⇒ 擋', () => {
+  const sb = sandbox();
+  try {
+    const d = destRepo(sb);
+    // 別人先推了一筆到遠端 main
+    const other = join(sb.dir, 'other');
+    gitT(['clone', '-q', d.bare, other], sb.dir);
+    writeFileSync(join(other, 'x.txt'), 'x\n');
+    commitAll(other, 'someone else');
+    gitT(['push', '-q', 'origin', 'HEAD:refs/heads/main'], other);
+    gitT(['fetch', '-q', 'origin'], d.work);
+    writeFileSync(join(d.work, 'y.txt'), 'y\n');
+    commitAll(d.work, 'mine');
+    assert.throws(() => stagePush(sb, d.work), (e) => /不是 fast-forward/.test(e.message));
+    assert.throws(() => stagePush(sb, d.work, { args: ['push', '--force', 'origin', 'HEAD:refs/heads/main'] }), (e) => /強推/.test(e.message));
+    assert.throws(() => stagePush(sb, d.work, { args: ['push', 'origin', '+HEAD:refs/heads/main'] }), (e) => /強推/.test(e.message));
+  } finally { sb.cleanup(); }
+});
+
+test('⑳d stage：刪檔是本意（--allow-deletions）且 .gitignore 沒變短 ⇒ 放行', () => {
+  const sb = sandbox();
+  try {
+    const d = destRepo(sb);
+    rmSync(join(d.work, 'cmd', 'collector', 'main.go'));
+    commitAll(d.work, 'remove main.go on purpose');
+    assert.throws(() => stagePush(sb, d.work), MainPushBlocked);
+    assert.equal(stagePush(sb, d.work, { allowDeletions: true }).reason, '機械檢查');
+  } finally { sb.cleanup(); }
+});
+
+test('⑳e 端到端：syncSourceRepo 以 stage 判準演 08-18 ⇒ 擋、遠端不動；prod 判準（預設）沒戳記照樣擋', () => {
+  const sb = sandbox();
+  try {
+    const d = destRepo(sb);
+    const before = d.tip();
+    const src = join(sb.dir, 'src');
+    mkdirSync(join(src, 'collector'), { recursive: true });
+    gitT(['init', '-q', '-b', 'main'], src);
+    writeFileSync(join(src, 'collector', 'a.go'), 'package a\n');
+    writeFileSync(join(src, 'collector', '.gitignore'), 'node_modules/\n');
+    commitAll(src, 'src');
+    const call = (guardOpts) => syncSourceRepo({
+      srcRoot: src, sourceDir: 'collector', workDir: join(sb.dir, 'syncwork'),
+      remoteUrl: d.bare, branch: 'main', message: 'sync: 演 08-18',
+      guardOpts: { stampPath: sb.stampPath, logPath: sb.logPath, pendingDir: sb.pendingDir, ...guardOpts },
+    });
+    assert.throws(() => call({ policy: 'mechanical' }), MainPushBlocked);
+    assert.equal(d.tip(), before, 'stage 判準擋下後遠端 main 不准動');
+    assert.throws(() => call({}), (e) => e instanceof MainPushBlocked && /戳記/.test(e.message));
+    assert.equal(d.tip(), before, 'prod 判準沒戳記一樣不准動');
+  } finally { sb.cleanup(); }
+});

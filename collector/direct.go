@@ -601,6 +601,37 @@ type DirectResult struct {
 	Status     string `json:"status"` // ingested | removed | planned | failed | skipped
 	HTTPStatus int    `json:"http_status,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// At＝這一筆結果產生的時間（`inkstone/arcrun-rag#201`，leo 09-16：「應該加上時間」）。
+	// 每輪 results 會把還沒解決的舊錯誤再印一次；沒有時間就分不出哪一筆是剛剛發生的。
+	At string `json:"at,omitempty"`
+	// LastFailAt＝「這一筆是在講以前的失敗」時，那次失敗真正發生的時間（被退避擋下的檔）。
+	LastFailAt string `json:"last_fail_at,omitempty"`
+}
+
+// emptyProbeMaxBytes＝多大以下的檔才去讀內容判斷「是不是空白」（#201）。
+// 只有空白字元的檔不會大；上限讓這道判斷不必每輪去讀大檔。
+const emptyProbeMaxBytes = 4096
+
+// networkDownNote＝「這台電腦現在連不上網路」的白話（#201）。
+// 🔴 結尾「後重試」是 explainsWhySkipped 的識別字：畫面要講得出這份為什麼沒送。
+func networkDownNote(cfg *DirectConfig, err error) string {
+	who := strings.TrimSpace(cfg.InstanceName)
+	if who == "" {
+		who = instanceHostOf(cfg.CypherURL)
+	}
+	return fmt.Sprintf("這台電腦現在連不上知識庫「%s」（網路沒通或找不到網址），這份還沒送出，不算失敗；1 分鐘後重試｜原因：%s",
+		who, err.Error())
+}
+
+// stampResults 給還沒有時間的結果補上「現在」（#201）。
+// 逐檔處理的那兩處在建立結果時就蓋了章；這裡是保底，讓 log 裡**每一筆**都帶時間。
+func stampResults(r []DirectResult) {
+	now := directNow().Format(time.RFC3339)
+	for i := range r {
+		if r[i].At == "" {
+			r[i].At = now
+		}
+	}
 }
 
 // makeAccountSubConfig 從帳號設定建出單帳號用的 DirectConfig，繼承機器層級欄位（t104）。
@@ -887,6 +918,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 					r[i].Root = root
 				}
 			}
+			stampResults(r)
 			for i := range r {
 				r[i].Account = accHost // t104: 標明所屬帳號
 				if cfg.Extractor != "" && countsAsDocument(r[i]) {
@@ -935,6 +967,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		for _, root := range accCfg.RetiringRoots() {
 			cfg.guard.enterFolder(accHost, root) // #200
 			r, e, remaining, done := retireRootOnce(accCfg, root, dryRun)
+			stampResults(r)
 			for i := range r {
 				r[i].Root = root
 				r[i].Account = accHost
@@ -1396,6 +1429,15 @@ func retrySkipReason(m *Manifest, path string, now int64) string {
 	if !ok {
 		return "暫時跳過"
 	}
+	if isLocalNetworkText(e.LastError) {
+		wait := e.NextRetry - now
+		if wait < 0 {
+			wait = 0
+		}
+		// 🔴「後重試」是 explainsWhySkipped 的識別字，不要改掉。
+		return fmt.Sprintf("上次這台電腦沒連上網路（不算這份檔案的失敗），%s 後重試｜原因：%s",
+			(time.Duration(wait) * time.Second).String(), e.LastError)
+	}
 	if e.FailCount >= MaxFailBeforeSkip {
 		msg := fmt.Sprintf("連續失敗 %d 次，已暫停自動重試（改檔或按「立刻同步」會再試）", e.FailCount)
 		if e.LastError != "" {
@@ -1774,7 +1816,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			//（頁名可能改變＝要新頁名的卡）。新路徑這邊的冪等由 kbdb 端承擔（同頁名覆蓋語意）；
 			// 舊路徑那邊不會自動消失——上面已經把 ev.OldPath 排進 m.PendingTakedowns，
 			// 這裡送完新卡之後、本函式結尾會補打下架（InkStoneCo#44 ⑩）。
-			res := DirectResult{Type: ev.Type, Path: ev.Path}
+			res := DirectResult{Type: ev.Type, Path: ev.Path, At: directNow().Format(time.RFC3339)}
 			// 2026-08-07 pacing task 2：帳號還在額度冷卻中 → 這輪連試都不試。
 			// 這不是這個檔的問題（不記 FailCount/退避——那是「這個檔」的病歷，
 			// 額度用完是「整個帳號」的狀態，混在一起會讓退避階梯失真）。
@@ -1822,6 +1864,27 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					}
 				}
 			}
+			// 🔴 #201：從沒送上去過的**空白**純文字檔（Logseq 自動開的空日記最常見）⇒ 不送。
+			// 舊版照送，雲端回 400「page_name 與 text 必填」，這個檔被記成失敗、記滿 8 次永久暫停，
+			// 資料夾於是永遠掛著一個 ⚠。leo 的 KB 有 12 份就是這樣（全是 0 位元組的日記）。
+			// 記成「已處理、沒有卡上雲」：之後寫了內容，雜湊一變就會照常送。
+			// 🔴 放在逐檔退避（ShouldRetry）**之前**：那批已經被舊版記滿 8 次的空檔，
+			//   也要在這裡被重新判成「空白略過」，不然它們會永遠掛著舊的暫停紀錄
+			//   （0.18.54 在 leo 的 Mac 上第一輪實撞：6 份還顯示「連續失敗 8 次｜HTTP 400」）。
+			// 已經送上去過、後來才被清空的檔不走這裡（那是「要不要下架」的題目，不在這一刀）。
+			if !dryRun && cfg.Extractor != "" && IsPlainText(ev.Path) {
+				if e := m.Entries[ev.Path]; e != nil && e.IngestedHash == "" && e.Size <= emptyProbeMaxBytes {
+					if raw, rerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(ev.Path))); rerr == nil && strings.TrimSpace(string(raw)) == "" {
+						m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+						m.MarkNoCloudCard(ev.Path)
+						saveManifest()
+						res.Status = "skipped"
+						res.Error = "空白檔案，沒有內容可以整理（寫了內容之後會自動送）"
+						results = append(results, res)
+						continue
+					}
+				}
+			}
 			// 🔴 t195 止血點：這個檔剛失敗過且還在退避窗口內 → 這輪跳過。
 			//   沒有這道閘時的實測災情：`小果被AFTEE詐貸.pdf` 因雲端 401 失敗，
 			//   每輪重掃又被當成新檔 ⇒ **1387 輪、跨 11 小時**，且它排在佇列前面，
@@ -1832,6 +1895,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			if !m.ShouldRetry(ev.Path, now, cfg.ForceSync) {
 				res.Status = "skipped"
 				res.Error = retrySkipReason(m, ev.Path, now)
+				if e := m.Entries[ev.Path]; e != nil && e.LastFailAt > 0 {
+					res.LastFailAt = time.Unix(e.LastFailAt, 0).Format(time.RFC3339) // #201：那次失敗真正的時間
+				}
 				results = append(results, res)
 				continue
 			}
@@ -1885,9 +1951,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 掛上去的話，Google 慢會被算成「你的知識庫沒有回應」——
 					// 誤導的訊息比沒有訊息更貴（會害人往錯的方向查）。
 					xgate := cfg.openGate(stepExtractDoc)
-					prior := m.Entries[ev.Path] // #121：先前失敗過的檔再失敗，不算「路壞了」
+					// #121：先前失敗過的檔再失敗，不算「路壞了」；#201：斷網那種不算前科
 					cards, xerr = extractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin,
-						prior != nil && prior.FailCount > 0)
+						m.HasOwnFailure(ev.Path))
 					xgate.release()
 					if xerr == nil {
 						xgate.ok()
@@ -1899,6 +1965,16 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// t176：claude 路先不支援（RunDirectOnce 開頭已正規化）。
 					// 走到這裡代表 config 有沒見過的值——誠實報錯，不要靜默跳過（禁假綠）。
 					xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai／gemma）", cfg.Extractor)
+				}
+				if xerr != nil && isLocalNetworkErr(xerr) {
+					// 🔴 #201：這台電腦根本沒連出去（DNS 查不到／網路不通）⇒ 不是這個檔的失敗。
+					// 舊版照樣 MarkFailed ⇒ Mac 睡醒那幾秒就能把一批檔記滿 8 次、永久暫停。
+					res.Status = "skipped"
+					res.Error = networkDownNote(cfg, xerr)
+					m.MarkNetworkUnavailable(ev.Path, now, "本地萃取失敗："+xerr.Error())
+					saveManifest()
+					results = append(results, res)
+					continue
 				}
 				if xerr != nil {
 					// 2026-08-07 task 2：Workers AI 每日免費額度用完是**已知的上游狀況**
@@ -1976,14 +2052,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						cardBody["quality_warnings"] = warns
 					}
 					// #121：這個檔先前失敗過 ⇒ 這一發再失敗不算「路壞了」（見 routebackoff.go 檔頭）。
-					prior := m.Entries[ev.Path]
 					status, _, perr := cfg.postJSONAs(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody,
-						prior != nil && prior.FailCount > 0)
+						m.HasOwnFailure(ev.Path))
 					res.HTTPStatus = status
 					if perr != nil {
 						res.Status, res.Error = "failed", perr.Error()
 						if isRouteBackoff(perr) {
 							res.Status = "skipped" // #121：沒打出去，不是這個檔的失敗
+							routeSkipped = true
+						} else if isLocalNetworkErr(perr) {
+							res.Status = "skipped" // #201：這台電腦沒連出去，不是這個檔的失敗
+							res.Error = networkDownNote(cfg, perr)
+							m.MarkNetworkUnavailable(ev.Path, now, perr.Error())
 							routeSkipped = true
 						}
 						ok = false
@@ -2200,6 +2280,8 @@ func runDirect(args []string) int {
 	if *strict {
 		cfg.LintStrict = true // CLI 旗標覆蓋 config
 	}
+	// #201：每一次被算進斷路器的失敗，當下就印一行帶時間的紀錄進 collector.log。
+	routeFailureLog = announceRouteFailure
 
 	// t176：t92 的 claude_bin 回寫已隨 claude 萃取路一併退役——RunDirectOnce 不再解析
 	// claude 執行檔，cfg.ClaudeBin 不會被改寫，故沒有東西需要回寫。

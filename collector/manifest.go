@@ -268,6 +268,11 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 	if !ok {
 		return false
 	}
+	// #201：上一筆病歷是「這台電腦沒連上網路」⇒ 那幾次不是這個檔的失敗，重新算起。
+	// （更新前的舊版會把斷網也記成失敗，一個檔就這樣被記滿 8 次永久暫停。）
+	if isLocalNetworkText(e.LastError) {
+		e.FailCount = 0
+	}
 	e.FailCount++
 	e.LastFailAt = at
 	if strings.TrimSpace(reason) != "" {
@@ -281,6 +286,35 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 	return true
 }
 
+// networkRetryAfter＝這台電腦連不上網路時，多久之後再試同一個檔。
+// 不是 0：斷網期間每 5 秒一輪，每輪都把大 PDF 重新轉一次文字是白燒 CPU；
+// 也不長：網路一恢復，一分鐘內就要自己接上（#201 驗收：不用人按「立刻同步」）。
+const networkRetryAfter = 60 // 秒
+
+// MarkNetworkUnavailable 記下「這一發沒送出去，因為這台電腦連不上網路」（#201）。
+//
+// 🔴 **不動 FailCount**：請求沒離開這台電腦，不是這個檔壞了，也不該讓它往
+// 「連續失敗 8 次、暫停自動重試」走。只留一個短短的等待，讓斷網期間不要每輪空轉。
+func (m *Manifest) MarkNetworkUnavailable(path string, at int64, reason string) bool {
+	e, ok := m.Entries[path]
+	if !ok {
+		return false
+	}
+	e.LastFailAt = at
+	if strings.TrimSpace(reason) != "" {
+		e.LastError = reason
+	}
+	e.NextRetry = at + networkRetryAfter
+	return true
+}
+
+// HasOwnFailure＝這個檔**自己**失敗過（不含「當時這台電腦沒網路」那種）。
+// 給斷路器判斷「這一發算不算第一次送」用（#121／#201）。
+func (m *Manifest) HasOwnFailure(path string) bool {
+	e, ok := m.Entries[path]
+	return ok && e != nil && e.FailCount > 0 && !isLocalNetworkText(e.LastError)
+}
+
 // ShouldRetry 回報「這個檔現在該不該送」。
 //
 //   - 從沒失敗過 → true（行為與 t195 前一字不變）
@@ -292,16 +326,32 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 // 另：使用者改檔會讓 content hash 變 → 走的是「內容變更」路徑，本函式不介入。
 func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 	e, ok := m.Entries[path]
-	if !ok || e.FailCount == 0 {
+	if !ok {
 		return true
 	}
 	if force {
 		return true
 	}
+	// #201：最近一次是「這台電腦沒連上網路」⇒ 不管記了幾次（包括 0 次），等短暫的窗口過了就再試。
+	// 舊版把斷網記成這個檔的失敗，leo 的 KB 有 17 份就這樣被永久暫停（最早 08-14）。
+	// 要放在 FailCount==0 之前：MarkNetworkUnavailable 不加次數，放後面等於那 60 秒不存在。
+	if isLocalNetworkText(e.LastError) {
+		return now >= e.NextRetry
+	}
+	if e.FailCount == 0 {
+		return true
+	}
 	if e.FailCount >= MaxFailBeforeSkip {
-		return false
+		// #201：「雲端當時還是舊版、沒有 AI」不是這個檔的病——雲端更新之後要自己再試。
+		// 退避窗口照舊（最長 6 小時一次），雲端還沒更新的話頂多每 6 小時白問一發。
+		return isOldCloudText(e.LastError) && now >= e.NextRetry
 	}
 	return now >= e.NextRetry
+}
+
+// isOldCloudText＝病歷上寫的是「雲端還沒有這個功能」（舊版雲端），不是檔案本身的問題。
+func isOldCloudText(msg string) bool {
+	return strings.Contains(msg, "沒有綁定 Workers AI") || strings.Contains(msg, "沒有雲端萃取功能")
 }
 
 // Save 原子寫入（temp + rename），避免掃描中斷留半個 JSON。

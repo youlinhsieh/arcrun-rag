@@ -326,7 +326,8 @@ func TestRouteBreaker_Rules(t *testing.T) {
 	if b.note(u, t0.Add(time.Minute+90*time.Second)) == "" {
 		t.Fatal("窗口到期後再失敗一發，應該停 2 分鐘")
 	}
-	b.record(u, t0.Add(3*time.Minute), 0, errors.New("dial tcp: connection refused"), false)
+	// #201：連線層錯誤只算「連上之後出事」的（這裡用連線被切斷）；本機沒連出去的另有測試。
+	b.record(u, t0.Add(3*time.Minute), 0, errors.New("read tcp 10.0.0.1:1->10.0.0.2:443: connection reset by peer"), false)
 	if b.note(u, t0.Add(3*time.Minute+4*time.Minute)) == "" {
 		t.Fatal("再失敗一發應該停 5 分鐘")
 	}

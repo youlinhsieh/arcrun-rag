@@ -74,6 +74,9 @@ func (m *Manifest) Progress() SyncProgress {
 		switch {
 		case e.IngestedHash != "" && e.IngestedHash == e.ContentHash:
 			p.Done++
+		case isLocalNetworkText(e.LastError):
+			// #201：上次只是這台電腦沒連上網路 ⇒ 會自己再試，是排隊中，不是卡住。
+			p.Pending++
 		case e.FailCount >= MaxFailBeforeSkip:
 			// 已經放棄自動重試的不能混在 Pending 裡假裝還在排隊——
 			// 使用者會一直等一件永遠不會發生的事。

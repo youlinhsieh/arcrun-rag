@@ -92,7 +92,7 @@ export function normRemote(u) {
  */
 export function parsePush(args) {
   const a = (args || []).map(String);
-  const NONE = { isPush: false, remote: null, branches: [], dryRun: false, allRefs: false, sawRefspec: false };
+  const NONE = { isPush: false, remote: null, branches: [], dryRun: false, allRefs: false, sawRefspec: false, forced: false };
 
   // ① 先跳過 `git` 自己的全域旗標（`-c http.postBuffer=…` 這種，出貨線真的在用）
   const GLOBAL_TAKES_VALUE = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
@@ -107,7 +107,7 @@ export function parsePush(args) {
 
   // ② push 自己的旗標與參數
   const SUB_TAKES_VALUE = new Set(['--repo', '--exec', '--receive-pack', '-o', '--push-option']);
-  let remote = null; let dryRun = false; let allRefs = false; let sawRefspec = false;
+  let remote = null; let dryRun = false; let allRefs = false; let sawRefspec = false; let forced = false;
   const branches = [];
   for (; i < a.length; i++) {
     const t = a[i];
@@ -116,18 +116,21 @@ export function parsePush(args) {
       if (t === '--dry-run' || t === '-n') dryRun = true;
       // `--mirror`／`--all` 不指名分支，卻會一次覆寫（含 main）⇒ 當成「會動到 main」
       else if (t === '--mirror' || t === '--all') allRefs = true;
+      // 強推會改寫遠端歷史——機械檢查模式一律不放（inkstone/arcrun-rag#202）
+      else if (t === '--force' || t === '-f' || t.startsWith('--force-with-lease') || t === '--force-if-includes') forced = true;
       else if (SUB_TAKES_VALUE.has(t)) i += 1;
       continue;
     }
     if (remote === null) { remote = t; continue; }
     sawRefspec = true;
+    if (t.startsWith('+')) forced = true;
     // refspec：`+src:dst`／`:dst`（刪除）／`dst`。目的地永遠是最後一段。
     const dst = t.replace(/^\+/, '').split(':').pop();
     if (/^refs\/tags\//.test(dst)) continue;          // 推 tag 不是推分支
     const b = dst.replace(/^refs\/heads\//, '');
     if (b) branches.push(b);
   }
-  return { isPush: true, remote, branches, dryRun, allRefs, sawRefspec };
+  return { isPush: true, remote, branches, dryRun, allRefs, sawRefspec, forced };
 }
 
 /** 目標裡有沒有 main／master。整名比對——含 `main` 的字不算。 */
@@ -306,6 +309,88 @@ function defaultGit(args, cwd) {
   } catch { return ''; }
 }
 
+/** 會回傳 exit code 的 git 執行器（機械檢查要分得出「查無」與「查到」）。 */
+function defaultGitRun(args, cwd) {
+  try {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return { status: r.status, out: (r.stdout || '').trim() };
+  } catch { return { status: 1, out: '' }; }
+}
+
+/**
+ * 🔴 stage 目標推 main 的放行判準：**看這一推會不會毀掉遠端既有的東西**，不看戳記。
+ *
+ * 為什麼（inkstone/ISEP#30 c7553，leo 09-17「stage 版不用問我你決定，不要因為這個原因停工」）：
+ *   戳記＝「模型替自己造一枚放行證」，這個形狀不管入口放哪都會被 Claude Code 自動模式分類器擋
+ *   ⇒ stage 出貨每次都得 leo 開口。而戳記當初要防的從來不是「推了 main」，
+ *   是 **2026-08-18 那一筆的形狀**：刪掉 `cmd/collector/main.go`、把 22 行 `.gitignore` 洗成 1 行。
+ *   ⇒ 直接驗那個形狀，比驗「有沒有人蓋過章」更準——章蓋了，那一筆照樣推得出去。
+ *
+ * 三條，全部對**遠端此刻的真實 tip**（`ls-remote`，不信本機可能過期的 origin/*）：
+ *   ① 只准 fast-forward：遠端 tip 必須是 HEAD 的祖先（不准改寫歷史）
+ *   ② 不准刪檔：遠端 tip..HEAD 有任何 `D` ⇒ 擋（`--allow-deletions` 才放，與 commit 站同一個旗標）
+ *   ③ 不准把任何 `.gitignore` 變短：它是擋建置產物的閘（08-18 被洗成 1 行）——這條沒有旗標可放
+ *
+ * 遠端沒有這條分支（全新 repo）＝沒有既有內容可毀 ⇒ 放行並說明。
+ * prod 不走這裡：prod 照舊要戳記＋D20 保險（leo 親手）。
+ */
+export function checkNonDestructivePush({ remote, branch, cwd, allowDeletions = false, run = defaultGitRun }) {
+  const lr = run(['ls-remote', remote, `refs/heads/${branch}`], cwd);
+  if (lr.status !== 0) return { ok: false, why: `查不到遠端 ${branch} 的現況（ls-remote 失敗）——不知道會蓋掉什麼就不推` };
+  const remoteSha = (lr.out.split(/\s+/)[0] || '').trim();
+  if (!remoteSha) return { ok: true, why: `遠端還沒有 ${branch}（沒有既有內容可毀）` };
+
+  if (run(['cat-file', '-e', `${remoteSha}^{commit}`], cwd).status !== 0) {
+    return { ok: false, why: `本機沒有遠端 ${branch} 的 tip ${remoteSha.slice(0, 7)}——這一推不是建立在遠端現況上（會蓋掉別人的 commit）` };
+  }
+  if (run(['merge-base', '--is-ancestor', remoteSha, 'HEAD'], cwd).status !== 0) {
+    return { ok: false, why: `不是 fast-forward：遠端 ${branch} 的 ${remoteSha.slice(0, 7)} 不在 HEAD 的歷史裡（會改寫遠端歷史）` };
+  }
+  const diff = run(['diff', '--no-renames', '--name-status', remoteSha, 'HEAD'], cwd);
+  if (diff.status !== 0) return { ok: false, why: `比不出遠端 ${remoteSha.slice(0, 7)} 與 HEAD 的差異——看不清楚就不推` };
+  const rows = diff.out.split('\n').filter(Boolean).map((l) => l.split('\t'));
+  const deleted = rows.filter(([st]) => st === 'D').map(([, f]) => f);
+  if (deleted.length && !allowDeletions) {
+    return {
+      ok: false,
+      why: `這一推會刪掉遠端 ${branch} 上的 ${deleted.length} 個檔：${deleted.slice(0, 8).join('、')}${deleted.length > 8 ? '…' : ''}`,
+      deleted,
+    };
+  }
+  const countLines = (rev, f) => {
+    const r = run(['show', `${rev}:${f}`], cwd);
+    return r.status === 0 ? r.out.split('\n').filter((l) => l.trim()).length : 0;
+  };
+  for (const [st, f] of rows) {
+    if (!/(^|\/)\.gitignore$/.test(f) || (st !== 'M' && st !== 'D')) continue;
+    const before = countLines(remoteSha, f);
+    const after = st === 'D' ? 0 : countLines('HEAD', f);
+    if (after < before) {
+      return { ok: false, why: `這一推會把 ${f} 從 ${before} 行砍到 ${after} 行（它是擋建置產物的閘，08-18 就是這樣被洗掉）` };
+    }
+  }
+  return {
+    ok: true,
+    why: `fast-forward ${remoteSha.slice(0, 7)}→HEAD，${rows.length} 個檔有變`
+      + `${deleted.length ? `（含 ${deleted.length} 個刪除，--allow-deletions 放行）` : '、沒有刪檔'}、.gitignore 沒變短`,
+  };
+}
+
+function mechanicalBlockedMessage({ dest, branches, why, cwd, pendingFile }) {
+  return [
+    `🚫 推 ${branches.join('、')} 被機械檢查擋下（stage 目標不看戳記，看這一推會不會毀掉遠端既有的東西）：`,
+    `     ${why}`,
+    '',
+    `     目的地：${dest}`,
+    `     工作區：${cwd}`,
+    pendingFile ? `     📮 原始請求留在 ${pendingFile}` : '',
+    '',
+    '     → 先看清楚是不是同步／打包動了不該動的東西（2026-08-18 就是刪掉 main.go、洗掉 .gitignore）。',
+    '       確定刪檔是本意 ⇒ 重跑時加 --allow-deletions 並在 commit 說明理由；',
+    '       改寫歷史與 .gitignore 變短沒有旗標可放。',
+  ].filter((l) => l !== '').join('\n');
+}
+
 function blockedMessage({ dest, branches, why, stampPath, cwd, pendingFile }) {
   return [
     `🚫 推 ${branches.join('、')} 要先有「總管決定了」的戳記——這一次沒有（${why}）。`,
@@ -349,6 +434,7 @@ export function assertPushAllowed({
   args, cwd, remoteUrl = null, who = 'ship 出貨線', currentBranch = null,
   stampPath = STAMP_PATH, logPath = DEFAULT_LOG_PATH, pendingDir = DEFAULT_PENDING_DIR,
   now = Date.now(), git = defaultGit, grants = null,
+  policy = 'stamp', allowDeletions = false, gitRun = defaultGitRun,
 }) {
   const p = parsePush(args);
   // 不是 push ⇒ 這道閘不管它，連留痕都不記（灌水會讓真正的紀錄讀不出來）
@@ -374,6 +460,29 @@ export function assertPushAllowed({
     // 推 tag 的 refspec 解析完不會留下任何分支 ⇒ 說清楚是哪一種放行，log 才讀得懂
     logRow('✅ 放行', p.sawRefspec && branches.length === 0 ? '推的是 tag，不是分支' : '目標不是 main／master');
     return { allowed: true, reason: '不是 main', dest, branches };
+  }
+
+  // 🔴 stage 目標（policy='mechanical'，inkstone/arcrun-rag#202）：不看戳記，看這一推毀不毀東西
+  if (policy === 'mechanical') {
+    let why = null;
+    if (p.allRefs) why = '--mirror／--all 會一次覆寫所有分支';
+    else if (p.forced) why = '強推（--force／+refspec）會改寫遠端歷史';
+    const notes = [];
+    if (!why) {
+      for (const b of branches.filter((x) => PROTECTED_BRANCHES.has(String(x)))) {
+        const r = checkNonDestructivePush({ remote: p.remote || url, branch: b, cwd, allowDeletions, run: gitRun });
+        if (!r.ok) { why = r.why; break; }
+        notes.push(r.why);
+      }
+    }
+    if (why) {
+      const pendingFile = writePendingRequest(pendingDir, { who, dest, branches, args, cwd, git });
+      logRow('⛔ 擋下', `機械檢查：${why}`);
+      throw new MainPushBlocked(mechanicalBlockedMessage({ dest, branches, why, cwd, pendingFile }),
+        { dest, branches, pendingFile, why });
+    }
+    logRow('✅ 放行', `機械檢查（stage）：${notes.join('；')}`);
+    return { allowed: true, reason: '機械檢查', dest, branches };
   }
 
   const ids = identitiesOf({ remoteUrl: url, cwd, toplevel: git(['rev-parse', '--show-toplevel'], cwd) || null });
