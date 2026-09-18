@@ -1,0 +1,17 @@
+{
+ "_source": "geek6688（arcrun-fc9490d5）~/Desktop/geek6688-test1 的帳本原樣，2026-09-17 讀出；inkstone/arcrun-rag#196",
+ "entries": {
+  "system-dev/wiki/cards/arcrun-sample-knowledge.md": {
+   "fail_count": 8,
+   "last_fail_at": 1788188201,
+   "next_retry": 1788209801,
+   "last_error": "HTTP 500：{\"success\":false,\"error\":\"Node post_block failed: Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits\",\"trace\":[{\"node\":\"input\",\"status\":\"success\"},{\"node\":\"list_old_blocks\",\"status\":\"success\"},{\"node\":\"list_old_triplets\",\"status\":\"success\"},{\"node\":\"pick_stale\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"parse_card\",\"status\":\"success\"},{\"node\":\"post_block\",\"status\":\"f"
+  },
+  "system-dev/wiki/cards/arcrun-n8n版本比較表新-2025.11-範本.md": {
+   "fail_count": 8,
+   "last_fail_at": 1788188201,
+   "next_retry": 1788209801,
+   "last_error": "HTTP 500：{\"success\":false,\"error\":\"Node post_block failed: Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits\",\"trace\":[{\"node\":\"input\",\"status\":\"success\"},{\"node\":\"list_old_blocks\",\"status\":\"success\"},{\"node\":\"list_old_triplets\",\"status\":\"success\"},{\"node\":\"pick_stale\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_entry\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"delete_record\",\"status\":\"success\"},{\"node\":\"parse_card\",\"status\":\"success\"},{\"node\":\"post_block\",\"status\":\"f"
+  }
+ }
+}

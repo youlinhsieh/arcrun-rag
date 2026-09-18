@@ -706,6 +706,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			//   ⇒ 畫面只剩 humanizeFailure 的最後退路「當時沒有記下原因」。
 			//   這正是上面那句警告的第二次實例——真因是我們自己刪掉的，不是沒記。
 			ne.LastError = carry.LastError
+			ne.FailCloudVersion = carry.FailCloudVersion // #196：同上那句警告——漏 carry 就分不出暫停是在哪一版雲端記的
 			// 🔴 #140（2026-08-26）：雲端對帳的三個欄位同樣要 carry，而且漏了會**很貴**：
 			//   - CloudCheckedAt 歸零 ⇒ 每輪都判「太久沒對帳」⇒ 每輪重問整批（請求風暴）
 			//   - CloudMissingAt 歸零 ⇒ **防重送迴圈的 grace 消失** ⇒ 補送 → 下一輪又拔章

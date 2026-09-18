@@ -101,6 +101,10 @@ type DirectConfig struct {
 	// 不寫進 config.json（`json:"-"`）：它是單次執行旗標，不是使用者設定。
 	ForceSync bool `json:"-"`
 
+	// CloudVersion＝這一輪這個帳號的雲端版本（/health 的 bundle_version，查不到時沿用上一輪）。
+	// 單次執行資訊，不寫進 config.json。給逐檔退避判斷「舊雲端造成的暫停該不該再試」（#196）。
+	CloudVersion string `json:"-"`
+
 	// B2 萃取品質檢查（daemon 端 lint，草案 §3 第一層；分支 work/b2-quality-lint-0726 移入，
 	// 2026-08-09 重新接到現行 direct.go——原分支落後 main 130 筆，不能硬併，見
 	// wiki status.md:1570-1573）：extractor 模式萃完、POST 前跑。
@@ -853,6 +857,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// t215：這個帳號要不要更新——與 portal 版本卡同一套判準（見檔頭）。
 		// 第二個參數傳「我們知不知道它的版本」而不是「這一輪連不連得上」：
 		// 版本是**事實**，可達性是**當下狀態**，兩者不是同一個問題。
+		accCfg.CloudVersion = cloudVer // #196：逐檔退避要知道雲端是不是已經修好子請求那面牆
 		cloudUpd := EvalCloudUpdate(cloudVer, strings.TrimSpace(cloudVer) != "", latestRelease, latestOK)
 		accSt := AccountSyncStatus{
 			LastSync:         time.Now().Format(time.RFC3339),
@@ -1540,6 +1545,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	if err != nil {
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
 	}
+	m.CloudVersion = cfg.CloudVersion // #196
 	// 2026-08-07 task 3（斷點續傳）：每個事件處理完就立刻存檔，不要等整輪跑完。
 	// 舊行為＝整個 for 迴圈跑完才 Save 一次——process 在跑到一半被殺掉（重開機、
 	// 換版、當機）時，**已經成功的那些也會遺失**，下次重開等於從頭來過，

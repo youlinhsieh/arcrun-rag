@@ -56,6 +56,11 @@ type ManifestEntry struct {
 	//    真因（Cloudflare「當日免費額度用完」／「這份 PDF 沒有文字層」）**當場消失**
 	//    ⇒ 使用者以為是我們壞掉。原因必須跟著 entry 存活到下次成功為止。
 	LastError string `json:"last_error,omitempty"`
+	// FailCloudVersion＝最後一次失敗時，這個帳號的雲端版本（/health 的 bundle_version；""＝當時不知道）。
+	// 為什麼要記（inkstone/arcrun-rag#196）：「單次呼叫子請求太多」在 1.4.64 之前是雲端引擎的病，
+	// 之後就是這張卡真的太大。只看錯誤原文分不出是哪一種——要知道**當時打的是哪一版雲端**，
+	// 才能做到「舊雲端造成的暫停，雲端更新後自己再試一次；新雲端上還撞牆就照舊暫停，不反覆燒額度」。
+	FailCloudVersion string `json:"fail_cloud_version,omitempty"`
 
 	// ── 雲端對帳（`inkstone/arcrun-rag#140`，2026-08-26）──────────────────────
 	// 病：上面那個 IngestedHash 的章**永遠不會過期**。雲端 08-14 被重裝／清空之後，
@@ -91,6 +96,9 @@ const MaxFailBeforeSkip = 8
 // Manifest 對應一個被勾選的資料夾。
 type Manifest struct {
 	FolderID string                    `json:"folder_id"`
+	// CloudVersion＝這一輪這個帳號的雲端版本（執行期由呼叫端填，不寫進檔案）。
+	// MarkFailed 把它記進病歷、ShouldRetry 拿它判斷「雲端是不是已經修好那面牆」（#196）。
+	CloudVersion string `json:"-"`
 	// FolderCardHashes＝每個子資料夾索引卡的內容雜湊（鍵＝相對監看根的目錄路徑）。
 	// 冪等用：內容沒變就不重送（同 InventoryHash 的角色，只是一層變多層）。
 	// 資料夾消失時由 syncFolderCards 清掉對應的鍵，不讓這張表無限長大。
@@ -234,6 +242,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	// 成功即清掉失敗狀態（t195）：下次再壞會從第一階退避重新算起。
 	e.FailCount, e.LastFailAt, e.NextRetry = 0, 0, 0
 	e.LastError = ""
+	e.FailCloudVersion = ""
 	// #140：預設「這次有送卡上雲」；真的一張卡都沒送的那條路由呼叫端補打
 	// MarkNoCloudCard（見 direct.go 的 cards 為空分支）。預設值放這裡而不是
 	// 讓呼叫端每次都設，是因為漏設的方向要落在**安全的那一邊**：
@@ -275,6 +284,7 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 	}
 	e.FailCount++
 	e.LastFailAt = at
+	e.FailCloudVersion = m.CloudVersion // #196：記下這次撞的是哪一版雲端
 	if strings.TrimSpace(reason) != "" {
 		e.LastError = reason // 存真因；退避訊息由呼叫端另外組，不覆蓋這裡
 	}
@@ -344,9 +354,34 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 	if e.FailCount >= MaxFailBeforeSkip {
 		// #201：「雲端當時還是舊版、沒有 AI」不是這個檔的病——雲端更新之後要自己再試。
 		// 退避窗口照舊（最長 6 小時一次），雲端還沒更新的話頂多每 6 小時白問一發。
-		return isOldCloudText(e.LastError) && now >= e.NextRetry
+		// #196：同理，「單次呼叫子請求太多」在雲端 1.4.64 之前是引擎的病（每個節點多打 3 發附帶呼叫）。
+		// 病歷是在舊雲端上記的、而現在的雲端已經修好 ⇒ 再試。
+		// 在已修好的雲端上又撞 ⇒ 這次 MarkFailed 會記下新版本號 ⇒ 不再自動重試（卡真的太大，重撞只是燒額度）。
+		return (isOldCloudText(e.LastError) || m.subrequestWallFixedSince(e)) && now >= e.NextRetry
 	}
 	return now >= e.NextRetry
+}
+
+// subrequestFixedRelease＝雲端第一個帶「每次呼叫附帶子請求改成常數」修正的版本
+// （Arcrun 1eb26c9，首次出貨＝1.4.64，inkstone/arcrun-rag#196）。
+const subrequestFixedRelease = "1.4.64"
+
+// isSubrequestLimitText＝病歷是 Cloudflare「單次 Worker 呼叫子請求太多」。
+func isSubrequestLimitText(msg string) bool {
+	return strings.Contains(msg, "Too many subrequests")
+}
+
+// cloudHasSubrequestFix＝這個雲端版本已經帶子請求修正（""、舊日期格式、比 1.4.64 舊 ⇒ false）。
+func cloudHasSubrequestFix(version string) bool {
+	head := strings.TrimSpace(strings.SplitN(version, "+", 2)[0])
+	return isSemverLike(head) && compareSemver(head, subrequestFixedRelease) >= 0
+}
+
+// subrequestWallFixedSince＝這筆暫停是舊雲端的子請求牆造成的，而這一輪的雲端已經修好。
+func (m *Manifest) subrequestWallFixedSince(e *ManifestEntry) bool {
+	return isSubrequestLimitText(e.LastError) &&
+		cloudHasSubrequestFix(m.CloudVersion) &&
+		!cloudHasSubrequestFix(e.FailCloudVersion)
 }
 
 // isOldCloudText＝病歷上寫的是「雲端還沒有這個功能」（舊版雲端），不是檔案本身的問題。
