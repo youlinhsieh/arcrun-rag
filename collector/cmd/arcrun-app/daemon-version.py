@@ -81,7 +81,37 @@ SOURCE_FILES = HERE / ".version-source-files.json"
 # 🔴 3 → 4（2026-08-18）：指紋的**根**從 repo 根換成 collector/，被雜湊的相對路徑
 #    因此全部改變（`collector/cmd/…` → `cmd/…`）⇒ 舊帳本是「用不同單位量出來的數字」，
 #    比對沒有意義。照既有設計改號讓它自動整本作廢重記，不要手改 JSON。
-FINGERPRINT_ALGO = 4
+# 🔴 4 → 5（2026-09-18，inkstone/InkStoneCo#98 c7826）：**測試檔不再算進指紋**
+#    （判準見 `is_test_only()`），量尺本身（本檔）也不算（見 scan_source 的 skip）。檔案集合變了 ⇒ 總指紋與逐檔帳本全都換單位，照慣例 +1。
+#    帳本不是整本作廢：0.18.56 那一版已用「打包那顆 commit 的樹」重算 v5 指紋
+#    （同一棵樹的 v4 值與舊帳本 `d333ded9d0608cd9` 逐位相符，才准換），
+#    所以 changelog 最上面那一版仍查證得到，不會掉進「無法查證」。
+FINGERPRINT_ALGO = 5
+
+
+def is_test_only(rel):
+    """這個檔**結構上不可能**進到小幫手執行檔 ⇒ 不算進原始碼指紋。
+
+    為什麼（2026-09-18，inkstone/InkStoneCo#98 c7826）：
+        出貨線第 5 站把 0.18.56 判成「成品過期」，而打包之後多出來的只有兩支
+        `_test.go`（雲端補的證據測試）。為兩支測試多出一個小幫手版號＝**版本號說謊**
+        ——使用者會拿到一個宣稱更新、實際位元一模一樣的執行檔。
+
+    判準只用**工具鏈本身的規則**，不用「我覺得這個不重要」：
+      · `*_test.go`       —— `go build` 依 Go 規格一律不編譯（只有 `go test` 會）
+      · 路徑含 `testdata/` —— Go 工具鏈忽略這個目錄名；且本 repo 沒有任何
+                             `//go:embed` 指到 testdata（2026-09-18 實查三處 embed：
+                             `all:templatefs`／`all:frontend/dist`／`build/…`）
+      · `*.test.mjs`      —— Node 的測試檔，不是 Go、也不在任何 embed 根底下
+
+    🔴 **不要擴大成「非 .go 都排掉」**：`build/` 的圖示、`templatefs/` 的範本
+       都是被 embed 進執行檔的，排掉就是在閘上挖洞（見 scan_source 三修的註）。
+    """
+    parts = rel.split("/")
+    name = parts[-1]
+    return (name.endswith("_test.go")
+            or name.endswith(".test.mjs")
+            or "testdata" in parts[:-1])
 
 # 🔴 2026-08-18（inkstone/arcrun-rag#88）：**對外號是三個數字，不帶 `v`**
 #   （leo 2026-08-17「不要 v」，全文 InkStoneCo `system-dev/wiki/ops-facts.md` §「定案」）。
@@ -161,14 +191,21 @@ def scan_source():
     #    只排除帳本一個檔——**不要順手把 build/ 整個排掉**，
     #    那會讓「換 app icon」不算原始碼變更，等於把閘挖個洞。
     #    2026-08-18：逐檔帳本（SOURCE_FILES）是同一個形狀的自我參照，一起排除。
+    #    2026-09-18（inkstone/InkStoneCo#98 c7826）：**量尺本身**也是同一個形狀——
+    #    本檔是出貨線拿來量指紋的工具，不會被編進執行檔（它只把 changelog 最上面那一版
+    #    的號碼交給 ldflags，而 changelog 本身仍在指紋裡）。不排除它 ⇒ 每改一次量法，
+    #    changelog 上已發佈的那一版就被判成「成品過期」，只能靠多出一個版號解套
+    #    ＝版本號說謊（本次改「測試不算」時實撞：光改這支，0.18.56 就被自己擋下）。
     skip = {
         str(SOURCE_LOCK.relative_to(COLLECTOR)),
         str(SOURCE_FILES.relative_to(COLLECTOR)),
+        str((HERE / "daemon-version.py").relative_to(COLLECTOR)),
     }
 
     h = hashlib.sha256()
     per_file = {}
-    for rel in sorted(f for f in files if f.strip() and f not in skip):
+    for rel in sorted(f for f in files
+                      if f.strip() and f not in skip and not is_test_only(f)):
         fp = COLLECTOR / rel
         if not fp.is_file():
             continue  # 已刪除的檔案

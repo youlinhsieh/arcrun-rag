@@ -234,3 +234,58 @@ test('⑪ --source-state 是唯讀的，而且答得出「這一版配不配得�
       '--source-state 問了兩次，帳本一個位元都不准動');
   } finally { t.cleanup(); }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 指紋只量「會進執行檔的東西」（inkstone/InkStoneCo#98 c7826，2026-09-18）
+//
+// 實撞：0.18.56 出 prod 之後，雲端補了兩支證據測試（`_test.go`），出貨線第 5 站
+// 就把 0.18.56 判成「成品過期」——要過只能多戳一個小幫手版號，而那個版號的執行檔
+// 與 0.18.56 位元一模一樣 ⇒ 版本號說謊。⑫ 釘住放行、⑬⑭ 釘住「別把閘修成放行一切」。
+// ═══════════════════════════════════════════════════════════════════════════
+
+const askState = (t) => JSON.parse(execFileSync('python3',
+  [join(t.appDir, 'daemon-version.py'), '--source-state'],
+  { cwd: t.appDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+
+test('⑫ 打包之後只多了測試（_test.go／testdata／.test.mjs）或改了量尺本身 ⇒ 成品仍算數', () => {
+  const t = realishTree({ changelog: UNRELEASED + OLD_V });
+  try {
+    t.stampIt();
+    const before = askState(t);
+    // 真實形狀：打包後新增兩支證據測試（同 direct_dedup_e2e_test.go／direct_quota_resume_test.go）
+    writeFileSync(join(t.root, 'collector', 'direct_dedup_e2e_test.go'), 'package collector\n');
+    mkdirSync(join(t.root, 'collector', 'testdata'), { recursive: true });
+    writeFileSync(join(t.root, 'collector', 'testdata', 'fixture.json'), '{}\n');
+    writeFileSync(join(t.appDir, 'daemon-version.test.mjs'), '// 測試檔\n');
+    // 量尺本身（daemon-version.py）改了——它不進執行檔，量法一改不該讓已發佈版過期
+    writeFileSync(join(t.appDir, 'daemon-version.py'),
+      readFileSync(join(t.appDir, 'daemon-version.py'), 'utf8') + '\n# 量法註解\n');
+    const after = askState(t);
+    assert.equal(after.current_fingerprint, before.current_fingerprint);
+    assert.equal(after.recorded_fingerprint, after.current_fingerprint);
+    assert.deepEqual([after.changed, after.added, after.removed], [[], [], []]);
+  } finally { t.cleanup(); }
+});
+
+test('⑬ 🔴 反向：改一個**非測試**的 .go 照樣判過期，且講得出是哪個檔', () => {
+  const t = realishTree({ changelog: UNRELEASED + OLD_V });
+  try {
+    t.stampIt();
+    // 名字裡有 test 但不是 `_test.go` 結尾 ⇒ 會被編進執行檔，不准被當成測試放掉
+    writeFileSync(join(t.appDir, 'selftest.go'), 'package main\n');
+    const s = askState(t);
+    assert.notEqual(s.recorded_fingerprint, s.current_fingerprint);
+    assert.deepEqual(s.added, ['cmd/arcrun-app/selftest.go']);
+  } finally { t.cleanup(); }
+});
+
+test('⑭ 🔴 反向：被 embed 的非 Go 檔（圖示、範本）照樣算數——排除只限測試', () => {
+  const t = realishTree({ changelog: UNRELEASED + OLD_V });
+  try {
+    t.stampIt();
+    mkdirSync(join(t.root, 'collector', 'templatefs'), { recursive: true });
+    writeFileSync(join(t.root, 'collector', 'templatefs', 'VERSION'), '1\n');
+    const s = askState(t);
+    assert.deepEqual(s.added, ['templatefs/VERSION']);
+  } finally { t.cleanup(); }
+});
