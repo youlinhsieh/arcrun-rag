@@ -6155,8 +6155,8 @@
     {
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
-     "status": "skip",
-     "note": "bundle 已委任 0.18.55；內容是否真的到位由下一站 daemon-check 逐檔查證"
+     "status": "done",
+     "note": null
     },
     {
      "id": "daemon-check",
@@ -6191,8 +6191,8 @@
     {
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
-     "status": "skip",
-     "note": "已是最新：以前被記成「連續失敗 8 次、已暫停」的空白筆記，更新後會自己消掉警告・當時雲端還沒有 AI 功能而暫停的檔，雲端更新後會自己再試"
+     "status": "done",
+     "note": null
     },
     {
      "id": "version",
@@ -6215,26 +6215,26 @@
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "skip",
-     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+     "status": "done",
+     "note": null
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "skip",
-     "note": "已與遠端同步，沒有要推的"
+     "status": "done",
+     "note": null
     },
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
-     "status": "skip",
-     "note": "釘子沒動（built 2026-09-13）；安裝器原始碼指紋 91f8d10250bb（烙在 version.mjs，不寫這裡）"
+     "status": "done",
+     "note": null
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "skip",
-     "note": "線上已是 1.4.67／pin 04d5437／安裝器原始碼 91f8d10250bb 未變，且釘子沒動 ⇒ 不重複部署"
+     "status": "done",
+     "note": null
     },
     {
      "id": "docs",
@@ -6275,7 +6275,7 @@
    ],
    "sourceCommit": "Arcrun@b08a8cee44cd",
    "machine": "9f06f3113188",
-   "ts": 1789646364571
+   "ts": 1789709359937
   }
  }
 }

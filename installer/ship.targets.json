@@ -92,11 +92,11 @@
       "allowDirtySource": false,
       "bundles": {
         "dir": "~/.arcrun-ship/bundles-stage",
-        "remote": "git.uncle6.me/Leo/arcrun-rag-bundles-staging",
+        "remote": "git.uncle6.me/inkstone/arcrun-rag-bundles-staging",
         "branch": "main"
       },
       "pin": {
-        "template": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/{sha7}",
+        "template": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/{sha7}",
         "shaLen": 7
       },
       "installer": {
@@ -133,8 +133,8 @@
           "",
           "waitMs 只有 3 秒：Gitea raw 沒有邊緣快取要散，不必陪 prod 等 20 秒。"
         ],
-        "movingPointer": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
-        "refreshUrl": "https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
+        "movingPointer": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
+        "refreshUrl": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
         "refreshKind": "強制重讀",
         "waitMs": 3000,
         "maxTries": 4

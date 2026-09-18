@@ -258,7 +258,7 @@ test('⑯ armCommand：閘自己給得出總管要貼的那一行（不必去翻
 test('⑰ unarmed：preflight 問「這趟的目的地哪些還沒按閘」——不消耗戳記', () => {
   const sb = sandbox();
   try {
-    const dests = ['git.uncle6.me/leo/arcrun-rag-bundles-staging', 'git.uncle6.me/inkstone/arcrun-collector'];
+    const dests = ['git.uncle6.me/inkstone/arcrun-rag-bundles-staging', 'git.uncle6.me/inkstone/arcrun-collector'];
     assert.deepEqual(unarmed(dests, { stampPath: sb.stampPath }), dests, '沒戳記 ⇒ 兩個都缺');
     sb.arm('git.uncle6.me/inkstone/arcrun-collector');
     assert.deepEqual(unarmed(dests, { stampPath: sb.stampPath }), [dests[0]], '按了一個 ⇒ 只剩另一個缺');
@@ -274,11 +274,11 @@ test('⑱ claimGrants：preflight 一次領走，之後每推一次 main 用掉�
   try {
     writeFileSync(sb.stampPath, 'git.uncle6.me/inkstone/arcrun-collector\ngithub.com/youlinhsieh/arcrun-rag-bundles\n', 'utf8');
     const grants = claimGrants(
-      ['git.uncle6.me/inkstone/arcrun-collector', 'github.com/youlinhsieh/arcrun-rag-bundles', 'git.uncle6.me/leo/沒按過'],
+      ['git.uncle6.me/inkstone/arcrun-collector', 'github.com/youlinhsieh/arcrun-rag-bundles', 'git.uncle6.me/inkstone/沒按過'],
       { stampPath: sb.stampPath });
     assert.equal(grants.get('git.uncle6.me/inkstone/arcrun-collector'), 1);
     assert.equal(grants.get('github.com/youlinhsieh/arcrun-rag-bundles'), 1);
-    assert.equal(grants.has('git.uncle6.me/leo/沒按過'), false, '沒按過的不准自己長出來');
+    assert.equal(grants.has('git.uncle6.me/inkstone/沒按過'), false, '沒按過的不准自己長出來');
     assert.equal(existsSync(sb.stampPath), false, '領完戳記就用掉了');
 
     // 帶著授權推 main ⇒ 放行一次，第二次就沒了（單次用完即丟這條沒有鬆）

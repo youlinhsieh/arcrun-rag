@@ -55,7 +55,7 @@ test('釘點產物網址：prod 的 jsDelivr @sha 要換宿主到 raw.githubuser
 });
 
 test('釘點產物網址：stage 的 Gitea raw root 直接用 base，不誤指去 prod 的 GitHub', () => {
-  const stagePin = 'https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/ab4ef01';
+  const stagePin = 'https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/ab4ef01';
   assert.equal(pinArtifactUrl(stagePin, FILE), `${stagePin}/${FILE}`);
 });
 
@@ -114,7 +114,7 @@ test('③ 之二：無法取證時，若下載內容本身是錯的，照樣被�
 });
 
 test('② 來源跑到別條線（stage 的安裝器宣告 prod 的下載網址）⇒ 不抓檔就抓到', async () => {
-  const stagePin = 'https://git.uncle6.me/Leo/arcrun-rag-bundles-staging/raw/commit/ab4ef01';
+  const stagePin = 'https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/ab4ef01';
   const r = await checkDaemonDownload({
     ...baseArgs,
     pinUrl: stagePin,

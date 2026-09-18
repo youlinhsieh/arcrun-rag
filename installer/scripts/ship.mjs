@@ -172,6 +172,7 @@ import { fill as fillCredentials, describeSources, missingCredentialError } from
 import { installConsoleRedaction, redactError, redactSecrets, gitHeaderEnv } from './secret-redact.mjs';
 // 同一趟抓到的另一半：新 worktree 的 .github-public/ 是全新歷史 ⇒ push 公開鏡像被拒（fetch first）。
 import { alignMirrorWithRemote } from './mirror-align.mjs';
+import { runtimeProblems as orgNamespaceProblems, explain as explainOrgNamespace } from './org-namespace-gate.mjs';
 
 installConsoleRedaction();
 
@@ -216,6 +217,14 @@ if (!TARGET_NAME || !cfg.targets[TARGET_NAME]) {
   process.exit(2);
 }
 const T = cfg.targets[TARGET_NAME];
+
+// 🔴 不變式：出貨線只准指 inkstone org，不准指 Leo/ 個人 namespace
+//   （inkstone/InkStoneCo#98 c7795，leo 2026-09-18：「Leo 的東西就是我的，org 的東西就是 CC 的」）。
+//   改指 org 改過兩次都停在分支沒併、main 一路推到 Leo/ ⇒ 擋在這裡，任何目標都過不了。
+{
+  const nsProblems = orgNamespaceProblems(REPO_ROOT, cfg);
+  if (nsProblems.length) { console.error(explainOrgNamespace(nsProblems)); process.exit(2); }
+}
 
 // 🔴 不變式 Ⅴ：**有安裝器的目標，一定要有文件站**（2026-08-09，arcrun-rag#27）
 //   leo 推完 1.4.29 prod 後問：「有沒有上 docs？版本有沒有版本說明？」

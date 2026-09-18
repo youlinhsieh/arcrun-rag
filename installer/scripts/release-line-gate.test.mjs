@@ -304,7 +304,7 @@ test('⑧c 【D95】真的 ship.targets.json：桌面小幫手那條線指向 ar
 test('⑧b remote → slug 的擷取（含 Gitea 自架網域與沒有主機名的 selftest）', () => {
   assert.equal(slugOfRemote('github.com/youlinhsieh/arcrun-rag-bundles'), 'youlinhsieh/arcrun-rag-bundles');
   assert.equal(slugOfRemote('https://github.com/youlinhsieh/arcrun-rag-bundles.git'), 'youlinhsieh/arcrun-rag-bundles');
-  assert.equal(slugOfRemote('git.uncle6.me/Leo/arcrun-rag-bundles-staging'), 'Leo/arcrun-rag-bundles-staging');
+  assert.equal(slugOfRemote('git.uncle6.me/inkstone/arcrun-rag-bundles-staging'), 'inkstone/arcrun-rag-bundles-staging');
   assert.equal(slugOfRemote('local-selftest'), null);
   assert.equal(slugOfRemote(null), null);
 });
