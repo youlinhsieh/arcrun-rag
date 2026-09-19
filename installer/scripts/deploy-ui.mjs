@@ -27,7 +27,7 @@
  * 用法：
  *   node installer/scripts/deploy-ui.mjs --subdomain <workers.dev 子網域> [選項]
  *
- *   --subdomain <s>   必填。實例的 workers.dev 子網域（如 youlin-hsieh-dev）
+ *   --subdomain <s>   必填。實例的 workers.dev 子網域（用戶自己的，如 acme-inc）
  *   --bundle <dir>    bundle 目錄（讀 <dir>/tier2/ui/index.js 與 <dir>/manifest.json）
  *                     不給則現場用 build-ui-bundle.mjs 從 --arcrun 打一份到暫存目錄
  *   --arcrun <path>   Arcrun repo 路徑（只在沒給 --bundle 時用）

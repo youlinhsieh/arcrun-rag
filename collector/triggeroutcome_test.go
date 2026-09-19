@@ -18,7 +18,7 @@ const realFailingEnvelope = `{"success":true,"data":{"success":false,"status":50
 	`"error":"{\"success\":false,\"error\":\"unreachable\"}"},"duration_ms":2476}`
 
 func TestWebhookFailure_實測那份回應必須被判成失敗(t *testing.T) {
-	msg := webhookFailure(realFailingEnvelope)
+	msg := webhookFailure(realFailingEnvelope, nil)
 	if msg == "" {
 		t.Fatal("外層 success=true、內層 success=false ⇒ 必須判失敗，否則就是 2026-08-26 那個假綠")
 	}
@@ -51,7 +51,7 @@ func TestWebhookFailure_只在看得懂的時候才判失敗(t *testing.T) {
 		{"被截斷的 JSON", `{"success":true,"data":{"success":false,"err`, false},
 	}
 	for _, c := range cases {
-		got := webhookFailure(c.body) != ""
+		got := webhookFailure(c.body, nil) != ""
 		if got != c.fail {
 			t.Errorf("%s：判失敗=%v，預期 %v（body=%s）", c.name, got, c.fail, c.body)
 		}

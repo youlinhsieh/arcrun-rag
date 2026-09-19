@@ -57,7 +57,8 @@ import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const DEFAULT_STAGE_BASE = 'https://arcrun-cypher-executor.youlin-hsieh-dev.workers.dev';
+// youlin（D37 stage）現役子網域＝arcrun-yuga3bse；09-02 重裝前的舊子網域已 DNS 查無（#194）。
+const DEFAULT_STAGE_BASE = 'https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev';
 const DEFAULT_TARGET_BASE = 'https://arcrun-cypher-executor.arcrun-fc9490d5.workers.dev';
 // notify_leo 正式通道（頂層 wiki/agent-memory.md §1）住在 leo21c：
 // POST /webhooks/named/<namespace>/notify_leo/trigger，body {"text": "..."}。

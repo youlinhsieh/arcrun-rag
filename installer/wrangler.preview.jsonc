@@ -2,13 +2,18 @@
   // 官方安裝器的 preview 版：account_id＝uncle6（官方件所在帳號），
   // LANDING_VERIFY_URL 指官方 landing＝**正確的預設值**。
   // 🔴 部署它＝出貨動作，需 leo 開閘；測試實例本身一律走 youlin（見 repo CLAUDE.md）。
+  //
+  // WORKER_SUBDOMAIN＝youlin（D37 stage）的現役子網域 `arcrun-yuga3bse`：
+  // 這支預覽安裝器導出的實例位址（arcrun-cypher-executor.<sub>.workers.dev 等）就指它。
+  // 🔴 舊值是 09-02 清空重裝前的子網域，重裝後已消失（DNS ENOTFOUND），
+  //    留著會讓在預覽安裝器上測的人拿到一個查不到的死名（inkstone/arcrun-rag#194）。
   "name": "arcrun-installer-preview",
   "main": "src/index.js",
   "compatibility_date": "2026-07-01",
   "account_id": "58309bb90fd93ad6d0fe0aae99170e9d",
   "vars": {
     "LANDING_VERIFY_URL": "https://arcrun-landing.uncle6-me.workers.dev/api/verify-code",
-    "WORKER_SUBDOMAIN": "youlin-hsieh-dev",
+    "WORKER_SUBDOMAIN": "arcrun-yuga3bse",
     "INSTALLER_DEV": "true"
   }
 }

@@ -27,7 +27,8 @@
   **migration 會重複塞資料 → 需自建記帳表**
 
 原型網址（private，只有 youlin 帳號可授權）：
-https://arcrun-installer.youlin-hsieh-dev.workers.dev/
+原本部署在 youlin 帳號 09-02 重裝前的 workers.dev 子網域下，該舊網址現已 DNS 查無
+（youlin 現役子網域為 `arcrun-yuga3bse`；此原型當時的部署網址已失效，見 inkstone/arcrun-rag#194）。
 
 ## 你接手要做的（P0，優先序見頂層 wiki status.md「明天第一件事」）
 

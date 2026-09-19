@@ -161,8 +161,8 @@ export function resolveNamespace() {
  *   · 上游解析順序是 ①環境變數覆寫 ②實例目錄＋該實例的 namespace 環境變數 ③`~/.arcrun/config.yaml`
  *   · 實例目錄早已改指 youlin 09-02 重裝後的子網域 `arcrun-yuga3bse`（inkstone/Arcrun#196 `22c314b`）
  *   · 但 `ARCRUN_NS_YOULIN` 只住在頂層 `.env`，**一般 shell 裡沒有它** ⇒ 第②層不出手
- *     ⇒ 落到第③層 ⇒ 那份家目錄設定還寫著舊子網域 `youlin-hsieh-dev`（CF API 實查：
- *     帳號子網域現為 `arcrun-yuga3bse`；舊主機名在本機／1.1.1.1／8.8.8.8 都查無 DNS）。
+ *     ⇒ 落到第③層 ⇒ 那份家目錄設定還寫著 09-02 重裝前的舊子網域（CF API 實查：
+ *     帳號子網域現為 `arcrun-yuga3bse`；那個舊主機名在本機／1.1.1.1／8.8.8.8 都查無 DNS）。
  * ⇒ **目錄是對的，只是走不到**。這不是座標判斷錯，是「值在 `.env`、管線沒去拿」——
  *   與 #102（出貨金鑰由管線自己去 `.env` 取）同一個病，所以**沿用同一支 `credential-store.fill`**，
  *   不另開一條路。

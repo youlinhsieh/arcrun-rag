@@ -30,6 +30,7 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -52,27 +53,83 @@ type triggerInner struct {
 //
 // 回空字串＝沒看出失敗（真的成功，或這個回應我們看不懂——兩者都放行）。
 // 回非空＝**確定失敗**，字串是給使用者看的那句話。
-func webhookFailure(body string) string {
+func webhookFailure(body string, probe credentialProbe) string {
+	raw, ok := failureReason(body)
+	if !ok {
+		return ""
+	}
+	return ingestFailureSentence(headAccepted, raw, probe)
+}
+
+// failureReason 從觸發回應裡挖出「工作流自己說的失敗原因」原文。
+// ok=false ⇒ 沒看出失敗（真的成功，或這個回應我們看不懂——兩者都放行）。
+func failureReason(body string) (string, bool) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
-		return "" // 不是 JSON ⇒ 看不出來 ⇒ 放行
+		return "", false // 不是 JSON ⇒ 看不出來 ⇒ 放行
 	}
 	var env triggerEnvelope
 	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return "" // 解析不了（含被截斷）⇒ 看不出來 ⇒ 放行
+		return "", false // 解析不了（含被截斷）⇒ 看不出來 ⇒ 放行
 	}
 	// ① 外層自己就說失敗
 	if env.Success != nil && !*env.Success {
-		return ingestFailureSentence(env.Error)
+		return env.Error, true
 	}
 	// ② 外層說成功，但工作流的輸出說失敗——本檔存在的理由就是這一格
 	if len(env.Data) > 0 {
 		var inner triggerInner
 		if err := json.Unmarshal(env.Data, &inner); err == nil && inner.Success != nil && !*inner.Success {
-			return ingestFailureSentence(inner.Error)
+			return inner.Error, true
 		}
 	}
+	return "", false
+}
+
+// triggerFailure＝一則觸發失敗的**兩張臉**：使用者讀的那句（`Error()`）
+// 與工程師要的上游原文（`raw`）。
+//
+// 🔴 這兩張臉不准合併成一張。合併過的下場就是這張票的兩半：
+//   - 合成「原文」⇒ 上游那句「修復: 編輯 credentials.yaml…」直接印到使用者臉上
+//   - 合成「人話」⇒ 為了不嚇人，連證據一起丟掉，檢修孔就再也看不到出了什麼事
+//     （leo 2026-09-10：「客戶的測試環境，我們應該有檢修孔看到出了什麼事」）
+type triggerFailure struct {
+	sentence string
+	raw      string
+}
+
+func (e *triggerFailure) Error() string { return e.sentence }
+
+// upstreamDetail 取出上游原文（給檢修孔／log 用）。不是 triggerFailure 就回空字串。
+func upstreamDetail(err error) string {
+	var tf *triggerFailure
+	if errors.As(err, &tf) {
+		return tf.raw
+	}
 	return ""
+}
+
+// 兩種開頭，因為「收下了但沒寫進去」與「根本沒收下」是兩件事，不准講成同一句。
+const (
+	headAccepted = "雲端收下了，但你的知識庫沒有真的寫進去（這一份還查不到）"
+	headRejected = "雲端沒有把這一份寫進你的知識庫"
+)
+
+// triggerRejectedSentence 給**非 2xx** 的觸發回應用（`inkstone/arcrun-rag#179` c6867）。
+//
+// 🔴 為什麼要有這一支：原本非 2xx 直接把 `HTTP 500：<上游 JSON 原文>` 當成錯誤丟出去，
+// 而那串原文裡就寫著「修復: 編輯 credentials.yaml 後執行 …」——
+// **我們把一句叫使用者去修一個沒壞的東西的指示，原封不動印到他畫面上。**
+// 這同時違反本檔開頭第三條自我約束（講人話、不裸露狀態碼與上游 JSON 原文）。
+//
+// 回空字串＝這個回應不是我們認得的「工作流自己說失敗」的形狀（例如額度、401），
+// 呼叫端保留原本的技術字串——那些路徑另有判準在讀它，不在本票射程內。
+func triggerRejectedSentence(body string, probe credentialProbe) string {
+	raw, ok := failureReason(body)
+	if !ok {
+		return ""
+	}
+	return ingestFailureSentence(headRejected, raw, probe)
 }
 
 // ingestFailureSentence 把上游那串技術文字換成一句使用者讀得懂的話。
@@ -80,16 +137,48 @@ func webhookFailure(body string) string {
 // 🔴 不是 debug 訊息，是產品文案：使用者看到「已整理 26 份」卻查不到東西的當下，
 // 唯一能讓他知道發生什麼事的就是這句（#104 的紅線：不要讓他猜）。
 // 認不出來的原因不編故事，只誠實說「雲端沒有寫進去」。
-func ingestFailureSentence(raw string) string {
-	const head = "雲端收下了，但你的知識庫沒有真的寫進去（這一份還查不到）"
+func ingestFailureSentence(head, raw string, probe credentialProbe) string {
 	switch {
 	case strings.Contains(raw, "unreachable"):
 		return head + "：連不到知識庫的資料層。稍後會自動再試。"
 	case strings.Contains(raw, "card_content 為空"):
 		return head + "：這份檔萃出來是空的。"
 	case strings.Contains(raw, "credential"):
-		return head + "：知識庫的內部金鑰不對，要重裝一次雲端才會通。"
+		return credentialSentence(head, raw, probe)
 	default:
 		return head + "，稍後會自動再試。"
+	}
+}
+
+// credentialSentence 決定「取不到內部金鑰」這一類要講哪一句。
+//
+// 🔴 舊版只有一句：「知識庫的內部金鑰不對，要重裝一次雲端才會通。」
+// 它有兩個問題，而且兩個都是這張票在治的那個病：
+//   - **它指定了一個修法**，但上游那句話在「金鑰真的沒種進去」與「目錄暫時讀不到」
+//     兩種原因下長得一模一樣（見 credentialcause.go 檔頭那三行證據）
+//     ⇒ 資料層抖一下，我們就叫使用者去重裝整座雲端。
+//   - 就算真的是金鑰沒種進去，**重裝也不是使用者的活**——那是我們的安裝沒到位。
+//
+// ⇒ 現在先去問一次目錄（探針），問得出來才講原因，問不出來就說不知道。
+func credentialSentence(head, raw string, probe credentialProbe) string {
+	name := credentialNameIn(raw)
+	rep := credDirReport{Status: credDirUnknown}
+	if probe != nil {
+		rep = probe()
+	}
+	switch {
+	case rep.Status == credDirUnreachable:
+		// 這一格就是總管 2026-09-10 追了一整天的那個誤導：資料層讀不到而已。
+		return head + "：連不到知識庫的資料層（金鑰目錄現在讀不到，不是金鑰不見了）。稍後會自動再試。"
+	case rep.Status == credDirReadable && name != "" && !rep.has(name):
+		// 目錄讀得到、就是沒有這一把 ⇒ 我們的安裝沒到位。使用者做不了任何事，
+		// 唯一的出路是交回我們（不叫他重裝——重裝跑的是同一支安裝步驟）。
+		return head + "：這個實例的內部金鑰沒有裝上去，這是我們這邊沒做完的事，不是你的設定。請把這一句回報給我們。"
+	case rep.Status == credDirReadable && name != "" && rep.has(name):
+		// 目錄有它，壞的是取值那一段。分得出來就要說出來，不要含混成上一句。
+		return head + "：內部金鑰在，但雲端這一趟取不到它的值。請把這一句回報給我們。"
+	default:
+		// 問不出來就說不知道——**不編一個原因**（頂層鐵律：帶著免責聲明的猜測比誠實說不知道更貴）。
+		return head + "：雲端取不到它要用的內部金鑰，我們還沒能分辨是金鑰沒裝上、還是資料層暫時讀不到。稍後會自動再試；一直這樣請回報給我們。"
 	}
 }

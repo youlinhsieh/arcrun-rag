@@ -574,6 +574,16 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 		if k := d1QuotaKind(string(full)); k != "" {
 			noteD1Quota(c.CypherURL, k, directNow())
 		}
+		// 🔴 `inkstone/arcrun-rag#179` c6867：非 2xx 的 body 裡也住著工作流自己講的失敗原因，
+		//    而那串原文會帶著上游寫死的「修復: 編輯 credentials.yaml…」一起印到使用者畫面上
+		//    ——一句叫他去修一個沒壞的東西的指示。認得出來就換成人話（見 triggeroutcome.go）；
+		//    認不出來才保留原本的技術字串（額度／401 那些路徑另有判準在讀它）。
+		if msg := triggerRejectedSentence(string(full), c.credentialDirectoryProbe()); msg != "" {
+			return resp.StatusCode, string(snippet), &triggerFailure{
+				sentence: msg,
+				raw:      fmt.Sprintf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet))),
+			}
+		}
 		return resp.StatusCode, string(snippet), fmt.Errorf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	// 🔴 2xx 只證明「請求送到了」，不證明「東西寫進知識庫了」。
@@ -581,8 +591,12 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 	//（2026-08-26 實測 `InkStoneCo`：26 份蓋了「已送達」章，雲端只有 4 份）。
 	// 判斷放在這裡而不是各呼叫端：**「忘了接」這個失敗模式不該存在**
 	//（同 ingestplan.go 把兩張排除表收成一張的理由）。
-	if msg := webhookFailure(string(full)); msg != "" {
-		return resp.StatusCode, string(snippet), errors.New(msg)
+	if msg := webhookFailure(string(full), c.credentialDirectoryProbe()); msg != "" {
+		// 人話給使用者、原文留給檢修孔——兩張臉，見 triggeroutcome.go 的 triggerFailure。
+		return resp.StatusCode, string(snippet), &triggerFailure{
+			sentence: msg,
+			raw:      fmt.Sprintf("HTTP %d（工作流自己回報失敗）：%s", resp.StatusCode, strings.TrimSpace(string(snippet))),
+		}
 	}
 	return resp.StatusCode, string(snippet), nil
 }
@@ -610,6 +624,11 @@ type DirectResult struct {
 	At string `json:"at,omitempty"`
 	// LastFailAt＝「這一筆是在講以前的失敗」時，那次失敗真正發生的時間（被退避擋下的檔）。
 	LastFailAt string `json:"last_fail_at,omitempty"`
+	// Detail＝上游原文（`inkstone/arcrun-rag#179` c6867）。
+	// 🔴 `Error` 是**使用者讀的那句**，從這一版起不再夾帶上游 JSON；
+	//    證據改放這裡給檢修孔／log 用，**不畫在使用者畫面上**。
+	//    少了它，「不嚇人」就會變成「查不到出了什麼事」——leo 2026-09-10 抱怨的正是後者。
+	Detail string `json:"detail,omitempty"`
 }
 
 // emptyProbeMaxBytes＝多大以下的檔才去讀內容判斷「是不是空白」（#201）。
@@ -2063,6 +2082,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					res.HTTPStatus = status
 					if perr != nil {
 						res.Status, res.Error = "failed", perr.Error()
+						res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
 						if isRouteBackoff(perr) {
 							res.Status = "skipped" // #121：沒打出去，不是這個檔的失敗
 							routeSkipped = true
@@ -2125,6 +2145,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			res.HTTPStatus = status
 			if perr != nil {
 				res.Status, res.Error = "failed", perr.Error()
+				res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
 				exit = 1
 			} else {
 				res.Status = "ingested"
@@ -2167,6 +2188,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			res.HTTPStatus = status
 			if perr != nil {
 				res.Status, res.Error = "failed", perr.Error()
+				res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
 				exit = 1
 				// 2026-08-07：下架失敗——保持上面「暫時放回」的狀態，不刪、不存檔。
 				// 下一輪 Scan() 會重新偵測到這個檔仍然不見了，自然重新補發 removed 事件。

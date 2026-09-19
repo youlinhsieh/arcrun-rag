@@ -15,18 +15,21 @@
 - 日期：2026-09-01
 - 帳號：`1129efd7df2e8899d537e9c8fbabb6cb`（youlin，D37 的 AI stage）
 - 憑證：`CLOUDFLARE_API_TOKEN_YOULIN_CC_USE`（API token，非 OAuth token——見最下面「還沒驗到的」）
-- 全部是**唯讀或冪等**的呼叫；youlin 既有的子網域 `youlin-hsieh-dev` 量測前後皆未改變。
+- 全部是**唯讀或冪等**的呼叫；youlin 既有的子網域量測前後皆未改變。
+- 🔴 **子網域名的註記（2026-09-18，inkstone/arcrun-rag#194）**：量測當時 youlin 的子網域名
+  已在 09-02 清空重裝後改為 `arcrun-yuga3bse`（舊名 DNS 查無）。**本文件裡量到的 HTTP status／CF code
+  才是重點，且不受子網域改名影響**；下表中原本寫死的舊子網域名一律換成佔位描述，避免留一個指向死名的字串。
 
 ## 量到的（原始回應）
 
 | 呼叫 | HTTP | CF code | 回應 |
 |---|---|---|---|
-| `GET /accounts/{id}/workers/subdomain` | **200** | – | `{"subdomain":"youlin-hsieh-dev"}` |
-| `GET /accounts/{id}/workers/subdomains/youlin-hsieh-dev`（自己的名字） | **200** | – | `{"subdomain":"youlin-hsieh-dev"}` |
+| `GET /accounts/{id}/workers/subdomain` | **200** | – | `{"subdomain":"<youlin 帳號的子網域>"}` |
+| `GET /accounts/{id}/workers/subdomains/{自己的名字}` | **200** | – | `{"subdomain":"<youlin 帳號的子網域>"}` |
 | `GET /accounts/{id}/workers/subdomains/arcrun-zzq7k4m2test`（沒人要的） | **404** | **10032** | `Subdomain '…' is available but not configured.` |
 | `GET /accounts/{id}/workers/subdomains/uncle6-me`（別人的） | **403** | **10031** | `Subdomain 'uncle6-me' is unavailable. Please try a different one.` |
 | 同上：`test` / `demo` / `cloudflare` / `workers` / `admin` | **403** | **10031** | 同上（六個名字全同一組，不是單一樣本） |
-| `PUT /accounts/{id}/workers/subdomain {"subdomain":"youlin-hsieh-dev"}` | **409** | **10036** | `Account already has an associated subdomain.` |
+| `PUT /accounts/{id}/workers/subdomain {"subdomain":"{自己的名字}"}` | **409** | **10036** | `Account already has an associated subdomain.` |
 
 ## 三個結論，程式碼照這三條寫
 
