@@ -283,7 +283,8 @@
     "name": "rag_ingest_card",
     "description": "收本地萃好的 wiki 卡（inline card_content）→ 機械切塊寫 KBDB blocks ＋解析「## 關聯」 寫 triplets（source_uri=kb://path，帶 library）。零 LLM（寫 KBDB 仍需 kbdb_internal_token）， 是四步定稿（本地萃卡）唯一的雲端收口。（daemon-beta task 5）\n",
     "flow": [
-      "input >> ON_SUCCESS >> list_old_blocks",
+      "input >> ON_SUCCESS >> prep",
+      "prep >> ON_SUCCESS >> list_old_blocks",
       "list_old_blocks >> ON_SUCCESS >> list_old_triplets",
       "list_old_triplets >> ON_SUCCESS >> pick_stale",
       "pick_stale >> 對每個 dead_entry >> delete_entry",
@@ -293,6 +294,18 @@
       "parse_card >> 對每個 rel >> post_triplet"
     ],
     "config": {
+      "prep": {
+        "component": "__CODE_URL__",
+        "code": "const pageName = String(input.page_name || 'unknown');\nconst path = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + path;\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri) };\n",
+        "input": {
+          "page_name": "{{input.page_name}}",
+          "path": "{{input.path}}"
+        },
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
       "list_old_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
@@ -305,7 +318,7 @@
       "list_old_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100",
+        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -317,10 +330,9 @@
           "blocks_body": "{{list_old_blocks.data.body}}",
           "triplets_body": "{{list_old_triplets.data.body}}",
           "path": "{{input.path}}",
-          "page_name": "{{input.page_name}}",
           "machine": "{{input.machine}}"
         },
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst page = String(input.page_name || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) dead_entry.push({ id: e.id });\n}\nconst ar = parse(input.triplets_body);\nconst recs = (ar && (ar.records || ar.result)) || [];\nconst dead_record = [];\nfor (const r of recs) {\n  const v = r.values || r;\n  const src = String(v.source_uri || '');\n  const subj = String(v.subject || '');\n  const rid = r.record_id || r.id;\n  if (!rid) continue;\n  let hit = (path && src.indexOf('kb://' + path) === 0) || (!src && page && subj === page);\n  // 同一條規則用在三元組上（比照 rag_takedown_direct 的 pick_dead_triplets 對 library 的處置）。\n  // ⚠️ 這一格要真的生效，triplet template 必須有 machine slot——沒有時 KBDB 會\n  //    **靜默丟掉**這個值（record-crud.ts createRecord：writtenSlots 只取 template 有的 slot），\n  //    於是三元組永遠讀不到 machine、退回舊行為。補 slot 的正路＝ cypher-executor\n  //    的 PORTAL_TEMPLATE_SEEDS（ensurePortalTemplates 會 PATCH 補上，library 當初就是這樣加的）。\n  if (hit && machineBlocks(String(v.machine || ''))) hit = false;\n  if (hit) dead_record.push({ record_id: rid });\n}\nreturn { dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) dead_entry.push({ id: e.id });\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\nreturn { dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
       },
       "delete_entry": {
         "component": "__HTTP_REQ_URL__",
@@ -408,6 +420,12 @@
           "label": "input"
         },
         {
+          "id": "prep",
+          "type": "Component",
+          "componentId": "prep",
+          "label": "prep"
+        },
+        {
           "id": "list_old_blocks",
           "type": "Component",
           "componentId": "list_old_blocks",
@@ -459,6 +477,11 @@
       "edges": [
         {
           "from": "input",
+          "to": "prep",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep",
           "to": "list_old_blocks",
           "type": "ON_SUCCESS"
         },

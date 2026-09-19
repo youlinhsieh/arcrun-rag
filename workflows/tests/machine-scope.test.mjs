@@ -105,17 +105,22 @@ const relLine = ['- A', '依賴', 'B'].join(SEP);
     JSON.stringify(staleEntries(r)) === '["legacy","mba"]', JSON.stringify(staleEntries(r)));
 }
 {
-  // 三元組同一條規則（要 triplet template 有 machine slot 才會有值；沒有時退回舊行為）。
-  const records = [
-    rec('mba', 'kb://RFP/design.md', { machine: 'youlinhsieh@Leo-MBA' }),
-    rec('imac', 'kb://RFP/design.md', { machine: 'youlinhsieh@Leo-iMac' }),
-  ];
+  // 🔴 `inkstone/Arcrun#223`／PR #225（2026-09-19）：list_old_triplets 改走 KBDB
+  // by-source（伺服器端用 source_uri 精確比對，見該節點上方 yaml 註解），回應只剩
+  // record_ids——不再是逐筆帶 values 的 by-template 形狀，pick_stale 沒有 machine
+  // 可比對了。**這一格的行為因此變了**：以前三元組這一側只清自己那台（本測試曾經
+  // 斷言的行為，見 git blame），現在 by-source 只認 source_uri，兩台的三元組都會
+  // 被清掉——與 mira#6 修的病同一種形狀，但這是刻意接受的已知取捨（治大於治小：
+  // 解掉 leo21c 每次搜尋讀百萬列的量級問題，換掉這一格窄邊界的保護），不是漏做。
+  // blocks 那側不受影響，機器隔離仍然成立（見上面 ① 那幾個 block 測試）。
+  // 這條測試現在釘住「新行為確實是這樣」，不是背書「這樣才對」——要補回這道保護時
+  // （例如改走 GET /records/:id 逐筆核對再刪），這裡會是第一個要跟著改紅的地方。
   const r = pickStale({
-    blocks_body: '{}', triplets_body: JSON.stringify({ records }),
+    blocks_body: '{}', triplets_body: JSON.stringify({ record_ids: ['mba', 'imac'] }),
     path: 'RFP/design.md', page_name: 'design', machine: 'youlinhsieh@Leo-iMac',
   });
-  t('收卡三元組：只清自己那台的',
-    JSON.stringify(staleRecords(r)) === '["imac"]', JSON.stringify(staleRecords(r)));
+  t('收卡三元組（已知取捨，非保護）：by-source 只認 source_uri，兩台的三元組都會被清掉',
+    JSON.stringify(staleRecords(r)) === '["imac","mba"]', JSON.stringify(staleRecords(r)));
 }
 
 // ── ② parse_card：machine 進 metadata，且不混進 source_uri ────────────────

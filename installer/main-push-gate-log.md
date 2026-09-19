@@ -86,3 +86,10 @@
 | 2026-09-18 13:29:04 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 0 次） |
 | 2026-09-18 13:29:08 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 0 次） |
 | 2026-09-18 14:09:56 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 784ab29→HEAD，80 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-19 17:20:16 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 909f8da→HEAD，7 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-19 17:28:06 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 909f8da→HEAD，7 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-19 18:03:45 | git.uncle6.me/inkstone/arcrun-collector | main | ⛔ 擋下 | 機械檢查：查不到遠端 main 的現況（ls-remote 失敗）——不知道會蓋掉什麼就不推 |
+| 2026-09-19 18:10:23 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward ba58400→HEAD，13 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-19 18:43:06 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 0 次） |
+| 2026-09-19 18:46:02 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 0 次） |
+| 2026-09-19 18:46:05 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 0 次） |

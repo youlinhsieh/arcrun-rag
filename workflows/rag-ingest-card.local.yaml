@@ -31,7 +31,8 @@ description: >
   是四步定稿（本地萃卡）唯一的雲端收口。（daemon-beta task 5）
 
 flow:
-  - "input >> ON_SUCCESS >> list_old_blocks"
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> list_old_blocks"
   - "list_old_blocks >> ON_SUCCESS >> list_old_triplets"
   - "list_old_triplets >> ON_SUCCESS >> pick_stale"
   - "pick_stale >> 對每個 dead_entry >> delete_entry"
@@ -46,6 +47,25 @@ config:
   #       （實撞：搜「n8n 版本比較」回 20 筆全同一筆，內容分數一樣、只有 created_at 不同）。
   #   為什麼真刪不 deprecate：重複副本不是「舊版本」，是同一份東西灌了 20 次的垃圾，
   #       留著沒有回溯價值；kbdb 本來就有真刪（entries.ts:214／records.ts:84）。
+  #
+  # 先算好這張卡的 srcUri（與下面 parse_card 用同一條公式：path 缺省時退回
+  # page_name + '.md'）＋ CJK 進 URL query 前必先 encodeURIComponent
+  # （agent-memory §7 實撞教訓，同 rag_takedown_direct 的 prep）——
+  # list_old_triplets（`inkstone/Arcrun#223`／PR #225）要拿它去查「這張卡自己的舊三元組」。
+  prep:
+    component: "__CODE_URL__"
+    code: |
+      const pageName = String(input.page_name || 'unknown');
+      const path = String(input.path || (pageName + '.md'));
+      const srcUri = 'kb://' + path;
+      return { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri) };
+    input:
+      page_name: "{{input.page_name}}"
+      path: "{{input.path}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
   list_old_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
@@ -54,56 +74,51 @@ config:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 🔴 limit 為什麼是 100 不是 500（`inkstone/arcrun-rag#104`，2026-08-27 在 youlin 逐格量出來的）
+  # 🔴 治本（`inkstone/Arcrun#223`／PR #225，2026-09-19）：原本這裡打
+  # `/records/by-template/triplet?owner_id=…&limit=100`——撈的是**全租戶**三元組再
+  # 靠 pick_stale 逐筆比對 source_uri 前綴，回應大小跟著租戶三元組總數長大，遲早撞
+  # `http_request` 零件的 64 KiB 輸出上限（越線整顆 WASM trap，這個節點一失敗
+  # `ON_SUCCESS` 就不往下走，整份卡從此寫不進知識庫而觸發端點照樣回 HTTP 200——
+  # 分界線／算術見 `inkstone/arcrun-rag#104` 那次實測，同一個坑 `rag_takedown_direct`
+  # 的 `list_triplets` 還沒補，保留在那份檔案裡供對照）。
   #
-  # `http_request` 零件**讀不回超過 64 KiB 的回應**：它的輸出緩衝區寫死
-  # `make([]byte, 65536)`（`matrix/arcrun/registry/components/http_request/main.go:88`）。
-  # 越線就整顆 WASM trap，執行器把它記成
-  #   {"success":false,"status":500,"error":"{\"success\":false,\"error\":\"unreachable\"}"}
+  # 新路：KBDB `GET /records/by-source/:template?field=&value=&owner_id=`
+  # （`matrix/arcrun` PR #225，`recordIdsByFieldValue`：content 精確比對
+  # `idx_entries_content` → `idx_entries_rel_dst` 反查關係列 → record id）直接查
+  # 「這張卡自己的三元組」——field=source_uri、value=這張卡的 srcUri（`kb://path`，
+  # 與下面 parse_card 算法一致，triplet 的 source_uri 永遠是完整值、不像 block 的
+  # source 帶 `#N`，可精確比對）。成本只跟**這張卡自己的三元組數**成正比，與租戶
+  # 三元組總數脫鉤；只回 record_ids（≈40 bytes/筆），遠低於 64 KiB。
   #
-  # 而這條是本工作流唯一「回應大小跟著整個租戶長大」的請求——它撈的是**全租戶**三元組
-  # （KBDB 這條路由沒有任何按來源／頁名過濾的參數）⇒ 遲早越線，而且是一去不回：
-  # 這個節點一失敗，`ON_SUCCESS` 就不往下走，parse_card／post_block 全都不執行
-  # ⇒ **整份卡從此寫不進知識庫，而觸發端點照樣回 HTTP 200。**
-  #
-  # 分界線（實測，不是推估）：
-  #   limit=170 → 62,297 B ✅   limit=180 → 65,450 B ✅
-  #   limit=181 → 65,797 B ❌   limit=182 → 66,106 B ❌     ⇒ 分界＝65,536＝64 KiB
-  # 當時 youlin 有 182 條三元組 ⇒ **剛好越線**，所以「某一天之後每張卡都寫不進去」。
-  #
-  # 100 的算術：實測單筆三元組 avg 381 B／max 497 B（n=182）
-  #   · 實測 100 筆 ＝ 42,446 B（額度的 65%）——這個值下整條圖跑通、卡片真的落地
-  #   · 保守估：單筆就算漲到 600 B，100 筆也只有 60,000 B，仍在線內
-  #
-  # ⚠️ 這是止血不是治本，兩件事都還欠著：
-  #   ① 治本在零件：超過 64 KiB 該誠實回報「太大」，不該 trap（Arcrun 核心，B 類）
-  #   ② 這個節點本來就問錯問題——它只需要「這一份的三元組」卻撈全租戶。
-  #      KBDB `/records/by-template/:template` 沒有 slot 值過濾 ⇒ 沒有伺服器端的正解。
-  #      在補上過濾之前覆蓋率本來就不完整（500 在 4,381 條的實例上也只有 11%）；
-  #      少收的代價是「舊三元組沒清掉＝重複」，比「整份卡寫不進去」輕得多。
+  # ⚠️ 已知取捨（誠實列出，未解）：`by-source` 只吃單一 field/value，不能再像舊版
+  # pick_stale 那樣疊 machine 二次過濾（`inkstone/mira#6`：同一相對路徑被兩台不同
+  # 機器監看時，用來避免互刪對方還活著的三元組——本來就是「兩邊都有值才收緊」的
+  # 盡力而為，沒有 machine slot 時 KBDB 本來就會靜默丟掉這格）。block 那側（上面
+  # list_old_blocks／下面 pick_stale 的 dead_entry）不受影響，machine 檢查原樣留著。
   list_old_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100"
+    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 逐筆核對來源再決定刪誰（防「同頁名不同卡」誤殺）——判準照抄 rag_takedown_direct 的
-  # build_deprecations：meta.source_path === 本檔路徑，或 meta.source 以 kb://<路徑># 開頭；
-  # 兩者皆無（老資料）＝fallback 本清單已按 page_name 查，視為命中。
+  # blocks 那側：逐筆核對來源再決定刪誰（防「同頁名不同卡」誤殺）——判準照抄
+  # rag_takedown_direct 的 build_deprecations：meta.source_path === 本檔路徑，或
+  # meta.source 以 kb://<路徑># 開頭；兩者皆無（老資料）＝fallback 本清單已按
+  # page_name 查，視為命中。
+  # triplets 那側：`list_old_triplets` 已在伺服器端用 source_uri 精確比對過，回來的
+  # record_ids 直接就是「這張卡自己的舊三元組」，不需要再比對（見上方節點註解）。
   pick_stale:
     component: "__CODE_URL__"
     input:
       blocks_body: "{{list_old_blocks.data.body}}"
       triplets_body: "{{list_old_triplets.data.body}}"
       path: "{{input.path}}"
-      page_name: "{{input.page_name}}"
       machine: "{{input.machine}}"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const path = String(input.path || '');
-      const page = String(input.page_name || '');
       const machine = String(input.machine || '');
       const kbPrefix = 'kb://' + path + '#';
       // 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，
@@ -132,24 +147,13 @@ config:
         if (hit && machineBlocks(String(meta.machine || ''))) hit = false;
         if (hit && e.id) dead_entry.push({ id: e.id });
       }
-      const ar = parse(input.triplets_body);
-      const recs = (ar && (ar.records || ar.result)) || [];
-      const dead_record = [];
-      for (const r of recs) {
-        const v = r.values || r;
-        const src = String(v.source_uri || '');
-        const subj = String(v.subject || '');
-        const rid = r.record_id || r.id;
-        if (!rid) continue;
-        let hit = (path && src.indexOf('kb://' + path) === 0) || (!src && page && subj === page);
-        // 同一條規則用在三元組上（比照 rag_takedown_direct 的 pick_dead_triplets 對 library 的處置）。
-        // ⚠️ 這一格要真的生效，triplet template 必須有 machine slot——沒有時 KBDB 會
-        //    **靜默丟掉**這個值（record-crud.ts createRecord：writtenSlots 只取 template 有的 slot），
-        //    於是三元組永遠讀不到 machine、退回舊行為。補 slot 的正路＝ cypher-executor
-        //    的 PORTAL_TEMPLATE_SEEDS（ensurePortalTemplates 會 PATCH 補上，library 當初就是這樣加的）。
-        if (hit && machineBlocks(String(v.machine || ''))) hit = false;
-        if (hit) dead_record.push({ record_id: rid });
-      }
+      // `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用
+      // source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種
+      // { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject
+      // （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。
+      const at = parse(input.triplets_body);
+      const ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];
+      const dead_record = ids.map(function (id) { return { record_id: id }; });
       return { dead_entry: dead_entry, dead_record: dead_record,
                removed_blocks: dead_entry.length, removed_triplets: dead_record.length };
 
