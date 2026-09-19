@@ -83,7 +83,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8479ecbee9003b5f1142536569c1bae13222ee10';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@5f6b16911ea3739ede03e6e4450753097940852a';
 const BUNDLE_BUILT = '2026-09-19'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2980,6 +2980,7 @@ async function runInstall(env, sid, progress, force) {
         return;
       }
     }
+    const seedT0 = Date.now();
     try {
       const seedRes = await fetch(`${workerUrl}/init/seed`, {
         method: 'POST',
@@ -2993,6 +2994,30 @@ async function runInstall(env, sid, progress, force) {
         : (seedRes.ok ? 'ok' : `HTTP ${seedRes.status}`);
     } catch (e) {
       progress.result.seedError = String((e && e.message) || e);
+    }
+    // 208：量測 /init/seed 耗時——不管成敗都記（驗收要「已裝過的實例耗時有數字」）。
+    progress.result.seedMs = Date.now() - seedT0;
+
+    // 208：/init/seed 逾時／回錯 ≠ 底稿沒種進去。已裝過的實例本來就有 triplet template，
+    //   逾時只代表「沒等到回應」（seed 在已裝過的實例上仍可能 >30s，根因調查見票），
+    //   而結算把它講成「關係圖會空白」＝嚇用戶去按重新安裝。這裡直接核實 triplet template
+    //   在不在（GET /kbdb/templates/triplet：200＝在、404＝真的缺），只有真的缺才示警。
+    if (progress.result.seedError
+        || (typeof progress.result.seedTemplates === 'string' && /^HTTP\s/.test(progress.result.seedTemplates))) {
+      const probeT0 = Date.now();
+      try {
+        const chk = await fetch(`${workerUrl}/kbdb/templates/triplet`, {
+          headers: { 'X-Arcrun-API-Key': ns },
+          signal: AbortSignal.timeout(10000),
+        });
+        progress.result.seedTripletProbeMs = Date.now() - probeT0;
+        // 200＝底稿已在（seed 失敗只是逾時，不是真的缺）。404／探測失敗＝沒把握，維持示警。
+        progress.result.seedTripletPresent = chk.ok;
+      } catch (e2) {
+        progress.result.seedTripletProbeMs = Date.now() - probeT0;
+        progress.result.seedTripletPresent = false;
+        progress.result.seedTripletProbeError = String((e2 && e2.message) || e2);
+      }
     }
 
     // D36 第2步：金鑰獨立寫入 kbdb/cypher 兩顆 worker（已不隨 code 上傳，見 deployBundledWorker）。
@@ -4518,14 +4543,22 @@ function installWarnings(result) {
   //    其中 secretSyncError 的寫入點旁邊，08-10 的註解自己就寫著「**也沒人在看**」
   //    ——那句話從那天到今天都是對的，沒有人回來把它變成看得見的東西。
 
-  if (r.seedError || (typeof r.seedTemplates === 'string' && /^HTTP\s/.test(r.seedTemplates))) {
+  // 208：seed 逾時／回錯，但若已核實 triplet 底稿其實還在（seedTripletPresent===true），
+  //   就不要示警——那是把「沒等到回應」誤報成「沒種進去」，只會嚇用戶去按重新安裝
+  //   （leo 2026-09-19：leo21c 從 1.4.67 更新到 1.4.68，9 個範本都在卻跳這條黃框）。
+  if ((r.seedError || (typeof r.seedTemplates === 'string' && /^HTTP\s/.test(r.seedTemplates)))
+      && !r.seedTripletPresent) {
     // `/init/seed` 沒種進去 ⇒ triplet template 不存在 ⇒ 三元組寫入 400 ⇒ **總圖永遠空白**。
     // 寫入點旁的註解（t147）自己認證過這是「每個新用戶都會中的 bug」。
+    // 走到這裡＝真的核實過底稿不在（或探測不到），不是逾時誤報。
     out.push({
       title: '知識圖譜的基本設定沒有種進去',
       body: '你的知識庫可以收東西，但「概念之間怎麼連起來」這份底稿沒有建立，'
-        + '關係圖可能一直是空白的。',
-      detail: 'seed: ' + String(r.seedError || r.seedTemplates),
+        + '關係圖可能一直是空白的。可以再跑一次安裝來補種；若補種後仍出現這一條，'
+        + '請把下面的技術細節回報給我們。',
+      detail: 'seed: ' + String(r.seedError || r.seedTemplates)
+        + (r.seedMs != null ? ` (seedMs=${r.seedMs})` : '')
+        + (r.seedTripletProbeError ? ` triplet-probe: ${r.seedTripletProbeError}` : ''),
       audience: 'user',
     });
   }

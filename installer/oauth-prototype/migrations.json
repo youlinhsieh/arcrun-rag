@@ -8,10 +8,11 @@
     "0006_drop_credentials_table.sql",
     "0007_tree_record_model.sql",
     "0008_entries_content_index.sql",
-    "0009_entries_list_indexes.sql"
+    "0009_entries_list_indexes.sql",
+    "0010_entries_fts_trigram.sql"
   ],
   "statements": [
-    "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n\n  \n  parent_id TEXT,\n\n  \n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n\n  \n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n\n  \n  confidence REAL,\n  metadata_json TEXT,\n\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
+    "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
     "CREATE TABLE IF NOT EXISTS templates (\n  id TEXT PRIMARY KEY,\n  name TEXT UNIQUE NOT NULL,\n  description TEXT,\n  slots_json TEXT NOT NULL,        \n  created_by TEXT,                 \n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
     "CREATE TABLE IF NOT EXISTS entry_values (\n  id TEXT PRIMARY KEY,\n  record_id TEXT NOT NULL,\n  template_id TEXT NOT NULL REFERENCES templates(id),\n  slot_name TEXT NOT NULL,\n  entry_id TEXT NOT NULL REFERENCES entries(id),\n  created_at INTEGER DEFAULT (unixepoch()),\n  UNIQUE(record_id, slot_name)\n)",
     "CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type)",
@@ -27,7 +28,7 @@
     "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES\n  ('tpl-recipe-stat', 'recipe_stat', 'recipe success/failure counters', '[\"canonical_id\",\"success_count\",\"failure_count\",\"last_status\",\"last_at\"]', 'system')",
     "CREATE TABLE IF NOT EXISTS credentials ( \n  api_key      TEXT NOT NULL,           \n  name         TEXT NOT NULL,           \n  service      TEXT,                    \n  sensitivity  TEXT NOT NULL DEFAULT 'standard',  \n  secret_ref   TEXT NOT NULL,           \n  created_at   INTEGER NOT NULL,\n  last_used_at INTEGER,                 \n  PRIMARY KEY (api_key, name)\n)",
     "CREATE INDEX IF NOT EXISTS idx_cred_apikey ON credentials(api_key)",
-    "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-library-map',\n  'library_map',\n  'per-library map block（藏書地圖：top_entities／relation_profile／bridges／triplet_count 由 graph 機械導出；narrative 由 LLM 著作，算不出來、丟了回不來；Arcrun#39／#44）',\n  '[\"library\",\"narrative\",\"top_entities\",\"relation_profile\",\"bridges\",\"triplet_count\",\"commit_hash\",\"status\"]',\n  'system'\n)",
+    "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-library-map',\n  'library_map',\n  'per-library map block（藏書地圖：top_entities／relation_profile／bridges／triplet_count 由 graph 機械導出；narrative 由 LLM 著作，算不出來、丟了回不來；Arcrun#39／#44）',\n  '[\"library\",\"narrative\",\"top_entities\",\"relation_profile\",\"bridges\",\"triplet_count\",\"commit_hash\",\"status\",\"entry_count\"]',\n  'system'\n)",
     "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-execution-log',\n  'execution_log',\n  'workflow 執行紀錄（KV 額度事故修復；欄位收斂＝少記，成功記最少/失敗記多一點，見 execution-log.ts）',\n  '[\"workflow_id\",\"verdict\",\"duration_ms\",\"message\",\"target\",\"api_key\"]',\n  'system'\n)",
     "INSERT OR IGNORE INTO templates (id, name, description, slots_json, created_by)\nVALUES (\n  'tpl-credential',\n  'credential',\n  'credential 目錄（D38 圍牆修復：改走 entries 表 entry_type=credential，取代舊 credentials 表；零密文，密文本體住 Workers per-script Secrets）',\n  '[\"name\",\"service\",\"sensitivity\",\"secret_ref\",\"last_used_at\"]',\n  'system'\n)",
     "CREATE TABLE IF NOT EXISTS credentials ( \n  api_key      TEXT NOT NULL,\n  name         TEXT NOT NULL,\n  service      TEXT,\n  sensitivity  TEXT NOT NULL DEFAULT 'standard',\n  secret_ref   TEXT NOT NULL,\n  created_at   INTEGER NOT NULL,\n  last_used_at INTEGER,\n  PRIMARY KEY (api_key, name)\n)",
@@ -55,6 +56,11 @@
     "CREATE INDEX IF NOT EXISTS idx_entries_content ON entries(content) WHERE content IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_entries_owner_type_created ON entries(owner_id, entry_type, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_entries_owner_created ON entries(owner_id, created_at)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(json_extract(metadata_json, '$.source')) WHERE json_extract(metadata_json, '$.source') IS NOT NULL"
+    "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(json_extract(metadata_json, '$.source')) WHERE json_extract(metadata_json, '$.source') IS NOT NULL",
+    "INSERT OR IGNORE INTO entries (id, entry_type, metadata_json)\nVALUES (\n  'kbdb-fts-migration-cutoff',\n  'kbdb_fts_migration_cutoff',\n  json_object('cutoff_rowid', (SELECT COALESCE(MAX(rowid), 0) FROM entries))\n)",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(\n  content,\n  content='entries',\n  content_rowid='rowid',\n  tokenize='trigram'\n)",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_ai AFTER INSERT ON entries\n  WHEN new.content IS NOT NULL\nBEGIN\n  INSERT INTO entries_fts(rowid, content) VALUES (new.rowid, new.content);\nEND",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_ad AFTER DELETE ON entries\n  WHEN old.content IS NOT NULL\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);\nEND",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_au AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) SELECT 'delete', old.rowid, old.content WHERE old.content IS NOT NULL;\n  INSERT INTO entries_fts(rowid, content) SELECT new.rowid, new.content WHERE new.content IS NOT NULL;\nEND"
   ]
 }

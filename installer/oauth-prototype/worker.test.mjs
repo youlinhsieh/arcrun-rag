@@ -2903,6 +2903,29 @@ test('#191 靜默降級：清查後每一個「寫了卻沒人畫」的警告都
     '種成功時不要嚇用戶');
 });
 
+test('#208 seed 逾時但已核實 triplet 底稿還在 ⇒ 不示警（誤報嚇用戶去重裝）', () => {
+  // leo 2026-09-19：leo21c 1.4.67→1.4.68，9 個範本（含 triplet）都在，
+  // /init/seed 只是超過 30 秒逾時，結算卻跳「關係圖會空白」——那是把「沒等到回應」
+  // 誤報成「沒種進去」。修法：seed 失敗時直接探 triplet template 在不在，只有真的缺才示警。
+  assert.equal(installWarnings({ seedError: 'timeout', seedTripletPresent: true }).length, 0,
+    'seed 逾時但底稿已在＝誤報，不准畫這條黃框');
+  assert.equal(installWarnings({ seedTemplates: 'HTTP 500', seedTripletPresent: true }).length, 0,
+    'seed 回錯但底稿已在＝誤報，一樣不畫');
+
+  // 真的缺（探測回報不在）⇒ 仍要示警，且要講得出用戶該怎麼辦（驗收條款②）
+  const miss = installWarnings({ seedError: 'timeout', seedTripletPresent: false });
+  assert.equal(miss.length, 1, 'triplet 底稿真的不在時仍要示警');
+  assert.match(miss[0].body, /再跑一次|重新|回報/, '真的缺時要講得出用戶該怎麼辦');
+
+  // 沒有核實資訊（舊行為 / seedTripletPresent 未設）⇒ 維持示警，不因新欄位缺席而漏報
+  assert.equal(installWarnings({ seedError: 'timeout' }).length, 1,
+    '沒有核實資訊時維持舊行為（寧可示警不漏報）');
+
+  // 量測數字（seedMs）若有，收進技術細節給回報用（驗收條款③）
+  const withMs = installWarnings({ seedError: 'timeout', seedMs: 41234 });
+  assert.match(withMs[0].detail, /seedMs=41234/, 'seed 耗時要進 detail 供回報');
+});
+
 test('#191 前端實跑：清查挖出來的四條警告，也要真的畫到完成頁上', async () => {
   const { els, renderDone } = await loadInstallScript();
   const all = installWarnings({

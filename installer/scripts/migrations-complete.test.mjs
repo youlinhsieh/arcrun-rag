@@ -95,8 +95,13 @@ test('④ 最新那支的特徵語句真的在 statements 裡（只比檔名不�
   const last = onDisk[onDisk.length - 1];
   const lastSql = readFileSync(join(root, 'kbdb', 'migrations', last), 'utf8');
   // 取那支 migration 裡第一個 CREATE/ALTER 的目標當特徵——它一定會出現在切好的句子裡
-  const m = lastSql.match(/^\s*(ALTER TABLE \w+ ADD COLUMN \w+|CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? \w+)/mi);
-  assert.ok(m, `${last} 裡找不到可當特徵的 ALTER／CREATE INDEX——請更新本測試的取樣方式`);
+  // 🔴 2026-09-19（inkstone/Arcrun#223 c10032）：0010 帶 CREATE VIRTUAL TABLE／CREATE TRIGGER，
+  //   原本只認 ALTER TABLE／CREATE INDEX 的規則在這支上找不到特徵而炸——補上這兩種寫法，
+  //   不是放寬判準，是這支測試原本就該認得的 migration 語句類型。
+  const m = lastSql.match(
+    /^\s*(ALTER TABLE \w+ ADD COLUMN \w+|CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? \w+|CREATE VIRTUAL TABLE(?: IF NOT EXISTS)? \w+|CREATE TRIGGER(?: IF NOT EXISTS)? \w+)/mi,
+  );
+  assert.ok(m, `${last} 裡找不到可當特徵的 ALTER／CREATE INDEX／CREATE VIRTUAL TABLE／CREATE TRIGGER——請更新本測試的取樣方式`);
   const needle = m[1].replace(/\s+/g, ' ').trim();
   const hit = (shipped.statements ?? []).some((s) => s.replace(/\s+/g, ' ').includes(needle));
   assert.ok(
@@ -114,6 +119,33 @@ test('切句法的前提仍成立：字串常值裡沒有 ; 或 --', (t) => {
       assert.ok(
         !lit.includes(';') && !lit.includes('--'),
         `${f} 的字串常值 ${lit.slice(0, 40)} 含 ; 或 --，compile-migrations 的切句法會切錯`,
+      );
+    }
+  }
+});
+
+// 🔴 2026-09-19（inkstone/Arcrun#223 c10032）：專門守「trigger 身體沒被切斷」這件事——
+// 上面④只驗第一句 CREATE 有出現，驗不到 trigger 的 BEGIN…END 內部有沒有被 `;` 攔腰切斷
+// （0010 恰好第一句是 CREATE VIRTUAL TABLE，不含分號，切壞了④也不會叫）。
+test('⑥ 每一支 CREATE TRIGGER 都是完整一句（BEGIN…END 沒被 ; 切斷）', (t) => {
+  if (!root) return t.skip('找不到 Arcrun repo');
+  const dir = join(root, 'kbdb', 'migrations');
+  for (const f of readdirSync(dir).filter((x) => /^\d{4}_.+\.sql$/.test(x))) {
+    const sql = readFileSync(join(dir, f), 'utf8');
+    const triggerCount = (sql.match(/CREATE\s+TRIGGER/gi) ?? []).length;
+    if (triggerCount === 0) continue;
+    const triggerStmts = (shipped.statements ?? []).filter((s) => /^CREATE\s+TRIGGER/i.test(s.trim()));
+    assert.ok(
+      triggerStmts.length >= triggerCount,
+      `${f} 有 ${triggerCount} 支 CREATE TRIGGER，但 statements 裡只找到 ${triggerStmts.length} 句以 CREATE TRIGGER 開頭——` +
+        '少的那幾句代表 trigger 身體被切成碎片了',
+    );
+    for (const s of triggerStmts) {
+      assert.match(
+        s.trim(),
+        /\bBEGIN\b[\s\S]*\bEND\b\s*$/i,
+        `statements 裡有一句 CREATE TRIGGER 沒有以 END 收尾（開頭：${s.slice(0, 60)}…）——` +
+          'trigger 身體被 `;` 攔腰切斷，用戶按更新會打出殘缺 SQL 失敗',
       );
     }
   }
