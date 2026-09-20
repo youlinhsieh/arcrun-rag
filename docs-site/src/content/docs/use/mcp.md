@@ -23,11 +23,20 @@ https://arcrun-mcp.xxxx.workers.dev/mcp
 
 **你裝的是雲端 MCP** —— 你的 AI 走網址連過來就好，不必在本機裝任何東西。
 
+## 怎麼登入：就是你的 Portal 帳號密碼
+
+**沒有另一把「金鑰」或「secret」要找。** 任何 AI 接上來的時候，
+都會跳出一個要你輸入 **email ＋ 密碼**的頁面——填**你登入這個知識庫用的那組**就對了。
+
+輸入正確才會發給對方一把有效期限的通行證；輸入錯誤就不發。
+所以「知道網址」的人進不來。
+
 ## 接到 Claude.ai（網頁版／App）
 
 1. 打開 Claude 的**設定 → 連接器**
 2. 新增自訂連接器
 3. 貼上你的 MCP 網址，儲存
+4. 按授權，在跳出來的頁面填你的 **Portal email ＋ 密碼**
 
 ## 接到 Claude Code（終端機）
 
@@ -49,13 +58,54 @@ claude mcp add --transport http arcrun https://arcrun-mcp.xxxx.workers.dev/mcp
 3. 新增一個 App，貼上你的 MCP 網址，驗證方式選 **OAuth**
 4. 存檔，照畫面完成授權
 
-:::caution[能查詢，不能寫入]
-接上後 ChatGPT 可以查詢你的知識庫、附出處，跟 Claude 那邊一樣。
-但目前**不能拿它寫入或修改**——OpenAI 那邊本來就只開放到「讀取」，
-剛好跟本產品「MCP 只提供查詢」一致，沒有損失。
+:::caution[ChatGPT 那邊只能查詢]
+接上後 ChatGPT 可以查詢你的知識庫、附出處，跟 Claude 那邊一樣，
+但**不能拿它寫入或修改**——這是 OpenAI 的限制，他們只開放到「讀取」。
+
+**這不代表 MCP 本身只能讀。** Claude 那邊接上後是可以寫的
+（建立知識卡、存工作流、加標籤都做得到）。差別在客戶端，不在這個知識庫。
 :::
 
-方案不符合？先用 Claude（上面兩節）就好，功能一樣，不必等 OpenAI 開放。
+方案不符合？先用 Claude（上面兩節）就好，**功能還更完整**，不必等 OpenAI 開放。
+
+## 接到 n8n、或其他自己架的工具
+
+n8n 的 **MCP Client** 節點：
+
+| 欄位 | 填什麼 |
+|---|---|
+| Endpoint | 你的 MCP 網址（上面那串，結尾是 `/mcp`） |
+| Server Transport | **HTTP Streamable** |
+| Authentication | **MCP OAuth2**（不是 Bearer、不是 Header Auth） |
+
+按授權後會跳出帳密頁，填你的 Portal email ＋ 密碼。
+
+:::danger[先讓你的網域被認得，否則連帳密頁都看不到]
+授權時，對方會把你送回**它自己的網址**（n8n 叫它 callback URL，
+長得像 `https://你的n8n網域/rest/oauth2-credential/callback`）。
+
+**你的知識庫只認得幾個網域**——內建放行的是 Claude 官方那三個
+（`claude.ai`／`claude.com`／`anthropic.com`），它們永遠有效、移不掉。
+沒被放行的網域，會看到一頁寫著「**這個網域還沒被允許連上你的知識庫**」，
+底下附一行技術訊息：
+
+```
+invalid_request: redirect_uri missing or not allowed
+```
+
+**這不是帳密錯，也不是網址打錯。** 症狀是「連要你輸入帳密的那一頁都出不來」，
+非常容易誤判成認證壞掉——看到這一頁就是這個原因。
+
+**怎麼放行**（要用**管理員**帳號）：
+
+1. 用瀏覽器登入你的知識庫 **Portal**
+2. 到 **設定 → 接上你的 AI（MCP）→ 允許連線的網址**
+3. 把那個工具給你的 callback 網址**整條**貼進去（會自動取出網域），按「加入」
+4. 回到剛才那個工具，重新按一次授權
+
+加進去的網域是**跟內建那三個相加**，不是取代——填了自己的 n8n，Claude 那邊照樣通。
+不是管理員的話，請管理員照上面加一次即可。
+:::
 
 ## 有多個知識庫？
 
