@@ -1061,6 +1061,21 @@ const STEPS = [
   }
   lines.push(`版本印記閘：${stampGate.sections.length} 項全過（每條部署路徑版號與 commit 成對／印記產地真的吐兩個）`);
 
+  // (b4.7) 工作流重編閘（inkstone/InkStoneCo#141，2026-09-20）─────────────────
+  //
+  // 擋的是「**改了 workflow YAML 卻沒重編 `workflows.json`**」。
+  // 使用者實例上被種下去的是 `workflows.json`（安裝器 import 它），YAML 只是它的原稿；
+  // 兩者之間唯一的橋是「有人記得跑 compile-workflows.mjs」，而出貨線上
+  // **一站都沒有在驗它**。漏跑的症狀是完全靜默的：測試綠、版本跳、`/health` 報新 commit，
+  // 而實例上跑的還是舊圖——2026-09-20 修的三筆省額度工作流就是這個形狀。
+  // 位置理由同 (b4)：preflight，蓋得到預演，也繞不過 deploy 站的快路徑。
+  const wfCheck = spawnSync(process.execPath, [join('installer', 'scripts', 'compile-workflows.mjs'), '--check'],
+    { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (wfCheck.status !== 0) {
+    throw new Error(`工作流重編閘不過（改了 YAML 沒重編 ⇒ 修法到不了使用者手上）：\n${(wfCheck.stdout || '') + (wfCheck.stderr || '')}`);
+  }
+  lines.push(`工作流重編閘：${(wfCheck.stdout || '').trim().replace(/^✓\s*/, '') || '通過'}`);
+
   // (b5) 文案契約閘（順手接上，2026-08-12）──────────────────────────────────
   // `installer/oauth-prototype/copy-contract.test.mjs` 自己的檔頭寫著
   // 「deploy-web.sh 在部署前跑本檔，任一違反＝拒絕部署」——而 `deploy-web.sh` 早就不存在，
@@ -1587,8 +1602,12 @@ const STEPS = [
   ctx.installerSrcChanged = inst.fingerprintChanged;
 
   // 交付面的三條線要能離線對得起來 ⇒ 安裝器的號碼也寫進 manifest（同 daemon 那條的作法）。
-  // 🔴 它**不進 contentFingerprint**（那支只認 manifest.core[]）⇒ 寫它不會讓 1.4.x 跳號。
+  // 🔴 **安裝器的號碼不進 `contentFingerprint`** ⇒ 寫它不會讓 1.4.x 跳號。
   //   這正是「不准兩條同時是真相」：改安裝器不該讓每一台既有實例被誤報「有新版」。
+  //   ⚠️ 2026-09-20（#141）補一句，免得被誤讀：`contentFingerprint` 現在除了
+  //   `manifest.core[]` 還認**實例酬載**（`workflows.json`／`skills.json`）——那不是
+  //   安裝器的行為碼，是安裝器**種進使用者實例的東西**，它變了既有實例就真的變了。
+  //   上面這條規矩管的仍然只有「安裝器自己怎麼跑」。
   const mPath = join(ctx.bundlesDir, 'manifest.json');
   const m = { ...m0, installer: { ...(m0.installer || {}), version: inst.version } };
   if (JSON.stringify(m) !== JSON.stringify(m0)) writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');

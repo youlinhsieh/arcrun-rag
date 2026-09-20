@@ -301,9 +301,20 @@ config:
 
   # 🔴 limit=100 不是 500：`http_request` 零件讀不回超過 64 KiB 的回應（緩衝區寫死
   # `make([]byte, 65536)`），越線整顆 WASM trap 成 `unreachable`，這個節點一失敗
-  # 後面全部不執行。而這條撈的是**全租戶**三元組（KBDB 沒有按來源過濾的參數）⇒
-  # 大小跟著租戶長大、遲早越線。分界線與算術見 `rag-ingest-card.local.yaml`
-  # 的 `list_old_triplets`（`inkstone/arcrun-rag#104`，2026-08-27 實測）。
+  # 後面全部不執行。而這條撈的是**全租戶**三元組 ⇒ 大小跟著租戶長大、遲早越線。
+  # 分界線與算術見 `inkstone/arcrun-rag#104`（2026-08-27 實測）。
+  #
+  # 🔴 **這條路已經有正解，但本檔沒跟著改**（`inkstone/InkStoneCo#138`，2026-09-20）：
+  #   · 上面那句「KBDB 沒有按來源過濾的參數」**已經不成立**——`inkstone/Arcrun#12`／
+  #     PR #225 加了 `GET /records/by-source/:template?field=&value=&owner_id=`，
+  #     1.4.69 起在線上。現役的兩支（`rag-ingest-card.local.yaml` 的 `list_old_triplets`、
+  #     `rag-takedown-direct.local.yaml` 的 `list_triplets`）都已改走它。
+  #   · 本檔**沒改的理由**：它是舊鏈遺留，不在出貨鏈上——`installer/scripts/
+  #     compile-workflows.mjs` 的 FILES 只收四支（graph-neighbors／rag-chat／
+  #     rag-ingest-card／rag-takedown-direct），`docs/manual/cf-install-guide.md` §4
+  #     也明寫「用戶實例不推它們」。改了無從實測，等於交出不知道能不能用的東西。
+  #   · **要復活這支之前，先照 `rag-takedown-direct.local.yaml` 的 `list_triplets`
+  #     改成 by-source**，否則等於把已經修好的病再裝回去。
   list_renamed_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
@@ -409,9 +420,20 @@ config:
 
   # 🔴 limit=100 不是 500：`http_request` 零件讀不回超過 64 KiB 的回應（緩衝區寫死
   # `make([]byte, 65536)`），越線整顆 WASM trap 成 `unreachable`，這個節點一失敗
-  # 後面全部不執行。而這條撈的是**全租戶**三元組（KBDB 沒有按來源過濾的參數）⇒
-  # 大小跟著租戶長大、遲早越線。分界線與算術見 `rag-ingest-card.local.yaml`
-  # 的 `list_old_triplets`（`inkstone/arcrun-rag#104`，2026-08-27 實測）。
+  # 後面全部不執行。而這條撈的是**全租戶**三元組 ⇒ 大小跟著租戶長大、遲早越線。
+  # 分界線與算術見 `inkstone/arcrun-rag#104`（2026-08-27 實測）。
+  #
+  # 🔴 **這條路已經有正解，但本檔沒跟著改**（`inkstone/InkStoneCo#138`，2026-09-20）：
+  #   · 上面那句「KBDB 沒有按來源過濾的參數」**已經不成立**——`inkstone/Arcrun#12`／
+  #     PR #225 加了 `GET /records/by-source/:template?field=&value=&owner_id=`，
+  #     1.4.69 起在線上。現役的兩支（`rag-ingest-card.local.yaml` 的 `list_old_triplets`、
+  #     `rag-takedown-direct.local.yaml` 的 `list_triplets`）都已改走它。
+  #   · 本檔**沒改的理由**：它是舊鏈遺留，不在出貨鏈上——`installer/scripts/
+  #     compile-workflows.mjs` 的 FILES 只收四支（graph-neighbors／rag-chat／
+  #     rag-ingest-card／rag-takedown-direct），`docs/manual/cf-install-guide.md` §4
+  #     也明寫「用戶實例不推它們」。改了無從實測，等於交出不知道能不能用的東西。
+  #   · **要復活這支之前，先照 `rag-takedown-direct.local.yaml` 的 `list_triplets`
+  #     改成 by-source**，否則等於把已經修好的病再裝回去。
   list_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET

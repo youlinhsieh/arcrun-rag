@@ -171,16 +171,20 @@ const relLine = ['- A', '依賴', 'B'].join(SEP);
     JSON.stringify(deadEntries(r)) === '["legacy"]', JSON.stringify(deadEntries(r)));
 }
 {
-  const records = [
-    rec('mba', 'kb://notes.md', { subject: 'notes', machine: 'youlinhsieh@Leo-MBA' }),
-    rec('imac', 'kb://notes.md', { subject: 'notes', machine: 'youlinhsieh@Leo-iMac' }),
-  ];
+  // 🔴 `InkStoneCo#138`（2026-09-20）：下架的 list_triplets 改走 KBDB by-source
+  // （伺服器端用 source_uri 精確比對，見該節點上方 yaml 註解），回應只剩 record_ids
+  // ——pick_dead_triplets 沒有 values 可比對了。**這一格的行為因此變了**：以前三元組
+  // 這一側只殺自己那台，現在兩台的三元組都會被清掉。
+  // 與收卡端 1.4.69 那次（本檔 ① 最後一格）是同一個取捨、同一個理由：
+  // 解掉「刪一張卡要讀三輪整張 sheet」的量級問題，換掉這一格窄邊界的保護。
+  // ⚠️ blocks 那側（build_deprecations，上面兩格）不受影響，機器隔離仍然成立。
+  // 這條測試釘住「新行為確實是這樣」，不是背書「這樣才對」——要補回這道保護
+  // （需 KBDB 那側回得出完整 record 或吃多組 field/value），這裡會第一個變紅。
   const r = pickDeadTriplets({
-    body: JSON.stringify({ records }), page_name: 'notes', source_uri: 'kb://notes.md',
-    library: 'kb', machine: 'youlinhsieh@Leo-MBA',
+    body: JSON.stringify({ record_ids: ['imac', 'mba'], count: 2, total: 2 }),
   });
-  t('下架三元組：只殺同一台機器的',
-    JSON.stringify(deadRecords(r)) === '["mba"]', JSON.stringify(deadRecords(r)));
+  t('下架三元組（已知取捨，非保護）：by-source 只認 source_uri，兩台的都會被清掉',
+    JSON.stringify(deadRecords(r)) === '["imac","mba"]', JSON.stringify(deadRecords(r)));
 }
 
 // ── ④ 問答的出處要帶著機器（畫面上「未知來源」變成真名的那條路）──────────

@@ -25,8 +25,9 @@
 name: rag_takedown_direct
 description: >
   daemon 直送下架（v1 無 R2）：按 page_name 撈 kbdb blocks、逐筆核對 source_path 後
-  **真刪**；對應 triplets（subject==頁名 或 source_uri==kb://path）一併真刪。
-  （2026-08-05 由 deprecate 改真刪；順帶清掉既有的 deprecated 舊垃圾。）（task 11）
+  **真刪**；對應 triplets 由 KBDB 按來源（source_uri==kb://path）直接取 id 後一併真刪。
+  （2026-08-05 由 deprecate 改真刪；2026-09-20 三元組那側改走 by-source，
+  成本與租戶三元組總數脫鉤，見 list_triplets 註解。）（task 11）
 
 flow:
   - "input >> ON_SUCCESS >> prep"
@@ -51,8 +52,12 @@ config:
       // 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。
       // 選填：舊版 daemon 不送，此時行為與從前一字不差。
       const machine = String(input.machine == null ? '' : input.machine).trim();
+      // src_uri_enc：list_triplets 要拿它去 KBDB by-source 查「這張卡自己的三元組」，
+      // CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。
+      const srcUri = 'kb://' + path;
       return { success: true, page_name: page, page_enc: encodeURIComponent(page),
-               path: path, source_uri: 'kb://' + path, library: library, machine: machine };
+               path: path, source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
+               library: library, machine: machine };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
@@ -140,63 +145,78 @@ config:
     headers:
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 🔴 limit=100 不是 500：`http_request` 零件讀不回超過 64 KiB 的回應（緩衝區寫死
-  # `make([]byte, 65536)`），越線整顆 WASM trap 成 `unreachable`，這個節點一失敗
-  # 後面全部不執行。而這條撈的是**全租戶**三元組（KBDB 沒有按來源過濾的參數）⇒
-  # 大小跟著租戶長大、遲早越線。分界線與算術見 `rag-ingest-card.local.yaml`
-  # 的 `list_old_triplets`（`inkstone/arcrun-rag#104`，2026-08-27 實測）。
+  # 🔴 治本（`inkstone/InkStoneCo#138`，2026-09-20）：原本這裡打
+  # `/records/by-template/triplet?owner_id=…&limit=100`——撈的是**全租戶**三元組，
+  # 再靠 pick_dead_triplets 逐筆比對。兩個病一起發作：
+  #
+  #   ① 貴：那條路由（kbdb `searchByTemplatePage`）一次呼叫會讀三輪整張 sheet 的成員——
+  #      取 id（`WHERE rel_id='sys_belongs' AND dst_id=?` ＋ `ORDER BY created_at DESC`）、
+  #      算 total（`countSheetMembers`：`limit=100` 且租戶三元組 ≥100 時**一定**會跑）、
+  #      再 JOIN 回格子值。成本跟**租戶三元組總數**成正比，與「刪的是哪張卡」無關。
+  #      leo21c 2026-09-20 03:50 刪 9 張卡實測（`InkStoneCo#138` comment 10141）：
+  #      那一格 546,054 讀列＝日額度 10.9%，而**前三名查詢的 SQL 字串只由這條路由發出**
+  #      （`countSheetMembers` 只被 `searchByTemplatePage` 呼叫，後者只被
+  #      `/records/by-template/:template` 呼叫，2026-09-20 讀 kbdb 原始碼核對）：
+  #      COUNT 134,995 列／7 次＝19,285 列一次、格子 JOIN 64,800 列／30 次、身分 1,980 列。
+  #   ② 刪不乾淨：`limit=100` 只拿「這個租戶**最新** 100 筆」⇒ 租戶三元組一過百，
+  #      要刪的那張卡的三元組多半已被擠出視窗，**一筆都清不到**（同 `inkstone/Arcrun#12`
+  #      在收卡端量到的 16,841 條殘留）。調大 limit 不是解：by-template 回完整 record，
+  #      幾百筆就撞 `http_request` 零件 64 KiB 輸出上限（越線整顆 WASM trap 成
+  #      `unreachable`，這個節點一失敗 `ON_SUCCESS` 後面全部不執行）。
+  #
+  # 新路＝收卡端 1.4.69 已經走通的那條（`inkstone/Arcrun#223`／PR #225，實測每卡
+  # ≈60,000 讀列 → 287）：KBDB `GET /records/by-source/:template?field=&value=&owner_id=`
+  # 伺服器端用 source_uri 精確比對（content 索引 → `idx_entries_rel_dst` 反查 → record id），
+  # 成本只跟**這張卡自己的三元組數**成正比；只回 record_ids（≈40 bytes/筆），遠低於 64 KiB。
+  # 回應帶 `total`（不受 limit 影響的命中總數），pick_dead_triplets 拿它跟 count 對帳。
+  #
+  # ⚠️ 兩道保護換掉了，誠實列出（見 pick_dead_triplets 的註解與 takedown-scope 測試）：
+  #   · library／machine 的二次過濾（`arcrun-rag#46`／`inkstone/mira#6`）——by-source 只吃
+  #     單一 field/value，回來的是 id 不是 values，沒有東西可以再比對。
+  #   · 「完全沒有 source_uri 的舊三元組退回 subject 比對」——by-source 按 source_uri 查，
+  #     查不到那種資料。要補回來需要 KBDB 那側配合（回完整 record，或吃多組 field/value），
+  #     本票不跨 repo 動 kbdb，已回報在票上。
   list_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100"
+    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
 
-  # 比對規則（原：subject==頁名 或 source_uri==本卡 → 全下架，治 G9 主詞≠卡名缺口；
-  # InkStoneCo#44 ⑩ 2026-08-16 改：那條規則對「同頁名、多路徑並存」是過寬的洞——
-  # 資料夾搬移時，新舊路徑產出的三元組 subject 都等於同一個頁名，若只看 subject 就會把
-  # 搬移後、根本還活著的新三元組一起殺掉（實測：對舊路徑補打下架，新路徑那筆也被清空）。
-  # 修法照抄 build_deprecations 對 blocks 的做法：三元組**有帶 source_uri** 時只認精確比對，
-  # 只有**完全沒有 source_uri**（沒被本次改版前的舊資料）才退回寬鬆的 subject 比對——
-  # G9 的初衷（subject 文字可能跟頁名有落差、要用 source_uri 兜住）在「有 source_uri」分支
-  # 依然成立（不看 subject，只看 source_uri 是否精確等於這次要下架的那個），沒有被削弱。
+  # `list_triplets` 已在**伺服器端**用 source_uri 精確比對過（見該節點註解），
+  # 回來的是 `{ record_ids: [...], count, total }` ⇒ 這裡不再逐筆比對，只把 id 攤成
+  # foreach 吃得到的形狀，並把 total 與實拿筆數對帳。
+  #
+  # 🔴 舊版在這裡做的三件比對，各自的去向（`InkStoneCo#138`，2026-09-20）：
+  #   ① **有 source_uri 就只認精確比對**（`InkStoneCo#44` ⑩ 2026-08-16 修的那條：
+  #      資料夾搬移後，新舊路徑產出的三元組 subject 都等於同一個頁名，只看 subject
+  #      會把搬移後還活著的新三元組一起殺掉）——**保住了，而且更強**：現在精確比對
+  #      在 D1 索引上做，連「別條路徑的三元組」都不會被撈回來，沒有誤殺的機會。
+  #   ② **完全沒有 source_uri 的舊三元組退回 subject 比對**（G9 的兜底）——**沒了**。
+  #      by-source 按 source_uri 查，查不到那種資料。要補回來得讓 KBDB 也能按 subject
+  #      查、且回得出「這筆有沒有 source_uri」，那是 kbdb 那側的事，已回報票上。
+  #   ③ **library／machine 的二次過濾**（`arcrun-rag#46`／`inkstone/mira#6`：兩個被監看
+  #      資料夾各有同名同相對路徑的檔時，source_uri 會完全相同）——**沒了**，理由同 ②：
+  #      回來的是 id，沒有 values 可比。這與收卡端 1.4.69 的取捨是同一個
+  #      （`rag-ingest-card.local.yaml` 的 `list_old_triplets` 註解、
+  #      `tests/machine-scope.test.mjs` 那一格），不是本票新開的破口。
+  #      ⚠️ blocks 那側（`build_deprecations`）**完全不受影響**，library／machine
+  #      兩道保護原樣留著——被換掉的只有三元組這一側。
   pick_dead_triplets:
     component: "__CODE_URL__"
     code: |
       let body = input.body;
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }
-      let records = (body && Array.isArray(body.records)) ? body.records : [];
-      const page = String(input.page_name || '');
-      const srcUri = String(input.source_uri || '');
-      const lib = String(input.library || '');
-      const mach = String(input.machine || '');
-      const dead_records = [];
-      for (const r of records) {
-        const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;
-        // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。
-        if (!v || !r.record_id) continue;
-        const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';
-        let hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);
-        // arcrun-rag#46：與 build_deprecations 同一條規則——兩個資料夾各有同名同相對
-        // 路徑的檔時，source_uri 也會完全相同，library 是唯一分得開它們的那一維。
-        const vLib = typeof v.library === 'string' ? v.library : '';
-        if (hit && lib !== '' && vLib !== '' && vLib !== lib) hit = false;
-        // `inkstone/mira#6`：machine 同一條規則。⚠️ triplet template 沒有 machine slot 的
-        // 實例，這一格永遠是空字串（KBDB 靜默丟掉未宣告的 slot）⇒ 退回舊行為，不會誤殺，
-        // 但也擋不住跨機器連坐。補 slot 走 PORTAL_TEMPLATE_SEEDS（library 當初的那條路）。
-        const vMachine = typeof v.machine === 'string' ? v.machine : '';
-        if (hit && mach !== '' && vMachine !== '' && vMachine !== mach) hit = false;
-        if (!hit) continue;
-        dead_records.push({ record_id: r.record_id });
-      }
-      return { success: true, dead_records: dead_records, count: dead_records.length };
+      const ids = (body && Array.isArray(body.record_ids)) ? body.record_ids : [];
+      const dead_records = ids.map(function (id) { return { record_id: id }; });
+      // total＝KBDB 端不受 limit 影響的命中總數。拿不完（一張卡三元組破千）時
+      // 留在輸出裡讓執行紀錄看得見，不要靜默少刪。
+      const total = (body && typeof body.total === 'number') ? body.total : dead_records.length;
+      return { success: true, dead_records: dead_records, count: dead_records.length,
+               total: total, truncated: total > dead_records.length };
     input:
       body: "{{list_triplets.data.body}}"
-      page_name: "{{prep.data.page_name}}"
-      source_uri: "{{prep.data.source_uri}}"
-      library: "{{prep.data.library}}"
-      machine: "{{prep.data.machine}}"
     limits:
       timeout_ms: 3000
       max_output_bytes: 2097152

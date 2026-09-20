@@ -43,16 +43,66 @@ export function readLine(repoRoot) {
 }
 
 /**
- * 內容指紋＝manifest.core[] 每顆的 name+sha256 串起來再 hash。
+ * 實例酬載＝**安裝器會種進使用者實例、但不是 worker 的那些東西**。
+ * 現在是兩份：`workflows.json`（4 支 AI 工作流的預編圖）與 `skills.json`（實例 AI 的 playbook）。
+ *
+ * 🔴 為什麼要有這個（inkstone/InkStoneCo#141，2026-09-20）：
+ *   `1.4.x` 的定義是「**使用者實例上跑的是哪一版**」，而 portal 的「立即更新」鈕
+ *   唯一的觸發條件就是「我的 `bundle_version` < `/api/latest` 的 release」。
+ *   但舊的指紋**只認 `manifest.core[]`**（那 23 顆 worker）⇒ 工作流是 workflow YAML 改的，
+ *   一顆 worker 的 bytes 都沒動 ⇒ **號碼一動也不動** ⇒ portal 對既有用戶說「已是最新版」、
+ *   按鈕根本不出現 ⇒ 那個修法**到不了他手上**，而且沒有任何畫面會顯示異常。
+ *   2026-09-20 一天內三筆工作流層的省額度修法就是這樣靜默失效的。
+ *
+ *   而工作流**確確實實跑在使用者自己的 Cloudflare 帳號上**（`/webhooks/named` 的紀錄），
+ *   跟那 23 顆 worker 是同一種東西：都是「他那台實例上有什麼」。
+ *   ⇒ 它本來就該在 `1.4.x` 的定義域裡。
+ *
+ * ⚠️ 與「不准兩條同時是真相」（`installer-line.mjs` 檔頭）不衝突：那條禁的是
+ *   **安裝器的行為碼**（worker.js 怎麼跑）去動 `1.4.x`——那不會改變任何既有實例，
+ *   讓它跳號就是把人騙去重裝一模一樣的東西。工作流相反：它一變，既有實例身上的東西
+ *   就真的不一樣了，**不跳號才是說謊**。
+ *   這兩份檔同時也在安裝器那條線的指紋裡（`1.0.x`），那是對的且必要的——
+ *   不讓 `1.0.x` 動，出貨線就不會重部安裝器，新的 `workflows.json` 連 install.arcrun.dev
+ *   都上不去。兩個號碼答的是不同問題：`1.0.x` 答「發給你的那台機器是哪一版」，
+ *   `1.4.x` 答「你手上那台實例裡有什麼」。同一次改動讓兩個答案都變，兩個都是真的。
+ */
+export const INSTANCE_PAYLOAD_FILES = [
+  join('installer', 'oauth-prototype', 'workflows.json'),
+  join('installer', 'oauth-prototype', 'skills.json'),
+];
+
+/**
+ * 算實例酬載的指紋。檔案不存在就**跳過那一份**（不是致命錯）——
+ * 由 `verifyManifest` 負責在「manifest 宣告過但這次算不出來」時當場紅，
+ * 而不是在這裡靜默換成另一個數字（那會讓版本號無聲漂移，正是本檔一直在治的病）。
+ * 一份都沒有 ⇒ 回空字串 ⇒ 指紋退回舊演算法（本機臨時目標／測試用的假 repoRoot）。
+ */
+export function instancePayloadFingerprint(repoRoot) {
+  const parts = [];
+  for (const rel of INSTANCE_PAYLOAD_FILES) {
+    const p = join(repoRoot, rel);
+    if (existsSync(p)) parts.push(`${rel}:${sha256(p)}`);
+  }
+  if (!parts.length) return '';
+  return createHash('sha256').update(parts.join('|')).digest('hex');
+}
+
+/**
+ * 內容指紋＝manifest.core[] 每顆的 name+sha256 串起來再 hash，
+ * **再串上實例酬載的指紋**（見 `instancePayloadFingerprint`）。
  * 只認「真正會送到用戶機器上的東西」，不含 built/release/source 自己
  * （否則指紋會因為自己變動而變動，永遠停不下來）。
  */
-export function contentFingerprint(core) {
+export function contentFingerprint(core, payloadFingerprint = '') {
   const flat = [...core]
     .map((c) => `${c.name}:${c.sha256}`)
     .sort()
     .join('|');
-  return createHash('sha256').update(flat).digest('hex');
+  // 空字串 ⇒ 完全不加後綴 ⇒ 與 2026-09-20 之前算出來的指紋逐位元相同
+  // （讀不到酬載的呼叫端不會因為本次改動被迫虛增一版）。
+  const material = payloadFingerprint ? `${flat}#payload:${payloadFingerprint}` : flat;
+  return createHash('sha256').update(material).digest('hex');
 }
 
 /**
@@ -157,7 +207,9 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
   const prevFingerprint = sharedState ? (state ? state.fingerprint : m.fingerprint) : m.fingerprint;
 
   const core = recomputeShas(bundlesDir, m.core);
-  const fingerprint = contentFingerprint(core);
+  // #141：工作流／skill 也是「這台實例上有什麼」的一部分（見 instancePayloadFingerprint）。
+  const payloadFingerprint = instancePayloadFingerprint(repoRoot);
+  const fingerprint = contentFingerprint(core, payloadFingerprint);
   const release = nextRelease(line, prevRelease, prevFingerprint, fingerprint);
   const changed = release !== prevRelease;
 
@@ -180,6 +232,10 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
     schema: m.schema || 'arcrun-rag-bundles/v1',
     release,                                        // ← 用戶看到的那個號碼（唯一真相源）
     fingerprint,                                    // ← 下次比對用，決定要不要 bump
+    // #141：酬載那一半單獨留一格，`verifyManifest` 才有辦法分辨
+    //   「這次真的沒有酬載」與「這次讀不到酬載（repoRoot 給錯）」。
+    //   後者若靜默通過，版本號會無聲倒退成只認 core 的算法。
+    payload_fingerprint: payloadFingerprint,
     built,
     source: m.source,
     core,
@@ -216,7 +272,24 @@ export function verifyManifest(bundlesDir, { repoRoot = process.cwd() } = {}) {
       problems.push(`${c.name}：manifest 寫 ${String(declared).slice(0, 12)}…，磁碟實檔是 ${c.sha256.slice(0, 12)}…（漏跑 syncManifest）`);
     }
   }
-  const fp = contentFingerprint(core);
+  // 🔴 #141：酬載這一半要先單獨驗，不然「讀不到」會偽裝成「沒有」——
+  //   `instancePayloadFingerprint` 對缺檔是回空字串（測試用的假 repoRoot 需要這樣），
+  //   所以呼叫端 repoRoot 給錯時，指紋會安靜地退回舊算法、版本號跟著倒退，
+  //   而整條出貨線全綠。那正是本檔一路在治的病，不可以在這裡開一個新的。
+  const payloadFp = instancePayloadFingerprint(repoRoot);
+  if (m.payload_fingerprint && !payloadFp) {
+    problems.push(
+      `manifest 宣告過 payload_fingerprint（${String(m.payload_fingerprint).slice(0, 12)}…），`
+      + `但這次在 ${repoRoot} 底下一份實例酬載都讀不到`
+      + `（${INSTANCE_PAYLOAD_FILES.join('／')}）——repoRoot 給錯了？`
+      + '照這樣算出來的版本號會無聲倒退成只認 worker 的舊算法。');
+  } else if (m.payload_fingerprint && m.payload_fingerprint !== payloadFp) {
+    problems.push(
+      '工作流／skill 變了但 release 沒 bump：'
+      + `manifest 寫 ${String(m.payload_fingerprint).slice(0, 12)}…，磁碟實檔算出來是 ${payloadFp.slice(0, 12)}…`
+      + '（漏跑 syncManifest）。這一格沒跳號 ⇒ portal 會對既有用戶說「已是最新版」⇒ 修法到不了他手上。');
+  }
+  const fp = contentFingerprint(core, payloadFp);
   if (m.fingerprint && m.fingerprint !== fp) {
     problems.push(`指紋不符：內容變了但 release 沒 bump（manifest release=${m.release}）`);
   }

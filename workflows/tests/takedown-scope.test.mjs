@@ -69,42 +69,52 @@ const idsOf = (r) => r.dead_entries.map((e) => e.id).sort();
   t('無 source 的老資料：維持 page_name fallback', JSON.stringify(idsOf(r)) === '["ancient"]', JSON.stringify(idsOf(r)));
 }
 
+// ── list_triplets（三元組怎麼撈）──────────────────────────────────────────
+// 🔴 `InkStoneCo#138`（2026-09-20）：本票要達成的事**只有這一格看得到**——
+//   撈三元組的成本必須跟「這張卡自己有幾筆」成正比，不能跟租戶三元組總數綁在一起。
+//   下面那些 code 節點的測試怎麼綠，都證明不了這件事（它們拿到的是已經撈好的東西），
+//   所以這一格直接釘住 YAML 裡那條 URL。
+{
+  const m = y.match(/\n {2}list_triplets:\n[\s\S]*?\n {4}url: "([^"]+)"/);
+  const url = m ? m[1] : '';
+  t('撈三元組走 by-source（按這張卡自己的來源取，不是撈全租戶再過濾）',
+    url.indexOf('/records/by-source/triplet') >= 0, url);
+  t('by-source 的鍵是 source_uri，值來自 prep 算好的 encodeURIComponent',
+    url.indexOf('field=source_uri') >= 0 && url.indexOf('{{prep.data.src_uri_enc}}') >= 0, url);
+  // 只看真的會發出去的 url:（註解裡引用舊端點是在說明歷史，不是行為——
+  // 同 response-size-cap.test.mjs 對註解行的處置）。
+  const liveUrls = y.split('\n').filter((l) => !/^\s*#/.test(l) && /^\s*url:\s*"/.test(l));
+  t('不准再有任何 url 打 by-template（那條會讀三輪整張 sheet，且 limit=100 根本刪不乾淨）',
+    liveUrls.every((l) => l.indexOf('/records/by-template/') < 0),
+    JSON.stringify(liveUrls.filter((l) => l.indexOf('/records/by-template/') >= 0)));
+}
+
 // ── pick_dead_triplets（三元組）────────────────────────────────────────────
-const rec = (id, srcUri, library, subject) => ({
-  record_id: id, values: { source_uri: srcUri, library, subject },
-});
+// 比對已經在**伺服器端**做完（by-source 用 source_uri 精確比對），這裡只把 id 攤平。
+// 舊版在這裡做的 library／machine／subject 三道比對的去向，逐條寫在 YAML 節點註解上。
 const recIds = (r) => r.dead_records.map((x) => x.record_id).sort();
 {
-  // 同名同路徑 ⇒ source_uri 也完全相同，library 是唯一分得開的那一維。
-  const records = [
-    rec('gone', 'kb://notes.md', 'gone_folder', 'notes'),
-    rec('keep', 'kb://notes.md', 'keep_folder', 'notes'),
-  ];
-  const r = pickDeadTriplets({
-    body: JSON.stringify({ records }), page_name: 'notes',
-    source_uri: 'kb://notes.md', library: 'gone_folder',
-  });
-  t('三元組：同 source_uri 只殺對的庫', JSON.stringify(recIds(r)) === '["gone"]', JSON.stringify(recIds(r)));
+  const r = pickDeadTriplets({ body: JSON.stringify({ record_ids: ['a', 'b'], count: 2, total: 2 }) });
+  t('三元組：by-source 回來的 id 原樣成為刪除清單',
+    JSON.stringify(recIds(r)) === '["a","b"]' && r.count === 2, JSON.stringify(r));
 }
 {
-  // 2026-08-16 那次修的規則不可以被本次改動弄壞：有 source_uri 就只認精確比對，
-  // 不因為 subject 等於頁名就殺掉別條路徑的三元組。
-  const records = [rec('other-path', 'kb://moved/notes.md', 'gone_folder', 'notes')];
-  const r = pickDeadTriplets({
-    body: JSON.stringify({ records }), page_name: 'notes',
-    source_uri: 'kb://notes.md', library: 'gone_folder',
-  });
-  t('三元組：有 source_uri 時不吃 subject 寬鬆比對（守 08-16 的修正）',
-    r.dead_records.length === 0, JSON.stringify(recIds(r)));
+  // 這張卡本來就沒有三元組（或 template 不存在）⇒ 空集合，不可以炸掉整條鏈：
+  // 這個節點一失敗，後面的 deprecate_triplet 全部不執行。
+  const r = pickDeadTriplets({ body: JSON.stringify({ record_ids: [], count: 0, total: 0 }) });
+  t('三元組：沒有命中就是空集合，不報錯', r.success === true && r.dead_records.length === 0, JSON.stringify(r));
+  const r2 = pickDeadTriplets({ body: 'not json' });
+  t('三元組：回應不是 JSON 也只是空集合（不整條鏈斷掉）',
+    r2.success === true && r2.dead_records.length === 0, JSON.stringify(r2));
 }
 {
-  // 沒有 source_uri 的舊三元組：維持 subject fallback（G9 的初衷）。
-  const records = [{ record_id: 'old', values: { subject: 'notes' } }];
-  const r = pickDeadTriplets({
-    body: JSON.stringify({ records }), page_name: 'notes',
-    source_uri: 'kb://notes.md', library: 'gone_folder',
-  });
-  t('三元組：無 source_uri 維持 subject fallback', JSON.stringify(recIds(r)) === '["old"]', JSON.stringify(recIds(r)));
+  // 一張卡的三元組破了單頁上限時，total 會比實拿的多。**不准靜默少刪**——
+  // 要在輸出裡看得見，執行紀錄才說得出「這次沒刪乾淨」。
+  const r = pickDeadTriplets({ body: JSON.stringify({ record_ids: ['a'], count: 1, total: 3 }) });
+  t('三元組：拿不完時 truncated 要說出來（不靜默少刪）',
+    r.truncated === true && r.total === 3, JSON.stringify(r));
+  const r2 = pickDeadTriplets({ body: JSON.stringify({ record_ids: ['a', 'b'], count: 2, total: 2 }) });
+  t('三元組：拿齊了就不亂報 truncated', r2.truncated === false, JSON.stringify(r2));
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

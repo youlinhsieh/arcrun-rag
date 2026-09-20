@@ -530,7 +530,7 @@
   {
     "file": "rag-takedown-direct.local.yaml",
     "name": "rag_takedown_direct",
-    "description": "daemon 直送下架（v1 無 R2）：按 page_name 撈 kbdb blocks、逐筆核對 source_path 後 **真刪**；對應 triplets（subject==頁名 或 source_uri==kb://path）一併真刪。 （2026-08-05 由 deprecate 改真刪；順帶清掉既有的 deprecated 舊垃圾。）（task 11）\n",
+    "description": "daemon 直送下架（v1 無 R2）：按 page_name 撈 kbdb blocks、逐筆核對 source_path 後 **真刪**；對應 triplets 由 KBDB 按來源（source_uri==kb://path）直接取 id 後一併真刪。 （2026-08-05 由 deprecate 改真刪；2026-09-20 三元組那側改走 by-source， 成本與租戶三元組總數脫鉤，見 list_triplets 註解。）（task 11）\n",
     "flow": [
       "input >> ON_SUCCESS >> prep",
       "prep >> ON_SUCCESS >> list_dead_blocks",
@@ -543,7 +543,7 @@
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "const page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };\nconst path = String(input.path || (page + '.md'));\n// library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。\nconst library = String(input.library == null ? '' : input.library).trim();\n// machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，\n// 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。\n// 選填：舊版 daemon 不送，此時行為與從前一字不差。\nconst machine = String(input.machine == null ? '' : input.machine).trim();\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, source_uri: 'kb://' + path, library: library, machine: machine };\n",
+        "code": "const page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };\nconst path = String(input.path || (page + '.md'));\n// library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。\nconst library = String(input.library == null ? '' : input.library).trim();\n// machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，\n// 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。\n// 選填：舊版 daemon 不送，此時行為與從前一字不差。\nconst machine = String(input.machine == null ? '' : input.machine).trim();\n// src_uri_enc：list_triplets 要拿它去 KBDB by-source 查「這張卡自己的三元組」，\n// CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。\nconst srcUri = 'kb://' + path;\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         library: library, machine: machine };\n",
         "input": {
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
@@ -589,7 +589,7 @@
       "list_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?owner_id=__NAMESPACE__&limit=100",
+        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -597,13 +597,9 @@
       },
       "pick_dead_triplets": {
         "component": "__CODE_URL__",
-        "code": "let body = input.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nlet records = (body && Array.isArray(body.records)) ? body.records : [];\nconst page = String(input.page_name || '');\nconst srcUri = String(input.source_uri || '');\nconst lib = String(input.library || '');\nconst mach = String(input.machine || '');\nconst dead_records = [];\nfor (const r of records) {\n  const v = (r && typeof r === 'object' && r.values && typeof r.values === 'object') ? r.values : null;\n  // 2026-08-05：不再跳過 deprecated（改真刪後那些正是要清的舊垃圾）。\n  if (!v || !r.record_id) continue;\n  const vSrc = typeof v.source_uri === 'string' ? v.source_uri : '';\n  let hit = vSrc !== '' ? (srcUri !== '' && vSrc === srcUri) : (v.subject === page);\n  // arcrun-rag#46：與 build_deprecations 同一條規則——兩個資料夾各有同名同相對\n  // 路徑的檔時，source_uri 也會完全相同，library 是唯一分得開它們的那一維。\n  const vLib = typeof v.library === 'string' ? v.library : '';\n  if (hit && lib !== '' && vLib !== '' && vLib !== lib) hit = false;\n  // `inkstone/mira#6`：machine 同一條規則。⚠️ triplet template 沒有 machine slot 的\n  // 實例，這一格永遠是空字串（KBDB 靜默丟掉未宣告的 slot）⇒ 退回舊行為，不會誤殺，\n  // 但也擋不住跨機器連坐。補 slot 走 PORTAL_TEMPLATE_SEEDS（library 當初的那條路）。\n  const vMachine = typeof v.machine === 'string' ? v.machine : '';\n  if (hit && mach !== '' && vMachine !== '' && vMachine !== mach) hit = false;\n  if (!hit) continue;\n  dead_records.push({ record_id: r.record_id });\n}\nreturn { success: true, dead_records: dead_records, count: dead_records.length };\n",
+        "code": "let body = input.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nconst ids = (body && Array.isArray(body.record_ids)) ? body.record_ids : [];\nconst dead_records = ids.map(function (id) { return { record_id: id }; });\n// total＝KBDB 端不受 limit 影響的命中總數。拿不完（一張卡三元組破千）時\n// 留在輸出裡讓執行紀錄看得見，不要靜默少刪。\nconst total = (body && typeof body.total === 'number') ? body.total : dead_records.length;\nreturn { success: true, dead_records: dead_records, count: dead_records.length,\n         total: total, truncated: total > dead_records.length };\n",
         "input": {
-          "body": "{{list_triplets.data.body}}",
-          "page_name": "{{prep.data.page_name}}",
-          "source_uri": "{{prep.data.source_uri}}",
-          "library": "{{prep.data.library}}",
-          "machine": "{{prep.data.machine}}"
+          "body": "{{list_triplets.data.body}}"
         },
         "limits": {
           "timeout_ms": 3000,

@@ -12,6 +12,20 @@
  *
  * 用法：node installer/scripts/compile-workflows.mjs
  *   需 python3 + pyyaml（與 push-demo-workflow.sh 相同前置）。輸出 installer/src/workflows.json。
+ *
+ * ── `--check`（唯讀模式，機械閘用；inkstone/InkStoneCo#141，2026-09-20）─────────
+ * 一個字都不寫，只回答一個問題：**磁碟上那份 `workflows.json`，是不是現在這些 YAML 編出來的？**
+ * 不是就 exit 1。
+ *
+ * 🔴 為什麼要有它：工作流的真身是 `workflows/*.local.yaml`，但**使用者拿到的是
+ *   `workflows.json`**（安裝器 import 它、`/api/finish` 照它推）。兩者之間唯一的橋
+ *   就是「有人記得跑這支」——而整條出貨線上**沒有任何一站在驗這件事**。
+ *   ⇒ 改完 YAML 沒重編：測試全綠、版本照跳、出貨全過、`/health` 報新 commit，
+ *     而使用者實例上被種下去的還是舊圖。**失效是完全靜默的。**
+ *   跟 `verify-manifest.mjs` 治的是同一個病（宣告與磁碟脫鉤），只是換一層。
+ *
+ * ⚠️ `--check` 不連網，所以「flow 變了、需要重編圖」這種情況它只能**報告**
+ *   （叫你帶 `CYPHER_BASE` 跑一次），不能代勞——編圖要用引擎自己的 parser，猜不得。
  */
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -81,6 +95,7 @@ const prev = (() => {
 const prevByName = new Map(prev.map((w) => [w.name, w]));
 const sameFlow = (a, b) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
 
+const checkOnly = process.argv.includes('--check');
 const cypherBase = process.env.CYPHER_BASE;
 const needCompile = [];
 for (const w of parsed) {
@@ -90,6 +105,41 @@ for (const w of parsed) {
   } else {
     needCompile.push(w);
   }
+}
+
+// ── `--check`：唯讀比對，不寫任何檔 ───────────────────────────────────────────
+// 判準只有一句：**照現在的 YAML 重編一次，會不會編出跟磁碟上不一樣的東西？**
+// 會 ⇒ 那份 `workflows.json` 已經不是這些 YAML 的成品 ⇒ exit 1。
+if (checkOnly) {
+  const problems = [];
+  if (needCompile.length > 0) {
+    for (const w of needCompile) {
+      problems.push(prevByName.get(w.name)
+        ? `${w.name}（${w.file}）：flow 改過了，但 workflows.json 裡還是舊的圖`
+        : `${w.name}（${w.file}）：workflows.json 裡根本沒有這一支`);
+    }
+  } else {
+    const expected = JSON.stringify(parsed, null, 2) + '\n';
+    for (const out of [outPath, outPathProto]) {
+      let actual = null;
+      try { actual = readFileSync(out, 'utf8'); } catch { /* 不存在 */ }
+      if (actual === null) problems.push(`${out}：檔案不存在`);
+      else if (actual !== expected) problems.push(`${out}：內容與 YAML 編出來的不一致（description／config／佔位符其中之一改過了）`);
+    }
+  }
+  if (problems.length) {
+    console.error('\n❌ workflows.json 與 workflows/*.local.yaml 已經脫鉤：');
+    for (const p of problems) console.error(`   · ${p}`);
+    console.error('\n   ⇒ 使用者實例上被種下去的是 workflows.json，不是 YAML。');
+    console.error('     現在出貨的話，YAML 上的修法**不會**到任何人手上，而且沒有任何訊息會提醒你。');
+    console.error('\n   修法：重編一次（flow 有變就要帶 CYPHER_BASE，用引擎自己的 parser 產圖）：');
+    console.error('     node installer/scripts/compile-workflows.mjs');
+    console.error('     CYPHER_BASE=https://arcrun-cypher-executor.<subdomain>.workers.dev \\');
+    console.error('       CYPHER_NS=<namespace> node installer/scripts/compile-workflows.mjs');
+    process.exit(1);
+  }
+  console.log(`✓ workflows.json 與 ${parsed.length} 支 YAML 一致（${parsed.map((w) => w.name).join('、')}）`);
+  process.exit(0);
 }
 
 if (needCompile.length > 0) {
