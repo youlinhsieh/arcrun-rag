@@ -9,7 +9,9 @@
     "0007_tree_record_model.sql",
     "0008_entries_content_index.sql",
     "0009_entries_list_indexes.sql",
-    "0010_entries_fts_trigram.sql"
+    "0010_entries_fts_trigram.sql",
+    "0011_records_list_index.sql",
+    "0012_entries_write_amplification.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -61,6 +63,15 @@
     "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(\n  content,\n  content='entries',\n  content_rowid='rowid',\n  tokenize='trigram'\n)",
     "CREATE TRIGGER IF NOT EXISTS entries_fts_ai AFTER INSERT ON entries\n  WHEN new.content IS NOT NULL\nBEGIN\n  INSERT INTO entries_fts(rowid, content) VALUES (new.rowid, new.content);\nEND",
     "CREATE TRIGGER IF NOT EXISTS entries_fts_ad AFTER DELETE ON entries\n  WHEN old.content IS NOT NULL\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);\nEND",
-    "CREATE TRIGGER IF NOT EXISTS entries_fts_au AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) SELECT 'delete', old.rowid, old.content WHERE old.content IS NOT NULL;\n  INSERT INTO entries_fts(rowid, content) SELECT new.rowid, new.content WHERE new.content IS NOT NULL;\nEND"
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_au AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) SELECT 'delete', old.rowid, old.content WHERE old.content IS NOT NULL;\n  INSERT INTO entries_fts(rowid, content) SELECT new.rowid, new.content WHERE new.content IS NOT NULL;\nEND",
+    "CREATE INDEX IF NOT EXISTS idx_entries_dst_rel_created ON entries(dst_id, rel_id, created_at) WHERE dst_id IS NOT NULL",
+    "DROP INDEX IF EXISTS idx_entries_owner",
+    "DROP INDEX IF EXISTS idx_entries_task",
+    "DROP INDEX IF EXISTS idx_entries_parent",
+    "CREATE INDEX IF NOT EXISTS idx_entries_parent_present ON entries(parent_id) WHERE parent_id IS NOT NULL",
+    "DROP INDEX IF EXISTS idx_entries_page",
+    "CREATE INDEX IF NOT EXISTS idx_entries_page_present ON entries(page_name) WHERE page_name IS NOT NULL",
+    "DROP INDEX IF EXISTS idx_entries_hash",
+    "CREATE INDEX IF NOT EXISTS idx_entries_hash_present ON entries(content_hash) WHERE content_hash IS NOT NULL"
   ]
 }
