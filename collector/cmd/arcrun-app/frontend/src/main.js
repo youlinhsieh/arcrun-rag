@@ -127,6 +127,7 @@ function pageHome(s) {
       </div>
     </div>
     ${cardQuota(s.quota, s.progress)}
+    ${cardQuotaMeter(s.quotaMeter)}
     ${cardTrouble(s)}
     ${cardProgress(s.progress)}
     ${cardSkipped(s.skipped)}
@@ -267,6 +268,101 @@ function cardQuota(q, p) {
       <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
       <div class="acts"><button class="ghost" data-openurl="https://rag.arcrun.dev/docs/">看看怎麼做</button></div>
     </div>`;
+}
+
+// 今天的用量：常駐的那張卡（`inkstone/arcrun-rag#209`）。
+//
+// 🔴 它與上面 cardQuota 是**兩張卡，不互相取代**。leo 2026-09-20 原話：
+//   「我覺得**不是告訴他爆了**，而是告訴他你現在的還要多久完成，比如 5 天，
+//     那就 **1/5、2/5** 就是現在不能立刻完成就有進度條⋯⋯
+//     CF 給一個儀表板，我們也要，他隨時可以看到用了多少剩下多少，
+//     而且**看到他查詢不會像大量寫入那樣爆掉**。」
+// ⇒ cardQuota 講「現在怎麼辦」（只在撞頂時出現）；這張講「你在整條路的哪裡」（隨時都在）。
+//
+// 🔴 三條紅線，逐條對應票上的：
+//   ① **數字要簡單**——leo：「數字應該簡單不要囉嗦」「`1000/100000`、`90332/100000`」。
+//      所以分子分母就是一條斜線，**不加千分位、不加句子**（那個形狀是他指名的）。
+//   ② **讀取與寫入不准混成一個數字**——混在一起會讓人以為「這產品就是會爆」，
+//      而事實正好相反：會卡的只有灌存量那一段的寫入。
+//   ③ **算不出來就說算不出來**——搜尋那一行**刻意沒有分子**：搜尋是使用者在網頁上做的，
+//      不經過小幫手 ⇒ 這台數不到，而唯一數得到的地方（Cloudflare 分析 API）打不到
+//      （`inkstone/arcrun-rag#197`／`#198` 已裁過「不假裝查得到用量」）。
+//      放一個假的分子會比空著更貴——它看起來像個答案。
+//
+// 🔴 **所有數字都是後端算好的**（collector/quotameter.go），這裡一個算式都沒有——
+// 同 cardProgress／cardQuota 的慣例：判斷只住一個接縫，前端只負責畫。
+function cardQuotaMeter(m) {
+  if (!m) return '';
+  const rows = [];
+
+  // ── 上傳（寫入）──────────────────────────────────────────────────
+  if (m.write_known) {
+    rows.push(meterRow('上傳', `${m.write_used_rows}/${m.write_limit_rows}`,
+      pct(m.write_used_rows, m.write_limit_rows), m.write_exhausted,
+      `今天送了 ${m.write_cards_today} 張卡，每張約 ${m.write_rows_per_card} 列`));
+  } else {
+    rows.push(`<div class="mrow"><span class="ml">上傳</span>
+      <span class="mn dim">—</span></div>`);
+  }
+
+  // ── 搜尋（讀取）：只講得出上限與現況，見上面紅線③ ───────────────────
+  rows.push(`<div class="mrow">
+    <span class="ml">搜尋</span>
+    <span class="mn dim" title="${esc(m.read_note || '')}">上限 ${m.read_limit_rows}/天</span>
+    <span class="mstat ${m.read_exhausted ? 'bad' : 'ok'}" role="img"
+      title="${esc(m.read_note || '')}" aria-label="${esc(m.read_note || '')}">${m.read_exhausted ? '🔴' : '✅'}</span>
+  </div>`);
+
+  // ── 這批還要幾天（leo 要的 1/5）──────────────────────────────────
+  let batch = '';
+  if (m.batch_known) {
+    batch = `<div class="mbatch">
+      <div class="mrow">
+        <span class="ml">這批還要 ${m.batch_total_days} 天</span>
+        <span class="mn">${m.batch_day_no}/${m.batch_total_days}</span>
+        <span class="mbar"><i style="width:${pct(m.batch_day_no, m.batch_total_days)}%"></i></span>
+      </div>
+      <div class="d">還有 <b>${m.batch_pending_cards}</b> 張卡排隊中（一天送得了約 ${m.batch_cards_per_day} 張）——會自動接著跑，你不用重丟。</div>
+    </div>`;
+  } else if (m.batch_note) {
+    batch = `<div class="mbatch"><div class="d">${esc(m.batch_note)}</div></div>`;
+  }
+
+  const why = m.write_known ? '' : `<div class="d" style="margin-top:6px">${esc(m.write_note || '')}</div>`;
+  return `
+    <div class="card" data-quota-meter="1">
+      <h3>今天的用量</h3>
+      <div class="meter">${rows.join('')}</div>
+      ${why}
+      ${batch}
+      <div class="acts">
+        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">怎麼升級付費</button>
+        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/">額度怎麼算</button>
+      </div>
+    </div>`;
+}
+
+// 🔴 上面「怎麼升級付費」那顆按鈕的錨點是**百分比編碼過的**，而且那串編碼是
+// **從真的建出來的 HTML 抓的**（docs-site `npm run build` 之後
+// `dist/use/quota/index.html` 裡的 `id="怎麼升級四步"`），不是照標題猜的。
+// 標題一改字這個連結就會無聲失效——所以 `quota_meter_links_test.go` 盯著它：
+// 那支測試會讀 docs-site 的原始 md，確認那個標題還在。
+//
+// meterRow＝一行「名稱 ・ 分子/分母 ・ 進度條」。撞頂的那一行整條標紅。
+function meterRow(label, num, width, bad, tip) {
+  return `<div class="mrow">
+    <span class="ml">${esc(label)}</span>
+    <span class="mn${bad ? ' bad' : ''}" title="${esc(tip || '')}">${esc(num)}</span>
+    <span class="mbar${bad ? ' bad' : ''}"><i style="width:${width}%"></i></span>
+  </div>`;
+}
+
+// pct＝進度條寬度（0〜100 的整數）。**只給 CSS 寬度用，畫面上的數字一律是後端給的原值**
+// ——百分比是這裡唯一算的東西，而它不會被當成事實讀（沒有印出來）。
+function pct(a, b) {
+  if (!b || b <= 0) return 0;
+  const v = Math.round((a / b) * 100);
+  return v < 0 ? 0 : (v > 100 ? 100 : v);
 }
 
 // 你的檔案：分母 + 三個分類（t210，2026-08-08，取代 08-06 逐檔白話翻譯）。

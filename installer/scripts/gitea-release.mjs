@@ -28,8 +28,14 @@
  * D36 金鑰鐵律：只讀，不落地、不印出（`redactToken` 供呼叫端安全記錄用）。
  */
 import { execFileSync } from 'node:child_process';
+import { fetchWithRetry } from './fetch-retry.mjs';
 
 export const GITEA_API_BASE_DEFAULT = 'https://git.uncle6.me';
+
+// 🔴 2026-09-22（inkstone/ISEP#30 c10724）：預設 fetchImpl 換成有界重試版，撐過
+//   Gitea 那條路線的連線層掉包（見 fetch-retry.mjs 檔頭）。呼叫端仍可注入自己的
+//   fetchImpl（測試就是這樣做的），這裡改的只是「沒有人特別指定時」的預設行為。
+const DEFAULT_FETCH = fetchWithRetry;
 
 /**
  * 從一個 repo 的 `gitea` remote URL 擷取寫入用的 owner/token。
@@ -62,7 +68,7 @@ export function redactToken({ login, token } = {}) {
  * 同一版重跑不該報錯、也不該建出兩筆 release。
  * @returns {Promise<object|null>} release 物件，或 null（不存在）
  */
-export async function releaseExists(repoSlug, tag, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch } = {}) {
+export async function releaseExists(repoSlug, tag, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH } = {}) {
   const headers = { accept: 'application/json' };
   if (token) headers.authorization = `token ${token}`;
   const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/releases/tags/${encodeURIComponent(tag)}`, { headers });
@@ -80,7 +86,7 @@ export async function releaseExists(repoSlug, tag, { token, baseUrl = GITEA_API_
  * 「這一站碰的東西，只有某台機器看得到嗎？是 → 那不是限制，是**還沒交貨**。」
  * @returns {Promise<boolean>}
  */
-export async function commitExists(repoSlug, sha, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch } = {}) {
+export async function commitExists(repoSlug, sha, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH } = {}) {
   const headers = { accept: 'application/json' };
   if (token) headers.authorization = `token ${token}`;
   const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/git/commits/${encodeURIComponent(sha)}`, { headers });
@@ -103,7 +109,7 @@ export async function commitExists(repoSlug, sha, { token, baseUrl = GITEA_API_B
  */
 export async function createRelease({
   repoSlug, tag, name, body, target, token, draft = false, prerelease = false,
-  baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch,
+  baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH,
 }) {
   if (!token) {
     throw new Error('缺寫入權杖——本函式只讀呼叫端傳進來的 token，不會自己生一個（D36：只碰名字，不碰真身）');
@@ -131,7 +137,7 @@ export async function createRelease({
  * @param {number} o.id   releaseExists()／createRelease() 回傳物件裡的 `id`
  * @param {string} o.token
  */
-export async function deleteRelease({ repoSlug, id, token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch }) {
+export async function deleteRelease({ repoSlug, id, token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH }) {
   if (!token) throw new Error('缺寫入權杖——刪除一樣需要寫入權限');
   const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/releases/${id}`, {
     method: 'DELETE',
@@ -171,7 +177,7 @@ export async function deleteRelease({ repoSlug, id, token, baseUrl = GITEA_API_B
  * @returns {Promise<object>} Gitea 的 attachment 物件（含 `browser_download_url`）
  */
 export async function uploadReleaseAsset({
-  repoSlug, id, name, data, token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch,
+  repoSlug, id, name, data, token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH,
 }) {
   if (!token) throw new Error('缺寫入權杖——掛附件是寫入動作（D36：只碰名字，不碰真身）');
   if (!name) throw new Error('缺附件檔名——沒有名字的附件在頁面上是一條沒人點得下去的連結');
@@ -197,7 +203,7 @@ export async function uploadReleaseAsset({
  * `zipball_url`／`tarball_url`，不是 attachment）⇒ 這支回空陣列就是字面意思：
  * **這筆 release 上沒有任何人掛過東西**，頁面上那兩個附檔全是自動快照。
  */
-export async function listReleaseAssets(repoSlug, id, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch } = {}) {
+export async function listReleaseAssets(repoSlug, id, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH } = {}) {
   const headers = { accept: 'application/json' };
   if (token) headers.authorization = `token ${token}`;
   const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/releases/${id}/assets`, { headers });
@@ -208,7 +214,7 @@ export async function listReleaseAssets(repoSlug, id, { token, baseUrl = GITEA_A
 /**
  * 列出一個 repo 目前的 release 數（供驗收用：「現在是 0 個」→「建完是 N 個」）。
  */
-export async function listReleases(repoSlug, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = fetch, limit = 50 } = {}) {
+export async function listReleases(repoSlug, { token, baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = DEFAULT_FETCH, limit = 50 } = {}) {
   const headers = { accept: 'application/json' };
   if (token) headers.authorization = `token ${token}`;
   const r = await fetchImpl(`${baseUrl}/api/v1/repos/${repoSlug}/releases?limit=${limit}`, { headers });

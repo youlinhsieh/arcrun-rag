@@ -83,8 +83,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@529a4dcdf1814600542c7ece280ee50191bd21d4';
-const BUNDLE_BUILT = '2026-09-19'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8cbf49e06120c3017ca83ecd4d3210e5b7e1fbcb';
+const BUNDLE_BUILT = '2026-09-22'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -1422,6 +1422,104 @@ function resolveServiceBindings(entryName, names) {
   return out;
 }
 
+/**
+ * inkstone/arcrun-rag#212：哪幾顆 worker 需要 Cloudflare 的 cron trigger，以及各自的排程。
+ *
+ * ── 為什麼一顆都沒有 ────────────────────────────────────────────────────────
+ * `cypher-executor/wrangler.toml` 從第一天就寫著 `[triggers] crons = ["* * * * *"]`，
+ * 但 `[triggers]` 是 **`wrangler deploy` 才會讀的東西**。安裝器走的是 CF script API
+ * （`PUT /accounts/{id}/workers/scripts/{name}`），那支 API **不吃 toml、也不碰排程**
+ * ⇒ 走安裝器裝起來的實例，`GET …/schedules` 從頭到尾都是 `[]`。
+ * 實測（2026-09-20，youlin stage）：`arcrun-cypher-executor` → `{"schedules":[]}`。
+ *
+ * 後果不是少一個功能，是**掛在 `scheduled()` 底下的每一件事都不跑**，而且不報錯：
+ * 用戶寫的定期工作流永遠不啟動（`arcrun_get_skill('build_watcher_workflow')` 教的就是它）、
+ * entries_fts 補存量不跑、執行紀錄不清。
+ *
+ * ── 為什麼這張表住在安裝器 ──────────────────────────────────────────────────
+ * 同 `SERVICE_BINDINGS` 的理由：**manifest 帶不動它**。
+ * `Arcrun/scripts/build-worker-artifacts.mjs` 的 `readToml()` 只抽 kv／d1／vectorize／ai／vars／compat，
+ * 沒有 `[triggers]` ⇒ `requires` 裡不存在 `crons`（1.4.72 manifest 實抓確認）。
+ * ⇒ 在上游把它補進 manifest 之前，目標只能在這裡明列。
+ *
+ * 🔴 `cronsForEntry()` **優先讀 manifest**：等 Arcrun 那半開始吐 `requires.crons`，
+ *    這張表就自動退居備援，不必再改一次安裝器——避免「兩份真相同時有效」。
+ * 🔴 為什麼是白名單而不是「凡有 scheduled() 就設」：安裝器看不到原始碼，
+ *    而 bundle 那 23 顆裡只有 `arcrun-cypher-executor` 同時宣告了 crons 又匯出 scheduled
+ *    （`arcrun-kbdb` 兩者皆無 ⇒ 它的 `schedules: []` 是對的，不該補）。
+ */
+const CRON_TRIGGERS = {
+  'arcrun-cypher-executor': ['* * * * *'],
+};
+
+/** 這顆 worker 該有的 cron 清單：manifest 有就聽 manifest，沒有才回退本地那張表。 */
+function cronsForEntry(entry) {
+  const fromManifest = entry && entry.requires && entry.requires.crons;
+  if (Array.isArray(fromManifest) && fromManifest.length) return fromManifest.map(String);
+  return CRON_TRIGGERS[(entry && entry.name) || ''] || [];
+}
+
+/**
+ * 把一顆 worker 的 cron 排程設成 `want`，並**回頭讀一次確認它真的在上面**。
+ *
+ * 🔴 為什麼先 GET 再決定寫不寫：這支會被**每一次安裝／更新**呼叫（含整批跳過那條快路徑），
+ *    已經對的實例不該每次都白寫一次 CF API。
+ * 🔴 為什麼寫完還要再 GET：`PUT` 回 `success:true` 只代表「請求被收下」。
+ *    這張票整個講的就是「設定寫進去 ≠ 它會跑」——所以**確認那一步不准省**。
+ *
+ * @returns {{name:string, want:string[], before:string[], after:string[], changed:boolean, ok:boolean}}
+ */
+async function ensureWorkerSchedules(token, accountId, scriptName, want) {
+  const wanted = (want || []).map(String);
+  const read = async () => {
+    const r = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/schedules`);
+    return ((r && r.schedules) || []).map((s) => String((s && s.cron) || '')).filter(Boolean);
+  };
+  const before = await read();
+  const same = wanted.every((c) => before.includes(c));
+  if (same) return { name: scriptName, want: wanted, before, after: before, changed: false, ok: true };
+  // CF 的 cron trigger 端點是**整份取代**（不是 append）⇒ 要把既有的一起帶上，
+  // 否則用戶／我們之後自己加的排程會在下一次更新時被這支默默洗掉。
+  const merged = before.concat(wanted.filter((c) => !before.includes(c)));
+  await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/schedules`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(merged.map((cron) => ({ cron }))),
+  });
+  const after = await read();
+  return { name: scriptName, want: wanted, before, after, changed: true, ok: wanted.every((c) => after.includes(c)) };
+}
+
+/**
+ * 整包 manifest 的 cron 同步（#212）。
+ *
+ * 🔴 **刻意不掛在「這顆有沒有重新上傳」底下**——那正是 t145（D36 第 2 步）學過的那一課：
+ *    凡是跟著 code 上傳走的東西，「內容沒變 → 跳過上傳」就會讓它永遠同步不到。
+ *    既有用戶按「立即更新」時 23 顆通常一顆都不會重推，而他要的正是這個修法
+ *    ⇒ 這支必須跟金鑰同步一樣，**每一輪都無條件跑過一遍**（冪等，已經對的不寫）。
+ *
+ * @returns {{synced:string[], failed:string[]}}  兩邊都是可讀短句，直接進 progress.result
+ */
+async function syncManifestCrons(token, accountId, manifest, presentOnAccount) {
+  const synced = [];
+  const failed = [];
+  for (const entry of (manifest && manifest.core) || []) {
+    const want = cronsForEntry(entry);
+    if (!want.length) continue;
+    // 帳號上沒有這顆 script ⇒ `/schedules` 必回 404。那不是排程壞了，是它根本還沒裝上；
+    // 收尾的缺件檢查（#179）才是處理它的地方——這裡不要把它講成「排程設不上」。
+    if (presentOnAccount && typeof presentOnAccount.has === 'function' && !presentOnAccount.has(entry.name)) continue;
+    try {
+      const r = await ensureWorkerSchedules(token, accountId, entry.name, want);
+      if (r.ok) synced.push(`${r.name}: ${r.after.join(', ')}${r.changed ? '（本次補上）' : ''}`);
+      else failed.push(`${r.name}：要求 ${r.want.join(', ')}，寫完回讀到 ${r.after.join(', ') || '（空的）'}`);
+    } catch (e) {
+      failed.push(`${entry.name}：${(e && e.message) || e}`);
+    }
+  }
+  return { synced, failed };
+}
+
 /** 抓懶載 manifest（CI build-bundles.mjs 產出的 bundles/manifest.json）。 */
 async function fetchBundleManifest(env) {
   const { response } = await fetchBundleAsset(bundleBase(env) + '/manifest.json', '安裝包清單');
@@ -2183,6 +2281,8 @@ export {
   applySubs, pushWorkflowTo,
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
+  // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
+  CRON_TRIGGERS, cronsForEntry, ensureWorkerSchedules, syncManifestCrons,
   seedSkillsTo, // skills 種入（本班）
   waitForWorkerLive, briefBody, // #190：「等網址生效」單一真相＋失敗訊息保留 CF 原文
   // inkstone/Arcrun#190 workers.dev 子網域自動開通 ＋ 靜默降級可見化
@@ -3042,6 +3142,20 @@ async function runInstall(env, sid, progress, force) {
       progress.result.secretsSynced = true;
     } catch (e) {
       progress.result.secretSyncError = String((e && e.message) || e);
+    }
+
+    // inkstone/arcrun-rag#212：cron trigger 同步（`wrangler.toml` 的 `[triggers]` 只有
+    // `wrangler deploy` 讀得到，而用戶走的是 script API ⇒ 排程從來沒被設上去過）。
+    //
+    // 位置與 D36 第 2 步的金鑰同步**刻意相同、理由也相同**：放在部署步驟**外面**、
+    // 每一輪無條件跑。既有用戶按「立即更新」時 23 顆一顆都不會重推
+    // ——若把這件事掛在部署裡，他永遠補不到（＝t145 那個病的第二次現身）。
+    try {
+      const cron = await syncManifestCrons(token, accountId, manifest, null);
+      if (cron.synced.length) progress.result.cronsSynced = cron.synced;
+      if (cron.failed.length) progress.result.cronSyncError = cron.failed.join('\n');
+    } catch (e) {
+      progress.result.cronSyncError = String((e && e.message) || e);
     }
 
     // D36：把金鑰種進 credential 中心。
@@ -4567,6 +4681,22 @@ function installWarnings(result) {
       detail: 'seed: ' + String(r.seedError || r.seedTemplates)
         + (r.seedMs != null ? ` (seedMs=${r.seedMs})` : '')
         + (r.seedTripletProbeError ? ` triplet-probe: ${r.seedTripletProbeError}` : ''),
+      audience: 'user',
+    });
+  }
+  if (r.cronSyncError) {
+    // inkstone/arcrun-rag#212：cron 沒設上去 ⇒ `scheduled()` 一次都不會被觸發
+    // ⇒ 用戶寫的定期工作流永遠不啟動，而且**不會有任何錯誤訊息**
+    //（功能在文件上存在、畫面上建得出來、就是不會跑）。
+    //
+    // 收件人是**用戶**，不是我們：他有出路（按「重新安裝」會重跑這支同步，它是冪等的），
+    // 而後果是他會看得到的——他排的工作流不動。藏起來就是再製造一次靜默失敗。
+    out.push({
+      title: '定時執行的排程沒有設定成功',
+      body: '你的知識庫和工作流都可以手動使用，但「每隔一段時間自動跑一次」這件事還沒開起來'
+        + '——你建立的定期工作流不會自己啟動。可以按「重新安裝」再試一次；'
+        + '若補了還是出現這一條，請把下面的技術細節回報給我們。',
+      detail: String(r.cronSyncError),
       audience: 'user',
     });
   }

@@ -21,6 +21,29 @@
 
 import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { checkTicketArmed } from './ticket-arm-guard.mjs';
+
+/**
+ * checkArmedViaTicket — 2026-09-22 新路（inkstone/ISEP#30 comment 10739）
+ *
+ * 取代 `checkArmed()`＋`.github-armed` 檔那條路的**單一動作版**：leo 不必等總管跑
+ * `gitea-arm-request.sh`／`gitea-arm-check.sh` 那組來回，直接在「該版本所在里程碑的
+ * InkStoneCo 載體票」留一行 `ARM: <版本號>`，這支就認得出來。
+ *
+ * 核對邏輯（誰算 leo、版本要不要對上）全部住在 `ticket-arm-guard.mjs`——這支只是
+ * 把它跟 `checkArmed()` 放在同一個檔案裡，方便呼叫端一次看到「D20 有哪幾條放行的路」。
+ * 舊的 `checkArmed()`／`.github-armed` 路不刪、不改一個字——任何還沒設定
+ * `armTicket` 的目標／呼叫端照舊能用，這支只是多一條路，不是取代掉原本那條。
+ *
+ * @param {object} o
+ * @param {string} o.version  呼叫端自己 manifest 算出的版本號（不接受外部傳入的字串）
+ * @param {string} [o.repo]   載體票所在 repo（inkstone org 底下），預設 InkStoneCo
+ * @param {number} o.issue    載體票號（來自 `installer/ship.targets.json` 的 `armTicket.issue`）
+ * @param {string} [o.token]
+ */
+export async function checkArmedViaTicket({ version, repo, issue, token }) {
+  return checkTicketArmed({ version, repo, issue, token });
+}
 
 export function armedFilePath(inkstoneRoot) {
   return join(inkstoneRoot, '.github-armed');

@@ -568,12 +568,19 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 	if len(snippet) > 1024 {
 		snippet = snippet[:1024]
 	}
+	// arcrun-rag#197：雲端把 D1 額度用完的原文傳回來了（新舊雲端不一定都會）⇒ 記下，
+	// 下一發起整個帳號停打，不必等下一分鐘的 /health。
+	//
+	// 🔴 `inkstone/InkStoneCo#140` 條件③：這一段原本只在**非 2xx** 的分支裡跑，
+	// 而那正好漏掉寫入撞頂真正會走的那條路——named-webhook 觸發成功一律回 **200**，
+	// 工作流內部的失敗住在 body 裡（triggeroutcome.go 檔頭那筆實錄）。
+	// ⇒ 讀取撞頂 `/health` 探得到（它自己就是讀），**寫入撞頂只會從這一發回來**，
+	// 而它回的是 200 ⇒ 舊位置等於「寫入側永遠認不出來」。
+	// 放在狀態碼分支之前，兩種形狀都收得到。
+	if k := d1QuotaKind(string(full)); k != "" {
+		noteD1Quota(c.CypherURL, k, directNow())
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// arcrun-rag#197：雲端把 D1 額度用完的原文傳回來了（新舊雲端不一定都會）⇒ 記下，
-		// 下一發起整個帳號停打，不必等下一分鐘的 /health。
-		if k := d1QuotaKind(string(full)); k != "" {
-			noteD1Quota(c.CypherURL, k, directNow())
-		}
 		// 🔴 `inkstone/arcrun-rag#179` c6867：非 2xx 的 body 裡也住著工作流自己講的失敗原因，
 		//    而那串原文會帶著上游寫死的「修復: 編輯 credentials.yaml…」一起印到使用者畫面上
 		//    ——一句叫他去修一個沒壞的東西的指示。認得出來就換成人話（見 triggeroutcome.go）；
@@ -830,6 +837,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 
 	// t210：跨帳號、跨資料夾累加的總量進度（見 rootProgress 註解）。
 	var totalProgress SyncProgress
+	// #209：同一批東西換算成「張卡」。用量表的分子分母都從這裡來——
+	// 卡才是吃 D1 寫入額度的單位，份檔不是（見 quotameter.go CardCount）。
+	var totalCards, totalPendingCards CardCount
 	var stuckReasons []string
 
 	// arcrun-rag#46：這一輪各個「移除並收回中」資料夾的進度（key＝資料夾路徑）。
@@ -907,6 +917,12 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 這兩件事是**帳號層級、跨輪持續**的狀態，不是單一資料夾的（額度是雲端
 		// 實例/Cloudflare 帳號共用的，一個根撞到，同帳號其他根不該還繼續撞牆）。
 		qs := &quotaState{}
+		// #209：今天送了幾張卡也是帳號層、跨輪持續的——同一條 UTC 日界線（與額度重置同一條）。
+		// 跨日就從 0 開始：昨天的卡不佔今天的額度。
+		cardsToday := 0
+		if prevAcc, ok := prevStatus.AccountDetails[accHost]; ok && prevAcc.CardsSentDate == todayUTC(now) {
+			cardsToday = prevAcc.CardsSentCount
+		}
 		if prevAcc, ok := prevStatus.AccountDetails[accHost]; ok {
 			if prevAcc.DailyIngestedDate == todayUTC(now) {
 				qs.DailyCount = prevAcc.DailyIngestedCount
@@ -923,6 +939,8 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			cfg.guard.enterFolder(accHost, root) // #200
 			r, e, p, rp := runDirectOnceRoot(accCfg, root, dryRun, qs, now)
 			totalProgress = totalProgress.Add(rp.Progress)
+			totalCards = totalCards.Add(rp.Cards)             // #209
+			totalPendingCards = totalPendingCards.Add(rp.PendingCards) // #209
 			stuckReasons = append(stuckReasons, rp.StuckReasons...)
 			// #44：這一根的樹。**掃壞了（Nodes 空）就不要覆蓋上一輪的好資料**——
 			// 合併時沿用舊的（MergeFolderTreeStore ②），畫面不會突然變成「還沒回報」。
@@ -945,6 +963,13 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			stampResults(r)
 			for i := range r {
 				r[i].Account = accHost // t104: 標明所屬帳號
+				// #209：這一輪真的送出去幾張卡。**數的是結果，不是意圖**——
+				// 失敗、被退避擋下、dry-run 的都不算，因為它們沒有寫進雲端、沒吃到額度。
+				// `folder_tree` 排除在外：那是送給 portal 的結構化資料，不是知識卡
+				//（countsAsDocument 本來就是那條界線，這裡借同一把尺，不另造判準）。
+				if r[i].Status == "ingested" && countsAsDocument(r[i]) {
+					cardsToday++
+				}
 				if cfg.Extractor != "" && countsAsDocument(r[i]) {
 					switch r[i].Status {
 					case "ingested":
@@ -1016,6 +1041,11 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 供下一輪 RunDirectOnce（甚至下一次程序啟動——status.json 落地磁碟）復原。
 		accSt.DailyIngestedDate = todayUTC(now)
 		accSt.DailyIngestedCount = qs.DailyCount
+		// #209：今天送了幾張卡，以及這台雲端親口講的每卡成本。
+		// WriteCost 沒問到就留 nil——畫面會說「算不出來」，不拿別台的數字頂替。
+		accSt.CardsSentDate = todayUTC(now)
+		accSt.CardsSentCount = cardsToday
+		accSt.WriteCost = knownWriteCost(accCfg.CypherURL)
 		if qs.inCooldown(now) {
 			accSt.QuotaCooldownUntil = qs.CooldownUntil.Format(time.RFC3339)
 			notice := qs.noticeNow(now)
@@ -1120,6 +1150,13 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			failReasons = append(failReasons, ErrUnsupported.Error())
 		}
 		st.FailureBreakdown = BuildFailureBreakdown(failReasons)
+
+		// #209：常駐用量表。**放在 Progress 之後**是因為它用的是同一批現況數字，
+		// 只是換算成「張卡」——同一組數字被切開，不是第二份實作（同 FolderProgress 的理由）。
+		// 讀不了的檔不算卡：它們根本沒送上去，也就沒吃額度。
+		st.Cards = totalCards
+		st.PendingCards = totalPendingCards
+		st.QuotaMeter = pickQuotaMeter(accountDetails, st.Cards, st.PendingCards, now)
 
 		// 頂層彙總（向後相容：單帳號時填頂層欄位讓舊版 tray 仍能讀）
 		if cfg.Extractor != "" {
@@ -1513,6 +1550,10 @@ type rootProgress struct {
 	// 🔴 **就是送上雲端的那一棵**（BuildFolderTree 的產物原件），不是為了畫面另算一份。
 	//    呼叫端把它落地成 folder-trees.json，小幫手離線也攤得開（理由見 foldertree.go 檔尾）。
 	Tree FolderTree
+	// Cards／PendingCards＝這一根換算成「張卡」是多少（`inkstone/arcrun-rag#209`）。
+	// 與 Progress 同一個「原地數現況」的做法，不另外維護計數器（計數器會漂）。
+	Cards        CardCount
+	PendingCards CardCount
 }
 
 // qs：這個帳號本輪共用的額度冷卻狀態（跨同帳號的多個監看根，見 quota.go）。
@@ -2263,6 +2304,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// #200：Tree 用**最後重算的那一棵**（沒處理任何檔時就是開工那棵）。
 	// 以前這裡是開工前那棵 ⇒ 收工合併進 folder-trees.json 的分子永遠是開工前的數字。
 	rp := rootProgress{Progress: m.Progress(), Tree: latestTree}
+	// #209：同一份 manifest 換算成「張卡」。**一份檔不等於一張卡**——
+	// 每一層資料夾各一張（BuildFolderCards ⇔ dirsFromEntries，逐一對應），
+	// 再加這個監看根的一張總覽卡（inventory.go）。端到端實測：1 資料夾＋3 檔 ⇒ 4 張。
+	// 這裡數的是 dirs 不是重建卡片內容——BuildFolderCards 的 `cards` 與 `dirs`
+	// 長度恆等（它就是 `for _, rel := range dirs` 一圈），而重建內容會在大樹上白白吃記憶體。
+	folderCardsTotal := len(dirsFromEntries(m.Entries))
+	folderCardsSent := len(m.FolderCardHashes)
+	if folderCardsSent > folderCardsTotal {
+		folderCardsSent = folderCardsTotal // 資料夾消失後記帳還沒清乾淨的那一瞬間，別讓待送變負數
+	}
+	rp.Cards = CardCount{Files: rp.Progress.Total, Folders: folderCardsTotal, Roots: 1}
+	rp.PendingCards = CardCount{Files: rp.Progress.Pending, Folders: folderCardsTotal - folderCardsSent}
 	for _, e := range m.Entries {
 		if e != nil && e.FailCount >= MaxFailBeforeSkip {
 			// LastError 原文交給呼叫端彙總後過 ClassifyFailure——分類判斷只住那一個接縫，

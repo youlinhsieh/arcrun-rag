@@ -37,7 +37,26 @@ flow:
   - "list_old_triplets >> ON_SUCCESS >> pick_stale"
   - "pick_stale >> 對每個 dead_entry >> delete_entry"
   - "pick_stale >> 對每個 dead_record >> delete_record"
-  - "pick_stale >> ON_SUCCESS >> parse_card"
+  # `inkstone/InkStoneCo#140` comment 10651：常數格（source_uri/status/library/machine）
+  # 一張卡只建一次。刻意排在 parse_card **之前**（不是之後）：graph-executor 的
+  # FOREACH 找 `rel`/`block` 清單靠兩層 fallback——先看觸發節點自己的新鮮輸出，
+  # 找不到才退回累積 context 裡做「淺一層」nested scan（`getIterableFromContext`）。
+  # code 節點的回傳值本身就包一層 `data`，若在 parse_card 與 FOREACH 之間插入更多
+  # 「輸出也是 `{success,data}` 形狀」的節點（例如這四支 POST /entries），每一棒的
+  # `...result` 展開都會把 context 頂層的 `data` 換成自己的（body 那個小物件），
+  # 兩層之後 `rels` 就再也 nested-scan 不到——**已實測撞到**：` post_triplet`
+  # FOREACH 拿到 0 個項目、`results:[]`，21 條三元組一條都沒送出去。
+  # 修法：常數格改在 parse_card **之前**建好（值從 prep 早算好的 src_uri／
+  # input.library／input.machine 取得，不依賴 parse_card 的輸出），
+  # parse_card 自己觸發 FOREACH 的兩條邊維持原樣（單跳、與改動前逐字相同）；
+  # pool_constants 用**具名節點參照**（`{{pool_constants.data.xxx_id}}`）而非
+  # 通用鍵掃描，具名鍵不會被後面任何節點的展開覆蓋，經幾跳都拿得到。
+  - "pick_stale >> ON_SUCCESS >> post_const_source_uri"
+  - "post_const_source_uri >> ON_SUCCESS >> post_const_status"
+  - "post_const_status >> ON_SUCCESS >> post_const_library"
+  - "post_const_library >> ON_SUCCESS >> post_const_machine"
+  - "post_const_machine >> ON_SUCCESS >> pool_constants"
+  - "pool_constants >> ON_SUCCESS >> parse_card"
   - "parse_card >> 對每個 block >> post_block"
   - "parse_card >> 對每個 rel >> post_triplet"
 
@@ -58,10 +77,20 @@ config:
       const pageName = String(input.page_name || 'unknown');
       const path = String(input.path || (pageName + '.md'));
       const srcUri = 'kb://' + path;
-      return { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri) };
+      // `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前
+      // 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的
+      // `String(input.library || 'kb')`／`String(input.machine || '')`——
+      // 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會
+      // 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。
+      const constLibrary = String(input.library || 'kb');
+      const constMachine = String(input.machine || '');
+      return { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
+               const_library: constLibrary, const_machine: constMachine };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
+      library: "{{input.library}}"
+      machine: "{{input.machine}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -249,7 +278,93 @@ config:
       # 空字串＝舊版 daemon 沒送 ⇒ portal 顯示「未知來源」，**不猜、不填假名**。
       metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"embed\":true}"
 
-  # 寫 KBDB triplets（與 rag_ingest_direct post_triplet 一致；library 從 rel 帶入）
+  # ── 常數格共用（`inkstone/InkStoneCo#140` comment 10651，2026-09-21）────────────
+  # 同一張卡的每一條三元組，source_uri/status/library/machine 四格內容永遠相同
+  # （同一份文件、同一次上傳）。改法：這四格各建**一次** value entry，
+  # post_triplet 用 KBDB `createRecord` 既有支援的 `entry_ids` 指標機制共用同一顆，
+  # 不再讓每一條三元組各自新建這四格 entry（各自的索引＋FTS 觸發器也就不再各自重建一次）。
+  # 不動 KBDB schema／API：`POST /records` 的 `entry_ids` 是既有機制（record-crud.ts）。
+  # 實測（Miniflare，23 條三元組一批）：130.5 → 102.5 列/條，再省 21.5%。
+  post_const_source_uri:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      entry_type: "value"
+      content: "{{prep.data.src_uri}}"
+      owner_id: "__NAMESPACE__"
+
+  post_const_status:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      entry_type: "value"
+      # status 對三元組永遠是字面常數 'active'（與 parse_card 的 rel.status 一致），
+      # 不必等任何節點算，直接寫死。
+      content: "active"
+      owner_id: "__NAMESPACE__"
+
+  post_const_library:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      entry_type: "value"
+      content: "{{prep.data.const_library}}"
+      owner_id: "__NAMESPACE__"
+
+  post_const_machine:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      entry_type: "value"
+      content: "{{prep.data.const_machine}}"
+      owner_id: "__NAMESPACE__"
+
+  # 四支 POST /entries 回應的 body 是字串（http_request 零件契約：data.body 恆為字串，
+  # 不是零件自動解析的物件），這裡統一 JSON.parse 抽出 entry.id，收斂成一個物件給
+  # post_triplet 的 entry_ids 用。任何一格抽不到 id → success:false，整份卡在這裡停下
+  # （不靜默放行去生半殘的三元組——四格常數建不出來，後面每一條三元組都會缺這一角）。
+  pool_constants:
+    component: "__CODE_URL__"
+    input:
+      source_uri_body: "{{post_const_source_uri.data.body}}"
+      status_body: "{{post_const_status.data.body}}"
+      library_body: "{{post_const_library.data.body}}"
+      machine_body: "{{post_const_machine.data.body}}"
+    code: |
+      function parseEntryId(raw) {
+        let obj;
+        try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+        return (obj && obj.entry && obj.entry.id) ? obj.entry.id : null;
+      }
+      const source_uri_id = parseEntryId(input.source_uri_body);
+      const status_id = parseEntryId(input.status_body);
+      const library_id = parseEntryId(input.library_body);
+      const machine_id = parseEntryId(input.machine_body);
+      if (!source_uri_id || !status_id || !library_id || !machine_id) {
+        return { success: false, error: '常數格 entry 建立失敗：' + JSON.stringify({ source_uri_id: source_uri_id, status_id: status_id, library_id: library_id, machine_id: machine_id }) };
+      }
+      return { success: true, source_uri_id: source_uri_id, status_id: status_id, library_id: library_id, machine_id: machine_id };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 寫 KBDB triplets（與 rag_ingest_direct post_triplet 血統一致；差別＝常數格改走 entry_ids 指標）
   post_triplet:
     component: "__HTTP_REQ_URL__"
     method: POST
@@ -261,14 +376,18 @@ config:
       template: "triplet"
       owner_id: "__NAMESPACE__"
       values:
+        # subject/predicate/object 逐條三元組不同，仍照舊路新建各自的 value entry。
         subject: "{{rel.subject}}"
         predicate: "{{rel.predicate}}"
         object: "{{rel.object}}"
-        source_uri: "{{rel.source_uri}}"
-        status: "{{rel.status}}"
-        library: "{{rel.library}}"
-        # machine（`inkstone/mira#6`）：template 還沒有這個 slot 的實例會**靜默丟掉**它
-        # （KBDB createRecord 只寫 template 宣告過的 slot），行為與改版前一字不差；
-        # 補上 slot 之後同一份定義自動開始生效。補 slot 的正路＝ cypher-executor
-        # PORTAL_TEMPLATE_SEEDS（library 當初就是這樣加的）。
-        machine: "{{rel.machine}}"
+      entry_ids:
+        # source_uri/status/library/machine 這一張卡內是常數，指向 pool_constants
+        # 收斂出的既有 entry（同一顆，本卡所有三元組共用），不再各自新建。
+        source_uri: "{{pool_constants.data.source_uri_id}}"
+        status: "{{pool_constants.data.status_id}}"
+        library: "{{pool_constants.data.library_id}}"
+        # machine（`inkstone/mira#6`）：template 沒有這個 slot 的實例，走 entry_ids
+        # 會直接報錯（record-crud.ts createRecord 對 entry_ids 是 unknown slot 即拋錯，
+        # 不像 values 路徑靜默丟掉）——但 machine 已是 PORTAL_TEMPLATE_SEEDS 的既有欄位，
+        # ensurePortalTemplates 對既有實例會 PATCH 補上，不需要本檔額外處理。
+        machine: "{{pool_constants.data.machine_id}}"

@@ -91,6 +91,11 @@ func fetchBundleVersion(cypherURL string) (version string, ok bool) {
 	// arcrun-rag#197：同一份回應順便看「雲端資料庫額度是不是用完了」（見 cloudquota.go）。
 	// 只有拿到看得懂的回應才更新——連不上時保留上一次親眼看到的狀態，重置時間一到自然失效。
 	noteD1Quota(cypherURL, d1QuotaFromHealth(raw), directNow())
+	// arcrun-rag#209：同一份回應再順便收「送一張卡要付多少寫入列」（見 quotameter.go）。
+	// 🔴 **不另開一發**——這支檔的存在理由就是「這兩件事各打一次，被退避放大成每 5 秒一次」
+	// （見檔頭 #121 的實測）。用量表要的數字跟版本號住在同一份 JSON 裡，順手收下就好。
+	// 舊版雲端沒有那一格 ⇒ 回 nil ⇒ noteWriteCost 不動既有的（認不出來就不編故事）。
+	noteWriteCost(cypherURL, writeCostFromHealth(raw))
 	return payload.BundleVersion, true
 }
 

@@ -289,17 +289,24 @@
       "list_old_triplets >> ON_SUCCESS >> pick_stale",
       "pick_stale >> 對每個 dead_entry >> delete_entry",
       "pick_stale >> 對每個 dead_record >> delete_record",
-      "pick_stale >> ON_SUCCESS >> parse_card",
+      "pick_stale >> ON_SUCCESS >> post_const_source_uri",
+      "post_const_source_uri >> ON_SUCCESS >> post_const_status",
+      "post_const_status >> ON_SUCCESS >> post_const_library",
+      "post_const_library >> ON_SUCCESS >> post_const_machine",
+      "post_const_machine >> ON_SUCCESS >> pool_constants",
+      "pool_constants >> ON_SUCCESS >> parse_card",
       "parse_card >> 對每個 block >> post_block",
       "parse_card >> 對每個 rel >> post_triplet"
     ],
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "const pageName = String(input.page_name || 'unknown');\nconst path = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + path;\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri) };\n",
+        "code": "const pageName = String(input.page_name || 'unknown');\nconst path = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         const_library: constLibrary, const_machine: constMachine };\n",
         "input": {
           "page_name": "{{input.page_name}}",
-          "path": "{{input.path}}"
+          "path": "{{input.path}}",
+          "library": "{{input.library}}",
+          "machine": "{{input.machine}}"
         },
         "limits": {
           "timeout_ms": 2000,
@@ -382,6 +389,76 @@
           "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"embed\":true}"
         }
       },
+      "post_const_source_uri": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "entry_type": "value",
+          "content": "{{prep.data.src_uri}}",
+          "owner_id": "__NAMESPACE__"
+        }
+      },
+      "post_const_status": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "entry_type": "value",
+          "content": "active",
+          "owner_id": "__NAMESPACE__"
+        }
+      },
+      "post_const_library": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "entry_type": "value",
+          "content": "{{prep.data.const_library}}",
+          "owner_id": "__NAMESPACE__"
+        }
+      },
+      "post_const_machine": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "entry_type": "value",
+          "content": "{{prep.data.const_machine}}",
+          "owner_id": "__NAMESPACE__"
+        }
+      },
+      "pool_constants": {
+        "component": "__CODE_URL__",
+        "input": {
+          "source_uri_body": "{{post_const_source_uri.data.body}}",
+          "status_body": "{{post_const_status.data.body}}",
+          "library_body": "{{post_const_library.data.body}}",
+          "machine_body": "{{post_const_machine.data.body}}"
+        },
+        "code": "function parseEntryId(raw) {\n  let obj;\n  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }\n  return (obj && obj.entry && obj.entry.id) ? obj.entry.id : null;\n}\nconst source_uri_id = parseEntryId(input.source_uri_body);\nconst status_id = parseEntryId(input.status_body);\nconst library_id = parseEntryId(input.library_body);\nconst machine_id = parseEntryId(input.machine_body);\nif (!source_uri_id || !status_id || !library_id || !machine_id) {\n  return { success: false, error: '常數格 entry 建立失敗：' + JSON.stringify({ source_uri_id: source_uri_id, status_id: status_id, library_id: library_id, machine_id: machine_id }) };\n}\nreturn { success: true, source_uri_id: source_uri_id, status_id: status_id, library_id: library_id, machine_id: machine_id };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
       "post_triplet": {
         "component": "__HTTP_REQ_URL__",
         "method": "POST",
@@ -396,11 +473,13 @@
           "values": {
             "subject": "{{rel.subject}}",
             "predicate": "{{rel.predicate}}",
-            "object": "{{rel.object}}",
-            "source_uri": "{{rel.source_uri}}",
-            "status": "{{rel.status}}",
-            "library": "{{rel.library}}",
-            "machine": "{{rel.machine}}"
+            "object": "{{rel.object}}"
+          },
+          "entry_ids": {
+            "source_uri": "{{pool_constants.data.source_uri_id}}",
+            "status": "{{pool_constants.data.status_id}}",
+            "library": "{{pool_constants.data.library_id}}",
+            "machine": "{{pool_constants.data.machine_id}}"
           }
         }
       }
@@ -456,6 +535,36 @@
           "label": "delete_record"
         },
         {
+          "id": "post_const_source_uri",
+          "type": "Component",
+          "componentId": "post_const_source_uri",
+          "label": "post_const_source_uri"
+        },
+        {
+          "id": "post_const_status",
+          "type": "Component",
+          "componentId": "post_const_status",
+          "label": "post_const_status"
+        },
+        {
+          "id": "post_const_library",
+          "type": "Component",
+          "componentId": "post_const_library",
+          "label": "post_const_library"
+        },
+        {
+          "id": "post_const_machine",
+          "type": "Component",
+          "componentId": "post_const_machine",
+          "label": "post_const_machine"
+        },
+        {
+          "id": "pool_constants",
+          "type": "Component",
+          "componentId": "pool_constants",
+          "label": "pool_constants"
+        },
+        {
           "id": "parse_card",
           "type": "Component",
           "componentId": "parse_card",
@@ -509,6 +618,31 @@
         },
         {
           "from": "pick_stale",
+          "to": "post_const_source_uri",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "post_const_source_uri",
+          "to": "post_const_status",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "post_const_status",
+          "to": "post_const_library",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "post_const_library",
+          "to": "post_const_machine",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "post_const_machine",
+          "to": "pool_constants",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "pool_constants",
           "to": "parse_card",
           "type": "ON_SUCCESS"
         },

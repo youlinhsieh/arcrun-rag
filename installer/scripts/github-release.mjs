@@ -34,6 +34,12 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHANGELOG_REL, DAEMON_CHANGELOG_REL } from './daemon-notes.mjs';
+import { fetchWithRetry } from './fetch-retry.mjs';
+
+// 🔴 2026-09-22（inkstone/ISEP#30 c10724）：預設 fetchImpl 換成有界重試版，撐過
+//   Gitea／GitHub 這條路線的連線層掉包（見 fetch-retry.mjs 檔頭）。呼叫端仍可注入
+//   自己的 fetchImpl（測試就是這樣做的），這裡改的只是「沒有人特別指定時」的預設行為。
+const DEFAULT_FETCH = fetchWithRetry;
 
 /**
  * 從說明文件抽出某一版的**完整段落**（不是 daemon-notes.mjs 那種一行摘要）——
@@ -83,7 +89,7 @@ function sectionIn(p, version) {
  * 不該報錯、也不該建出兩筆 release。
  * @returns {Promise<object|null>} release 物件，或 null（不存在）
  */
-export async function releaseExists(repoSlug, tag, { fetchImpl = fetch } = {}) {
+export async function releaseExists(repoSlug, tag, { fetchImpl = DEFAULT_FETCH } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases/tags/${encodeURIComponent(tag)}`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
   if (r.status === 404) return null;
@@ -101,7 +107,7 @@ export async function releaseExists(repoSlug, tag, { fetchImpl = fetch } = {}) {
  * @param {string} o.targetCommitish   tag 要指到的 commit sha（或分支名）
  * @param {string} o.token             寫入權杖，只從環境變數傳進來，本函式不落地不印出
  */
-export async function createRelease({ repoSlug, tag, name, body, targetCommitish, token, fetchImpl = fetch }) {
+export async function createRelease({ repoSlug, tag, name, body, targetCommitish, token, fetchImpl = DEFAULT_FETCH }) {
   if (!token) {
     throw new Error('缺寫入權杖——本函式只讀呼叫端傳進來的 token，不會自己生一個（D36：只碰名字，不碰真身）');
   }
@@ -138,7 +144,7 @@ export async function createRelease({ repoSlug, tag, name, body, targetCommitish
  *
  * @param {string} o.uploadUrl createRelease 回傳的 `upload_url`（含 `{?name,label}` 樣板，會被剝掉）
  */
-export async function uploadReleaseAsset({ uploadUrl, name, data, token, contentType = 'application/octet-stream', fetchImpl = fetch }) {
+export async function uploadReleaseAsset({ uploadUrl, name, data, token, contentType = 'application/octet-stream', fetchImpl = DEFAULT_FETCH }) {
   if (!token) throw new Error('缺寫入權杖——掛附件是寫入動作（D36：只碰名字，不碰真身）');
   if (!name) throw new Error('缺附件檔名——沒有名字的附件在頁面上是一條沒人點得下去的連結');
   const base = String(uploadUrl || '').replace(/\{[^}]*\}$/, '');
@@ -165,7 +171,7 @@ export async function uploadReleaseAsset({ uploadUrl, name, data, token, content
  * 用途是算「今天已經出到第幾版」——內部號的序號從**既有 release 的內文**算，
  * 不自己養一本會漂的帳（理由見 internal-version.mjs 的 nextSequence）。
  */
-export async function listReleases(repoSlug, { fetchImpl = fetch, limit = 50 } = {}) {
+export async function listReleases(repoSlug, { fetchImpl = DEFAULT_FETCH, limit = 50 } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases?per_page=${limit}`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
   if (!r.ok) throw new Error(`列出 ${repoSlug} 的 release 失敗：HTTP ${r.status}`);
@@ -176,7 +182,7 @@ export async function listReleases(repoSlug, { fetchImpl = fetch, limit = 50 } =
  * 列出一筆 release 身上現在真的掛著什麼（**匿名唯讀**，公開 repo 不需 token）。
  * 同 gitea 那半：用來回頭查證，不聽上傳步驟說「我成功了」。
  */
-export async function listReleaseAssets(repoSlug, id, { fetchImpl = fetch } = {}) {
+export async function listReleaseAssets(repoSlug, id, { fetchImpl = DEFAULT_FETCH } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases/${id}/assets`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
   if (!r.ok) throw new Error(`列出 release ${id} 的附件失敗：HTTP ${r.status}`);

@@ -139,6 +139,10 @@ func triggerRejectedSentence(body string, probe credentialProbe) string {
 // 認不出來的原因不編故事，只誠實說「雲端沒有寫進去」。
 func ingestFailureSentence(head, raw string, probe credentialProbe) string {
 	switch {
+	// `inkstone/InkStoneCo#140` 條件③：放在最前面，因為額度撞頂的原文也帶得到別的識別字
+	// （例如工作流在取不到資料層時順手提到 credential），先落到別的分支就會講錯原因。
+	case d1QuotaKind(raw) != "":
+		return d1QuotaSentence(head, d1QuotaKind(raw), directNow())
 	case strings.Contains(raw, "unreachable"):
 		return head + "：連不到知識庫的資料層。稍後會自動再試。"
 	case strings.Contains(raw, "card_content 為空"):

@@ -150,6 +150,44 @@ func humanRows(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// d1QuotaMarks＝**我們自己組出來的**那幾句 D1 額度文案裡，最不會變動的識別字。
+//
+// 🔴 這是 `explainsWhySkipped`（routebackoff.go）同一個形狀的約束，而且踩過同一個坑：
+// 判準與產生文字的地方分居兩處，改了措辭就對不上，而後果不是報錯，是**這批檔在畫面上
+// 掉回「其他」——等於一句原因都沒有**。改 buildD1QuotaNotice 的文案時要連這裡一起改。
+var d1QuotaMarks = []string{
+	"雲端知識庫今天的免費", // Headline
+	"雲端資料庫今天的免費", // Achievement（Combined() 用它開頭）
+}
+
+// isD1QuotaText 回答：「這串字在講雲端資料庫的每日額度用完嗎？」
+// 兩種來源都要認得：上游的英文原文，與我們翻成人話之後的那幾句。
+func isD1QuotaText(raw string) bool {
+	if d1QuotaKind(raw) != "" {
+		return true
+	}
+	for _, m := range d1QuotaMarks {
+		if strings.Contains(raw, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// d1QuotaSentence＝「這一份沒寫進去，因為雲端資料庫的額度用完了」那句人話。
+//
+// 🔴 `inkstone/InkStoneCo#140` 條件③：在這之前，寫入撞頂的那一張卡，使用者讀到的是
+// 「雲端收下了，但你的知識庫沒有真的寫進去（這一份還查不到），**稍後會自動再試**。」
+// ——沒有一個字提到額度，而且最後那半句是假的：在台北時間早上 8:00 之前，
+// 再試幾次都是同一個結果。這正是票面說的「他會以為這東西壞了」。
+//
+// head 保留（「收下了但沒寫進去」與「根本沒收下」是兩件事，triggeroutcome.go 的紅線），
+// 後面接的四件事與讀取側同一份文案來源：哪一種額度／上限多少／幾點恢復／要不要自己做事。
+func d1QuotaSentence(head, kind string, now time.Time) string {
+	n := buildD1QuotaNotice(kind, now, nextQuotaResetTaiwan(now))
+	return head + "：" + n.Headline + "。" + n.Usage + "。" + n.Guarantee + "（會自動恢復）。"
+}
+
 // d1QuotaNote＝「這一發不打，因為雲端資料庫額度用完」的一句話；空＝可以打。
 //
 // 🔴 結尾「會自動恢復」是 explainsWhySkipped 的識別字（sync_status.go）——被擋下的檔

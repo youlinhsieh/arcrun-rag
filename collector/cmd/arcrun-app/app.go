@@ -128,6 +128,8 @@ type syncStatus struct {
 	FolderProgress map[string]collector.SyncProgress `json:"folder_progress,omitempty"`
 	// arcrun-rag#200：一輪還沒跑完時做到哪（形狀定義在 collector/sync_status.go）。
 	InRound *collector.RoundProgress `json:"in_round,omitempty"`
+	// arcrun-rag#209：常駐用量表（形狀定義在 collector/quotameter.go，這裡原樣接住）。
+	QuotaMeter *collector.QuotaMeter `json:"quota_meter,omitempty"`
 }
 
 type skippedDoc struct {
@@ -310,6 +312,18 @@ type UIState struct {
 	// 這裡原樣接住 collector 組好的三句話，不重新組字串（避免措辭漂移）。
 	// nil＝現在不在額度冷卻中，前端不畫這張卡。
 	Quota *collector.QuotaNotice `json:"quota"`
+
+	// QuotaMeter＝首頁那張**常駐**的用量卡（`inkstone/arcrun-rag#209`）。
+	//
+	// 🔴 與上面的 Quota 是兩張卡，不互相取代：Quota 只在撞頂時出現，
+	// 這一張**隨時都在**。leo 2026-09-20：「**不是告訴他爆了**，而是告訴他
+	// 你現在的還要多久完成，比如 5 天，那就 1/5、2/5 就是現在不能立刻完成就有進度條」
+	// ⇒ 撞頂那張講「現在怎麼辦」，這張講「你在整條路的哪裡」。
+	//
+	// 與 Progress 同樣是**原樣接住** collector 算好的那一份，不在 App 這層重算任何數字
+	// ——算式只住 collector/quotameter.go 一個接縫（同 ClassifyFailure 的慣例）。
+	// nil＝一個帳號都還沒設定好，前端不畫這張卡。
+	QuotaMeter *collector.QuotaMeter `json:"quotaMeter"`
 }
 
 // UISkipped＝首頁那張「這些檔案現在還處理不了」的卡。
@@ -582,6 +596,7 @@ func (a *App) GetState() UIState {
 	st.Skipped = buildSkipped(sync)
 	st.Progress = buildProgress(sync)
 	st.Quota = pickQuotaNotice(sync, time.Now()) // P8：額度冷卻中 ⇒ 首頁畫三句話卡
+	st.QuotaMeter = sync.QuotaMeter              // #209：常駐用量表（collector 已算好，這裡不重算）
 	// 引擎有問題才把「回報問題」卡叫出來（含記錄檔路徑）。
 	// 沒事時不顯示——否則「哪裡看 log」會變成常駐噪音，真出事時反而沒人看。
 	st.EngineTrouble = !collectorAlive()

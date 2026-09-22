@@ -59,6 +59,7 @@ export default defineConfig({
           label: '日常使用',
           items: [
             { label: '放檔案進去', slug: 'use/add-files' },
+            { label: '會不會用爆？額度怎麼算', slug: 'use/quota' },
             { label: '搜尋與問答', slug: 'use/search' },
             { label: '接到你自己的 AI（MCP）', slug: 'use/mcp' },
             { label: '怎麼更新版本', slug: 'use/update' },

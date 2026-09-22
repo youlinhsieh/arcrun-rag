@@ -542,3 +542,29 @@ input[type=text], input[type=password] {
   padding: 6px 2px 2px; font-size: 12px; line-height: 1.65;
   color: rgba(var(--ink-rgb), .45);
 }
+
+/* ── 今天的用量：常駐那張卡（`inkstone/arcrun-rag#209`）───────────────────
+   leo 2026-09-20：「**數字應該簡單不要囉嗦**，`1000/100000`、`90332/100000`」
+   ⇒ 版面就是三欄：名稱 ・ 分子/分母 ・ 進度條。沒有標題列、沒有圖例、沒有百分比文字。
+   🔴 顏色一律 var(--...)（本檔檔頭鐵律：不准寫任何 hex）。 */
+.meter { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.mrow { display: flex; align-items: center; gap: 12px; font-size: 13.5px; }
+.mrow .ml { flex: none; min-width: 84px; color: rgba(var(--ink-rgb), .55); }
+.mrow .mn {
+  flex: none; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+  letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+}
+.mrow .mn.dim { color: rgba(var(--ink-rgb), .45); }
+.mrow .mn.bad { color: var(--err); font-weight: 600; }
+.mrow .mstat { flex: none; font-size: 13px; line-height: 1; cursor: default; }
+.mbar {
+  flex: 1; min-width: 40px; height: 6px; border-radius: 3px;
+  background: rgba(var(--ink-rgb), .10); overflow: hidden;
+}
+.mbar i { display: block; height: 100%; background: var(--amber); }
+.mbar.bad i { background: var(--err); }
+.mbatch {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid rgba(var(--ink-rgb), .10);
+}
+.mbatch .d { margin-top: 6px; }

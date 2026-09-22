@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "status": "ok",
+  "bundle_version": "1.4.73",
+  "data_layer": {
+    "ok": true,
+    "write_cost": {
+      "rows_per_card": 732,
+      "free_daily_rows": 100000,
+      "generation": 12,
+      "measured_by": "kbdb/tests/card-rows-written-gate.test.ts"
+    },
+    "summary": "資料層與程式碼同代（第 12 代）。",
+    "expected_generation": 12,
+    "actual_generation": 12,
+    "behind_by": 0,
+    "missing": [],
+    "legacy_tables": [],
+    "remedy": "無需動作。"
+  }
+}

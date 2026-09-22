@@ -100,12 +100,16 @@ func (m *Manifest) Progress() SyncProgress {
 const (
 	FailUnsupportedFormat = "格式不支援"
 	FailQuotaExhausted    = "今天的 AI 額度用完了"
-	FailNoTextInFile      = "檔案讀不出文字"
-	FailOther             = "其他"
+	// `inkstone/InkStoneCo#140` 條件③：雲端資料庫（D1）的每日額度是**另一件事**，
+	// 不准跟上面那個講成同一句——AI 額度的出口是「換一個模型」，而換模型救不了資料庫。
+	// 把它歸錯類，使用者就會去做一件不會有用的事，正是 `inkstone/arcrun-rag#197` 在治的歸錯因。
+	FailCloudDBQuota = "雲端資料庫今天的額度用完了"
+	FailNoTextInFile = "檔案讀不出文字"
+	FailOther        = "其他"
 )
 
 // FailCategories 是分類的**固定順序**（畫面與診斷檔都照這個序，不隨 map 迭代跳動）。
-var FailCategories = []string{FailUnsupportedFormat, FailQuotaExhausted, FailNoTextInFile, FailOther}
+var FailCategories = []string{FailUnsupportedFormat, FailQuotaExhausted, FailCloudDBQuota, FailNoTextInFile, FailOther}
 
 // ClassifyFailure 把 collector／雲端吐出的原始錯誤歸進上面四類。
 //
@@ -118,6 +122,10 @@ var FailCategories = []string{FailUnsupportedFormat, FailQuotaExhausted, FailNoT
 //     ⇒ 先看得到真因就照真因分類，看不到才落到「其他」
 func ClassifyFailure(raw string) string {
 	switch {
+	// 🔴 必須排在 AI 額度那一格**之前**：我們給 D1 額度組的那幾句人話裡本來就有「額度」
+	// 兩個字，順序一反過來就會被歸成 AI 額度 ⇒ 畫面叫使用者去換模型（見 FailCloudDBQuota）。
+	case isD1QuotaText(raw):
+		return FailCloudDBQuota
 	case strings.Contains(raw, "neurons"), strings.Contains(raw, "4006"),
 		strings.Contains(raw, "額度"),
 		// 2026-08-09（P8）：額度用完的檔，錯誤欄位存的是 QuotaNotice 三句話

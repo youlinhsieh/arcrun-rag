@@ -270,6 +270,24 @@
       "label": "prod（正式出貨：封測者按更新就會拿到）",
       "publish": true,
       "requiresArm": true,
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 140,
+        "coversMainPush": true,
+        "_": [
+          "2026-09-22（inkstone/ISEP#30 comment 10739，總管交辦）：leo 只要在這張載體票",
+          "留一行 `ARM: <版本號>`，出貨線就認得出來——不必再等總管跑",
+          "gitea-arm-request.sh／gitea-arm-check.sh，也不必貼 .github-armed 或",
+          "/tmp/.main-push-ok。核對邏輯見 installer/scripts/ticket-arm-guard.mjs；",
+          "owner 寫死 inkstone（不接受覆蓋，安全邊界同 scripts/lib/gitea-arm-common.sh）。",
+          "`issue: 140` 是目前這一輪里程碑的 InkStoneCo 載體票——**里程碑換了就要改這個號碼**，",
+          "改錯號碼的後果只是「查不到 ARM ⇒ 擋下」（fail-closed），不會誤放行到別張票。",
+          "`coversMainPush: true`：這張票的 ARM 同時當成 main-push-guard 的授權來源",
+          "（見 ship.mjs 的 version 站），總管不必再逐筆看 commit 貼戳記——這是明講的取捨，",
+          "不是悄悄放寬，理由見 ship.mjs 該段註解。要退回舊的「總管逐筆看 commit」流程，",
+          "把這個鍵改成 false 或拿掉即可，不必改 code。"
+        ]
+      },
       "allowDirtySource": false,
       "requireSourceBranch": "ship/verified-stage",
       "_requireSourceBranch": [

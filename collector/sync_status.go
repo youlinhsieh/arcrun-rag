@@ -65,6 +65,23 @@ type AccountSyncStatus struct {
 	// QuotaMessage＝額度冷卻中要給使用者看的三句話（見 quota.go QuotaNotice）。
 	// 冷卻結束且本輪沒有新命中 ⇒ 每輪重建的 AccountSyncStatus 不會再設它，自然清除。
 	QuotaMessage *QuotaNotice `json:"quota_message,omitempty"`
+
+	// ── 常駐用量表的材料（`inkstone/arcrun-rag#209`，見 quotameter.go）─────────
+	//
+	// WriteCost＝這台雲端**親口講的**「送一張卡要付多少寫入列」（`/health` 的
+	// `data_layer.write_cost`）。逐帳號各自記：兩個帳號的雲端版本可能不同步，
+	// 資料層世代不同＝每卡的價錢不同（第 11 代 1,156 列、第 12 代 732 列）。
+	// nil＝這台還沒報（舊版雲端）⇒ 畫面說「算不出來」，不拿另一台的數字頂替。
+	WriteCost *WriteCost `json:"write_cost,omitempty"`
+	// CardsSentDate／CardsSentCount＝今天（UTC 日界，與額度重置同一條線）這個帳號
+	// 送出去幾張卡。**送卡的是這台，所以它數得出來**——這是用量表唯一的本機來源。
+	//
+	// 🔴 與上面的 DailyIngestedCount 是兩件事，不要合併：那個數的是**份檔案**
+	// （Workers AI 的額度、畫面那句「今天已經幫你整理了 N 份」用的），
+	// 這個數的是**張卡**（D1 寫入額度用的）。一份檔不等於一張卡——
+	// 資料夾卡、總覽卡都不是檔（`inkstone/InkStoneCo#143`：1 資料夾＋3 檔 ⇒ 4 張卡）。
+	CardsSentDate  string `json:"cards_sent_date,omitempty"`
+	CardsSentCount int    `json:"cards_sent_count"`
 }
 
 // RetiringStatus＝某個「已移除、雲端撤除進行中」資料夾的現況（arcrun-rag#46）。
@@ -199,6 +216,20 @@ type SyncStatus struct {
 	// InRound＝這一輪還沒跑完時做到哪（`inkstone/arcrun-rag#200`，見 RoundProgress）。
 	// 收工時寫的那份不帶它 ⇒ 非空只可能是「一輪正在跑」或「上一輪跑到一半行程被殺掉」。
 	InRound *RoundProgress `json:"in_round,omitempty"`
+
+	// QuotaMeter＝常駐的用量表（`inkstone/arcrun-rag#209`，見 quotameter.go）。
+	//
+	// 🔴 與 AccountDetails[].QuotaMessage（#197 那張「爆掉了」的卡）是兩件事：
+	// 那張只在撞頂時出現，這張**隨時都在**——leo 2026-09-20：「不是告訴他爆了，
+	// 而是告訴他你現在的還要多久完成」。兩張同時存在時畫面兩張都畫，不互相取代。
+	//
+	// 與 Progress 同族：每輪照現況重算的快照，不進 CarryForwardActivity。
+	QuotaMeter *QuotaMeter `json:"quota_meter,omitempty"`
+
+	// Cards＝這一輪算出來的「幾張卡」（總量／待送），用量表的分子分母都從這裡來。
+	// 單位是**張卡**不是份檔——兩者差在資料夾卡與總覽卡（見 quotameter.go CardCount）。
+	Cards        CardCount `json:"cards"`
+	PendingCards CardCount `json:"pending_cards"`
 }
 
 // FolderPlanStatus＝某個看守資料夾這一輪用了什麼收檔策略、據此少收了什麼

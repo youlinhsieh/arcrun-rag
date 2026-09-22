@@ -105,7 +105,7 @@ import { syncManifest, verifyManifest } from './release.mjs';
 //   問錯那份檔案的症狀不是報錯，是「找不到已發佈版本段 ⇒ 安靜跳過」（見 daemon-in-bundle-gate.mjs 檔頭）。
 import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 import { requireDaemonInBundle } from './daemon-in-bundle-gate.mjs';
-import { checkArmed, logGithubContact } from './d20-guard.mjs';
+import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
 //   d20-guard 解的是「殼層 hook 看不見 node 子行程」的**GitHub 接觸**那一半；
 //   這一支解同一個形狀的另一半：**推 main**。2026-08-18 出貨線就是這樣把
@@ -776,8 +776,22 @@ const STEPS = [
   //   保險的事跑完並確認會過」在結構上成立，不必等 leo 開閘才能看到問題。
   //   真正的防呆沒有變弱：所有 `mutates:true` 的步驟本來就只在 `CONFIRM` 才執行
   //   （見下面主迴圈），所以拿掉的只是「連看都要先解保險」，不是「連做都不用解保險」。
+  // 🔴 2026-09-22（inkstone/ISEP#30 comment 10739）：`T.armTicket` 配置時走新路——
+  //   leo 在載體票留一行 `ARM: <版本號>` 就能放行，不必再等總管跑
+  //   `gitea-arm-request.sh`／`gitea-arm-check.sh`、也不必貼 `.github-armed`。
+  //   但版本號要等 `version` 站重打完才知道（`ctx.release`）⇒ 這裡**不能**在 preflight
+  //   就做那個核對——這一段只做「有沒有配置載體票」的靜態檢查，真正的簽名核對
+  //   搬到 `version` 站尾端（見該站，緊接在 `ctx.release` 算出來之後）。
+  //   沒配 `armTicket` 的目標／呼叫方式，完全照舊（舊路一個字沒動，見 d20-guard.mjs）。
   if (T.requiresArm) {
-    if (CONFIRM) {
+    if (T.armTicket) {
+      const { repo = 'InkStoneCo', issue } = T.armTicket;
+      if (!Number.isInteger(issue) || issue <= 0) {
+        throw new Error(`installer/ship.targets.json 的 ${TARGET_NAME}.armTicket.issue 必須是正整數（收到：${JSON.stringify(issue)}）。`);
+      }
+      lines.push(`保險走 Gitea 票（inkstone/${repo}#${issue}）：leo 留一行 \`ARM: <版本號>\` 就放行——`
+        + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
+    } else if (CONFIRM) {
       const { mission, expiresAt } = checkArmed(INKSTONE_ROOT);
       ctx.armMission = mission;
       lines.push(`保險已解（未過期，還剩 ${Math.max(0, Math.round((expiresAt - Date.now() / 1000) / 60))} 分鐘）：任務＝${mission}`);
@@ -916,6 +930,19 @@ const STEPS = [
       lines.push(`這一趟會推 main 的目的地（${dests.length}）：${dests.join('、')}`);
       lines.push(`（${TARGET_NAME} 不發佈給用戶 ⇒ 不要戳記；每次推送當場檢查：只准 fast-forward、`
         + `不准刪檔${ALLOW_DELETIONS ? '（本趟帶 --allow-deletions，刪檔放行）' : ''}、.gitignore 不准變短）`);
+    } else if (T.armTicket && T.armTicket.coversMainPush) {
+      // 🔴 2026-09-22（ISEP#30 comment 10739）：這個目標把「leo 簽的那一行 ARM」也當成
+      //   推 main 的授權，**不再要總管另外逐筆看 commit、另外貼 /tmp/.main-push-ok**——
+      //   兩件事收成同一個放行動作。這是明講的取捨，不是悄悄放寬：
+      //   main-push-guard 的機械安全檢查（fast-forward-only／不准刪檔／.gitignore 不准變短）
+      //   在 `policy==='stamp'` 這條路上**本來就不會跑**（見該檔 `assertPushAllowed` 的
+      //   ①號分支：領到 grants 就直接放行，不像 `mechanical` policy 會另外檢查內容）——
+      //   所以這裡改變的只是「誰核准」，不是「core 有沒有做安全檢查」（core 本來就沒有）。
+      //   授權真正核發的時機延後到 `version` 站（ctx.release 算出來、ticket-arm 核對過
+      //   之後），這裡只記下目的地清單，讓那一站知道要放多少格進 `ctx.mainPushGrants`。
+      ctx.pendingMainPushDests = dests;
+      lines.push(`推 main 的授權併入 Gitea 票的 ARM（${dests.length} 個目的地：${dests.join('、')}）——`
+        + `不必另外貼 /tmp/.main-push-ok；實際核發在 version 站核對完版本號之後`);
     } else if (!CONFIRM) {
       lines.push(`這一趟會覆寫 main 的目的地（${dests.length}）：${dests.join('、')}`);
       lines.push(`（預演不必先按閘。真的 --confirm 之前，總管逐筆看過那些 commit 再貼：${armCommand(dests)}）`);
@@ -1617,14 +1644,45 @@ const STEPS = [
   ctx.built = m.built;   // 使用者在 /api/latest 看到的建置日；verify 會拿它跟線上對
   ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
   const bumped = ctx.releaseBefore && ctx.releaseBefore !== release;
-  return { status: 'done', detail: [
+  const detail = [
     bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1，${shared ? '跨目標共用狀態' : '本機獨立計數'}）`
            : `版本 ${release}（內容與上一版一致 ⇒ 不動）`,
     !inst.previous ? `安裝器 ${inst.version}（這條線第一次有號碼）`
       : inst.changed ? `安裝器 ${inst.previous} → ${inst.version}（原始碼有變 ⇒ patch +1）`
       : `安裝器 ${inst.version}（原始碼未變 ⇒ 不動）`,
     `${m.core.length} 顆｜built ${m.built}｜source ${m.source}｜daemon ${ctx.daemonVersion}`,
-  ] };
+  ];
+
+  // ── ticket-arm 核對（ISEP#30 comment 10739，2026-09-22）───────────────────
+  // 🔴 這裡才是真正核對「leo 簽的版本」的地方——preflight 只確認有沒有配置
+  //   `armTicket`，因為那時候 `ctx.release` 還不存在。這一站算出版本號之後
+  //   **馬上核對**（不拖到真正寫 GitHub 的那一步才發現簽錯版本，浪費前面 20 站）。
+  //   只在真的 `--confirm` 才查（跟舊路一致：純預演不必先解保險）。
+  if (T.requiresArm && CONFIRM && T.armTicket) {
+    const { repo = 'InkStoneCo', issue } = T.armTicket;
+    // 讀權杖：走既有 Gitea 寫入權杖來源（remote 內嵌帳密）——這裡只是**讀**留言，
+    // 公開 repo 不需要 token 也查得到，但 InkStoneCo 若轉私有，帶著token 才不會 403。
+    const giteaCred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+    const { mission } = await checkArmedViaTicket({
+      version: ctx.release, repo, issue, token: giteaCred && giteaCred.token,
+    });
+    ctx.armMission = mission;
+    detail.push(`ticket-arm 核對過：${mission}`);
+    // preflight 記下的目的地清單（僅當 `armTicket.coversMainPush` 時才會有值）
+    // 現在才真的核發——見 main-push-guard.mjs 的 `assertPushAllowed`，`ctx.mainPushGrants`
+    // 是一個普通 Map，不必走 `/tmp/.main-push-ok` 那個檔案也能用同一套判定邏輯。
+    if (ctx.pendingMainPushDests && ctx.pendingMainPushDests.length) {
+      const grants = new Map();
+      // 每個目的地給遠多於單趟出貨會用到的次數（這條線最多推同一個目的地個位數次）——
+      // 不是「無限」（無限＝拿掉了「用完即丟」這條性質，變成整趟出貨之外也有效），
+      // 是「這一趟肯定夠用」，範圍仍然鎖死在這一次 checkArmed 通過的這次執行。
+      for (const d of ctx.pendingMainPushDests) grants.set(d, 20);
+      ctx.mainPushGrants = grants;
+      detail.push(`推 main 的授權已由 ticket-arm 核發（${[...grants.keys()].join('、')}）`);
+    }
+  }
+
+  return { status: 'done', detail };
 }},
 
 // ── 3.5 docs-changelog：這一版的更新說明必須已經寫進 docs，不然就中止 ─────────
@@ -2586,8 +2644,14 @@ const STEPS = [
   const align = alignMirrorWithRemote({ mirrorDir, remote: G.mirrorRemote, branch: 'main' });
   const mirrorSha = sh('git', ['rev-parse', 'HEAD'], mirrorDir);
 
-  // ② 保險（未過期）＋ push 鏡像＋自己留痕——與 `push` 步驟同一套規矩，理由同它的註解。
-  const { mission } = checkArmed(INKSTONE_ROOT);
+  // ② 保險＋push 鏡像＋自己留痕——與 `push` 步驟同一套規矩，理由同它的註解。
+  // 🔴 2026-09-22（ISEP#30 comment 10739）：`T.armTicket` 配置時，`ctx.armMission` 已在
+  //   `version` 站核對過（版本綁定，這次執行內版本不會變，沒有「過期」這個概念）——
+  //   這裡不重打一次網路，省一次撞上 Gitea 掉包（c10724）的機會，也不會降低安全性。
+  //   **舊路（沒配 `armTicket`）維持原樣**：`.github-armed` 有 15 分鐘時效，一趟出貨
+  //   可能跑上十幾分鐘，寫入前**必須**現查一次過不過期——這裡不能因為 preflight 查過
+  //   就跳過，跳過就是把「過期保護」拆掉一半，是這支閘本來要補的洞（見檔頭 2026-08-09）。
+  const { mission } = (T.armTicket && ctx.armMission) ? { mission: ctx.armMission } : checkArmed(INKSTONE_ROOT);
   const token = process.env.GITHUB_MIRROR_TOKEN || '';
   if (!token) {
     throw new Error(

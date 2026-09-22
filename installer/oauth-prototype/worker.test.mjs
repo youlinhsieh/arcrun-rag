@@ -25,6 +25,11 @@ import worker, {
   deployBundledWorker,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
+  // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
+  CRON_TRIGGERS,
+  cronsForEntry,
+  ensureWorkerSchedules,
+  syncManifestCrons,
   seedSkillsTo,
   ensureWorkersSubdomain,
   subdomainCandidates,
@@ -1148,11 +1153,17 @@ const DEPLOY_BUDGET_PER_RUN = Number(
 );
 assert.ok(DEPLOY_BUDGET_PER_RUN >= 1, 'worker.js 應有 DEPLOY_BUDGET_PER_RUN 常數');
 
-function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2 } = {}) {
+// #212：`state` 可從外面帶進來——「同一個 Cloudflare 帳號、第二次按更新」的測試需要它，
+// 否則第二趟會拿到一個空帳號，而安裝器的紀錄說它裝過 ⇒ 卡在 cache 步（資源規則照規約停手）。
+// `recordDeploys`＝把每次 PUT 上去的 bindings 記進 `state.deployed`，讓這個假帳號
+// 在**下一趟**看起來真的「已經裝過了」（資源規則的 update 模式就是讀 /settings 的 bindings）。
+// 預設關著：既有那些測試不需要它，也不該因為多了一個狀態而換行為。
+function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2, names = null, state: givenState = null, recordDeploys = false } = {}) {
   const core = [];
+  if (names) coreCount = names.length;
   for (let i = 1; i <= coreCount; i++) {
     core.push({
-      name: `arcrun-t26-worker-${i}`,
+      name: names ? names[i - 1] : `arcrun-t26-worker-${i}`,
       main_file: `core/worker-${i}.js`,
       main_module: 'index.js',
       modules: [],
@@ -1164,7 +1175,9 @@ function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2 } = {}) {
     });
   }
   const manifest = { core };
-  const state = { deployed: {}, kvByTitle: {}, d1ByName: {}, vectorize: [] };
+  // #212：`schedules` ＝這個假帳號上每顆 worker 的 cron 現況。**預設空的**，
+  // 因為那正是真實世界的起點：script API 裝出來的 worker 從來沒拿到過排程。
+  const state = givenState || { deployed: {}, kvByTitle: {}, d1ByName: {}, vectorize: [], schedules: {} };
   const calls = installFetch((url, init) => {
     const method = (init.method || 'GET').toUpperCase();
     if (url.endsWith('/manifest.json')) return { json: manifest };
@@ -1176,7 +1189,26 @@ function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2 } = {}) {
     if (rr) return rr;
     if (url.includes('/d1/database/') && url.includes('/query')) return cfOk({});
     if (url.endsWith('/workers/subdomain')) return cfOk({ subdomain: 'acme' });
+    // #212 cron trigger：**必須排在下面那條泛用 PUT 之前**（`/schedules` 也是 PUT）。
+    // 假帳號會真的記住寫進去的值，所以「寫完回讀」那一步驗的是真的狀態轉移。
+    const sch = url.match(/\/workers\/scripts\/([^/]+)\/schedules$/);
+    if (sch) {
+      const name = sch[1];
+      if (method === 'PUT') state.schedules[name] = JSON.parse(init.body);
+      return cfOk({ schedules: state.schedules[name] || [] });
+    }
     if (url.includes('/workers/scripts/') && url.endsWith('/subdomain') && method === 'POST') return cfOk({});
+    const put = url.match(/\/workers\/scripts\/([^/]+)$/);
+    if (put && method === 'PUT') {
+      if (recordDeploys) {
+        return (async () => {
+          const meta = JSON.parse(await init.body.get('metadata').text());
+          state.deployed[decodeURIComponent(put[1])] = meta.bindings || [];
+          return cfOk({});
+        })();
+      }
+      return cfOk({});
+    }
     if (url.includes('/workers/scripts/') && method === 'PUT') return cfOk({});
     return { status: 404, json: { error: `unhandled ${method} ${url}` } };
   });
@@ -2159,6 +2191,17 @@ function installStallFixFetchMulti({ accounts } = {}) {
     if (url.includes('/d1/database/') && url.includes('/query')) return cfOk({});
     if (url.endsWith('/workers/subdomain')) return cfOk({ subdomain: 'acme' });
     if (url.includes('/workers/scripts/') && url.endsWith('/subdomain') && method === 'POST') return cfOk({});
+    const put = url.match(/\/workers\/scripts\/([^/]+)$/);
+    if (put && method === 'PUT') {
+      if (recordDeploys) {
+        return (async () => {
+          const meta = JSON.parse(await init.body.get('metadata').text());
+          state.deployed[decodeURIComponent(put[1])] = meta.bindings || [];
+          return cfOk({});
+        })();
+      }
+      return cfOk({});
+    }
     if (url.includes('/workers/scripts/') && method === 'PUT') return cfOk({});
     return { status: 404, json: { error: `unhandled ${method} ${url}` } };
   });
@@ -3802,4 +3845,199 @@ test('#196 機械閘：seedCredential 拿到的是實例網址，不是 dbId', a
   assert.ok(!/\bdbId\b/.test(call[0]),
     `🔴 dbId 是舊路（打 D1）的殘骸，它還在就代表這條線沒真的換家。現況：${call[0]}`);
   assert.match(call[0], /workerUrl/, '要把 cypher 的網址傳進去（端點住在那顆 worker 上）');
+});
+
+// ---------------------------------------------------------------------------
+// inkstone/arcrun-rag#212｜cron trigger：該定時跑的東西要真的定時跑
+//
+// 病：`cypher-executor/wrangler.toml` 寫著 `[triggers] crons = ["* * * * *"]`，
+//     但那是 `wrangler deploy` 才讀的東西。安裝器走 CF script API（`PUT …/workers/scripts/<name>`），
+//     那支 API 不吃 toml、也不碰排程 ⇒ 用戶實例的 `GET …/schedules` 永遠是 `[]`
+//     ⇒ `scheduled()` 一次都不會被觸發 ⇒ **用戶寫的定期工作流永遠不啟動，而且不報錯**。
+//     實測（2026-09-20，youlin stage）：`arcrun-cypher-executor` → `{"schedules":[]}`。
+// ---------------------------------------------------------------------------
+
+test('#212 cronsForEntry：manifest 說了算，沒說才回退安裝器那張表；其餘的一律沒有排程', () => {
+  // ① 現況（1.4.72 manifest 實抓）：requires 裡沒有 crons ⇒ 吃本地表
+  assert.deepEqual(cronsForEntry({ name: 'arcrun-cypher-executor', requires: { kv: [] } }), ['* * * * *']);
+  // ② 前瞻：等 Arcrun 的 build-worker-artifacts.mjs 開始吐 crons，**manifest 壓過本地表**
+  //    （否則兩份真相同時有效，上游改了排程這邊還在用舊的）
+  assert.deepEqual(
+    cronsForEntry({ name: 'arcrun-cypher-executor', requires: { crons: ['*/5 * * * *'] } }),
+    ['*/5 * * * *'],
+    'manifest 帶了 crons 就該聽它的，不該還用安裝器寫死的那份'
+  );
+  // ③ arcrun-kbdb 的 toml 沒有 [triggers]、原始碼也沒有 export scheduled
+  //    ⇒ 它的 schedules: [] 是**對的**，不准「順便也補一個」
+  assert.deepEqual(cronsForEntry({ name: 'arcrun-kbdb', requires: {} }), []);
+  assert.deepEqual(cronsForEntry({ name: 'arcrun-set' }), []);
+  assert.deepEqual(Object.keys(CRON_TRIGGERS), ['arcrun-cypher-executor'],
+    '白名單只有 cypher 一顆——多一顆就是在幫沒有 scheduled() 的 worker 排空班');
+});
+
+test('#212 ensureWorkerSchedules：空的 → 寫進去 → 回讀確認真的在上面', async () => {
+  const store = {};
+  const calls = installFetch((url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'PUT') store.v = JSON.parse(init.body);
+    return cfOk({ schedules: store.v || [] });
+  });
+  let r;
+  try {
+    r = await ensureWorkerSchedules('tok', 'acct-1', 'arcrun-cypher-executor', ['* * * * *']);
+  } finally { restoreFetch(); }
+
+  const put = calls.find((c) => c.method === 'PUT');
+  assert.ok(put, '原本是空的 ⇒ 必須真的打一次 PUT');
+  assert.equal(put.url, 'https://api.cloudflare.com/client/v4/accounts/acct-1/workers/scripts/arcrun-cypher-executor/schedules');
+  assert.deepEqual(JSON.parse(put.body), [{ cron: '* * * * *' }], 'CF 的 cron 端點吃的是 [{cron}] 陣列');
+  assert.deepEqual(r, {
+    name: 'arcrun-cypher-executor', want: ['* * * * *'], before: [],
+    after: ['* * * * *'], changed: true, ok: true,
+  });
+  // 🔴 本票的判準：寫完要**回頭讀**。所以 GET 至少兩次（寫前一次、寫後一次）
+  assert.equal(calls.filter((c) => c.method === 'GET').length, 2,
+    '「設定寫進去了」不等於「它在上面」——寫完那一次回讀不准省');
+});
+
+test('#212 ensureWorkerSchedules：已經對了就不要每次更新都白寫一次', async () => {
+  const calls = installFetch(() => cfOk({ schedules: [{ cron: '* * * * *' }] }));
+  let r;
+  try {
+    r = await ensureWorkerSchedules('tok', 'acct-1', 'arcrun-cypher-executor', ['* * * * *']);
+  } finally { restoreFetch(); }
+  assert.equal(r.changed, false);
+  assert.equal(r.ok, true);
+  assert.equal(calls.filter((c) => c.method === 'PUT').length, 0,
+    '這支每一輪安裝／更新都會跑，已經對的實例不該被重寫一次');
+});
+
+test('#212 ensureWorkerSchedules：CF 那支是整份取代 ⇒ 不准把既有的排程洗掉', async () => {
+  const store = { v: [{ cron: '0 3 * * *' }] }; // 假設實例上已經有一條別人設的
+  const calls = installFetch((url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'PUT') store.v = JSON.parse(init.body);
+    return cfOk({ schedules: store.v });
+  });
+  let r;
+  try {
+    r = await ensureWorkerSchedules('tok', 'acct-1', 'arcrun-cypher-executor', ['* * * * *']);
+  } finally { restoreFetch(); }
+  const put = calls.find((c) => c.method === 'PUT');
+  assert.deepEqual(JSON.parse(put.body), [{ cron: '0 3 * * *' }, { cron: '* * * * *' }],
+    'PUT 是整份取代，只送自己那條＝把用戶原本的排程默默刪掉');
+  assert.deepEqual(r.after, ['0 3 * * *', '* * * * *']);
+  assert.equal(r.ok, true);
+});
+
+test('#212 ensureWorkerSchedules：PUT 說成功、回讀卻還是空的 ⇒ ok:false（不准拿 success:true 當交付）', async () => {
+  // 這就是本票 🔴 那一條的機械版：「不要只驗設定寫進去了」。
+  const calls = installFetch(() => cfOk({ schedules: [] })); // 永遠回空——CF 收下了但沒生效
+  let r;
+  try {
+    r = await ensureWorkerSchedules('tok', 'acct-1', 'arcrun-cypher-executor', ['* * * * *']);
+  } finally { restoreFetch(); }
+  assert.equal(calls.filter((c) => c.method === 'PUT').length, 1);
+  assert.equal(r.ok, false, 'PUT 回 success:true 只代表請求被收下，回讀是空的就是沒設上');
+});
+
+test('#212 syncManifestCrons：只碰有 scheduled() 的那顆，失敗誠實進 failed 不吞掉', async () => {
+  const manifest = { core: [{ name: 'arcrun-kbdb' }, { name: 'arcrun-cypher-executor' }, { name: 'arcrun-set' }] };
+  const store = {};
+  const calls = installFetch((url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    const name = url.match(/\/workers\/scripts\/([^/]+)\/schedules$/)[1];
+    if (method === 'PUT') store[name] = JSON.parse(init.body);
+    return cfOk({ schedules: store[name] || [] });
+  });
+  let out;
+  try { out = await syncManifestCrons('tok', 'acct-1', manifest, null); } finally { restoreFetch(); }
+  assert.deepEqual(out.failed, []);
+  assert.deepEqual(out.synced, ['arcrun-cypher-executor: * * * * *（本次補上）']);
+  const touched = new Set(calls.map((c) => c.url.match(/\/workers\/scripts\/([^/]+)\//)[1]));
+  assert.deepEqual([...touched], ['arcrun-cypher-executor'],
+    'kbdb／set 沒有 scheduled()，連問都不該問');
+
+  // 失敗要看得見——#191 的教訓：吞進空 catch 的錯誤等於沒發生過
+  const boom = installFetch(() => ({ status: 403, json: { success: false, errors: [{ code: 10000, message: 'Authentication error' }] } }));
+  let out2;
+  try { out2 = await syncManifestCrons('tok', 'acct-1', manifest, null); } finally { restoreFetch(); }
+  assert.equal(out2.synced.length, 0);
+  assert.equal(out2.failed.length, 1);
+  assert.match(out2.failed[0], /arcrun-cypher-executor/);
+  assert.ok(boom.length > 0);
+});
+
+test('#212 syncManifestCrons：帳號上還沒有這顆 ⇒ 跳過，不要把「還沒裝上」講成「排程設不上」', async () => {
+  const manifest = { core: [{ name: 'arcrun-cypher-executor' }] };
+  const calls = installFetch(() => ({ status: 404, json: { success: false, errors: [] } }));
+  let out;
+  try {
+    out = await syncManifestCrons('tok', 'acct-1', manifest, new Set(['arcrun-kbdb']));
+  } finally { restoreFetch(); }
+  assert.deepEqual(out, { synced: [], failed: [] });
+  assert.equal(calls.length, 0, '它根本不在帳號上，缺件檢查（#179）才是處理它的地方');
+});
+
+test('#212 installWarnings：cron 沒設成功要畫給**用戶**看（他排的工作流不會動，而他按重新安裝就能補）', () => {
+  const cards = installWarnings({ cronSyncError: 'arcrun-cypher-executor：HTTP 403' });
+  const card = cards.find((c) => c.title === '定時執行的排程沒有設定成功');
+  assert.ok(card, 'cronSyncError 必須有一張卡——寫進 result 卻沒人畫，就是 #191 清查出來的那個病');
+  assert.equal(card.audience, 'user');
+  assert.match(card.detail, /403/);
+  assert.equal(installWarnings({}).find((c) => c.title === '定時執行的排程沒有設定成功'), undefined,
+    '沒出事就不要跳警告（#196：不要拿嚇人的東西填版面）');
+});
+
+test('🔴 #212 既有實例再跑一次也要補上 cron（第二趟起點＝東西都在、就是沒有排程）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-cron-update';
+  await seedInstallSession(env, sid, 'cron@test.example');
+  const names = ['arcrun-cypher-executor', 'arcrun-kbdb'];
+
+  // ── 第一趟：新裝 ──────────────────────────────────────────────
+  const first = installStallFixFetch({ names, recordDeploys: true });
+  try { await startInstallAndDrain(env, sid, {}); } finally { restoreFetch(); }
+  assert.deepEqual(first.state.schedules['arcrun-cypher-executor'], [{ cron: '* * * * *' }],
+    '新裝的實例，cypher 身上就該有 cron（走用戶那條路，不是 wrangler deploy）');
+  assert.equal(first.state.schedules['arcrun-kbdb'], undefined, 'kbdb 沒有 scheduled()，不該被排班');
+  const prog1 = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.deepEqual(prog1.result.cronsSynced, ['arcrun-cypher-executor: * * * * *（本次補上）']);
+  assert.equal(prog1.result.cronSyncError, undefined);
+
+  // ── 第二趟：那台「已經裝好、但排程是空的」既有實例 ──────────────
+  // 沿用第一趟的帳號現況（KV／D1／worker 的 bindings 都還在），只把排程清空——
+  // 那正是今天每一台既有實例的樣子：東西都裝好了，就是沒有 cron。
+  const sid2 = 'sid-cron-update-2';
+  await seedInstallSession(env, sid2, 'cron@test.example');
+  first.state.schedules = {};
+  const second = installStallFixFetch({ names, state: first.state, recordDeploys: true });
+  try { await startInstallAndDrain(env, sid2, {}); } finally { restoreFetch(); }
+  const prog2 = await env.INSTALLER_KV.get(`prog:${sid2}`, 'json');
+  assert.deepEqual(second.state.schedules['arcrun-cypher-executor'], [{ cron: '* * * * *' }],
+    '既有實例再跑一次，缺的 cron 要被補回來');
+  assert.deepEqual(prog2.result.cronsSynced, ['arcrun-cypher-executor: * * * * *（本次補上）']);
+});
+
+// 🔴 這條是上面那條測不到的那一半，改用**結構**來保。
+//
+// 為什麼需要它：既有用戶按「立即更新」而版本沒變時，安裝器會走「整批跳過」那條快路徑
+// ——23 顆一顆都不重推。若 cron 同步被寫在部署迴圈裡，他**永遠補不到**
+// （＝t145／D36 第 2 步學過的那一課：跟著 code 上傳走的東西，跳過上傳就永遠同步不到）。
+// 那條快路徑的前置條件（穩定的 manifest 指紋＋實例版本／commit 對得上＋帳號清單列得到）
+// 在離線替身裡堆不出來，所以這裡直接對原始碼問那個不變式：
+// **cron 同步的呼叫點不准落在 deploy 步驟那個 try 區塊裡面。**
+test('🔴 #212 cron 同步必須在 deploy 步驟**外面**（整批跳過那條路也要走到它）', async () => {
+  const src = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
+  const callSites = [...src.matchAll(/await syncManifestCrons\(/g)].map((m) => m.index);
+  assert.equal(callSites.length, 1, 'syncManifestCrons 只該有一個呼叫點');
+  const deployStart = src.indexOf("  // --- e. 部署 worker");
+  const deployEnd = src.indexOf("await fail('deploy', e);");
+  assert.ok(deployStart > 0 && deployEnd > deployStart, '找不到 deploy 步驟的邊界——這道閘壞了，先修它');
+  assert.ok(callSites[0] > deployEnd,
+    'cron 同步掉進 deploy 步驟裡了：那代表「這顆沒重推」的實例永遠補不到排程');
+  // 位置要跟 D36 的金鑰同步同一區（那裡就是「與部署解耦」的既有正解，不另開一處）
+  const secretBlock = src.indexOf('progress.result.secretsSynced = true;');
+  assert.ok(secretBlock > 0 && callSites[0] > secretBlock,
+    'cron 同步應接在金鑰同步之後——兩者都是「部署完成後無條件跑一遍」的東西');
 });

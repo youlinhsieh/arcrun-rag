@@ -11,7 +11,8 @@
     "0009_entries_list_indexes.sql",
     "0010_entries_fts_trigram.sql",
     "0011_records_list_index.sql",
-    "0012_entries_write_amplification.sql"
+    "0012_entries_write_amplification.sql",
+    "0013_embed_pending_index.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -72,6 +73,8 @@
     "DROP INDEX IF EXISTS idx_entries_page",
     "CREATE INDEX IF NOT EXISTS idx_entries_page_present ON entries(page_name) WHERE page_name IS NOT NULL",
     "DROP INDEX IF EXISTS idx_entries_hash",
-    "CREATE INDEX IF NOT EXISTS idx_entries_hash_present ON entries(content_hash) WHERE content_hash IS NOT NULL"
+    "CREATE INDEX IF NOT EXISTS idx_entries_hash_present ON entries(content_hash) WHERE content_hash IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_entries_pending_embed ON entries(owner_id, created_at)\n  WHERE is_embedded = 0 AND content IS NOT NULL AND content <> '' AND json_extract(metadata_json, '$.embed') = 1",
+    "CREATE INDEX IF NOT EXISTS idx_entries_embedded_current ON entries(owner_id, created_at)\n  WHERE is_embedded = 1"
   ]
 }
