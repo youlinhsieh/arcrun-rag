@@ -34,12 +34,15 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHANGELOG_REL, DAEMON_CHANGELOG_REL } from './daemon-notes.mjs';
-import { fetchWithRetry } from './fetch-retry.mjs';
+import { withRetry } from './fetch-retry.mjs';
 
 // 🔴 2026-09-22（inkstone/ISEP#30 c10724）：預設 fetchImpl 換成有界重試版，撐過
 //   Gitea／GitHub 這條路線的連線層掉包（見 fetch-retry.mjs 檔頭）。呼叫端仍可注入
 //   自己的 fetchImpl（測試就是這樣做的），這裡改的只是「沒有人特別指定時」的預設行為。
-const DEFAULT_FETCH = fetchWithRetry;
+// 🔴 2026-09-22 prod 1.4.74 實撞：release asset 上傳（Arcrun-win-*.exe 數十 MB）
+//   套用預設 8 秒逾時 ⇒ 三次都在上傳途中被自己 abort。GitHub 這支要能上傳大檔，
+//   逾時放到 10 分鐘；連線層掉包照樣重試（重試前 findRelease 會先查已存在的 asset）。
+const DEFAULT_FETCH = withRetry({ timeoutMs: 600000 });
 
 /**
  * 從說明文件抽出某一版的**完整段落**（不是 daemon-notes.mjs 那種一行摘要）——
