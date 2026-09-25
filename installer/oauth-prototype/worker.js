@@ -83,7 +83,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8cbf49e06120c3017ca83ecd4d3210e5b7e1fbcb';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@dc59a05557b5ce0c9c2ee6c77a36418660c61601';
 const BUNDLE_BUILT = '2026-09-22'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -570,6 +570,20 @@ async function cfFetch(token, path, init = {}) {
       },
     });
   } catch (e) {
+    // 🔴 arcrun-rag#215 c11101：`fetch()` 在 Workers runtime 對「單次 invocation 的
+    //   subrequest 額度用完」也是丟例外（不是 HTTP 回應），訊息形如
+    //   `Too many subrequests by single Worker invocation`。這**不是暫時性的網路問題**
+    //   ——同一步驟如果還是要打那麼多次 API，重試會在同一個額度上再炸一次一模一樣的錯，
+    //   而畫面卻叫用戶「稍後再試」＝把一個確定性的產品缺陷講成隨機的網路問題。
+    //   誠實分類：講出「這是每次呼叫的用量上限」，且說明按「重新安裝」為什麼可能有用
+    //   （新的一輪＝新的 subrequest 額度，見「--- d. migration」那段），
+    //   而不是暗示這是網路不穩。
+    if (/too many subrequests/i.test(String(e && e.message))) {
+      throw new InstallError('這一步在單次操作內打了太多次 Cloudflare API', {
+        hint: '這是 Cloudflare 每次操作的用量上限，不是網路不穩——按「重新安裝」會拿到新的一輪用量額度，通常能繼續；若同一步驟一直卡在這裡，代表這個步驟本身要拆得更小，請把下方技術細節回報給我們。',
+        detail: `fetch failed: ${e && e.message}`,
+      });
+    }
     throw new InstallError('無法連線到 Cloudflare 服務', {
       hint: '這通常是暫時性的網路問題，請稍後按「重新安裝」再試一次。',
       detail: `fetch failed: ${e && e.message}`,
@@ -1071,6 +1085,497 @@ export default {
 // 真 kbdb schema（工地主任 installer/src/migrations.json，冪等 DDL；
 // 舊示範版的 entries(title,body) 與真 kbdb entries 撞名，已整段汰換——t20④c）
 const MIGRATION_SQL = MIGRATIONS.statements.join(';\n') + ';';
+
+// 🔴 arcrun-rag#215 c11101：ALTER TABLE … ADD COLUMN 在 SQLite 沒有 IF NOT EXISTS
+//   可寫，天生不冪等；其餘語句都用 IF NOT EXISTS／INSERT OR IGNORE／WHERE NOT EXISTS
+//   自己擋，本來就能放心整批重送。見下面 applyMigrations() 的分批理由。
+const MIGRATION_ALTER_ADD_COLUMN = /^\s*ALTER\s+TABLE\b[\s\S]*?\bADD\s+COLUMN\b/i;
+
+// ---------------------------------------------------------------------------
+// 🔴 arcrun-rag#215 comment 11172（總管定案，取代 c11163 的猜測段）：
+//
+// **根因不是「重試太貴」，是「已經裝好的帳號每一次重裝／更新，都會把全部 61 句
+// migration 從頭跑一遍」**——CF GraphQL 實測：`idx_entries_owner` 這句在 18:00–19:00
+// 被建了 16 次（含逐句/整批兩條路），每次寫入量 ≈ entries 總列數（youlin 約 4 萬列
+// ×16 ≈ 64 萬列，占當天 80 萬列燒掉額度的絕大部分）。而它**每次建完馬上被同一批
+// migration 的第 51 句 `DROP INDEX IF EXISTS idx_entries_owner` 刪掉**（0012 那支
+// migration 把它換成 `_present` partial index）——`IF NOT EXISTS` 擋不住這個病，
+// 因為每次重裝結束時這個索引本來就不存在（被自己的後段刪掉了），下次重送
+// 又會判定「不存在→要建」，於是每一次重裝都是「整張表建索引 → 馬上砍掉」的空轉，
+// 跟有沒有失敗、有沒有重試無關。
+//
+// 修法：**先探測這台實例現在在第幾代（沿用 kbdb `schema-generation.ts` 的
+// probeDataLayer() 同一套「觀察 schema 現況」判準，不新造一套「帳本」機制——
+// D38「永不加表」，且「宣稱跑過」與「schema 現在長怎樣」分開才不會撒謊），
+// 只送**還沒套過那幾代**的語句。已經在最新一代的帳號＝送 0 句，
+// 不再重跑任何一句、不再有「建了又刪」的空轉。
+//
+// 下面 GENERATION_CHECKS 是 `matrix/arcrun/kbdb/src/actions/schema-generation.ts`
+// `GENERATIONS` 常數裡 `checks`／`unprobeable` 那一部分的資料鏡射（不是邏輯搬移——
+// 探測的 SQL 由本檔自己發、走本檔既有的 D1 REST 存取，跟 `compile-migrations.mjs`
+// 已經在做的「安裝器自帶一份跟上游同步的資料」是同一個先例）。
+// 🔴 這份資料改動要跟上游同步；上游那邊每加一個世代，這裡要跟著補一筆，
+// 不然 `actual_generation` 會在新世代那裡提早停住（多送幾句，但不會算錯已完成的部分）。
+const GENERATION_CHECKS = [
+  { n: 1, checks: [
+      { kind: 'table', name: 'entries' }, { kind: 'table', name: 'templates' },
+      { kind: 'index', name: 'idx_entries_type' }, { kind: 'template', name: 'recipe_stat' },
+    ] },
+  { n: 2, unprobeable: true }, // 0006 把這張表拆了，「套過又拆了」與「從沒套過」schema 分不出來
+  { n: 3, checks: [{ kind: 'template', name: 'library_map' }] },
+  { n: 4, checks: [{ kind: 'template', name: 'execution_log' }] },
+  { n: 5, checks: [{ kind: 'template', name: 'credential' }] },
+  { n: 6, checks: [{ kind: 'no_table', name: 'credentials' }] },
+  { n: 7, checks: [
+      { kind: 'entries_column', name: 'src_id' }, { kind: 'entries_column', name: 'rel_id' },
+      { kind: 'entries_column', name: 'dst_id' },
+      { kind: 'index', name: 'idx_entries_rel_src' }, { kind: 'index', name: 'idx_entries_rel_dst' },
+      { kind: 'entry', id: 'sys_root' }, { kind: 'entry', id: 'sys_belongs' }, { kind: 'entry', id: 'sys_field_of' },
+      { kind: 'no_table', name: 'entry_values' },
+    ] },
+  { n: 8, checks: [{ kind: 'index', name: 'idx_entries_content' }] },
+  { n: 9, checks: [
+      { kind: 'index', name: 'idx_entries_owner_type_created' },
+      { kind: 'index', name: 'idx_entries_owner_created' },
+      { kind: 'index', name: 'idx_entries_source' },
+    ] },
+  { n: 10, checks: [{ kind: 'table', name: 'entries_fts' }] },
+  { n: 11, checks: [{ kind: 'index', name: 'idx_entries_dst_rel_created' }] },
+  { n: 12, checks: [
+      { kind: 'index', name: 'idx_entries_parent_present' },
+      { kind: 'index', name: 'idx_entries_page_present' },
+      { kind: 'index', name: 'idx_entries_hash_present' },
+    ] },
+  { n: 13, checks: [
+      { kind: 'index', name: 'idx_entries_pending_embed' },
+      { kind: 'index', name: 'idx_entries_embedded_current' },
+    ] },
+];
+
+function sqlQuote(s) { return `'${String(s).replace(/'/g, "''")}'`; }
+
+/** 判一條 check：滿足回 true。與 kbdb `explain()` 同一套判準，只是回布林不回句子。 */
+function generationCheckSatisfied(c, f) {
+  switch (c.kind) {
+    case 'table': return f.tables.has(c.name);
+    case 'no_table': return !f.tables.has(c.name);
+    case 'entries_column': return f.tables.has('entries') && f.entriesColumns.has(c.name);
+    case 'index': return f.indexes.has(c.name);
+    case 'template': return f.templates.has(c.name);
+    case 'entry': return f.entries.has(c.id);
+    default: return false;
+  }
+}
+
+/**
+ * 探這台實例現在在第幾代（1..13 連續滿足的最大 N；探測本身失敗 → 回 0，
+ * 當成「什麼都還沒有」——寧可多送幾句冪等的 migration，也不要少送）。
+ * `runReadSql(sql)` 由呼叫端注入，回傳這句 SELECT 的 rows 陣列（真打 D1 或測試假件）。
+ * 全部只讀 schema／系統保留 id，零使用者資料（同 kbdb probeDataLayer() 的不洩漏承諾）。
+ */
+async function detectMigrationGeneration(runReadSql) {
+  let tables, indexes, entriesColumns, templates, entries;
+  try {
+    const schemaRows = await runReadSql("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','index')");
+    tables = new Set(schemaRows.filter((r) => r.type === 'table').map((r) => r.name));
+    indexes = new Set(schemaRows.filter((r) => r.type === 'index').map((r) => r.name));
+    entriesColumns = new Set();
+    if (tables.has('entries')) {
+      try {
+        const cols = await runReadSql('PRAGMA table_info(entries)');
+        for (const c of cols) if (c && c.name) entriesColumns.add(String(c.name));
+      } catch { /* 落到下面的 DDL 解析（同 kbdb readEntriesColumns 的兩段式） */ }
+      if (entriesColumns.size === 0) {
+        const ddlRow = schemaRows.find((r) => r.type === 'table' && r.name === 'entries');
+        const ddl = ddlRow && ddlRow.sql;
+        if (ddl) {
+          const open = ddl.indexOf('(');
+          const body = open >= 0 ? ddl.slice(open + 1) : ddl;
+          for (const line of body.split(/[\n,]/)) {
+            const m = /^\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s+(TEXT|INTEGER|REAL|BLOB|NUMERIC)/i.exec(line);
+            if (m) entriesColumns.add(m[1]);
+          }
+        }
+      }
+    }
+    const wantedTemplates = [...new Set(GENERATION_CHECKS.flatMap((g) => (g.checks || [])
+      .filter((c) => c.kind === 'template').map((c) => c.name)))];
+    const wantedEntries = [...new Set(GENERATION_CHECKS.flatMap((g) => (g.checks || [])
+      .filter((c) => c.kind === 'entry').map((c) => c.id)))];
+    templates = new Set();
+    if (tables.has('templates') && wantedTemplates.length) {
+      const rows = await runReadSql(`SELECT name FROM templates WHERE name IN (${wantedTemplates.map(sqlQuote).join(',')})`);
+      for (const r of rows) templates.add(r.name);
+    }
+    entries = new Set();
+    if (tables.has('entries') && wantedEntries.length) {
+      const rows = await runReadSql(`SELECT id FROM entries WHERE id IN (${wantedEntries.map(sqlQuote).join(',')})`);
+      for (const r of rows) entries.add(r.id);
+    }
+  } catch (e) {
+    return { actualGeneration: 0, probeFailed: true, probeError: e instanceof Error ? e.message : String(e) };
+  }
+  const facts = { tables, indexes, entriesColumns, templates, entries };
+  let actual = 0;
+  for (const g of GENERATION_CHECKS) {
+    if (g.unprobeable) { actual = g.n; continue; }
+    if (!(g.checks || []).every((c) => generationCheckSatisfied(c, facts))) break;
+    actual = g.n;
+  }
+  return { actualGeneration: actual, probeFailed: false };
+}
+
+/** 從第 `fromGeneration + 1` 代開始的語句（已經套過的代不再送）。
+ *  `fromGeneration >= generationStarts.length`（已經是最新一代）→ 空陣列，0 句。
+ *  `generationStarts` 讀不到／格式壞掉 → **安全預設是送全部**，不是送 0 句
+ *  （少送而漏套 migration，比多送幾句冪等語句危險得多——寧可多花幾個 subrequest）。 */
+function migrationStatementsFrom(fromGeneration, statements = MIGRATIONS.statements, generationStarts = MIGRATIONS.generationStarts) {
+  if (!Array.isArray(generationStarts)) return statements;
+  if (fromGeneration >= generationStarts.length) return [];
+  return statements.slice(generationStarts[fromGeneration]);
+}
+
+// ---------------------------------------------------------------------------
+// 🔴 leo 2026-09-25 裁（arcrun-rag#215 c11182，取代 c11172 第 3 點「分天做完」）：
+// 「建索引是為了加速搜尋，但如果會爆，維護用戶至少可用慢速的，比加速但無法用好」
+//
+// migration 語句分兩類：
+//   ①「缺了會壞的」——新欄位／新表／template／資料搬遷／DROP 舊表：一定要做，算進預算
+//   ②「純加速的」——一般 `CREATE INDEX`（非 UNIQUE）：預算不夠就**先不建**，
+//      服務照樣能用、只是查詢比較慢；之後預算夠了再補（見 detectMigrationGeneration，
+//      沒補的索引 schema 上不存在 ⇒ 下次探測仍會把它排進 pending，不必另記帳）。
+//
+// 目前 61 句沒有一句是 `CREATE UNIQUE INDEX`，每一支普通索引都講得出服務哪一條
+// 查詢在用它——沒有一支是「沒它會回錯結果」的正確性依賴，全部屬於「變慢，但可用」：
+//   idx_entries_type/owner/parent/page/task/hash（0001）— 早期示範索引，
+//     已被 0012 的 `_present` partial index 取代
+//   idx_entries_rel_src/rel_dst（0007）— graph_neighbors 三元組查詢，避免全表 BFS
+//   idx_entries_content（0008）— Arcrun#168：節點名直接查，避免全表 content 掃描
+//   idx_entries_owner_type_created/owner_created/source（0009）— entries list 端點
+//     （Arcrun#210：D1 免費層三天連燒的根因）
+//   idx_entries_dst_rel_created（0011）— records/by-template 端點分頁（Arcrun#218）
+//   idx_entries_parent/page/hash_present（0012）— 0001 版瘦身重製，降寫入放大（InkStoneCo#140）
+//   idx_entries_pending_embed/embedded_current（0013）— embed backfill/reconcile（Arcrun#240）
+const FREE_TIER_DAILY_ROW_WRITE_LIMIT = 100000; // D1 免費層每日 rows written 上限（官方數字）
+// 🔴 leo 2026-09-25（c11181）：預算一律用免費方案額度算，即使這個帳號實際是付費的——
+//   讓付費帳號也知道「免費用戶在這一步會被燒光」。
+//
+// 🔴 總管審 b2ca8e0 退回（c11189）：原本這裡是「打七折」（70,000，單次安裝內部累計），
+//   兩個問題都是真的：
+//   ① `MigrationWriteBudget`／這支預算**每次 `runInstall` 從 0 重新算**，同一帳號同一天
+//      裝三次可能各花 7 萬、合計 21 萬，遠超過一天 10 萬的真實上限——沒有人在守「今天」。
+//   ② 70% 的門檻本身跟 `InkStoneCo#147` 已核准的「單一操作全域上限 5%（5,000 列）」
+//      對不上；#147 的推導：驗收要求「20% 之前剎住」，即使同時有 3 個操作各自頂上限，
+//      合計 15% 仍在 20% 內 ⇒ 單一操作上限抓 5%。
+//   ⇒ 改成兩層：**單一操作**（一支索引）不准超過 `ACCELERATOR_SINGLE_OP_CAP`；
+//   **同一帳號同一天**（跨每一次安裝／更新）的累計不准超過剩下的每日額度——
+//   累計數字自己記帳（`loadDailySpend`／`recordDailySpend`），不查 CF、不新增 KV 用途
+//   （沿用既有 `env.INSTALLER_KV` 的 key-value 介面；`inkstone/arcrun-rag#217` 把它換成
+//   DO 背後的 shim 之後，這裡的呼叫一行都不用改——跟那邊已經在用的
+//   `kbdbtok:<accountId>`／`cronlock:<sid>` 是同一種「新 key 前綴，不是新 binding」）。
+const ACCELERATOR_SINGLE_OP_CAP = Math.round(FREE_TIER_DAILY_ROW_WRITE_LIMIT * 0.05); // 5,000
+
+/** 這句是不是「純加速」的普通索引（服務沒它一樣能跑，只是慢）。
+ *  `CREATE UNIQUE INDEX` 不算——唯一性是正確性依賴，歸「缺了會壞」那類，不受預算限制。 */
+function isAcceleratorStatement(stmt) {
+  return /^\s*CREATE\s+INDEX\b/i.test(stmt) && !/^\s*CREATE\s+UNIQUE\s+INDEX\b/i.test(stmt);
+}
+
+function indexNameOf(stmt) {
+  const m = stmt.match(/CREATE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i);
+  return m ? m[1] : null;
+}
+
+/** 解析一句 `CREATE INDEX ... ON table(...) [WHERE ...]` 的目標表與過濾條件。 */
+function parseIndexTarget(stmt) {
+  const m = stmt.trim().match(/CREATE\s+(?:UNIQUE\s+)?INDEX[\s\S]*?\bON\s+(\w+)\s*\([\s\S]*?\)(?:\s+WHERE\s+([\s\S]*?))?;?\s*$/i);
+  if (!m) return null;
+  return { table: m[1], where: m[2] ? m[2].trim() : null };
+}
+
+/**
+ * 估一句「純加速」索引的建置成本（≈符合 WHERE 條件的列數，D1 對 CREATE INDEX
+ * 的寫入計費近似「每個索引項一筆」）。走 COUNT(*) 讀查詢，零寫入、零使用者資料
+ * （只讀「這張表現在有幾列符合這個過濾條件」這個數字本身，不讀任何一列的內容）。
+ * `runReadSql` 由呼叫端注入（真打 D1 或測試假件）。
+ *
+ * 🔴 總管審 b2ca8e0 退回（c11189）：解析失敗／查詢出錯原本回 `0`（「估不出來就讓它跑」）
+ * ——**這是往危險的方向猜**：估不出來應該當成「很貴」，不是「免費」。改回 `Infinity`，
+ * 讓呼叫端把它當成必定超預算，穩定跳過（安全方向：多跳過幾個索引、服務變慢一點，
+ * 好過猜錯讓它燒穿額度）。
+ *
+ * 🔴 總管實跑驗收腳本退回（c11213）：上面那條規則本身沒錯，但**漏分一種情況**——
+ *   全新安裝時，估價這一刻 `entries`／`templates` 這些表**根本還沒建出來**
+ *   （建表跟建索引是同一批 pending 語句，估價發生在真的執行任何一句之前）。
+ *   `COUNT(*) FROM entries` 對一張還不存在的表一定出錯，被舊規則當成「真的估不出來」
+ *   → `Infinity` → 23 支索引全新帳號第一次裝就全部被跳過**沒有任何理由**——
+ *   不是「預算不夠才慢」，是「毫無理由就慢」，而它明明是空表，成本應該是 0。
+ *   ⇒ 分清楚兩種「查不到」：**表還不存在**（`no such table`，D1／SQLite 原文固定字樣，
+ *   不受 `translateCfError` 影響——同 `isD1DailyLimit`／`isAlreadyExistsError` 的判斷
+ *   方式，讀 `cfRawMessage` 不讀翻譯過的 `message`）＝這張表**即將被同一批 pending
+ *   的 CREATE TABLE 建出來、當下必定是空的**，成本 0，不是「估不出來」；
+ *   任何其他錯誤才維持 `Infinity`（真的估不出來，當很貴）。
+ */
+async function estimateAcceleratorCost(runReadSql, stmt) {
+  const target = parseIndexTarget(stmt);
+  if (!target) return Infinity;
+  const sql = target.where
+    ? `SELECT COUNT(*) c FROM ${target.table} WHERE ${target.where}`
+    : `SELECT COUNT(*) c FROM ${target.table}`;
+  try {
+    const rows = await runReadSql(sql);
+    const c = rows && rows[0] && rows[0].c;
+    const n = Number(c);
+    return Number.isFinite(n) ? n : Infinity;
+  } catch (e) {
+    if (/no such table/i.test(cfRawMessage(e))) return 0; // 表還沒建出來＝即將是空表，成本 0，不是估不出來
+    return Infinity;
+  }
+}
+
+/**
+ * 把 pending 語句依預算分成「要送」（`toRun`）與「先跳過」（`skipped`，附估計成本與索引名）。
+ * 「缺了會壞」的語句（非 accelerator）一定進 `toRun`，不受預算限制、不估成本。
+ * 「純加速」的語句先估成本，**單一操作超過 `singleOpCap`（預設 5% 全域上限）就跳過**，
+ * 或累計超過 `dailyRemaining`（呼叫端傳入「今天這個帳號還剩多少」，見
+ * `loadDailySpend`）也跳過——跳過後 schema 仍然完整可用，只是查詢會比較慢
+ * （見檔頭 leo c11182 的裁決）。
+ *
+ * 🔴 leo 2026-09-25（c11186）：youlin 已升 Workers Paid，CF **不會再回 7500**——
+ *   若剎車只靠「撞到 CF 的錯誤碼才停」，付費帳號會完全看不到燒錢，這支估價
+ *   （事前 COUNT 查詢）與呼叫端的 `MigrationWriteBudget`（事後累計 `rows_written`，
+ *   見下方）合起來才是**自己算，不等 CF 回報**的剎車——CF 的 7500 只當最後一道兜底。
+ */
+async function planMigrationBudget(runReadSql, statements, opts = {}) {
+  const singleOpCap = opts.singleOpCap ?? ACCELERATOR_SINGLE_OP_CAP;
+  const dailyRemaining = opts.dailyRemaining ?? FREE_TIER_DAILY_ROW_WRITE_LIMIT;
+  const toRun = [];
+  const skipped = [];
+  // 🔴 arcrun-rag#215 c11236：把「送出前自己估的成本」原封不動帶出去，
+  // 讓呼叫端可以拿它蓋掉 D1 REST 回應那個不可靠的 meta.rows_written
+  // （見 MigrationWriteBudget 檔頭的查證：GraphQL／帳單那份跟 REST 單次回應對不上）。
+  const estimatedCosts = new Map();
+  let spent = 0;
+  for (const stmt of statements) {
+    if (!isAcceleratorStatement(stmt)) { toRun.push(stmt); continue; }
+    const cost = await estimateAcceleratorCost(runReadSql, stmt);
+    const cap = Math.min(singleOpCap, Math.max(0, dailyRemaining - spent));
+    if (cost > cap) {
+      skipped.push({ name: indexNameOf(stmt), estimatedCost: cost, statement: stmt });
+      continue;
+    }
+    spent += cost;
+    estimatedCosts.set(stmt, cost);
+    toRun.push(stmt);
+  }
+  return { toRun, skipped, estimatedSpend: spent, estimatedCosts };
+}
+
+/** 今天的 UTC 日期字串（額度台北 08:00＝UTC 午夜重置，用 UTC 日界自然對齊，不必額外算）。 */
+function utcDateKey(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10); // 'YYYY-MM-DD'
+}
+
+/**
+ * 讀「這個 Cloudflare 帳號今天已經花了多少免費層寫入額度」——自己記的帳，不查 CF。
+ * key 的日期就是重置點：明天這把 key 天然不存在，等於自動歸零，不必另外算重置時間。
+ * `kv` 是 `env.INSTALLER_KV`（或任何同介面的 store，見上方檔頭關於 `#217` DO 的說明）。
+ */
+async function loadDailySpend(kv, accountId, now = Date.now()) {
+  try {
+    const raw = await kv.get(`mig-budget:${accountId}:${utcDateKey(now)}`, 'json');
+    const n = raw && Number(raw.rowsWritten);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0; // 讀不到 → 當作今天還沒花過（安全方向留給預算上限本身：5% 單一操作上限仍然守著）
+  }
+}
+
+/** 把這次安裝實際花掉的列數加回「今天」的累計帳。 */
+async function recordDailySpend(kv, accountId, additionalRows, now = Date.now()) {
+  if (!additionalRows) return;
+  const key = `mig-budget:${accountId}:${utcDateKey(now)}`;
+  const before = await loadDailySpend(kv, accountId, now);
+  await kv.put(key, JSON.stringify({ rowsWritten: before + additionalRows, updatedAt: now }), {
+    expirationTtl: 2 * 24 * 60 * 60, // 2 天：隔天這把 key 本來就不會再被讀，TTL 只是順手清垃圾
+  });
+}
+
+/**
+ * 🔴 leo 2026-09-25（c11186）：「計數器自己算，不能等 CF 回報」——這支是那個計數器。
+ * 每打一次 D1 REST `/query`，把回應裡的 `meta.rows_written`／`meta.rows_read`
+ * 累加起來，跟**這個帳號今天還剩多少額度**（呼叫端傳入 `limit` = `loadDailySpend` 算出來的
+ * 剩餘值，不是每次都用滿額的 10 萬）對帳；一旦**我們自己算出**會超過，下一句還沒送出就
+ * 先擋下來丟錯（不等、也不看 CF 有沒有報 7500——付費帳號 CF 永遠不會報 7500，那條路完全沒用）。
+ *
+ * 用法：`const budget = new MigrationWriteBudget(dailyRemaining); const runSql = budget.wrap(rawRunSql);`
+ * ——包一層之後，呼叫端不必在每個呼叫點手動記帳，`budget.rowsWritten` 隨時可讀；
+ * 這次安裝結束後把它交給 `recordDailySpend` 存回「今天」的累計帳。
+ */
+class MigrationWriteBudget {
+  /**
+   * @param {number} limit
+   * @param {Map<string, number>} [estimateOverrides] 目前未使用（見下方 c11238 更正），
+   *   留著參數位置＋照樣收下 `stmtsInCall`，只是為了未來真的量出「多語句一次送，
+   *   每個 entry 是不是各自獨立」之後還能重新啟用，不必再改一次呼叫端簽名。
+   */
+  constructor(limit = FREE_TIER_DAILY_ROW_WRITE_LIMIT, estimateOverrides) {
+    this.limit = limit;
+    this.rowsWritten = 0;
+    this.rowsRead = 0;
+    this.calls = 0;
+    this.estimateOverrides = estimateOverrides || new Map();
+    // 🔴 arcrun-rag#215 c11236 → **c11238 總管更正，原結論撤回**：
+    //   c11236 說「REST meta 跟 CF 帳單對不上（2.2～9.4 倍）」，但總管事後查證：
+    //   ① D1 pricing 頁 FAQ 明講「Every query returns a `meta` object that
+    //     contains a total count of the rows read and rows written by that
+    //     query」——`meta.rows_written` **就是計費依據**，方向本來就是對的。
+    //   ② 總管當初拿來對帳的 CF GraphQL `d1QueriesAdaptiveGroups` 是**抽樣資料**
+    //     （節點名帶 Adaptive／`avg.sampleInterval` 觀察到 2～21 不等的取樣間隔），
+    //     不是逐列精確值，拿它來算「倍差」本身就沒有意義。
+    //   ⇒ **不採信 meta、改用 estimateAcceleratorCost 覆寫**這個修法的前提不成立，
+    //   已撤回（不再在 `record()` 裡做任何覆寫，一律相信 `meta.rows_written`）。
+    //
+    //   c11238 定案唯一還沒確認的事：D1 REST `/query` 一次送多句（`;` join）時，
+    //   回傳 `result[]` 裡每一筆的 `meta` 是**那一句自己的**用量，還是累計值。
+    //   查過官方文件（cloudflare-d1-raw-database-query）沒有明講；另一份社群整理
+    //   的說法傾向「一句一個 result、各自獨立 meta」，但**沒有官方逐字確認**，
+    //   總管要求「要用官方 API 文件或一次小實測證明，不准猜」——這裡先誠實記下
+    //   還沒證實，`callLog`／`stmtsInCall` 這兩個結構留著就是為了做那次小實測
+    //   （送 3 句已知寫入列數的語句，比對 `metas` 陣列的值是各自對得上還是遞增疊加）。
+    //   目前的行為（全部加總）在「各自獨立」成立時是對的；真的驗出是累計值，
+    //   再回來改，不是現在猜。
+    this.callLog = [];
+  }
+
+  /** 從一句 D1 REST `/query` 的回應（`cfFetch` 回傳的 `result` 陣列）記一筆帳。
+   *  `sqlForLog` 選填，只用來留痕（截斷成前 80 字），不影響計算。
+   *  `stmtsInCall` 選填：這次呼叫實際送出的語句陣列（依送出順序，跟 `result` 的
+   *  entry 理論上一一對應）——**只用來留痕**（供日後驗證 c11238 那個懸而未決的
+   *  問題），c11238 撤回之後不再拿它去覆寫任何數字。 */
+  record(result, sqlForLog, stmtsInCall) {
+    this.calls++;
+    const metas = Array.isArray(result) ? result.map((r) => r && r.meta).filter(Boolean) : [];
+    let callWritten = 0;
+    let callRead = 0;
+    for (const m of metas) {
+      if (typeof m.rows_written === 'number') callWritten += m.rows_written;
+      if (typeof m.rows_read === 'number') callRead += m.rows_read;
+    }
+    this.rowsWritten += callWritten;
+    this.rowsRead += callRead;
+    this.callLog.push({
+      sql: sqlForLog ? String(sqlForLog).slice(0, 80) : undefined,
+      stmtsInCall: Array.isArray(stmtsInCall) ? stmtsInCall.length : undefined, // 留痕：這次送了幾句，供日後對「各自/累計」那個懸案取證
+      resultEntries: metas.length,
+      metas: metas.map((m) => ({ rows_written: m.rows_written, rows_read: m.rows_read })),
+      callWritten,
+      callRead,
+    });
+  }
+
+  /** 剎車：下一句送出去之前，先問「我們自己算的累計數字」還在不在預算內。 */
+  assertWithinBudget() {
+    if (this.rowsWritten > this.limit) {
+      throw new InstallError('這一步已經用掉太多今天的免費寫入額度，自動停下來了', {
+        hint: '這是我們自己算出來的用量煞車（不是等 Cloudflare 回報），保護你今天其餘的正常使用。'
+          + '額度在台北時間早上 8 點（UTC 午夜）重置，之後再按一次「重新安裝」。',
+        detail: `MigrationWriteBudget：累計 rows_written=${this.rowsWritten}（自算，不讀 CF 錯誤碼），上限=${this.limit}`,
+      });
+    }
+  }
+
+  /** 包一層 runSql：送出前先剎車複驗，回應回來後立刻記帳。
+   *  `runSql(sql, stmtsInCall?)`——第二個參數選填，真的打 D1 的那層會忽略它，
+   *  只有這一層讀，用來做上面 `record()` 的逐句 override 對應。 */
+  wrap(runSql) {
+    return async (sql, stmtsInCall) => {
+      this.assertWithinBudget();
+      const result = await runSql(sql);
+      this.record(result, sql, stmtsInCall);
+      return result;
+    };
+  }
+}
+
+/**
+ * 套用 kbdb schema migration，`runSql(sql)` 由呼叫端注入（真正打 D1 或測試假件）。
+ * 回傳 `{ tolerated }`（幾句是「早就套過」被容忍略過）。
+ *
+ * 🔴 arcrun-rag#215 c11101：原本撞到 duplicate column 就把全部 statements 逐句重送
+ *   （目前 61 句＝61 個 subrequest），在同一次 invocation 裡把免費層 50 個 subrequest
+ *   的額度用完，`fetch()` 丟 `Too many subrequests by single Worker invocation`，
+ *   畫面卡在「建立資料表結構」——而且每個已裝過部分/全部 migration 的帳號，
+ *   之後每次升級都會重踩，不是偶發。
+ *   真正不冪等、非逐句不可的只有 `ALTER TABLE … ADD COLUMN`（目前 3 句，P0-2 測試
+ *   斷言「只該有 0007 那三句加欄位需要容錯」）；其餘語句分成幾批一次送（1 個
+ *   subrequest／批）。
+ *
+ * 🔴 arcrun-rag#215 comment 11138（總管審出的順序缺陷，退回重修）：
+ *   第一版把「安全」與「不安全」語句各自收攏成兩坨、**不安全那坨排在安全那坨後面**
+ *   才跑——但語句順序本身就是相依關係：第 25／26／50 句的 `CREATE INDEX` 建在
+ *   `src_id`／`rel_id`／`dst_id` 上、第 32／34／36／38／39 句的 `INSERT` 也寫那幾欄，
+ *   全部排在加欄位的第 22–24 句**之後**（migration 原始順序本來就保證這件事）。
+ *   把不安全語句挪到最後 ⇒ 這些「安全」語句實際上先跑，欄位還沒加 ⇒
+ *   `no such column: rel_id`，跟原本要防的 duplicate column 是兩種錯，直接往上拋、
+ *   整步失敗。**尤其會發生在「只套了一半 0007」的帳號**（例如 `src_id` 已加、
+ *   `rel_id` 還沒加——D1 多語句一次送遇錯可能中途停手，殘留半套）。
+ *
+ *   ⇒ 改法：**只合併「連續」的安全語句，遇到不冪等語句就先把目前累積的安全批送
+ *   出去、逐句跑那句不冪等的，再繼續累積下一批**——整體執行順序＝原始語句順序，
+ *   不重排。以目前的 61 句為例：安全批（0–21）→ 逐句(22)→逐句(23)→逐句(24)
+ *   → 安全批（25–60），共 6 個 subrequest（原本最壞情況 61 個）。
+ *   萬一某一批安全語句本身意外撞 duplicate column（分類規則沒抓到的新形態），
+ *   防禦性退回該批內逐句（順序不變），不讓分類假設本身變成單點故障。
+ */
+async function applyMigrations(runSql, statements = MIGRATIONS.statements) {
+  let tolerated = 0;
+  // 🔴 arcrun-rag#215 comment 11252（總管自己的探測腳本先撞到）：`statements` 是
+  // 空陣列時（`planMigrationBudget` 把 pending 裡全部的加速索引都跳過、又沒有
+  // 任何「缺了會壞」的語句要送），原本仍會 `[].join(';\n') + ';'` 送出裸的 `";"`
+  // ——D1 回 `did not contain a statement`，schema 步驟整個失敗。情境：某帳號
+  // 當天額度只剩一點點，而它缺的剛好全部是索引 ⇒ 應該「先慢速可用」，
+  // 結果卻是整步失敗，比不建索引還糟。一句都不用送就直接算完成。
+  if (statements.length === 0) return { tolerated };
+  // 🔴 arcrun-rag#215 c11236：`runSql` 的第二個參數（選填）是這次呼叫實際送出的
+  // 語句陣列，只給 MigrationWriteBudget 的 wrap() 拿去做逐句 override 對應
+  // （見該檔頭），真的打 D1 那層會忽略它，不影響送出的 SQL 內容。
+  try {
+    await runSql(statements.join(';\n') + ';', statements);
+    return { tolerated };
+  } catch (e) {
+    if (!/duplicate column/i.test(cfRawMessage(e))) throw e;
+  }
+  const runOne = async (stmt) => {
+    try {
+      await runSql(stmt, [stmt]);
+    } catch (e2) {
+      if (/duplicate column/i.test(cfRawMessage(e2))) { tolerated++; return; }
+      throw e2;
+    }
+  };
+  const flushSafeBatch = async (buf) => {
+    if (!buf.length) return;
+    try {
+      await runSql(buf.join(';\n') + ';', buf);
+    } catch (e3) {
+      if (!/duplicate column/i.test(cfRawMessage(e3))) throw e3;
+      for (const stmt of buf) await runOne(stmt); // 防禦性退回逐句，批內順序不變
+    }
+  };
+  let buf = [];
+  for (const stmt of statements) {
+    if (MIGRATION_ALTER_ADD_COLUMN.test(stmt)) {
+      await flushSafeBatch(buf);
+      buf = [];
+      await runOne(stmt);
+    } else {
+      buf.push(stmt);
+    }
+  }
+  await flushSafeBatch(buf);
+  return { tolerated };
+}
 
 /** 用戶身分 → 可重現的資源短碼（P0-2）：同一 email 每次安裝得到同一組名稱，
  *  斷點續傳才認得出上次建的那組、不會再建一整套。 */
@@ -2276,6 +2781,18 @@ async function seedSkillsTo(cypherBase, ns) {
 export {
   fetchBundleManifest, deployBundledWorker, bundleBase, landingBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
+  // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
+  // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
+  applyMigrations, MIGRATION_ALTER_ADD_COLUMN,
+  // arcrun-rag#215 comment 11172：世代探針＋按世代切句，測試直接注入假 runReadSql
+  // 證明「已是最新的帳號送 0 句」，不必繞整個 runInstall／真 Cloudflare。
+  detectMigrationGeneration, migrationStatementsFrom, GENERATION_CHECKS,
+  // arcrun-rag#215 c11182／c11186：可用優先於快的預算規劃＋自算計數器剎車
+  isAcceleratorStatement, indexNameOf, parseIndexTarget, estimateAcceleratorCost,
+  planMigrationBudget, MigrationWriteBudget, ACCELERATOR_SINGLE_OP_CAP, FREE_TIER_DAILY_ROW_WRITE_LIMIT,
+  utcDateKey, loadDailySpend, recordDailySpend,
+  // arcrun-rag#215 c11189：本機實裝驗收腳本要能直接呼叫同一支 runInstall（不開後門端點）
+  runInstall, freshProgress, writeProgress, readProgress,
   // 資源解析（判斷本身在 shared/resource-rule/，這兩支只做輸入整形與呼叫）
   manifestRequirements, resolveResourcesByRule, ensureVectorizeMetadataIndexes, VECTORIZE_INDEX,
   applySubs, pushWorkflowTo,
@@ -2607,7 +3124,7 @@ async function runInstall(env, sid, progress, force) {
     }
   }
 
-  // --- d. migration（一次批次送多語句；撞到「已經套過」才退回逐句容錯）-----------
+  // --- d. migration（一次批次送多語句；撞到「已經套過」才退回分批容錯）-----------
   //
   // 🔴 2026-08-26 實錯（leo 更新時當場失敗，畫面停在「建立資料表結構」）：
   //   `duplicate column name: src_id: SQLITE_ERROR`
@@ -2620,43 +3137,67 @@ async function runInstall(env, sid, progress, force) {
   //   ⇒ 修「migration 沒帶齊」的同時，沒有想到「帶齊之後會重複套用」。
   //     一個修法解開了另一個一直被遮住的缺陷。
   //
-  //   做法照 `cli/src/lib/deploy.ts` 的 `applyMigrationFile()`（那條路沒壞）：
-  //   **預設整批送（維持既有行為與 subrequest 預算）；只有在撞到 duplicate column
-  //   時才退回逐句、逐句容錯**。不預先逐句跑——41 句 × HTTP 來回會吃掉免費層的
-  //   subrequest 額度（每個用戶都在免費層，見 principles「免費層預算設計原則」）。
+  //   預設整批送（維持既有行為與 subrequest 預算）；只有在撞到 duplicate column
+  //   時才退回分批容錯——見 applyMigrations()（上面 MIGRATION_SQL 旁）為什麼是
+  //   「安全一批＋不冪等逐句」而不是全部逐句（arcrun-rag#215 c11101：全部逐句＝
+  //   61 個 subrequest，會把免費層額度打爆）。
+  // 🔴 arcrun-rag#215 comment 11172：送 migration 之前先探這台在第幾代，
+  // 已經套過的代不再重送——見 detectMigrationGeneration()／migrationStatementsFrom()
+  // 檔頭那段「建了又刪」根因說明（上面 MIGRATION_ALTER_ADD_COLUMN 旁）。
   if (!stepDone('schema')) {
     try {
       await setStep('schema', 'running');
-      const runSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
+      const rawRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sql }),
       });
-      let tolerated = 0;
+      const runReadSql = async (sql) => {
+        const result = await rawRunSql(sql);
+        return (result && result[0] && result[0].results) || [];
+      };
+      // 🔴 arcrun-rag#215 c11186／c11189：計數器自己算，跨這個帳號**今天**每一次安裝／
+      // 更新累計，不等 CF 回報（youlin 已升 Workers Paid，CF 對這顆帳號不會再回 7500——
+      // 若剎車只認 CF 的錯誤碼，付費帳號燒錢會完全看不到；若每次安裝各自從 0 算，
+      // 同一天裝三次會合計燒穿一整天的額度）。
+      const spentToday = await loadDailySpend(env.INSTALLER_KV, accountId);
+      const dailyRemaining = Math.max(0, FREE_TIER_DAILY_ROW_WRITE_LIMIT - spentToday);
+      // budget 要等 planMigrationBudget 算出每支加速索引「自己估的成本」才建——
+      // 那份估價會拿去蓋掉 D1 REST 回應不可靠的 meta.rows_written（c11236）。
+      let budget;
       try {
-        await runSql(MIGRATION_SQL);
-      } catch (e) {
-        // 🔴 Arcrun#191 第二處同款：這裡原本也是讀 `e.message`（＝譯文）去比對英文。
-        //    它**今天還沒壞，是運氣**——D1 的錯落在 translateCfError 最後那條
-        //    `Cloudflare 回報：${msg}`，原文剛好被原封不動接在後面，所以比得中。
-        //    只要哪天 D1 的這個錯改成帶 code、或走到 401/403/429 那三條翻譯分支，
-        //    這一行就會跟 metadata index 那一行一樣安靜地永遠比不中
-        //    ⇒ 已套過 migration 的實例再裝一次就整步失敗（就是 #159 那個病復發）。
-        //    ⇒ 改成讀原文，不留這顆定時炸彈。
-        // 只有「這一句本來就套過了」才退回逐句；其他錯照樣往上拋，不吞。
-        if (!/duplicate column/i.test(cfRawMessage(e))) throw e;
-        for (const stmt of MIGRATIONS.statements) {
-          try {
-            await runSql(stmt);
-          } catch (e2) {
-            if (/duplicate column/i.test(cfRawMessage(e2))) { tolerated++; continue; }
-            throw e2;
+        const { actualGeneration } = await detectMigrationGeneration(runReadSql);
+        const pending = migrationStatementsFrom(actualGeneration);
+        if (pending.length === 0) {
+          budget = new MigrationWriteBudget(dailyRemaining);
+          await setStep('schema', 'done', '資料表已是最新（沒有需要套用的變更）');
+        } else {
+          // leo 2026-09-25 裁（c11182）：可用優先於快——純加速索引預算不夠就先不建，
+          // 「缺了會壞」的語句不受這條限制。見 planMigrationBudget 檔頭。
+          const { toRun, skipped, estimatedCosts } = await planMigrationBudget(runReadSql, pending, { dailyRemaining });
+          if (skipped.length) {
+            progress.result.skippedAccelerators = skipped.map((s) => ({ name: s.name, estimatedCost: s.estimatedCost }));
           }
+          budget = new MigrationWriteBudget(dailyRemaining, estimatedCosts);
+          const runSql = budget.wrap(rawRunSql);
+          const { tolerated } = await applyMigrations(runSql, toRun);
+          const notes = [];
+          if (tolerated) notes.push(`${tolerated} 項先前已套過，略過`);
+          if (skipped.length) notes.push(`${skipped.length} 個加速索引為了不超額度先跳過（服務仍可用，會比較慢）`);
+          await setStep('schema', 'done', notes.length ? `資料表已就緒（${notes.join('；')}）` : '資料表已就緒');
         }
+      } finally {
+        // 不管成功／失敗都要記帳——失敗之前已經真的寫出去的列數，明天的額度不該假裝沒發生過。
+        // `budget` 可能因為 planMigrationBudget／applyMigrations 之前就出錯而還沒建出來
+        // （例如 detectMigrationGeneration 上游真的丟出非預期例外）——那種情況下
+        // 一句 D1 都還沒送出去，記 0 筆帳是誠實的，不是漏記。
+        const rowsWritten = budget ? budget.rowsWritten : 0;
+        progress.result.migrationRowsWritten = rowsWritten; // 這一次的用量，供技術細節與對帳
+        // arcrun-rag#215 c11219：CF 對帳誤差還沒定案，先把每一次呼叫的原始 meta 明細
+        // 帶出去（見 MigrationWriteBudget 建構子的註解），下次對帳直接比對哪一次呼叫多算了。
+        progress.result.migrationCallLog = budget ? budget.callLog : [];
+        await recordDailySpend(env.INSTALLER_KV, accountId, rowsWritten);
       }
-      await setStep('schema', 'done', tolerated
-        ? `資料表已就緒（${tolerated} 項先前已套過，略過）`
-        : '資料表已就緒');
     } catch (e) {
       await fail('schema', e);
       return;
@@ -4623,6 +5164,17 @@ async function handleInstallStart(request, env, ctx) {
 function installWarnings(result) {
   const r = result || {};
   const out = [];
+  // 🔴 arcrun-rag#215 c11182（leo 裁「可用優先於快」）：為了不燒光免費額度而先不建的
+  // 加速索引，必須讓用戶看得到「現在是慢速模式」——不准默默變慢。
+  if (Array.isArray(r.skippedAccelerators) && r.skippedAccelerators.length) {
+    out.push({
+      title: '有 ' + r.skippedAccelerators.length + ' 個加速索引還沒建',
+      body: '你的知識庫可以正常使用，只是為了不一次燒光今天的免費額度，部分搜尋／列表的'
+        + '加速索引先跳過了——查詢還是會出結果，只是可能比較慢。之後更新時會再嘗試補上。',
+      detail: r.skippedAccelerators.map((s) => `${s.name || '(未知索引)'}（估計成本 ${s.estimatedCost} 列）`).join('\n'),
+      audience: 'user',
+    });
+  }
   if (r.vectorizeWarning) {
     out.push({
       title: '語意搜尋沒有裝起來',

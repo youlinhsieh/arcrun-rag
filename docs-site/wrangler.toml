@@ -42,3 +42,19 @@ workers_dev = true
 [env.staging.assets]
 directory = "./deploy"
 not_found_handling = "404-page"
+
+# ---------------------------------------------------------------------------
+# youlin stage（inkstone/arcrun-rag#215，2026-09-25）：AI／雲端 stage 整套搬到
+# youlin 帳號，資料與 prod 完全分開。docs-site 是純靜態站（[assets] 沒有 KV／D1），
+# 所以這個環境唯一要換的就是 account_id——沒有資源要另外建。
+#   部署指令＝ `npx wrangler deploy --env youlin-stage --config docs-site/wrangler.toml`
+# ---------------------------------------------------------------------------
+[env.youlin-stage]
+name = "arcrun-docs-youlin-stage"
+account_id = "1129efd7df2e8899d537e9c8fbabb6cb"
+routes = []
+workers_dev = true
+
+[env.youlin-stage.assets]
+directory = "./deploy"
+not_found_handling = "404-page"

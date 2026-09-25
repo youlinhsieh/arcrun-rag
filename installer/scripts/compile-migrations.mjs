@@ -123,11 +123,17 @@ for (let i = 0; i < nums.length; i++) {
 }
 
 const statements = [];
+// 🔴 arcrun-rag#215 comment 11172：每個世代（migration 檔）的第一句在 statements
+// 陣列裡的 index——讓 worker.js 能「已經套過的世代永遠不再重跑」，只送
+// `generationStarts[actualGeneration]` 之後的句子，不必每次都把全部 61 句
+// （含早就套過、甚至早就被後面世代刪掉的舊索引）重新送一次。
+const generationStarts = [];
 for (const f of files) {
   const p = join(migDir, f);
   const sql = readFileSync(p, 'utf8');
   assertSafeToSplit(f, sql);
   const stmts = splitStatements(sql);
+  generationStarts.push(statements.length);
   for (const s of stmts) statements.push(s);
   console.log(`  · ${f} → ${stmts.length} 句`);
 }
@@ -141,5 +147,5 @@ if (!/import\s+MIGRATIONS\s+from\s+'\.\/migrations\.json'/.test(workerSrc)) {
   );
 }
 
-writeFileSync(outPath, JSON.stringify({ source: files, statements }, null, 2) + '\n', 'utf8');
+writeFileSync(outPath, JSON.stringify({ source: files, statements, generationStarts }, null, 2) + '\n', 'utf8');
 console.log(`✓ 共 ${statements.length} 句 → ${outPath}`);

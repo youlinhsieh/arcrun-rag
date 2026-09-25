@@ -70,3 +70,34 @@ EMAIL_FROM = "noreply@arcrun.dev"
 # 不是自己剛出的那個版本；辨識碼信裡的安裝連結也會把測試流程導去 prod 安裝器。
 INSTALL_BASE = "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
 DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
+
+# ---------------------------------------------------------------------------
+# youlin stage（inkstone/arcrun-rag#215，2026-09-25）：AI／雲端 stage 整套搬到
+# youlin 帳號，KV 與 uncle6 完全分開；只用 youlin 的 CF token 就能出這一站。
+#
+# 🔴 EMAIL_ENABLED 故意留 "false"（**與 uncle6 staging 唯一的行為差異，非身分差異**，
+# 記在這裡是因為 D90 要求「差身分不差行為」，這裡是有意的例外，理由如下）：
+# `send_email` binding 要求寄件網域（arcrun.dev）已在**同一個 CF 帳號**開通 Email
+# Routing／Sending——而 arcrun.dev 這顆 zone 只在 uncle6 帳號（youlin 帳號目前
+# 沒有掛任何 zone，查證：`GET /zones` 回空陣列）。⇒ 要嘛把 arcrun.dev 委給 youlin
+# （會動到正式網域的 DNS／nameserver，是要 leo 裁的結構決策，不在本票自己裁），
+# 要嘛給 youlin 另掛一個測試專用網域（多一筆維運）。兩者都不是本票能自己決定的，
+# 所以先讓這一站的寄信路徑保持關閉——worker.js:421/470 對 EMAIL_ENABLED!=true
+# 回乾淨的 503 + email_disabled，不會 500、不會噴 stack trace。
+# 其餘行為（版本查詢、辨識碼記錄、INSTALL_BASE／DOCS_BASE 導覽）照常運作。
+[env.youlin-stage]
+name = "arcrun-landing-youlin-stage"
+account_id = "1129efd7df2e8899d537e9c8fbabb6cb"
+compatibility_flags = ["global_fetch_strictly_public"]
+
+[[env.youlin-stage.kv_namespaces]]
+binding = "SIGNUPS"
+id = "885faf2c788744359287348ee9a7c043"  # SIGNUPS_YOULIN_STAGE（2026-09-25 建）
+
+[env.youlin-stage.vars]
+EMAIL_ENABLED = "false"
+EMAIL_FROM = "noreply@arcrun.dev"
+# 🔴 2026-09-25 c11015 總管訂正：youlin 的 workers.dev 子網域是 `arcrun-yuga3bse`，
+# 不是 `youlin-hsieh-dev`（09-07 起 DNS 已死）。第一版寫錯，總管部署後 curl 000 抓到。
+INSTALL_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
+DOCS_BASE = "https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs"

@@ -60,7 +60,7 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8cbf49e06120c3017ca83ecd4d3210e5b7e1fbcb"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@dc59a05557b5ce0c9c2ee6c77a36418660c61601"
 BUNDLE_BUILT = "2026-09-22"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
@@ -171,21 +171,31 @@ compatibility_flags = ["global_fetch_strictly_public"]
 
 [[env.youlin-stage.kv_namespaces]]
 binding = "INSTALLER_KV"
-id = "fdc2cee16c1544a5a66fb5c586684cf8"  # arcrun-installer-youlin-stage-INSTALLER_KV（2026-09-01 建）
+id = "fb717f4d5e9c449fa4e94ba95857a679"  # INSTALLER_KV_YOULIN_STAGE（2026-09-25 重建，
+# inkstone/arcrun-rag#215：09-01 那顆 fdc2cee1… 已不存在於帳號上（查證：CF API 10013
+# namespace not found）——那段當時只寫了 wrangler.toml 註解，沒有真的建出來或已被清掉，
+# 屬於「09-01 已開頭沒做完」的一部分，這次重新建立。
 
 # 對方通道偵測（t157）在 youlin 沒有真正的「對方」——給一顆空的自己的 KV，
 # 而不是指向 uncle6 的 namespace（跨帳號綁不上，而且那是別人家的資料）。
 [[env.youlin-stage.kv_namespaces]]
 binding = "PEER_INSTALLER_KV"
-id = "18d858b18c1049a4853d2236aca54b3c"  # arcrun-installer-youlin-stage-PEER_KV（2026-09-01 建）
+id = "ca4a7a4ed1634849bd0bc14a9a397aca"  # PEER_INSTALLER_KV_YOULIN_STAGE（2026-09-25 重建，同上）
 
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/a40af26"
-BUNDLE_BUILT = "2026-08-29"
-LANDING_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
-SITE_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
-DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main"
+BUNDLE_BUILT = "2026-09-25"
+# inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
+# ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。
+# 現在指向同一批本票新部署、住在 youlin 帳號的 landing／docs stage worker。
+# 🔴 2026-09-25 c11015 總管訂正：youlin 的 workers.dev 子網域是 `arcrun-yuga3bse`，
+# 不是 `youlin-hsieh-dev`（那個子網域 09-07 起 DNS 已死，見 InkStoneCo
+# system-dev/wiki/ops-facts.md／ISEP docs/cloud-session-bootstrap.md）。
+# 第一版寫錯子網域，總管部署後 curl 實測 000 才抓到——這裡是修正後的值。
+LANDING_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
+SITE_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
+DOCS_BASE = "https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs"
 
 [env.youlin-stage.observability]
 enabled = true

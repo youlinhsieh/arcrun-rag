@@ -7,10 +7,23 @@
 // 使用者才不會在站間跳來跳去時失去方向。
 //
 // 原則（leo）：用戶好用、白癡化 ⇒ 用「我要做什麼」命名，不用系統代號。
+//
+// 🔴 inkstone/arcrun-rag#215（2026-09-25，總管 c11019 瀏覽器實走抓到）：這兩個網址
+// 以前寫死 prod（`rag.arcrun.dev`／`install.arcrun.dev`）——docs 是純靜態站
+// （Astro SSG），沒有 runtime 可以像 worker 那樣讀 `[vars]`，於是 stage 的文件站
+// 點「首頁」「安裝」會把 stage 用戶直接帶去 prod，撞 D90「stage 與 prod 只准
+// 差身分」。查證：uncle6 的 `arcrun-docs-staging` 同樣是這個病（同一份寫死的原始碼
+// build 出來的，不是 youlin 這輪才有的新問題）。
+// 修法：改用 Astro 的 build-time 環境變數（`PUBLIC_*` 前綴，`.env` 或建置時
+// export 都吃得到），預設值＝prod（沒指定時行為不變，prod 出貨零改動）；
+// stage build 要帶 `PUBLIC_SITE_BASE`／`PUBLIC_INSTALL_BASE` 指向 stage 三站，
+// 見 `docs-site/README` 或出貨腳本裡的呼叫方式。
+const SITE_BASE = import.meta.env.PUBLIC_SITE_BASE || 'https://rag.arcrun.dev';
+const INSTALL_BASE = import.meta.env.PUBLIC_INSTALL_BASE || 'https://install.arcrun.dev';
 const links = [
-  { href: 'https://rag.arcrun.dev/',      label: '首頁',   match: null },
-  { href: 'https://install.arcrun.dev/',  label: '安裝',   match: null },
-  { href: '/docs/',                       label: '說明文件', match: '/docs' },
+  { href: `${SITE_BASE}/`,      label: '首頁',   match: null },
+  { href: `${INSTALL_BASE}/`,   label: '安裝',   match: null },
+  { href: '/docs/',             label: '說明文件', match: '/docs' },
 ];
 const path = Astro.url.pathname;
 ---

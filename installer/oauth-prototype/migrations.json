@@ -76,5 +76,20 @@
     "CREATE INDEX IF NOT EXISTS idx_entries_hash_present ON entries(content_hash) WHERE content_hash IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_entries_pending_embed ON entries(owner_id, created_at)\n  WHERE is_embedded = 0 AND content IS NOT NULL AND content <> '' AND json_extract(metadata_json, '$.embed') = 1",
     "CREATE INDEX IF NOT EXISTS idx_entries_embedded_current ON entries(owner_id, created_at)\n  WHERE is_embedded = 1"
+  ],
+  "generationStarts": [
+    0,
+    14,
+    16,
+    17,
+    18,
+    19,
+    22,
+    41,
+    42,
+    45,
+    50,
+    51,
+    59
   ]
 }

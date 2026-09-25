@@ -62,6 +62,18 @@
     "instance": "uncle6"
   },
 
+  "cloudflareCredentials": {
+    "_": [
+      "wrangler 部署到每個帳號時用哪一把鑰匙——**只寫名字**，值由 credential-store 從 shell／.env 鏈取得（D36）。",
+      "inkstone/arcrun-rag#212（2026-09-25）：以前三個部署站（deploy／docs／mail-relay）只給",
+      "CLOUDFLARE_ACCOUNT_ID，認證靠 leo 家目錄的 wrangler OAuth 登入態 ⇒ 雲端 container 部署不了，",
+      "且同一條線換一台機器就換一個身分部署。地端值住 products/arcrun-rag/.env 的 UNCLE6_CF_API_KEY；",
+      "雲端值由 leo 貼進 claude.ai Cloud environment 的環境變數，**同一個名字** UNCLE6_CF_API_KEY",
+      "（不是另立 CLOUDFLARE_API_TOKEN_UNCLE6——一把鑰匙一個名字，兩邊查得到同一個名字才叫「同一條路」）。"
+    ],
+    "58309bb90fd93ad6d0fe0aae99170e9d": { "name": "UNCLE6_CF_API_KEY", "note": "uncle6（官方件：安裝器／文件站／郵差，stage 與 prod 同帳號）" }
+  },
+
   "targets": {
     "selftest": {
       "label": "selftest（本機臨時目標；只建、只算版本、不推不部署）",

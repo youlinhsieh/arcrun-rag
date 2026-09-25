@@ -166,6 +166,9 @@ import {
   INSTALLER_CHANGELOG_REL, INSTALLER_SRC_REL, INSTALLER_VERSION_REL,
 } from './installer-line.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
+// 部署 Cloudflare 的鑰匙由登錄簿指名（inkstone/arcrun-rag#212）——不再靠家目錄的 wrangler 登入態，
+// 地端與雲端走同一條路（cloudflareDeployEnv 顯式塞 CLOUDFLARE_API_TOKEN，蓋過任何 ambient 登入態）。
+import { cloudflareDeployEnv } from './cf-credential.mjs';
 // 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
 //   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
 //   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
@@ -1927,10 +1930,12 @@ const STEPS = [
   // ——寧可多部署一次，也不要讓「該做的事沒做」悄悄過關。
   const args = ['wrangler', 'deploy', '--config', T.installer.config];
   if (T.installer.wranglerEnv) args.push('--env', T.installer.wranglerEnv);
-  // 🔴 「打錯實例」的第二個入口：ambient CLOUDFLARE_ACCOUNT_ID。這裡一律用登錄簿的值覆蓋。
-  shLive('npx', args, join(REPO_ROOT, T.installer.cwd), { CLOUDFLARE_ACCOUNT_ID: T.installer.accountId });
+  // 🔴 「打錯實例」的第二個入口：ambient CLOUDFLARE_ACCOUNT_ID／CLOUDFLARE_API_TOKEN。
+  // 這裡一律用登錄簿指名的帳號＋鑰匙覆蓋（inkstone/arcrun-rag#212）——不吃 `~/.wrangler` 登入態。
+  const cred = cloudflareDeployEnv({ cfg, accountId: T.installer.accountId, startDir: REPO_ROOT });
+  shLive('npx', args, join(REPO_ROOT, T.installer.cwd), cred.env);
   return { status: 'done', detail: [`帳號 ${T.installer.accountId}（${T.installer.accountNote}）`,
-    `env ${T.installer.wranglerEnv || '(prod 預設環境)'}`] };
+    `env ${T.installer.wranglerEnv || '(prod 預設環境)'}`, ...cred.lines] };
 }},
 
 // ── 7.5 docsSite：文件站 stage 版（s2，2026-08-09）。目標沒宣告 docsSite 就跳過 ──
@@ -1979,7 +1984,9 @@ const STEPS = [
   shLive('rsync', ['-a', '--delete', join(cwd, 'dist') + '/', join(cwd, 'deploy', 'docs') + '/'], cwd);
   const args = ['wrangler', 'deploy', '--config', D.config];
   if (D.wranglerEnv) args.push('--env', D.wranglerEnv);   // prod 走預設環境，沒有 env 名
-  shLive('npx', args, cwd, { CLOUDFLARE_ACCOUNT_ID: D.accountId });
+  // 帳號＋鑰匙都由登錄簿指名（inkstone/arcrun-rag#212）——不吃 `~/.wrangler` 登入態。
+  const docsCred = cloudflareDeployEnv({ cfg, accountId: D.accountId, startDir: REPO_ROOT });
+  shLive('npx', args, cwd, docsCred.env);
 
   // ── ③ 部署指令沒報錯 ≠ 線上那顆真的是這份原始碼 ⇒ 去線上抓一個只有這份碼會產生的東西 ──
   //
@@ -2004,7 +2011,7 @@ const STEPS = [
       + '       ② rsync 有沒有把 dist/ 鏡射進 deploy/docs/　③ wrangler 是不是部署到這顆 worker\n'
       + `     ⚠️ **不要**為了讓這道閘變綠而把版本說明頁加回 docs-site——leo 2026-08-17：「這個頁面刪除。」`);
   }
-  return { status: 'done', detail: [`帳號 ${D.accountId}｜env ${D.wranglerEnv || '(預設環境)'}`, ...r.lines] };
+  return { status: 'done', detail: [`帳號 ${D.accountId}｜env ${D.wranglerEnv || '(預設環境)'}`, ...docsCred.lines, ...r.lines] };
 }},
 
 // ── 7.6 mailRelay：郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）──
@@ -2019,7 +2026,9 @@ const STEPS = [
   const cwd = join(REPO_ROOT, M.cwd);
   const args = ['wrangler', 'deploy', '--config', M.config];
   if (M.wranglerEnv) args.push('--env', M.wranglerEnv);   // prod 走預設環境，沒有 env 名
-  shLive('npx', args, cwd, { CLOUDFLARE_ACCOUNT_ID: M.accountId });
+  // 帳號＋鑰匙都由登錄簿指名（inkstone/arcrun-rag#212）——不吃 `~/.wrangler` 登入態。
+  const mailCred = cloudflareDeployEnv({ cfg, accountId: M.accountId, startDir: REPO_ROOT });
+  shLive('npx', args, cwd, mailCred.env);
 
   // 部署指令沒報錯不算驗過（CRITICAL-PATH 使用規則 6）——實測踩過「health 綠但代寄路由
   // 404」，只問 health 會誤判成通：見 verify-mail-relay.mjs 檔頭。
@@ -2033,7 +2042,7 @@ const STEPS = [
       + r.fails.map((f) => `       • ${f}`).join('\n')
       + '\n' + r.lines.map((l) => `       ｜${l}`).join('\n'));
   }
-  return { status: 'done', detail: [`帳號 ${M.accountId}｜env ${M.wranglerEnv || '(預設環境)'}`, ...r.lines] };
+  return { status: 'done', detail: [`帳號 ${M.accountId}｜env ${M.wranglerEnv || '(預設環境)'}`, ...mailCred.lines, ...r.lines] };
 }},
 
 // ── 8. purge：讓送貨管道拿到新版並確認它真的收斂了（stage 與 prod 都走）──────

@@ -50,7 +50,34 @@ import worker, {
   // inkstone/Arcrun#196 comment 6144：警告的收件人（用戶／我們）分流
   userFacingWarnings,
   internalOnlyWarnings,
+  // arcrun-rag#215 c11101：migration 分批容錯，別把 61 句都逐句打
+  applyMigrations,
+  MIGRATION_ALTER_ADD_COLUMN,
+  // arcrun-rag#215 comment 11172：世代探針＋按世代切句，已經套過的代不再重送
+  detectMigrationGeneration,
+  migrationStatementsFrom,
+  GENERATION_CHECKS,
+  // arcrun-rag#215 c11182／c11186：可用優先於快的預算規劃＋自算計數器剎車
+  isAcceleratorStatement,
+  indexNameOf,
+  parseIndexTarget,
+  estimateAcceleratorCost,
+  planMigrationBudget,
+  MigrationWriteBudget,
+  ACCELERATOR_SINGLE_OP_CAP,
+  FREE_TIER_DAILY_ROW_WRITE_LIMIT,
+  utcDateKey,
+  loadDailySpend,
+  recordDailySpend,
+  runInstall,
+  freshProgress,
+  writeProgress,
+  readProgress,
 } from './worker.js';
+
+// arcrun-rag#215：真 kbdb migrations.json，模組層級載入一次給多個測試共用
+// （P0-2 那條測試維持自己讀一份局部變數，不動它既有寫法）。
+const MIGRATIONS = JSON.parse(await readFile(new URL('./migrations.json', import.meta.url), 'utf8'));
 
 // --- 測試替身 -------------------------------------------------------------
 
@@ -433,6 +460,615 @@ test('P0-2 MIGRATION_SQL：真 kbdb schema 對真 SQLite 連跑兩次＝冪等�
   // 0007 的三元組欄位真的加上去了（那三句就是上面被容錯的那三句）
   for (const c of ['src_id', 'rel_id', 'dst_id']) assert.ok(cols.includes(c), `entries 應含三元組欄位 ${c}`);
   db.close();
+});
+
+// ===========================================================================
+// arcrun-rag#215 c11101：migration 分批容錯——重裝／更新過的帳號不准把
+// 61 句全部逐句打（會把免費層 50 subrequest/invocation 的額度用完，
+// `fetch()` 丟 `Too many subrequests by single Worker invocation`）。
+// ===========================================================================
+
+test('#215 applyMigrations：全新帳號＝整批一次送，只打 1 次（不退化成逐句）', async () => {
+  let calls = 0;
+  const runSql = async () => { calls++; };
+  const { tolerated } = await applyMigrations(runSql, ['CREATE TABLE IF NOT EXISTS a (id TEXT)']);
+  assert.equal(calls, 1, '全新帳號第一次送就成功，不該有第二次呼叫');
+  assert.equal(tolerated, 0);
+});
+
+// arcrun-rag#215 comment 11252（總管自己的探測腳本在真 D1 上先撞到）：
+// pending 裡全部是被預算跳過的加速索引時，toRun 會是空陣列——原本仍會送出
+// 裸的 ";"，D1 回「did not contain a statement」，schema 步驟整個失敗，
+// 比「先不建索引、慢速可用」還糟（某帳號當天額度只剩一點點、缺的剛好全是索引）。
+test('#215 applyMigrations：statements 是空陣列時，一句都不送、不算失敗（c11252 邊界缺陷）', async () => {
+  let calls = 0;
+  const runSql = async () => { calls++; return []; };
+  const { tolerated } = await applyMigrations(runSql, []);
+  assert.equal(calls, 0, '空陣列不該送出任何 HTTP 呼叫（含裸的 ";"）');
+  assert.equal(tolerated, 0);
+});
+
+test('#215 端到端：planMigrationBudget 跳光所有加速索引（toRun 空）時，applyMigrations 不送出裸 ";"（c11252 真實情境重現）', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE entries (id TEXT)'); // kbdb-sql-ok：離線測試前置條件，非牆外碰真 KBDB
+  const ins = db.prepare('INSERT INTO entries (id) VALUES (?)'); // kbdb-sql-ok：離線測試前置條件，非牆外碰真 KBDB
+  for (let i = 0; i < 100; i++) ins.run('e' + i);
+  // 只有加速索引可送，且今天額度已經幾乎見底
+  const statements = ['CREATE INDEX IF NOT EXISTS idx_a ON entries(id)'];
+  const { toRun, skipped } = await planMigrationBudget(sqliteReadSql(db), statements, { dailyRemaining: 0 });
+  assert.equal(toRun.length, 0, '額度見底時這句索引該被跳過');
+  assert.equal(skipped.length, 1);
+  const calls = [];
+  const runSql = async (sql) => { calls.push(sql); return []; };
+  const { tolerated } = await applyMigrations(runSql, toRun);
+  assert.equal(calls.length, 0, 'toRun 空陣列時不該打任何 D1 呼叫（原本會送出裸的 ";" 而失敗）');
+  assert.equal(tolerated, 0);
+  db.close();
+});
+
+test('#215 applyMigrations：已裝過的帳號撞 duplicate column → 分批但不重排順序（安全批/不冪等語句穿插，順序＝原始順序）', async () => {
+  // 🔴 comment 11138 退回重修的那個坑：如果把「不安全」語句收攏到最後才跑，
+  // 排在它們之後、卻依賴那些欄位的「安全」語句（這裡用 idx_a 模擬 CREATE INDEX
+  // 依賴 ALTER 新增的欄位）會在欄位還沒加之前就先跑，炸出 `no such column`。
+  // 這裡刻意把依賴新欄位的安全語句放在 ALTER **之後**（跟真實 migrations.json
+  // 的第 25/26/50/32/34/36/38/39 句一樣），驗證分批不會打亂原始順序。
+  const statements = [
+    'CREATE TABLE IF NOT EXISTS a (id TEXT)',            // safe #0：不依賴任何新欄位
+    'INSERT OR IGNORE INTO a VALUES (1)',                 // safe #1：不依賴任何新欄位
+    'ALTER TABLE a ADD COLUMN src_id TEXT',               // unsafe #2
+    'ALTER TABLE a ADD COLUMN rel_id TEXT',               // unsafe #3
+    'ALTER TABLE a ADD COLUMN dst_id TEXT',               // unsafe #4
+    'CREATE INDEX IF NOT EXISTS idx_a ON a(src_id, rel_id, dst_id)', // safe #5：依賴 #2-4
+  ];
+  const calls = [];
+  const runSql = async (sql) => {
+    calls.push(sql);
+    if (calls.length === 1) throw new Error('duplicate column name: src_id: SQLITE_ERROR'); // 整批失敗
+    if (calls.length === 2) return; // 第一段安全批（#0,#1）成功
+    if (calls.length <= 5) throw new Error('duplicate column name: SQLITE_ERROR'); // 逐句 ALTER，全部「已套過」
+    return; // 第二段安全批（#5）成功——此時 #2-4 的欄位已經跑過（不管是容忍還是真的新增）
+  };
+  const { tolerated } = await applyMigrations(runSql, statements);
+  // 整批失敗(1) + 安全批(0,1)(1) + 逐句 ALTER(3) + 安全批(5)(1) = 6 次，不是全部 6 句逐句(7 次)
+  assert.equal(calls.length, 6, `應該打 6 次 HTTP，實際 ${calls.length} 次：\n${calls.join('\n---\n')}`);
+  assert.equal(tolerated, 3, '三句 ALTER 全部因為已套過被容忍');
+  // 順序斷言：安全批(0,1) 必須先送，且不含 idx_a；idx_a 那批必須排在三句 ALTER 之後送出
+  assert.ok(calls[1].includes('CREATE TABLE IF NOT EXISTS a') && calls[1].includes('INSERT OR IGNORE'),
+    '第一段安全批只該收 ALTER 之前的語句');
+  assert.ok(!calls[1].includes('idx_a'), 'idx_a 依賴新欄位，不准跟第一段安全批一起送（那時欄位還沒加）');
+  assert.equal(calls[5], 'CREATE INDEX IF NOT EXISTS idx_a ON a(src_id, rel_id, dst_id);',
+    'idx_a 必須排在三句 ALTER 都跑完之後才送出');
+});
+
+test('#215 applyMigrations：真 kbdb migrations.json 對真 SQLite——全新／已裝過全部／只裝過一半 0007，三種情境都要過（HTTP 次數各自斷言）', async () => {
+  const makeRunSql = (db) => async (sql) => { db.exec(sql); }; // kbdb-sql-ok：離線測試對 :memory: SQLite 驗 migration 本身
+
+  // ① 全新帳號：整批一次送就成功
+  {
+    const db = new DatabaseSync(':memory:');
+    const calls = [];
+    const runSql = async (sql) => { calls.push(sql); db.exec(sql); };
+    const { tolerated } = await applyMigrations(runSql, MIGRATIONS.statements);
+    assert.equal(calls.length, 1, `全新帳號該 1 次送完，實際 ${calls.length} 次`);
+    assert.equal(tolerated, 0);
+    db.close();
+  }
+
+  // ② 已裝過全部：先跑一次（模擬先前已完整安裝），再對同一顆 DB 重跑
+  {
+    const db = new DatabaseSync(':memory:');
+    db.exec(MIGRATION_SQL); // kbdb-sql-ok：模擬「先前已經完整裝過」
+    const calls = [];
+    const runSql = makeRunSql(db);
+    const wrapped = async (sql) => { calls.push(sql); return runSql(sql); };
+    const { tolerated } = await applyMigrations(wrapped, MIGRATIONS.statements);
+    // 整批失敗(1) + 安全批(0..21)(1) + 逐句 ALTER×3(3) + 安全批(25..60)(1) = 6 次
+    assert.equal(calls.length, 6, `已裝過全部該打 6 次，實際 ${calls.length} 次`);
+    assert.equal(tolerated, 3, '三句 ALTER 全部容忍（早就套過）');
+    db.close();
+  }
+
+  // ③ 只裝過一半 0007（comment 11138 描述的真實故障情境）：
+  //    src_id 已加、rel_id／dst_id 還沒加。
+  {
+    const db = new DatabaseSync(':memory:');
+    const alterIdx = MIGRATIONS.statements.findIndex((s) => MIGRATION_ALTER_ADD_COLUMN.test(s));
+    // 跑到（含）第一句 ALTER 為止，模擬「D1 多語句送出時前面幾句已生效、後面沒跑完」
+    db.exec(MIGRATIONS.statements.slice(0, alterIdx + 1).join(';\n') + ';'); // kbdb-sql-ok
+    const cols = db.prepare("SELECT name FROM pragma_table_info('entries')").all().map((r) => r.name); // kbdb-sql-ok
+    assert.ok(cols.includes('src_id') && !cols.includes('rel_id'), '前置條件：只套了一半 0007');
+
+    const calls = [];
+    const runSql = async (sql) => { calls.push(sql); db.exec(sql); };
+    // 這裡就是舊版會炸的地方：舊版把 rel_id/dst_id 的 ALTER 排到安全批之後，
+    // 而依賴 rel_id/dst_id 的 CREATE INDEX／INSERT 混在安全批裡先跑 ⇒ no such column。
+    // 新版必須整段成功，不丟錯。
+    const { tolerated } = await applyMigrations(runSql, MIGRATIONS.statements);
+    assert.equal(tolerated, 1, '只有 src_id 那句是真的重複，rel_id／dst_id 應該真的被加上');
+    const colsAfter = db.prepare("SELECT name FROM pragma_table_info('entries')").all().map((r) => r.name); // kbdb-sql-ok
+    for (const c of ['src_id', 'rel_id', 'dst_id']) assert.ok(colsAfter.includes(c), `補完後應含 ${c}`);
+    db.close();
+  }
+});
+
+test('#215 applyMigrations：非 duplicate column 的錯誤照樣往上拋，不吞（不管在哪一批撞到）', async () => {
+  const statements = ['CREATE TABLE IF NOT EXISTS a (id TEXT)', 'ALTER TABLE a ADD COLUMN x TEXT'];
+  const runSql = async (sql, i = 0) => {
+    throw new Error('D1_ERROR: near "TABLE": syntax error');
+  };
+  let threw = false;
+  try {
+    await applyMigrations(runSql, statements);
+  } catch (e) {
+    threw = true;
+    assert.match(e.message, /syntax error/);
+  }
+  assert.ok(threw, '非 duplicate column 的錯不該被吞掉');
+});
+
+test('#215 applyMigrations：安全批本身意外撞 duplicate column（分類假設漏接）→ 防禦性退回逐句，不整步炸掉', async () => {
+  const statements = ['CREATE TABLE IF NOT EXISTS a (id TEXT)', 'CREATE INDEX IF NOT EXISTS idx_a ON a(id)'];
+  const calls = [];
+  const runSql = async (sql) => {
+    calls.push(sql);
+    if (calls.length === 1) throw new Error('duplicate column name: x: SQLITE_ERROR'); // 整批失敗，觸發分批
+    if (calls.length === 2) throw new Error('duplicate column name: y: SQLITE_ERROR'); // 安全批也失敗（規則沒抓到的例外情形）
+    return; // 逐句都成功
+  };
+  const { tolerated } = await applyMigrations(runSql, statements);
+  assert.equal(calls.length, 4, '整批(1) + 安全批(1) + 逐句退回兩句(2) = 4 次');
+  assert.equal(tolerated, 0, '逐句都成功，不算容忍');
+});
+
+// ===========================================================================
+// arcrun-rag#215 comment 11172：世代探針——已經套過的世代永遠不再重跑。
+// 根因：idx_entries_owner 等早期索引每次重裝都「整張表建索引→馬上被後段
+// DROP INDEX IF EXISTS 刪掉」，`IF NOT EXISTS` 擋不住這個「建了又刪」的空轉。
+// ===========================================================================
+
+/** 對真 node:sqlite 跑 SELECT/PRAGMA，回傳陣列（模擬 D1 REST 的 `.results`）。 */
+function sqliteReadSql(db) {
+  return async (sql) => db.prepare(sql).all(); // kbdb-sql-ok：離線測試對 :memory: SQLite 讀 schema，非牆外碰真 KBDB
+}
+
+test('#215 detectMigrationGeneration：全新（空）資料庫 → 第 0 代（什麼都還沒有）', async () => {
+  const db = new DatabaseSync(':memory:');
+  const { actualGeneration, probeFailed } = await detectMigrationGeneration(sqliteReadSql(db));
+  assert.equal(actualGeneration, 0);
+  assert.equal(probeFailed, false);
+  db.close();
+});
+
+test('#215 detectMigrationGeneration + migrationStatementsFrom：真 migrations.json 對真 SQLite——三種情境，已是最新那種必須是 0 句（總管 c11172 要求的可量化閘）', async () => {
+  // ① 全新帳號：探測回第 0 代，該送全部 61 句
+  {
+    const db = new DatabaseSync(':memory:');
+    const { actualGeneration } = await detectMigrationGeneration(sqliteReadSql(db));
+    const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
+    assert.equal(actualGeneration, 0, '全新帳號沒有任何 schema 痕跡，探測應回第 0 代');
+    assert.equal(pending.length, MIGRATIONS.statements.length, '全新帳號要套用全部語句');
+    db.close();
+  }
+
+  // ② 從第 6 代升級：只跑前 6 個世代的語句，探測應準確認出第 6 代，
+  //    之後只需要送第 7 代起的語句（不重送第 1–6 代，尤其不重送早就會被
+  //    後段 DROP 掉的舊索引）。
+  {
+    const db = new DatabaseSync(':memory:');
+    const gen6End = MIGRATIONS.generationStarts[6]; // 第 7 代開始的 index＝前 6 代的語句數
+    db.exec(MIGRATIONS.statements.slice(0, gen6End).join(';\n') + ';'); // kbdb-sql-ok：模擬「這台裝到第 6 代」
+    const { actualGeneration } = await detectMigrationGeneration(sqliteReadSql(db));
+    assert.equal(actualGeneration, 6, `應該準確探到第 6 代，實際 ${actualGeneration}`);
+    const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
+    assert.equal(pending.length, MIGRATIONS.statements.length - gen6End, '只該送第 7 代起的語句');
+    assert.deepEqual(pending, MIGRATIONS.statements.slice(gen6End));
+    // 補完剩下的（用既有的 applyMigrations，兩者組合起來是一條完整的升級路徑）
+    const runSql = async (sql) => db.exec(sql); // kbdb-sql-ok：離線測試對 :memory: SQLite 套 migration，非牆外碰真 KBDB
+    await applyMigrations(runSql, pending);
+    const { actualGeneration: after } = await detectMigrationGeneration(sqliteReadSql(db));
+    assert.equal(after, 13, '補完之後應該到最新一代');
+    db.close();
+  }
+
+  // ③ 已經是最新：跑過全部 61 句之後，「再更新一次」必須送 0 句
+  //    ——這是總管 c11172 點名的量化閘：最後一種必須是 0 或接近 0。
+  {
+    const db = new DatabaseSync(':memory:');
+    db.exec(MIGRATION_SQL); // kbdb-sql-ok：模擬「已經裝到最新」
+    const { actualGeneration } = await detectMigrationGeneration(sqliteReadSql(db));
+    assert.equal(actualGeneration, 13, `已是最新的實例應該探到第 13 代，實際 ${actualGeneration}`);
+    const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
+    assert.equal(pending.length, 0, '🔴 已是最新再更新一次，必須是 0 句——不准再送任何一句（含早就被自己刪掉的舊索引）');
+    db.close();
+  }
+});
+
+test('#215 detectMigrationGeneration：中間斷一個洞（只裝到第 6 代，卻意外也符合第 9 代的某個索引名）→ 仍然只算到第 6 代，不假裝連續', async () => {
+  const db = new DatabaseSync(':memory:');
+  const gen6End = MIGRATIONS.generationStarts[6];
+  db.exec(MIGRATIONS.statements.slice(0, gen6End).join(';\n') + ';'); // kbdb-sql-ok：離線測試對 :memory: SQLite 套 migration，非牆外碰真 KBDB
+  // 手動建一個第 9 代才有的索引名，但沒有真的跑過第 7、8 代
+  db.exec('CREATE INDEX idx_entries_owner_type_created ON entries(owner_id)'); // kbdb-sql-ok：離線測試對 :memory: SQLite 造前置條件，非牆外碰真 KBDB
+  const { actualGeneration } = await detectMigrationGeneration(sqliteReadSql(db));
+  assert.equal(actualGeneration, 6, '第 7 代沒滿足就該在那裡停住，不能因為後面剛好對上就跳過去算');
+  db.close();
+});
+
+test('#215 detectMigrationGeneration：探測本身失敗（讀不到 schema）→ 誠實回第 0 代，寧可多送不要少送', async () => {
+  const failingReadSql = async () => { throw new Error('D1 讀取失敗'); };
+  const { actualGeneration, probeFailed, probeError } = await detectMigrationGeneration(failingReadSql);
+  assert.equal(actualGeneration, 0);
+  assert.equal(probeFailed, true);
+  assert.match(probeError, /D1 讀取失敗/);
+});
+
+test('#215 migrationStatementsFrom：generationStarts 格式異常（null，不是省略）時安全退回全部——寧可多送不要漏送', () => {
+  // 🔴 用 `null` 不用 `undefined`：預設參數只在引數是 `undefined` 時才生效，
+  // 傳 `undefined` 反而會被換成真的 MIGRATIONS.generationStarts（那是另一回事，不是在測壞值）。
+  assert.deepEqual(migrationStatementsFrom(0, ['a', 'b', 'c'], null), ['a', 'b', 'c'],
+    'generationStarts 讀不到／壞掉 → 安全預設是送全部，不是送 0 句（送 0 句而漏套 migration 比多送更危險）');
+  assert.deepEqual(migrationStatementsFrom(0, ['a', 'b', 'c'], [0, 1]), ['a', 'b', 'c']);
+  assert.deepEqual(migrationStatementsFrom(1, ['a', 'b', 'c'], [0, 1]), ['b', 'c']);
+  assert.deepEqual(migrationStatementsFrom(2, ['a', 'b', 'c'], [0, 1]), [], '超過已知世代數 → 視為已是最新，0 句');
+});
+
+test('#215 GENERATION_CHECKS：世代編號連續、與 migrations.json 的 source 檔案數對得上（跟上游漂移要立刻紅燈）', () => {
+  const ns = GENERATION_CHECKS.map((g) => g.n);
+  assert.deepEqual(ns, Array.from({ length: ns.length }, (_, i) => i + 1), '世代編號必須 1..N 連續，不准跳號');
+  assert.equal(GENERATION_CHECKS.length, MIGRATIONS.source.length,
+    `GENERATION_CHECKS 有 ${GENERATION_CHECKS.length} 代，但 migrations.json 有 ${MIGRATIONS.source.length} 支檔案——`
+    + '上游 kbdb 新增了 migration 卻沒同步補這張表，會讓 actual_generation 卡在舊世代（多送幾句但不會算錯）');
+});
+
+// ===========================================================================
+// arcrun-rag#215 c11182（leo 裁「可用優先於快」）＋ c11186（leo 硬規格：
+// 計數器自己算，不等 CF 回報——youlin 已升 Workers Paid，CF 不會再回 7500）。
+// ===========================================================================
+
+test('#215 isAcceleratorStatement：普通 CREATE INDEX 算加速、CREATE UNIQUE INDEX 不算', () => {
+  assert.equal(isAcceleratorStatement('CREATE INDEX IF NOT EXISTS idx_a ON entries(x)'), true);
+  assert.equal(isAcceleratorStatement('CREATE UNIQUE INDEX IF NOT EXISTS idx_u ON entries(x)'), false,
+    '唯一性是正確性依賴，歸「缺了會壞」那類，不受預算限制');
+  assert.equal(isAcceleratorStatement('CREATE TABLE IF NOT EXISTS a (id TEXT)'), false);
+  assert.equal(isAcceleratorStatement('ALTER TABLE entries ADD COLUMN x TEXT'), false);
+});
+
+test('#215 GENERATION_CHECKS 涵蓋的 61 句真實 migration：沒有一句是 CREATE UNIQUE INDEX（分類依據的機械複驗）', () => {
+  const uniqueIdx = MIGRATIONS.statements.filter((s) => /^\s*CREATE\s+UNIQUE\s+INDEX/i.test(s));
+  assert.equal(uniqueIdx.length, 0,
+    '目前分類假設「所有 CREATE INDEX 都是純加速」建立在這個事實上；'
+    + '哪天真的加了 UNIQUE INDEX，這條測試要紅，逼人重新檢查分類');
+});
+
+test('#215 parseIndexTarget／estimateAcceleratorCost：對真 SQLite COUNT 出正確的建置成本', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE entries (id TEXT, src_id TEXT)'); // kbdb-sql-ok：離線測試對 :memory: SQLite 造前置條件
+  const ins = db.prepare('INSERT INTO entries (id, src_id) VALUES (?, ?)');
+  for (let i = 0; i < 100; i++) ins.run('e' + i, i % 3 === 0 ? null : 'x'); // 2/3 非 null
+  const target = parseIndexTarget('CREATE INDEX IF NOT EXISTS idx_a ON entries(src_id) WHERE src_id IS NOT NULL');
+  assert.deepEqual(target, { table: 'entries', where: 'src_id IS NOT NULL' });
+  const cost = await estimateAcceleratorCost(sqliteReadSql(db), 'CREATE INDEX IF NOT EXISTS idx_a ON entries(src_id) WHERE src_id IS NOT NULL');
+  assert.equal(cost, 66, 'i=0..99 裡 i%3===0 的是 null（0,3,...,99 共 34 個），符合條件的應該是 100-34=66 列');
+  db.close();
+});
+
+test('#215 planMigrationBudget：預算不夠時只跳過「純加速」的索引，「缺了會壞」的語句一定進 toRun', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE entries (id TEXT)'); // kbdb-sql-ok：離線測試前置條件
+  const ins = db.prepare('INSERT INTO entries (id) VALUES (?)');
+  for (let i = 0; i < 1000; i++) ins.run('e' + i);
+  const statements = [
+    'ALTER TABLE entries ADD COLUMN x TEXT', // 缺了會壞：一定要送
+    'CREATE INDEX IF NOT EXISTS idx_big ON entries(id)', // 純加速：1000 列，故意用小預算擋下它
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_small ON entries(x)', // UNIQUE：不受預算限制，一定要送
+  ];
+  const { toRun, skipped } = await planMigrationBudget(sqliteReadSql(db), statements, { singleOpCap: 500, dailyRemaining: 500 });
+  assert.ok(toRun.includes(statements[0]), '缺了會壞的 ALTER 一定要在 toRun');
+  assert.ok(toRun.includes(statements[2]), 'UNIQUE INDEX 不受預算限制，一定要在 toRun');
+  assert.ok(!toRun.includes(statements[1]), '超預算的純加速索引該被跳過');
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].name, 'idx_big');
+  db.close();
+});
+
+test('#215 MigrationWriteBudget：自己算的計數器一旦超過免費額度就剎車——不管 CF 有沒有回錯', async () => {
+  // 模擬「已升 Workers Paid，CF 永遠不會回 7500」：runSql 每次都乾脆回 success，
+  // 但回應裡帶著很大的 meta.rows_written（真實 D1 也會給這個欄位，付費帳號一樣有）。
+  const budget = new MigrationWriteBudget(/* limit */ 1000);
+  const calls = [];
+  const paidAccountRunSql = async (sql) => {
+    calls.push(sql);
+    return [{ results: [], success: true, meta: { rows_written: 600, rows_read: 0 } }]; // 永遠成功，CF 不報錯
+  };
+  const runSql = budget.wrap(paidAccountRunSql);
+  await runSql('stmt 1'); // 累計 600，還在 1000 以內
+  assert.equal(budget.rowsWritten, 600);
+  await runSql('stmt 2'); // 累計 1200，已經超過，但這一句本身還是送出去了（剎車顧的是「下一句」）
+  assert.equal(budget.rowsWritten, 1200);
+  let threw = null;
+  try {
+    await runSql('stmt 3'); // 這一句送出**之前**先剎車，且從頭到尾沒有出現任何 CF 錯誤碼
+  } catch (e) {
+    threw = e;
+  }
+  assert.ok(threw, '累計超過預算後，下一句必須被我們自己的計數器擋下，不等 CF 回報');
+  assert.equal(calls.length, 2, '第三句應該連送都沒送出去');
+  assert.match(threw.hint, /自己算出來的用量煞車/, 'hint 要講清楚這是自算的剎車，不是 CF 的錯誤');
+  assert.doesNotMatch(threw.detail || '', /7500|code.*7500/, '不准把這次停下歸因成 CF 的錯誤碼——這次 CF 全程沒報過任何錯');
+});
+
+test('#215 大表情境（模擬 4 萬列 entries，budget 不夠建索引）：升級一次完成、服務可用、寫入列數在預算內（c11182 驗收條件）', async () => {
+  const db = new DatabaseSync(':memory:');
+  const ROWS = 40000;
+  // 跑到第 6 代為止（模擬「這台已經裝過舊版」），接下來要升級到第 13 代
+  const gen6End = MIGRATIONS.generationStarts[6];
+  db.exec(MIGRATIONS.statements.slice(0, gen6End).join(';\n') + ';'); // kbdb-sql-ok：離線測試模擬既有實例
+  const ins = db.prepare(
+    "INSERT INTO entries (id, entry_type, owner_id, page_name, content, metadata_json, created_at, updated_at) "
+    + "VALUES (?, 'block', 'owner1', 'page' || ?, 'content ' || ?, '{}', unixepoch(), unixepoch())",
+  );
+  db.exec('BEGIN'); // kbdb-sql-ok：離線測試造 4 萬列前置資料，非牆外碰真 KBDB
+  for (let i = 0; i < ROWS; i++) ins.run('e_' + i, i, i);
+  db.exec('COMMIT'); // kbdb-sql-ok
+
+  const readSql = sqliteReadSql(db);
+  const { actualGeneration } = await detectMigrationGeneration(readSql);
+  assert.equal(actualGeneration, 6);
+  const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
+
+  // 用真正的預設值：單一操作全域上限 5%（5,000 列）。4 萬列的表，任何一支普通索引
+  // 都遠超過這個上限，理當全部被跳過——這正是 leo 舉的真實例子（一句 CREATE INDEX
+  // 在 youlin 就是約 4 萬列＝單日額度 40%，遠超過驗收要求的 20%，更超過單一操作 5%）。
+  const { toRun, skipped } = await planMigrationBudget(readSql, pending, { dailyRemaining: FREE_TIER_DAILY_ROW_WRITE_LIMIT });
+  assert.ok(skipped.length > 0, '預算不夠時應該真的有索引被跳過（不然這個測試沒測到重點）');
+  for (const s of skipped) {
+    assert.ok(s.estimatedCost > ACCELERATOR_SINGLE_OP_CAP,
+      `跳過的索引 ${s.name} 估計成本 ${s.estimatedCost} 應該真的超過單一操作上限 ${ACCELERATOR_SINGLE_OP_CAP}`);
+  }
+
+  const budget = new MigrationWriteBudget(FREE_TIER_DAILY_ROW_WRITE_LIMIT);
+  // 用真 SQLite 執行 toRun，同時用「這句實際影響幾列」估一個保守的 rows_written 近似值
+  // 記進 MigrationWriteBudget（真 D1 環境下這個數字由 cfFetch 回應的 meta 給，這裡用
+  // 同一套 estimateAcceleratorCost 模型模擬，兩者本來就是同一份估價邏輯）。
+  for (const stmt of toRun) {
+    db.exec(stmt + ';'); // kbdb-sql-ok：離線測試套用 migration，非牆外碰真 KBDB
+    const approxRows = isAcceleratorStatement(stmt) ? await estimateAcceleratorCost(readSql, stmt) : 0;
+    budget.record([{ meta: { rows_written: approxRows } }]);
+  }
+
+  // ① 升級一次完成，沒有丟錯（上面整段跑完沒有 throw 就是這件事的證據）
+  // ② 服務可用：核心結構都在（entries/templates 兩張表、0007 的三元組欄位）
+  const cols = db.prepare("SELECT name FROM pragma_table_info('entries')").all().map((r) => r.name); // kbdb-sql-ok
+  for (const c of ['src_id', 'rel_id', 'dst_id']) assert.ok(cols.includes(c), `entries 應含三元組欄位 ${c}`);
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name); // kbdb-sql-ok
+  assert.ok(tables.includes('entries') && tables.includes('templates'));
+  // ③ 寫入列數在預算內（純加速那段用的是我們自己估的數字，不是等 CF 回報）
+  assert.ok(budget.rowsWritten <= ACCELERATOR_SINGLE_OP_CAP * toRun.filter(isAcceleratorStatement).length + 1000,
+    `估計寫入列數 ${budget.rowsWritten} 應該落在「留下的加速索引都在單一操作上限內」的量級`);
+  db.close();
+});
+
+// ===========================================================================
+// arcrun-rag#215 c11189（總管審 b2ca8e0 退回的缺陷）：計數器守的必須是「這個帳號今天」，
+// 不是「這一次安裝」——否則同一帳號同一天裝三次會各自從 0 算，合計燒穿一整天的額度。
+// ===========================================================================
+
+/** 假的 KV（get/put，模擬 env.INSTALLER_KV／#217 之後的 DO shim，介面一致）。 */
+function fakeKv() {
+  const store = new Map();
+  return {
+    async get(key, type) {
+      const v = store.get(key);
+      if (v === undefined) return null;
+      return type === 'json' ? JSON.parse(v) : v;
+    },
+    async put(key, value) { store.set(key, value); },
+    _store: store,
+  };
+}
+
+test('#215 loadDailySpend／recordDailySpend：同一帳號同一天累計，不會每次安裝都從 0 算', async () => {
+  const kv = fakeKv();
+  const accountId = 'acct-1';
+  const now = Date.parse('2026-09-25T12:00:00Z');
+  assert.equal(await loadDailySpend(kv, accountId, now), 0, '還沒花過就是 0');
+
+  await recordDailySpend(kv, accountId, 30000, now); // 第一次安裝花 3 萬
+  assert.equal(await loadDailySpend(kv, accountId, now), 30000);
+
+  await recordDailySpend(kv, accountId, 30000, now + 1000); // 第二次安裝（同一天）又花 3 萬
+  assert.equal(await loadDailySpend(kv, accountId, now + 1000), 60000, '要累計，不是蓋掉');
+
+  await recordDailySpend(kv, accountId, 30000, now + 2000); // 第三次（同一天）
+  assert.equal(await loadDailySpend(kv, accountId, now + 2000), 90000,
+    '同一天三次安裝合計 9 萬，還在 10 萬額度內——這正是總管退回的缺陷要守住的事');
+});
+
+test('#215 loadDailySpend：跨 UTC 日不沿用昨天的數字（額度自然重置，不必另外算重置時間）', async () => {
+  const kv = fakeKv();
+  const accountId = 'acct-1';
+  const day1 = Date.parse('2026-09-25T23:00:00Z');
+  const day2 = Date.parse('2026-09-26T01:00:00Z'); // 跨過 UTC 午夜＝台北 08:00
+  await recordDailySpend(kv, accountId, 90000, day1);
+  assert.equal(await loadDailySpend(kv, accountId, day1), 90000);
+  assert.equal(await loadDailySpend(kv, accountId, day2), 0, '換了一個 UTC 日，帳自動歸零');
+});
+
+test('#215 loadDailySpend：不同帳號互不影響', async () => {
+  const kv = fakeKv();
+  const now = Date.now();
+  await recordDailySpend(kv, 'acct-A', 50000, now);
+  assert.equal(await loadDailySpend(kv, 'acct-A', now), 50000);
+  assert.equal(await loadDailySpend(kv, 'acct-B', now), 0, '沒花過的帳號不該被別人的帳污染');
+});
+
+test('#215 loadDailySpend：讀不到／格式壞掉 → 安全預設當作 0（不擋安裝，讓單一操作 5% 上限繼續守）', async () => {
+  const brokenKv = { get: async () => { throw new Error('KV 掛了'); } };
+  assert.equal(await loadDailySpend(brokenKv, 'acct-1'), 0);
+});
+
+test('#215 planMigrationBudget：同一帳號今天已經花掉大部分額度時，dailyRemaining 要真的把新的一次安裝壓小', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE entries (id TEXT)'); // kbdb-sql-ok：離線測試前置條件，非牆外碰真 KBDB
+  const ins = db.prepare('INSERT INTO entries (id) VALUES (?)'); // kbdb-sql-ok：離線測試前置條件，非牆外碰真 KBDB
+  for (let i = 0; i < 1000; i++) ins.run('e' + i); // 這句索引成本 1000，本來在單一操作 5,000 上限內
+  const stmt = 'CREATE INDEX IF NOT EXISTS idx_a ON entries(id)';
+  // 假設今天已經花了 99,500，只剩 500 額度——即使單句成本只有 1,000（在 5% 上限內），
+  // 也該因為「今天剩不到這麼多」被擋下。
+  const { toRun, skipped } = await planMigrationBudget(sqliteReadSql(db), [stmt], { dailyRemaining: 500 });
+  assert.equal(toRun.length, 0, '今天剩餘額度不夠時，即使單句成本本身沒超過 5% 上限，也要被跳過');
+  assert.equal(skipped.length, 1);
+  db.close();
+});
+
+test('#215 estimateAcceleratorCost：解析失敗／查詢出錯 → 回 Infinity（估不出來當作很貴，不是免費）', async () => {
+  const failingReadSql = async () => { throw new Error('讀不到'); };
+  const cost = await estimateAcceleratorCost(failingReadSql, 'CREATE INDEX IF NOT EXISTS idx_a ON entries(x)');
+  assert.equal(cost, Infinity, '查詢失敗時，安全方向是當它很貴（一定被跳過），不是當它免費（一定會跑）');
+  const unparsable = await estimateAcceleratorCost(async () => [], 'CREATE INDEX weird syntax nobody wrote');
+  assert.equal(unparsable, Infinity, '解析不出目標表時同樣視為很貴');
+});
+
+// arcrun-rag#215 c11213（總管實跑驗收腳本抓到的缺陷）：全新安裝時 entries／templates
+// 這些表在估價當下還沒建出來（建表跟建索引是同一批 pending），COUNT(*) 對不存在的表
+// 一定出錯——舊版把這個錯也當成「真的估不出來」→ Infinity → 23 支索引全新帳號
+// 第一次裝就全部沒理由被跳過。要分清楚「表還不存在（即將建出來、當下是空的，成本 0）」
+// 跟「真的估不出來（維持 Infinity）」。
+test('#215 estimateAcceleratorCost：表還不存在（no such table）→ 回 0，不是 Infinity——它即將被同一批 pending 建出來，當下必定是空的', async () => {
+  const db = new DatabaseSync(':memory:'); // 完全空的 DB，連 entries 表都沒建
+  const cost = await estimateAcceleratorCost(sqliteReadSql(db), 'CREATE INDEX IF NOT EXISTS idx_a ON entries(id)');
+  assert.equal(cost, 0, '表還不存在＝即將建出來的空表，成本是 0，不是「估不出來」');
+  db.close();
+});
+
+test('#215 estimateAcceleratorCost：其餘錯誤（不是 no such table）仍然回 Infinity，不能被上面那條規則連帶放寬', async () => {
+  const weirdErrorReadSql = async () => { throw new Error('SQLITE_BUSY: database is locked'); };
+  const cost = await estimateAcceleratorCost(weirdErrorReadSql, 'CREATE INDEX IF NOT EXISTS idx_a ON entries(id)');
+  assert.equal(cost, Infinity, '真的估不出來（非「表不存在」的錯誤）要維持 Infinity，安全方向不能被誤放寬');
+});
+
+test('#215 planMigrationBudget＋真 migrations.json：全新 DB（一句都還沒跑過，順序跟真實安裝一致）——索引不該因為表還不存在就被跳過（c11213 驗收條件）', async () => {
+  const db = new DatabaseSync(':memory:'); // 完全空的 DB，跟真實安裝的起點一致——不先幫它建任何表
+  const readSql = sqliteReadSql(db);
+  const { actualGeneration } = await detectMigrationGeneration(readSql);
+  assert.equal(actualGeneration, 0, '全新帳號，探測應該回第 0 代');
+  const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
+  assert.equal(pending.length, MIGRATIONS.statements.length, '全新帳號要送全部語句');
+
+  // 🔴 估價必須在「真的執行任何一句 migration 之前」做——這正是總管抓到的順序問題：
+  // 舊測試的假件在估價時表已經存在，跟真實安裝的順序（先規劃、後執行）不一致。
+  const { toRun, skipped } = await planMigrationBudget(readSql, pending, { dailyRemaining: FREE_TIER_DAILY_ROW_WRITE_LIMIT });
+  const accelerators = pending.filter(isAcceleratorStatement);
+  assert.ok(accelerators.length > 0, '前提：這批 pending 裡真的有加速索引可以測');
+  assert.equal(skipped.length, 0,
+    `全新安裝時不該有任何索引被跳過（毫無理由就慢），實際跳過 ${skipped.length} 支：`
+    + JSON.stringify(skipped.map((s) => s.name)));
+  assert.equal(toRun.length, pending.length, '全新安裝：全部語句都該送，一句都不跳過');
+
+  // 照計畫真的執行，驗證索引真的建出來了（不是紙上談兵）
+  const runSql = async (sql) => { db.exec(sql); }; // kbdb-sql-ok：離線測試套用 migration，非牆外碰真 KBDB
+  await applyMigrations(runSql, toRun);
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((r) => r.name); // kbdb-sql-ok
+  // 有些早期索引會被同一批 pending 裡**後面**的語句刪掉——直接 DROP INDEX（如
+  // idx_entries_owner，0012 換成 `_present` partial index），或整張表被 DROP TABLE
+  // 掉（如 entry_values 上的 idx_ev_record，0007 把三元組模型搬進 entries）。
+  // 這是設計如此，不該斷言它們還在。
+  const droppedIndexNames = new Set(
+    pending.filter((s) => /^\s*DROP\s+INDEX/i.test(s))
+      .map((s) => (s.match(/DROP\s+INDEX(?:\s+IF\s+EXISTS)?\s+(\w+)/i) || [])[1])
+      .filter(Boolean),
+  );
+  const droppedTables = new Set(
+    pending.filter((s) => /^\s*DROP\s+TABLE/i.test(s))
+      .map((s) => (s.match(/DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+(\w+)/i) || [])[1])
+      .filter(Boolean),
+  );
+  for (const stmt of accelerators) {
+    const name = indexNameOf(stmt);
+    const target = parseIndexTarget(stmt);
+    if (droppedIndexNames.has(name)) continue; // 同一批 pending 後面直接刪掉它，不該存在才是對的
+    if (target && droppedTables.has(target.table)) continue; // 整張表後面被 DROP，索引自然跟著消失
+    assert.ok(indexes.includes(name), `全新安裝應該建出索引 ${name}，實際沒有`);
+  }
+  db.close();
+});
+
+test('#215 端到端：真的呼叫 runInstall 用到的同一套函式驗證跨次累計——第二次讀到第一次記的帳', async () => {
+  // 這條不打真的 Cloudflare；驗的是「schema 步驟真的把 dailyRemaining 傳給 planMigrationBudget／
+  // MigrationWriteBudget，且真的把這次花費寫回 loadDailySpend 能讀到的地方」這件事本身。
+  const kv = fakeKv();
+  const accountId = 'acct-e2e';
+  // 模擬「今天稍早已經花了 95,000」（例如同一天前兩次安裝累計）。
+  await recordDailySpend(kv, accountId, 95000, Date.now());
+  const spent = await loadDailySpend(kv, accountId);
+  assert.equal(spent, 95000);
+  const dailyRemaining = Math.max(0, FREE_TIER_DAILY_ROW_WRITE_LIMIT - spent);
+  assert.equal(dailyRemaining, 5000, '今天只剩 5,000——這是 schema 步驟接下來會拿到的真實上限');
+  // 用剩餘額度初始化 MigrationWriteBudget，驗證它真的用這個更小的上限剎車，不是滿額 10 萬。
+  const budget = new MigrationWriteBudget(dailyRemaining);
+  const runSql = budget.wrap(async () => [{ results: [], success: true, meta: { rows_written: 6000, rows_read: 0 } }]);
+  let threw = null;
+  try { await runSql('stmt'); await runSql('stmt2'); } catch (e) { threw = e; }
+  assert.ok(threw, '剩 5,000 額度時，寫了 6,000 之後的下一句要被剎住（不是等到滿 10 萬才剎）');
+});
+
+// ===========================================================================
+// arcrun-rag#215 c11236 → c11238（總管更正，原「多算 2.2～9.4 倍」結論撤回）：
+// 對帳用的 CF GraphQL `d1QueriesAdaptiveGroups` 是抽樣資料（節點名帶 Adaptive），
+// 不是逐列精確值，拿它跟 D1 REST 的 `meta.rows_written` 算倍差沒有意義；
+// D1 pricing 頁 FAQ 明講 `meta` 就是計費依據，方向本來就是對的——
+// 不再覆寫 `meta.rows_written`，一律相信它。`estimateOverrides` 參數與
+// `stmtsInCall` 留痕但不生效，只是為了日後真的驗出「多語句一次送，
+// 每個 entry 是各自獨立還是累計值」之後不必再改一次呼叫端簽名。
+// ===========================================================================
+
+test('#215 MigrationWriteBudget：即使帶了 estimateOverrides，c11238 撤回之後也不生效——一律相信 meta.rows_written', async () => {
+  const stmtA = 'CREATE INDEX IF NOT EXISTS idx_a ON entries(x)';
+  const stmtB = 'CREATE INDEX IF NOT EXISTS idx_b ON entries(y)';
+  const overrides = new Map([[stmtA, 3], [stmtB, 7]]); // 就算給了估價，也不該被拿去蓋掉 meta
+  const budget = new MigrationWriteBudget(FREE_TIER_DAILY_ROW_WRITE_LIMIT, overrides);
+  const runSql = budget.wrap(async () => [
+    { results: [], success: true, meta: { rows_written: 300, rows_read: 0 } },
+    { results: [], success: true, meta: { rows_written: 300, rows_read: 0 } },
+  ]);
+  await runSql(stmtA + ';\n' + stmtB + ';', [stmtA, stmtB]);
+  assert.equal(budget.rowsWritten, 600, 'D1 pricing FAQ：meta 就是計費依據，一律相信它，不管有沒有帶 estimateOverrides');
+});
+
+test('#215 MigrationWriteBudget：stmtsInCall 只留痕在 callLog，不影響計算', async () => {
+  const budget = new MigrationWriteBudget(FREE_TIER_DAILY_ROW_WRITE_LIMIT);
+  const runSql = budget.wrap(async () => [{ results: [], success: true, meta: { rows_written: 42, rows_read: 0 } }]);
+  await runSql('CREATE TABLE IF NOT EXISTS a (id TEXT)', ['CREATE TABLE IF NOT EXISTS a (id TEXT)']);
+  assert.equal(budget.rowsWritten, 42);
+  assert.equal(budget.callLog[0].stmtsInCall, 1, '留痕：這次呼叫送了幾句，供日後驗證累計/各自那個懸案取證用');
+});
+
+test('#215 applyMigrations：把送出的語句陣列一併傳給 runSql 的第二參數（供日後對「各自/累計」那個懸案取證，目前不影響計算）', async () => {
+  const seenStmtArrays = [];
+  const runSql = async (sql, stmts) => {
+    seenStmtArrays.push(stmts);
+    return []; // 全新帳號整批送一次就成功
+  };
+  await applyMigrations(runSql, ['CREATE TABLE IF NOT EXISTS a (id TEXT)', 'CREATE INDEX IF NOT EXISTS idx_a ON a(id)']);
+  assert.equal(seenStmtArrays.length, 1, '全新帳號整批一次送');
+  assert.deepEqual(seenStmtArrays[0], ['CREATE TABLE IF NOT EXISTS a (id TEXT)', 'CREATE INDEX IF NOT EXISTS idx_a ON a(id)'],
+    '第二參數要是這次真的送出的語句陣列，逐字對應（不是切字串猜回來的）');
+});
+
+test('#215 cfFetch：Workers runtime 丟 Too many subrequests → 誠實分類，不講成「暫時性網路問題」', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError('Too many subrequests by single Worker invocation.');
+  };
+  try {
+    await cfFetch('tok', '/accounts/x/d1/database/y/query', { method: 'POST' });
+    assert.fail('應該要丟錯');
+  } catch (e) {
+    assert.match(e.hint, /用量上限/, 'hint 要講清楚這是用量上限');
+    assert.doesNotMatch(e.hint, /暫時性的網路問題/, '不准把確定性的用量上限講成隨機的網路問題');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ===========================================================================
