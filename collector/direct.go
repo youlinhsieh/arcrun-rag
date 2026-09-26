@@ -2032,6 +2032,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 走到這裡代表 config 有沒見過的值——誠實報錯，不要靜默跳過（禁假綠）。
 					xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai／gemma）", cfg.Extractor)
 				}
+				// arcrun-rag#213：續讀機制的「還沒讀完」不是失敗——是有進度的成功。
+				// 從 xerr 認出這個訊號，改走下面的上傳＋partial 收尾，
+				// 不進入失敗／斷網那兩條會記退避或蓋錯章的路。
+				var inProgress *extractInProgress
+				if xerr != nil {
+					if pe, isPartial := asExtractInProgress(xerr); isPartial {
+						inProgress = pe
+						cards = pe.Cards
+						xerr = nil
+					}
+				}
 				if xerr != nil && isLocalNetworkErr(xerr) {
 					// 🔴 #201：這台電腦根本沒連出去（DNS 查不到／網路不通）⇒ 不是這個檔的失敗。
 					// 舊版照樣 MarkFailed ⇒ Mac 睡醒那幾秒就能把一批檔記滿 8 次、永久暫停。
@@ -2065,11 +2076,18 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				}
 				ok := true
 				routeSkipped := false // #121：卡是被「路在退避」擋下的（沒打出去）
-				// InkStoneCo#44 ④（2026-08-15）：gemma 路現在一份文件產「文件卡＋N 張
-				// 概念卡」（cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert、
-				// 下架以原稿頁名比對 ⇒ N 張卡都送會互相蓋寫同一頁。
-				// ⇒ 本環先只送文件卡（雲端行為與改版前一致）；原子卡與三元組上雲的
-				// 形狀是第⑤環（Arcrun#129/#130）的題目，屆時在這裡展開。
+				// InkStoneCo#44 ④（2026-08-15）：一份文件產「文件卡＋N 張概念卡」
+				// （cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert，
+				// 所有卡若共用同一個 page_name 會互相蓋寫同一頁 ⇒ **本環預設只送文件卡**
+				// （雲端行為與改版前一致）；概念卡先只落本機，上雲＝第⑤環
+				// （Arcrun#129/#130，本票不動那個全域決定）。
+				//
+				// 🔴 arcrun-rag#213 開的窄門：**走過續讀機制的大檔**（docWentThroughResumable）
+				// 例外——它的價值就在那 N 張分次整理出的概念卡本身（查表型手冊裝不進單一張
+				// 摘要卡），不送等於白做。概念卡各自用自己的 page_name（跟卡片檔名走，
+				// 不是原稿檔名），彼此不會互相蓋寫；下架時（見本函式的 "removed" 分支）
+				// 要照樣逐一下架，不能只下架 hub。
+				multiCard := docWentThroughResumable(absRoot, ev.Path)
 				// cards 為空＝該檔被判「無可萃取概念」（00-INDEX 已標「空」），不送雲端。
 				for cardIdx, cardRel := range cards {
 					cardData, cerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)))
@@ -2097,7 +2115,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					//   pageNameOf(ev.Path)（原稿頁名，不帶前綴）⇒ 兩邊從此對不上，
 					//   「刪原檔→下架」永遠 0 命中，跟 07-24 那枚 source_uri 的坑同一個形狀。
 					//   改成原稿頁名後，**雲端看到的頁名與改版前完全相同**（本次只動本機檔名）。
-					if cardIdx > 0 {
+					if cardIdx > 0 && !multiCard {
 						continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
 					}
 					// machine／machine_label（`inkstone/mira#6`）：與 library 同一個位置、
@@ -2105,8 +2123,15 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 「兩台機器的同一個相對路徑」。少送這一維，雲端就只能把兩台的同名檔
 					// 當成同一份（先到的被後到的蓋掉，而且是無聲的）。
 					mach := cfg.machineIdentity()
+					// pageName：hub（cardIdx==0）跟著原稿走，跟改版前完全相同；
+					// 續讀機制的概念卡（cardIdx>0）各自用自己的卡名，不能共用 hub 的
+					// page_name（會互相蓋寫同一頁，見上面 multiCard 的說明）。
+					pageName := pageNameOf(ev.Path)
+					if cardIdx > 0 {
+						pageName = pageNameOf(cardRel)
+					}
 					cardBody := map[string]any{
-						"page_name":     pageNameOf(ev.Path),
+						"page_name":     pageName,
 						"path":          ev.Path,
 						"card_content":  string(cardData),
 						"library":       cfg.libraryFor(absRoot),
@@ -2137,7 +2162,21 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						break
 					}
 				}
-				if ok {
+				if ok && inProgress != nil {
+					// arcrun-rag#213：這一輪的卡（含這一輪之前累積的）已經送上雲了，
+					// 但這份大檔還沒讀完。**不蓋 IngestedHash 的章**——manifest.go
+					// 檔頭那句「IngestedHash == "" 自然補一發 added 事件」就是這裡
+					// 要靠的續傳機制：下一輪 Scan() 對這個檔的內容雜湊沒變、章也還沒蓋，
+					// 自然會再產生一次事件，接著從書籤記的地方讀下去。也**不算失敗**：
+					// 不記退避、不進 8 次暫停的病歷（那正是 #195 要救的那種災情，
+					// 讀不完是已知的量體問題，不是壞掉）。
+					res.Status = "partial"
+					res.Error = inProgress.Error()
+					if inProgress.QuotaHit {
+						// 帳號層級冷卻照舊觸發：這輪撞了額度，其他檔這輪也別再撞。
+						qs.markHit(runNow, inProgress.RawQuotaErr)
+					}
+				} else if ok {
 					res.Status = "ingested"
 					// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
 					m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
@@ -2211,6 +2250,19 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				continue
 			}
 			pace() // 2026-08-07：下架一樣是觸發雲端 workflow，同樣節流
+			// arcrun-rag#213：走過續讀機制的大檔，概念卡各自有自己的 page_name
+			// 上雲（見上面 ingest 分支的 multiCard）——下架也要逐一補上，不然
+			// hub 沒了、概念卡卻永遠留在雲端（孤兒）。**要在 RemoveWikiDoc 清掉
+			// manifest 紀錄之前**先問到卡名單，晚了就問不到了。
+			var extraTakedownPageNames []string
+			if docWentThroughResumable(absRoot, ev.Path) {
+				for i, rel := range WikiDocCardRels(absRoot, ev.Path) {
+					if i == 0 {
+						continue // hub 用下面既有的那一發（page_name 跟原稿走）
+					}
+					extraTakedownPageNames = append(extraTakedownPageNames, pageNameOf(rel))
+				}
+			}
 			// 下架＝POST {page_name, path} 進 rag_takedown_direct（按 page_name 讀 kbdb blocks
 			// 標 deprecated，不碰 R2；獨立於 rag_ingest 的 __CARDS_PREFIX__ 閘——direct 模式檔在
 			// 資料夾根，會被 rag_ingest 的前綴閘擋掉，故自帶不含前綴閘的下架 workflow）。
@@ -2262,6 +2314,26 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 							Type: "warning", Path: ev.Path, Status: "skipped",
 							Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
 						})
+					}
+					// arcrun-rag#213：續讀機制的書籤（走過哪一版、讀到第幾段）也要
+					// 跟著收——原稿都不見了，書籤留著只會誤導下次判斷。
+					ClearExtractProgress(absRoot, ev.Path)
+					// 逐一下架續讀機制產出的概念卡（上面湊出來的 page_name 清單）。
+					// 最佳努力：任何一張失敗都只記 warning，不擋 hub 已經成功的下架。
+					for _, pn := range extraTakedownPageNames {
+						pace()
+						_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
+							"page_name":     pn,
+							"path":          ev.Path,
+							"machine":       machRm.ID,
+							"machine_label": machRm.Label,
+						})
+						if perr != nil {
+							results = append(results, DirectResult{
+								Type: "warning", Path: pn, Status: "skipped",
+								Error: "概念卡下架失敗（不擋 hub 下架）：" + perr.Error(),
+							})
+						}
 					}
 				}
 			}

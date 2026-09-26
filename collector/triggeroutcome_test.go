@@ -115,18 +115,22 @@ func TestWiring_雲端說沒寫進去就不准蓋已送達的章(t *testing.T) {
 	}
 }
 
-// 太大的檔：明知送出去一定失敗，就不要送——而且理由要是人話。
-func TestTooBigForWorkersAI_講人話且不送出去(t *testing.T) {
+// 太大的檔：arcrun-rag#213（leo 2026-09-22 定向）之後不再直接拒收，改判斷「要不要
+// 走續讀機制」——理由仍要是人話（多大、接下來會怎樣），但不再叫使用者自己去拆檔。
+func TestTooBigForWorkersAI_講人話且判斷要不要走續讀(t *testing.T) {
 	if why := tooBigForWorkersAI(strings.Repeat("a", 1000), "小檔.md"); why != "" {
-		t.Errorf("一般大小的檔不該被擋：%q", why)
+		t.Errorf("一般大小的檔不該被判定要走續讀：%q", why)
 	}
 	big := strings.Repeat("字", maxWorkersAIExtractBytes) // 中文一字 3 bytes ⇒ 一定超過
 	why := tooBigForWorkersAI(big, "mistakes.md")
 	if why == "" {
-		t.Fatal("超過上限的檔要被擋下")
+		t.Fatal("超過上限的檔要判定走續讀")
 	}
-	if !strings.Contains(why, "萬字") || !strings.Contains(why, "拆成") {
-		t.Errorf("要講出多大、以及使用者能做什麼：%q", why)
+	if !strings.Contains(why, "萬字") {
+		t.Errorf("要講出多大：%q", why)
+	}
+	if strings.Contains(why, "拆成") || strings.Contains(why, "不收") {
+		t.Errorf("#213 之後不再叫使用者自己拆檔／講「沒有收它」，這份檔會自動分次讀：%q", why)
 	}
 	for _, bad := range []string{"token", "131000", "HTTP", "8007", "llama"} {
 		if strings.Contains(why, bad) {
@@ -135,27 +139,52 @@ func TestTooBigForWorkersAI_講人話且不送出去(t *testing.T) {
 	}
 }
 
-func TestExtractWithWorkersAI_太大的檔一個請求都不送(t *testing.T) {
+// arcrun-rag#213：太大的檔不再整份被拒收——改成切段，逐段打雲端整理，全部段落
+// 都成功時仍然是普通的「ingested」結果（跟一般檔案一樣沒有錯誤）。
+func TestExtractWithWorkersAI_太大的檔改走續讀機制分段送出(t *testing.T) {
 	root := t.TempDir()
-	big := strings.Repeat("字", maxWorkersAIExtractBytes)
+	big := strings.Repeat("字", maxWorkersAIExtractBytes) // ≈ 900,000 bytes，遠超單發上限
 	if err := os.WriteFile(filepath.Join(root, "巨檔.md"), []byte("# 巨檔\n\n"+big), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
-		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "output": "{}"})
+		// 每段都回一個合法的最小概念，保證整份完成後至少有 1 張概念卡（不是 no_concept）。
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "output": `{
+			"gloss":"巨檔片段","summary":"這是一段測試內容","points":["這是一句判斷"],
+			"concepts":[{"name":"測試概念","gloss":"一句話","summary":"摘要句子","points":["重點一"]}]
+		}`})
 	}))
 	defer srv.Close()
 
-	_, err := ExtractWithWorkersAI(srv.URL, "k", root, "巨檔.md", testOrigin())
-	if err == nil {
-		t.Fatal("太大的檔應該直接失敗")
+	// 🔴 arcrun-rag#213 c10637：段落大小是真的量出來的（見 extract_resume.go
+	// extractChunkTargetBytes 檔頭），這份 900KB 的測試稿切出的段數會超過單次呼叫
+	// 的安全上限（maxChunksPerInvocation）——這正是續讀機制要處理的常態，所以這裡
+	// 循環呼叫模擬「daemon 好幾輪」，不是只打一次就要求全部完成。
+	var cards []string
+	var err error
+	for i := 0; i < 10; i++ {
+		cards, err = ExtractWithWorkersAI(srv.URL, "k", root, "巨檔.md", testOrigin())
+		if pe, isPartial := asExtractInProgress(err); isPartial {
+			cards = pe.Cards
+			continue // 還沒讀完，模擬下一輪
+		}
+		break
 	}
-	if hits != 0 {
-		t.Errorf("擋下的檔不該還打雲端一次（燒額度＋佔佇列），實際打了 %d 次", hits)
+	if err != nil {
+		t.Fatalf("全部段落都成功時不該回錯誤：%v", err)
 	}
-	if !strings.Contains(err.Error(), "太大") {
-		t.Errorf("理由要講人話：%v", err)
+	if hits < 2 {
+		t.Errorf("這麼大的檔應該切成多段、打多發雲端請求，實際只打了 %d 次", hits)
+	}
+	if len(cards) == 0 {
+		t.Errorf("完成後應該產出卡片（至少 hub），實際 0 張")
+	}
+	// 續讀完成後不該留下書籤（見 extract_resume.go「完成後不刪書籤」的例外說明——
+	// 但那是指走過續讀的『概念名單』要留給 direct.go 判斷上不上雲；這裡驗證的是
+	// 「這份原稿確實走過續讀」這件事，用 docWentThroughResumable 驗。
+	if !docWentThroughResumable(root, "巨檔.md") {
+		t.Errorf("這麼大的檔應該被記錄成「走過續讀機制」，供 direct.go 判斷概念卡要不要上雲")
 	}
 }

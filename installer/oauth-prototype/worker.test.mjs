@@ -47,6 +47,9 @@ import worker, {
   cfFetch,
   // inkstone/Arcrun#196：目錄那一半改走實例端點
   seedCredential,
+  // inkstone/Arcrun#196 comment 11733：金鑰輪換剛換完的暫時性 401 重試＋verify 不准假綠
+  seedCredentialWithRetry,
+  verifyStepVerdict,
   // inkstone/Arcrun#196 comment 6144：警告的收件人（用戶／我們）分流
   userFacingWarnings,
   internalOnlyWarnings,
@@ -1547,7 +1550,10 @@ test('t20④c pushWorkflowTo：編圖→合 config→部署（mock fetch 驗兩�
 
 /** 佈一個「已裝完」的 session＋progress（帳密精靈的前置狀態）。 */
 async function seedDoneInstall(env, sid, apiUrl = 'https://arcrun-cypher-executor.acme.workers.dev') {
-  await env.INSTALLER_KV.put(`sess:${sid}`, JSON.stringify({ access_token: 't', inviteVerified: true }));
+  // inkstone/arcrun-rag#217 comment 11275：handleSetupAccount 現在會呼叫 getAccessToken()
+  // 取 X-CF-Secrets-Token 要帶的 CF token——沒有 expires_at 就會被判定「過期」去找
+  // refresh_token（也沒有）而丟 InstallError，所以這裡要給一個遠期的 expires_at。
+  await env.INSTALLER_KV.put(`sess:${sid}`, JSON.stringify({ access_token: 't', inviteVerified: true, expires_at: Date.now() + 9_999_999 }));
   await env.INSTALLER_KV.put(`prog:${sid}`, JSON.stringify({
     state: 'done',
     steps: [],
@@ -1625,7 +1631,10 @@ test('t20④d-3 setup-account：首次 setup 成功 → bootstrap 帶 Bearer；�
     assert.equal(seen.length, 2);
     assert.ok(seen[0].url.startsWith('https://arcrun-cypher-executor.acme.workers.dev'));
     assert.equal(seen[0].body.email, 'a@b.com');
+    // inkstone/arcrun-rag#217 comment 11275：兩段都要帶 X-CF-Secrets-Token（安裝器手上的 CF token）
+    assert.equal(seen[0].headers['x-cf-secrets-token'], 't', 'setup 應帶 X-CF-Secrets-Token');
     assert.equal(seen[1].headers.authorization, 'Bearer tok-123', 'bootstrap 應帶 console session');
+    assert.equal(seen[1].headers['x-cf-secrets-token'], 't', 'bootstrap 應帶 X-CF-Secrets-Token');
     assert.equal(seen[1].body.display_name, 'a@b.com', 'display_name 未給時退回 email');
     // 帳密不落地：KV 裡任何值都不得含密碼
     for (const v of env.INSTALLER_KV.store.values()) {
@@ -1687,18 +1696,48 @@ test('t20④d-3 setup-account：setup 失敗且 login 也失敗 → 502 白話�
   }
 });
 
+test('🔴 t20④d-3 setup-account（inkstone/arcrun-rag#217 comment 11275）：授權過期（無 expires_at／無 refresh_token）→ 401，且不觸網打 cypher', async () => {
+  const calls = installFetch(() => { throw new Error('不該觸網'); });
+  try {
+    const env = { INSTALLER_KV: makeKV() };
+    // 故意不走 seedDoneInstall（它現在會給遠期 expires_at）——手動塞一個「舊到沒有
+    // expires_at／refresh_token」的 session，模擬 getAccessToken() 判定過期又救不回來的狀況。
+    await env.INSTALLER_KV.put('sess:sid-f', JSON.stringify({ access_token: 't', inviteVerified: true }));
+    await env.INSTALLER_KV.put('prog:sid-f', JSON.stringify({
+      state: 'done',
+      steps: [],
+      result: { apiUrl: 'https://arcrun-cypher-executor.acme.workers.dev', suffix: 'abcd2345', url: 'https://x/portal/' },
+    }));
+    const res = await worker.fetch(reqSetupAccount('sid-f', { email: 'a@b.com', password: 'longenough' }), env, { waitUntil() {} });
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.ok(body.error, '應附白話錯誤');
+    assert.equal(calls.length, 0, '拿不到 CF token 就不該打 cypher 的 /console/setup');
+  } finally {
+    restoreFetch();
+  }
+});
+
 /**
  * 完成頁的**現行契約**是 t79（leo 2026-07-28 原話：「建立你的帳號、下載同步小幫手、
  * 接下來可以做什麼**都是在 portal 做**，安裝到顯示連結就完畢了」）：
- * **完成頁只給網址**（＋這次安裝本身的結果：裝在哪個帳號、版本、技術細節）。
+ * **完成頁本體只給網址**（＋這次安裝本身的結果：裝在哪個帳號、版本、技術細節）。
  *
  * #164：原本這兩條測試斷言的是「帳號表單／setup-account 接線／config 下載鈕」都**要在**，
  * 那是 t79 之前的畫面。t76（下載小幫手卡）、t151/t152（MCP 密碼卡）、t75③（config 下載卡）
  * 三次都被 leo 親手拔掉，worker.js 的 renderDone 裡逐條記著日期與原話，而測試沒跟著改
  * ⇒ 它們從那天起就一直紅著。
  *
- * ⇒ 改成守**現在這條線**：該在的要在，被拔掉的三類卡**不准回來**（worker.js 的註解說這是
- *   「同類第 3 次」——正是需要一道機械閘的地方）。
+ * 🔴 inkstone/arcrun-rag#217 comment 11405／11421：t79 的前提（「建帳號在 portal 做」）
+ * 被 Arcrun#98 的零 KV／Workers Secrets 遷移打破——portal 首次設定頁拿不到 CF token，
+ * 一律 AuthStoreWriteError，是死路。c4fff4c 曾把建帳號表單直接接在網址卡下面試圖補這個洞，
+ * 被 leo 打回：「人會沒看到，因為他看到網址就覺得完成了」。
+ * 正解（leo 核准，comment 11421）：建帳號的畫面**回來了，但不是完成頁本體的一部分**——
+ * 是掛在 `document.body` 的獨立全螢幕彈窗（`showAccountModal`），結構上跟網址卡不同層，
+ * 成功後直接 `window.location.href` 帶去 portal，不再要求使用者自己點連結。
+ * ⇒ 這不是 t79 的 revert：t79 拔掉的三類卡（下載小幫手／MCP 密碼／config.json，這些是
+ *   「之後才要做的事」）依然不准回到完成頁；`/api/setup-account` 只是換了個容器重新掛回來。
  */
 test('t79 完成頁腳本：只給網址（網址卡＋複製鈕＋這次安裝的結果）', async () => {
   const env = { INSTALLER_KV: makeKV() };
@@ -1716,15 +1755,13 @@ test('t79 完成頁腳本：只給網址（網址卡＋複製鈕＋這次安裝�
   }
 });
 
-test('t79 🔴 紅線：完成頁不准再長出「之後才要做的事」那類卡（帳號表單／小幫手 config／MCP 密碼）', async () => {
+test('t79 🔴 紅線：完成頁本體（renderDone 的 html 字串）不准再長出「之後才要做的事」那類卡（小幫手 config／MCP 密碼）', async () => {
   const env = { INSTALLER_KV: makeKV() };
   const res = await worker.fetch(new Request('https://inst.test/install.js'), env, { waitUntil() {} });
   const src = await res.text();
   // 只挑「真的是程式碼才會出現」的識別字：worker.js 在 template literal 裡留了大量說明註解，
   // 光看中文標題會被註解本身命中（例如「建立你的帳號」就寫在 t79 那段引述 leo 的原話裡）。
   for (const forbidden of [
-    '/api/setup-account',   // 帳號表單的後端接線（帳號在 portal 建）
-    'acct-pass',            // 密碼欄 id
     'cfg-nickname',         // config 下載卡的暱稱欄 id
     'cfg.instance_name',    // config 組裝
     'watch_folders',        // config 內容鍵（現在由桌面 App 自己寫）
@@ -1733,6 +1770,37 @@ test('t79 🔴 紅線：完成頁不准再長出「之後才要做的事」那�
     assert.ok(!src.includes(forbidden),
       `完成頁不該再出現「${forbidden}」——t79：那些都在 portal／桌面 App 做，安裝到顯示連結就完畢`);
   }
+});
+
+/**
+ * comment 11421 的紅線是「不准把設定帳號接在完成頁下面」，不是「不准做這件事」。
+ * 這裡守的是**結構**：建帳號的 UI 必須是掛在 document.body 的獨立彈窗
+ * （`showAccountModal`／`acct-modal-overlay`），而且要在使用者一看到完成頁就自動觸發
+ * （不是要他往下滾、也不是要他先發現然後自己點開）；同時 `renderDone` 產生的
+ * `html`（最終塞進 `resultEl.innerHTML` 那段）本身不含帳號表單的 DOM——
+ * 表單是 `showAccountModal` 用另一個字串组出來、appendChild 上去的，兩段字串不共用。
+ */
+test('t217 建帳號是獨立彈窗，不是完成頁的一部分（comment 11421 UX 紅線）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const res = await worker.fetch(new Request('https://inst.test/install.js'), env, { waitUntil() {} });
+  const src = await res.text();
+
+  assert.ok(src.includes('/api/setup-account'), '建帳號的後端接線應該在（掛在彈窗上）');
+  assert.ok(src.includes('function showAccountModal'), '應該有獨立的彈窗建構函式');
+  assert.ok(src.includes("document.body.appendChild(overlay)"),
+    '彈窗要掛在 document.body，不是 resultEl——這是它跟網址卡不同層的結構證據');
+  assert.ok(src.includes('acct-modal-overlay'), '彈窗要有可辨識的獨立容器 id');
+  assert.ok(src.includes('showAccountModal(r)'), 'renderDone 收到 done 狀態要自動觸發彈窗，不能等使用者自己發現');
+
+  // renderDone 組出來、塞進 resultEl.innerHTML 的那段 html 字串本身不含帳號表單欄位——
+  // 表單只活在 showAccountModal 的 overlay.innerHTML 裡。抓法：renderDone 從宣告
+  // `var html = '';` 到 `resultEl.innerHTML = html;` 之間那一段原始碼。
+  const renderDoneStart = src.indexOf('function renderDone(p){');
+  const resultAssign = src.indexOf('resultEl.innerHTML = html;', renderDoneStart);
+  assert.ok(renderDoneStart >= 0 && resultAssign > renderDoneStart, '應該找得到 renderDone 主體');
+  const completionBodySrc = src.slice(renderDoneStart, resultAssign);
+  assert.ok(!completionBodySrc.includes('acct-email'),
+    '完成頁本體（塞進 resultEl 的那段）不該含帳號表單欄位——表單只在獨立彈窗裡');
 });
 
 // ===========================================================================
@@ -3429,7 +3497,18 @@ async function loadInstallScript() {
   const els = {};
   const mkEl = () => ({ innerHTML: '', textContent: '', addEventListener() {}, disabled: false });
   for (const id of ['steps', 'title', 'subtitle', 'result', 'error']) els[id] = mkEl();
-  const document = { getElementById: (id) => els[id] || null };
+  // inkstone/arcrun-rag#217 comment 11421：建帳號改成掛在 document.body 的獨立彈窗
+  // （showAccountModal），renderDone 收到 done 狀態會自動呼叫它——這個沙盒 document
+  // 本來只有固定五個 id 的假元素，沒有 createElement／body，會直接 TypeError 炸掉
+  // renderDone 本身。這裡補到「跟真 DOM 一樣夠用」的程度：createElement 回一個可以
+  // 設 id／innerHTML／掛事件的假元素，body.appendChild 是 no-op；彈窗內部動態元素
+  // （acct-email／acct-submit…）不在固定 els 表裡，getElementById 查不到就回 null，
+  // 跟 showAccountModal 本身「查不到就跳過那段接線」的容錯邏輯一致，不需要額外處理。
+  const document = {
+    getElementById: (id) => els[id] || null,
+    createElement: () => mkEl(),
+    body: { appendChild() {} },
+  };
   const window = { location: { search: '' } };
   let statusBody = {};
   const fetchStub = async () => ({ status: 200, json: async () => statusBody, body: null });
@@ -4476,11 +4555,130 @@ test('#196 機械閘：安裝器的可執行碼不准再出現任何 credentials
 
 test('#196 機械閘：seedCredential 拿到的是實例網址，不是 dbId', async () => {
   const src = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
-  const call = src.match(/await seedCredential\([^)]*\)/);
-  assert.ok(call, '找得到 seedCredential 的呼叫點');
+  // c11733：安裝時的呼叫點已換成重試包裝 seedCredentialWithRetry（多行），對準它。
+  const call = src.match(/await seedCredentialWithRetry\([\s\S]*?\)/);
+  assert.ok(call, '找得到安裝時的 seedCredentialWithRetry 呼叫點');
   assert.ok(!/\bdbId\b/.test(call[0]),
     `🔴 dbId 是舊路（打 D1）的殘骸，它還在就代表這條線沒真的換家。現況：${call[0]}`);
   assert.match(call[0], /workerUrl/, '要把 cypher 的網址傳進去（端點住在那顆 worker 上）');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// inkstone/Arcrun#196 comment 11733 — 金鑰輪換的假綠：暫時性 401 要重試、種不成不准回「一切正常」
+//
+// 根因（c11728/c11733 實錄）：更新安裝時安裝器先換 KBDB_INTERNAL_TOKEN，緊接著種
+//   kbdb_internal_token 進 credential。那一刻 cypher 身上的新 secret 還在 CF 傳播中
+//   ⇒ 目錄端點打 KBDB 回 401 ⇒ seed 失敗 ⇒ 工作流退回舊路（帶已輪換掉的舊值）
+//   ⇒ 所有寫 KBDB 的節點都 401。而安裝器把錯吞掉、verify 只看 /health 照回「一切正常」＝假綠。
+// ═══════════════════════════════════════════════════════════════════════════
+
+// 供重試測試用：前 n 次回指定 status，其後成功。回傳 calls 供斷言重試次數。
+function installFetchSeedTransient({ failStatus = 401, failTimes = 2 } = {}) {
+  let dirHits = 0;
+  return installFetch((url) => {
+    if (url.includes('/credentials/directory')) {
+      dirHits += 1;
+      if (dirHits <= failTimes) return { status: failStatus, json: { error: `still HTTP ${failStatus}` } };
+      return {
+        status: 200,
+        json: {
+          success: true, name: 'kbdb_internal_token', service: 'kbdb', sensitivity: 'high',
+          secret_ref: 'CRED_KBDB_INTERNAL_TOKEN_D4C58CE6', secret_script: 'arcrun-cypher-executor',
+        },
+      };
+    }
+    if (/\/workers\/scripts\/[^/]+\/secrets$/.test(url)) return cfOk({});
+    return { status: 404, json: { success: false } };
+  });
+}
+
+test('#196/c11733 暫時性 401（金鑰輪換剛換完）→ 重試到生效，最後種成功', async () => {
+  const calls = installFetchSeedTransient({ failStatus: 401, failTimes: 2 });
+  let out;
+  try {
+    out = await seedCredentialWithRetry(
+      'cf-token', 'acct-1', 'https://x.demo.workers.dev', 'ns', 'kbdb_internal_token',
+      'v', 'kbdb', 'high', { attempts: 4, backoffMs: 0 });  // backoff 0：測試不要真的睡
+  } finally { restoreFetch(); }
+  assert.equal(out.ref, 'CRED_KBDB_INTERNAL_TOKEN_D4C58CE6', '最後要種成功、拿到 ref');
+  assert.equal(out.attempts, 3, '第 3 次才成功（前兩次 401）');
+  const dirCalls = calls.filter((c) => c.url.includes('/credentials/directory'));
+  assert.equal(dirCalls.length, 3, '目錄端點被打了 3 次（重試 2 次）');
+  // 值那一半只在成功那次寫（前兩次 401 就丟出、還沒走到 PUT secret）
+  assert.equal(calls.filter((c) => /\/secrets$/.test(c.url)).length, 1,
+    'secret 只在種成功那次寫一次');
+});
+
+test('#196/c11733 404（端點根本沒上線）＝重試也沒用，不重試、直接失敗', async () => {
+  // 這是 #196/6144 的另一種狀態（端點還沒出貨）——重試只是白等，要立刻放棄
+  const calls = installFetchSeedTransient({ failStatus: 404, failTimes: 99 });
+  try {
+    await assert.rejects(
+      () => seedCredentialWithRetry(
+        'cf-token', 'acct-1', 'https://x.demo.workers.dev', 'ns', 'kbdb_internal_token',
+        'v', 'kbdb', 'high', { attempts: 4, backoffMs: 0 }),
+      /404/, '訊息要保留端點原始狀態碼');
+  } finally { restoreFetch(); }
+  assert.equal(calls.filter((c) => c.url.includes('/credentials/directory')).length, 1,
+    '🔴 404 只打一次，不重試（重試對「沒上線」沒有意義，只是拖慢安裝）');
+});
+
+test('#196/c11733 重試到底仍 401 ⇒ 丟出且帶 attempts（讓呼叫端記進 result）', async () => {
+  const calls = installFetchSeedTransient({ failStatus: 401, failTimes: 99 });
+  let caught = null;
+  try {
+    await seedCredentialWithRetry(
+      'cf-token', 'acct-1', 'https://x.demo.workers.dev', 'ns', 'kbdb_internal_token',
+      'v', 'kbdb', 'high', { attempts: 3, backoffMs: 0 });
+  } catch (e) { caught = e; } finally { restoreFetch(); }
+  assert.ok(caught, '重試用光要往上丟，不能默默吞掉（那正是假綠的來源）');
+  assert.match(String(caught.message), /401/, '保留端點原文');
+  assert.equal(caught.attempts, 3, '帶上總嘗試次數，呼叫端記進 credentialSeedAttempts');
+  assert.equal(calls.filter((c) => c.url.includes('/credentials/directory')).length, 3,
+    '打滿 3 次（attempts=3）');
+});
+
+test('#196/c11733 回應解析錯（缺 secret_ref）＝永久失敗，不重試', async () => {
+  let dirHits = 0;
+  const calls = installFetch((url) => {
+    if (url.includes('/credentials/directory')) { dirHits += 1; return { status: 200, json: { success: true, name: 'x' } }; }
+    if (/\/secrets$/.test(url)) return cfOk({});
+    return { status: 404, json: {} };
+  });
+  try {
+    await assert.rejects(
+      () => seedCredentialWithRetry(
+        'cf-token', 'acct-1', 'https://x.demo.workers.dev', 'ns', 'kbdb_internal_token',
+        'v', 'kbdb', 'high', { attempts: 4, backoffMs: 0 }),
+      /secret_ref/);
+  } finally { restoreFetch(); }
+  assert.equal(calls.filter((c) => c.url.includes('/credentials/directory')).length, 1,
+    '🔴 回應本身壞掉重試也不會變好——只打一次');
+});
+
+test('#196/c11733 verify 假綠：credential 沒種成時，verify 不准回「一切正常」', () => {
+  // 種成功（沒有 credentialSeedError）⇒ 一切正常
+  const ok = verifyStepVerdict({ credentialSeeded: true });
+  assert.equal(ok.state, 'done');
+  assert.equal(ok.note, '一切正常');
+
+  // 種不成（有 credentialSeedError）⇒ 不准說一切正常，要 warn，且講出功能後果
+  const bad = verifyStepVerdict({ credentialSeedError: '目錄端點回 HTTP 401' });
+  assert.equal(bad.state, 'warn', '🔴 這就是假綠的那一格：health 過了也不准回 done');
+  assert.notEqual(bad.note, '一切正常', '不准回「一切正常」');
+  assert.match(bad.note, /金鑰|工作流|可能會失敗/, '要講出用到金鑰的工作流可能失敗（不是只報一句 API 錯）');
+  // 但不用嚇人的安全措辭（那是 6144 裁掉的那一句，別在這裡復活）
+  assert.ok(!/不如原本設計的安全/.test(bad.note), '不重複 6144 裁掉的嚇人措辭');
+});
+
+test('#196/c11733 verify 假綠與 6144 不衝突：完成頁警告卡仍只走內部袋', () => {
+  // 6144：credentialSeedError 的「警告卡」收件人是我們（audience:internal），用戶面空
+  const all = installWarnings({ credentialSeedError: '目錄端點回 HTTP 401' });
+  assert.equal(userFacingWarnings(all).length, 0, '警告卡仍不對用戶顯示（6144 不動）');
+  assert.equal(internalOnlyWarnings(all).length, 1, '仍原樣留在內部袋');
+  // 而 verify 的判定字串是另一個載體，這一格才是 c11733 修的
+  assert.equal(verifyStepVerdict({ credentialSeedError: 'x' }).state, 'warn',
+    'verify 判定與警告卡是兩個載體：卡片藏、判定不准說謊');
 });
 
 // ---------------------------------------------------------------------------

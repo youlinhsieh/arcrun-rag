@@ -136,6 +136,17 @@ type FolderNode struct {
 	Skipped bool `json:"skipped,omitempty"`
 	// SkipReason＝一句話講給使用者聽的「為什麼整個沒收」（原文來自 IngestPlan.SkipsDirWhy）。
 	SkipReason string `json:"skip_reason,omitempty"`
+
+	// InProgressFiles＝這一層直接放的檔案裡，走過續讀機制（arcrun-rag#213）但還沒
+	// 讀完的那幾份——c10630「小檔一次就 100%，大檔顯示已經處理了多少%」要的資料。
+	// 只列**這一層直接放的**（同 TotalFiles 那句「不含子資料夾」），子樹合計由畫面疊。
+	InProgressFiles []LargeFileProgress `json:"in_progress_files,omitempty"`
+}
+
+// LargeFileProgress＝一份還沒讀完的大檔目前的進度（0-100）。
+type LargeFileProgress struct {
+	Name    string `json:"name"`    // 檔名（pageNameOf，跟畫面其他地方一致）
+	Percent int    `json:"percent"` // 0-100，來自 ExtractProgressPercent
 }
 
 // FolderTree＝一個監看根的整棵樹，加上「為什麼只收這些」的那句話。
@@ -244,6 +255,15 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 			n.SyncedFiles++
 		} else {
 			n.PendingFiles++
+			// arcrun-rag#213／c10630：這份檔如果走過續讀機制，本機書籤記得住
+			// 目前讀到幾 %——PendingFiles 只講得出「還沒完成」，這裡補上多少。
+			// 小檔（沒走過續讀）沒有書籤，ExtractProgressPercent 回 has=false，
+			// 不會多出雜訊。
+			if pct, has := ExtractProgressPercent(absRoot, rel); has {
+				n.InProgressFiles = append(n.InProgressFiles, LargeFileProgress{
+					Name: pageNameOf(rel), Percent: pct,
+				})
+			}
 		}
 	}
 

@@ -76,25 +76,39 @@ var workersAIHTTP = &http.Client{Timeout: 90 * time.Second}
 // 不做成全域常數，免得換模型時有人以為它是產品規格。
 const maxWorkersAIExtractBytes = 300_000
 
+// wordCountOf 用**實際字元數**（rune）估「約幾萬字」，取代舊版 `len(bytes)/3`。
+//
+// 🔴 為什麼要改（#213 scout c10575 第 2 點）：bytes/3 假設整份都是中文（UTF-8 中文
+// 3 bytes/字），客戶那份 NC 手冊幾乎全英文（1 byte/字）⇒ 舊算法把「約 98 萬字」
+// 講成中文讀者的三倍大，使用者以為檔案比實際誇張很多。rune 數是**語言中立**的
+// 「這份稿有幾個字元」，中英文都準。
+func wordCountOf(srcText string) int {
+	return len([]rune(srcText))
+}
+
 // tooBigForWorkersAI 回傳「這份原稿太大，這條路讀不完」的人話理由；
 // 沒超過回空字串。
 //
-// 🔴 訊息是產品文案不是 debug 字串：要講**多大**、**為什麼不收**、**他能做什麼**，
+// 🔴 arcrun-rag#213（leo 2026-09-22 定向）：**超過上限不再直接拒收**——見
+// extract_resume.go 的一般化「分次讀、本機存書籤、隔天接著讀」機制。這裡保留的
+// 判斷只用來決定「這份原稿要不要走那條路」，訊息本身也改記錄用途（legacy 雲端
+// 仍可能撞到，見 extractResumableWorkersAI 的 legacy fallback）。
+//
+// 🔴 訊息是產品文案不是 debug 字串：要講**多大**、**為什麼**、**他能做什麼**，
 // 而且不准出現狀態碼、模型名或 token 這種只有工程師看得懂的詞。
 func tooBigForWorkersAI(srcText, relPath string) string {
 	if len(srcText) <= maxWorkersAIExtractBytes {
 		return ""
 	}
-	// 中文一個字約 3 位元組——換算成「字數」才是使用者對得上的單位。
-	wan := len(srcText) / 3 / 10000
+	wan := wordCountOf(srcText) / 10000
 	return fmt.Sprintf(
-		"這份檔太大了（約 %d 萬字），雲端的整理模型一次讀不完，所以這次沒有收它。"+
-			"把它拆成幾份小一點的檔就會自動收進來。", wan)
+		"這份檔比較大（約 %d 萬字），雲端的整理模型一次讀不完，"+
+			"改成分次整理、每天接著讀之前讀到的地方。", wan)
 }
 
 // ExtractWithWorkersAI 讀原稿 → 送自己雲端的 /portal/daemon/extract 萃卡 → 卡片落地。
 // cypherURL/apiKey 用的是 daemon 既有的連線憑證（送卡片上雲時同一把，見 direct.go）。
-// 回傳產出的卡片相對路徑（單檔一卡），與 ExtractWithGemma 契約一致。
+// 回傳產出的卡片相對路徑（單檔一卡；分次讀的大檔可能是一卡＋多張分次完成的概念卡）。
 func ExtractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin SourceOrigin) ([]string, error) {
 	return extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath, origin, false)
 }
@@ -128,74 +142,26 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		return nil, fmt.Errorf("轉檔失敗（%s）：%w", relPath, err)
 	}
 
-	// 🔴 明知送出去一定會失敗，就不要送（見 maxWorkersAIExtractBytes）。
-	// 早一步擋下＝不燒額度、不占佇列，而且使用者看到的是人話不是上游錯誤碼。
-	if why := tooBigForWorkersAI(srcText, relPath); why != "" {
-		return nil, fmt.Errorf("%s", why)
+	pageName := pageNameOf(relPath)
+	url := workersAIExtractURL(cypherURL)
+
+	// 🔴 arcrun-rag#213（leo 2026-09-22 定向）：原稿超過單發上限 ⇒ **不再拒收**，
+	// 改走一般化的「分段、本機存書籤、每天接著讀」機制（extract_resume.go）。
+	// 這是**任何**大檔的共通路，不綁定文件形狀（不做「查表型偵測」之類的特判）。
+	if len(srcText) > maxWorkersAIExtractBytes {
+		return extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText, origin, retry)
 	}
 
-	pageName := pageNameOf(relPath)
-	// #134：prompt＝與 gemma 路同一份契約（同 package 同函式，物理上不可能漂移）。
-	// page_name/text 仍照送：舊雲端不認得 prompt，會拿它們組 legacy 提示詞回舊卡。
-	reqBody, _ := json.Marshal(map[string]string{
-		"page_name": pageName,
-		"text":      srcText,
-		"prompt":    wikiExtractPrompt(pageName, srcText),
-	})
-
-	url := workersAIExtractURL(cypherURL)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
+	output, legacyCard, err := callWorkersAIExtract(workersAIHTTP, url, apiKey, pageName, srcText, wikiExtractPrompt(pageName, srcText), retry)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Arcrun-API-Key", apiKey)
-
-	resp, err := workersAIHTTP.Do(req)
-	if err != nil {
-		cloudRoutes.record(url, directNow(), 0, err, retry) // #121
-		return nil, fmt.Errorf("連不上你的知識庫：%w", err)
-	}
-	defer resp.Body.Close()
-	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記失敗，2xx 歸零
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-
-	if resp.StatusCode == http.StatusNotFound {
-		// 舊實例還沒有這條 route ⇒ 講人話，別讓用戶看到裸 404
-		return nil, fmt.Errorf("你的知識庫還是舊版（沒有雲端萃取功能）⇒ 請到 portal 按「立即更新」重裝一次")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(body, &e)
-		if e.Error != "" {
-			return nil, fmt.Errorf("雲端萃取失敗（HTTP %d）：%s", resp.StatusCode, e.Error)
-		}
-		return nil, fmt.Errorf("雲端萃取失敗（HTTP %d）：%.200s", resp.StatusCode, string(body))
-	}
-
-	var parsed struct {
-		Success bool   `json:"success"`
-		Card    string `json:"card"`
-		Output  string `json:"output"` // #134：新雲端在 prompt 模式回模型原文
-		Error   string `json:"error"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("雲端回應解析失敗：%w", err)
-	}
-	if !parsed.Success || (strings.TrimSpace(parsed.Card) == "" && strings.TrimSpace(parsed.Output) == "") {
-		if parsed.Error != "" {
-			return nil, fmt.Errorf("雲端萃取失敗：%s", parsed.Error)
-		}
-		return nil, fmt.Errorf("雲端沒有回傳卡片內容")
 	}
 
 	// #134 主線：新雲端回 `output`（模型對 wikiExtractPrompt 的原始回應）⇒
 	// 與 gemma 路走**同一段**收尾：解析 JSON 判斷 → wikishape 機械組卡落 `.wiki/`。
 	// 兩條萃取路的卡片形狀從此由同一份程式碼保證，不是由兩份 prompt 各自維持。
-	if strings.TrimSpace(parsed.Output) != "" {
-		ex, perr := parseWikiExtractJSON(parsed.Output)
+	if strings.TrimSpace(output) != "" {
+		ex, perr := parseWikiExtractJSON(output)
 		if perr != nil {
 			return nil, perr
 		}
@@ -209,7 +175,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 
 	// legacy fallback：舊雲端（不認得 prompt）回 `card`（舊格式 markdown）。
 	// 與 gemma 舊路同一套淨化與落卡（第一行必須是「# <頁名>」），#60 保護不動。
-	card := cleanGemmaCard(parsed.Card, pageName)
+	card := cleanGemmaCard(legacyCard, pageName)
 	if !strings.HasPrefix(card, "# ") {
 		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)
 	}
@@ -233,4 +199,66 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		return nil, err
 	}
 	return []string{cardRel}, nil
+}
+
+// callWorkersAIExtract 對雲端 /portal/daemon/extract 打一發，回傳
+// （新雲端的）模型原文 output 與（舊雲端的）legacy card——兩者至多一個非空。
+// #121：這條路不經 postJSON，所以在這裡自己把結果記進路由退避。
+// 抽成獨立函式是為了讓「一發」與「大檔分段各打一發」（extract_resume.go）
+// 共用完全同一段連線／記帳／解析邏輯，不會有第二份漂移的實作。
+// client 可傳入不同逾時的 *http.Client（分段大檔的逾時要跟段落大小一起設定，見 chunkCallTimeout）。
+func callWorkersAIExtract(client *http.Client, url, apiKey, pageName, text, prompt string, retry bool) (output, legacyCard string, err error) {
+	reqBody, _ := json.Marshal(map[string]string{
+		"page_name": pageName,
+		"text":      text,
+		"prompt":    prompt,
+	})
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Arcrun-API-Key", apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		cloudRoutes.record(url, directNow(), 0, err, retry) // #121
+		return "", "", fmt.Errorf("連不上你的知識庫：%w", err)
+	}
+	defer resp.Body.Close()
+	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記失敗，2xx 歸零
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+
+	if resp.StatusCode == http.StatusNotFound {
+		// 舊實例還沒有這條 route ⇒ 講人話，別讓用戶看到裸 404
+		return "", "", fmt.Errorf("你的知識庫還是舊版（沒有雲端萃取功能）⇒ 請到 portal 按「立即更新」重裝一次")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &e)
+		if e.Error != "" {
+			return "", "", fmt.Errorf("雲端萃取失敗（HTTP %d）：%s", resp.StatusCode, e.Error)
+		}
+		return "", "", fmt.Errorf("雲端萃取失敗（HTTP %d）：%.200s", resp.StatusCode, string(body))
+	}
+
+	var parsed struct {
+		Success bool   `json:"success"`
+		Card    string `json:"card"`
+		Output  string `json:"output"` // #134：新雲端在 prompt 模式回模型原文
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", "", fmt.Errorf("雲端回應解析失敗：%w", err)
+	}
+	if !parsed.Success || (strings.TrimSpace(parsed.Card) == "" && strings.TrimSpace(parsed.Output) == "") {
+		if parsed.Error != "" {
+			return "", "", fmt.Errorf("雲端萃取失敗：%s", parsed.Error)
+		}
+		return "", "", fmt.Errorf("雲端沒有回傳卡片內容")
+	}
+	return parsed.Output, parsed.Card, nil
 }

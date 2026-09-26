@@ -2,7 +2,9 @@
  * Arcrun RAG 一鍵安裝器（原型）
  *
  * 單一 JS module worker，零框架零 npm 依賴。
- * 需要一個 KV binding：INSTALLER_KV（存 OAuth state / session / 安裝進度）
+ * 需要一個 Durable Object binding：INSTALLER_STORE（存 OAuth state / session / 安裝進度，
+ * 見 `InstallerStore`／`attachKvShim`——inkstone/arcrun-rag#217：原本是 KV binding，
+ * 換成 DO 之後程式碼裡照樣叫 `env.INSTALLER_KV.*`，只是背後接的東西換了）。
  *
  * 流程：
  *   GET  /                    安裝首頁
@@ -31,9 +33,15 @@ const OAUTH_AUTH_URL = 'https://dash.cloudflare.com/oauth2/auth';
 const OAUTH_TOKEN_URL = 'https://dash.cloudflare.com/oauth2/token';
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
+// 🔴 inkstone/arcrun-rag#217（leo 2026-09-25：「KV 只要存在你就會去用，很可能把用戶的
+//    服務搞掛」）：`workers-kv-storage.write` 從這裡拿掉——授權頁不再向用戶要 KV 權限。
+//    依賴 `inkstone/Arcrun#98`：bundle manifest 要先不再有任何 worker 宣告 `requires.kv`，
+//    `manifestRequirements()` 才會真的算出 0 個 kv_namespace 需求（見該函式註解）；
+//    bundle 還沒換版前，已經裝過帶 KV 的舊實例走「更新」流程時，`resolveResourcesByRule`
+//    仍會替既有 kv_namespace binding 跑 `listKvNamespaces`/`createKvNamespace`——
+//    那條路徑在拿掉這個 scope 後會 403，**先備妥在分支上，等 Arcrun#98 出 bundle 才實跑**。
 const OAUTH_SCOPES = [
   'workers-scripts.write',
-  'workers-kv-storage.write',
   'd1.write',
   'vectorize.write',
   'account-settings.read',
@@ -44,6 +52,178 @@ const SESSION_COOKIE = 'arcrun_sid';
 const STATE_TTL = 600;          // OAuth state 10 分鐘
 const SESSION_TTL = 86400;      // session 本身 1 天
 const PROGRESS_TTL = 86400;
+
+// ---------------------------------------------------------------------------
+// KV 相容層（Durable Object 版）——inkstone/arcrun-rag#217
+// ---------------------------------------------------------------------------
+// 🔴 leo 2026-09-25：「KV 只要存在你就會去用，很可能把用戶的服務搞掛」——這句話不只管
+//    用戶帳號那半（見上面 OAUTH_SCOPES 的改動），**安裝器自己（官方帳號）原本也綁一顆
+//    INSTALLER_KV** 存 session／OAuth state／安裝進度／部署紀錄，`scheduled()` 每 2
+//    分鐘 `list()` 一次找卡住的安裝續跑。這半**不依賴 `Arcrun#98`**（綁的是我們自己的
+//    worker，跟用戶帳號無關）——換成 Durable Object。
+//
+//    下面所有 `env.INSTALLER_KV.*`／`env.PEER_INSTALLER_KV.*` 呼叫**維持原樣不動**
+//    （`get(key, 'json')`／`put(key, value, {expirationTtl})`／`delete(key)`／
+//    `list({prefix, limit})`）——只把背後的 binding 從 KV namespace 換成一個實作
+//    同一組介面的 DO stub，呼叫端一行都不用改，降低大範圍替換誤改邏輯的風險。
+//    測試（`worker.test.mjs`）一律直接塞 `env.INSTALLER_KV` 假物件，`attachKvShim`
+//    只在它還沒被設過時才接上 DO，既有 182 條測試完全不受影響。
+//
+//    `InstallerStore`：單例 DO（固定 id name 'main'），內部用 `state.storage`
+//    （DO 自己的交易式儲存，不是 Workers KV、沒有 KV 的每日 namespace 讀寫配額）。
+//    TTL 用「讀取／列出時惰性過期」實作（存 `{v, e}`，`e` 是到期時間戳，
+//    get/list 時先濾掉已過期的並順手砍掉）——DO storage 沒有 KV 的
+//    `expirationTtl` 選項，這是最小、最不容易出錯的等效實作。
+export class InstallerStore {
+  constructor(state) {
+    this.storage = state.storage;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const op = url.pathname.slice(1);
+    if (op === 'get') {
+      const key = url.searchParams.get('key');
+      const rec = await this.storage.get(key);
+      if (!rec) return Response.json({ value: null });
+      if (rec.e && rec.e < Date.now()) {
+        await this.storage.delete(key);
+        return Response.json({ value: null });
+      }
+      return Response.json({ value: rec.v });
+    }
+    if (op === 'put') {
+      const body = await request.json();
+      const rec = { v: body.value };
+      if (body.expirationTtl) rec.e = Date.now() + body.expirationTtl * 1000;
+      await this.storage.put(body.key, rec);
+      return Response.json({ ok: true });
+    }
+    if (op === 'delete') {
+      const key = url.searchParams.get('key');
+      await this.storage.delete(key);
+      return Response.json({ ok: true });
+    }
+    if (op === 'list') {
+      const prefix = url.searchParams.get('prefix') || '';
+      const limit = Number(url.searchParams.get('limit') || 1000);
+      // 多抓一些彌補濾掉過期 key 的損耗，仍以 limit 為回傳上限。
+      const raw = await this.storage.list({ prefix, limit: Math.min(limit * 2, 1000) });
+      const keys = [];
+      const expired = [];
+      for (const [k, rec] of raw) {
+        if (rec && rec.e && rec.e < Date.now()) { expired.push(k); continue; }
+        keys.push({ name: k });
+        if (keys.length >= limit) break;
+      }
+      if (expired.length) await Promise.all(expired.map((k) => this.storage.delete(k))).catch(() => {});
+      return Response.json({ keys });
+    }
+    return new Response('not found', { status: 404 });
+  }
+}
+
+/**
+ * 把一顆 Durable Object namespace 包成跟 Workers KV binding 同一組介面。
+ *
+ * 🔴 總管審出（inkstone/arcrun-rag#217 comment 11162）：prod 的舊 `INSTALLER_KV`
+ * 裡有現役用戶的 `deployed:<acc>:<sub>` 紀錄（`expirationTtl: 365 * 86400`，見
+ * `deployBundledWorker` 那三處 `put`）——`hasDeployRecordForToken()` 靠它判斷
+ * 「這個帳號是不是已經裝過，回來更新可以免填辨識碼」。換成 DO 的那一刻，DO 是空的，
+ * **每一個舊用戶都會被誤判成新裝、被導去要辨識碼**（`need_code`）。
+ *
+ * 解法＝**惰性搬家（read-through backfill）**：`get`／`list` 在 DO 找不到時，
+ * 才去舊 KV（`legacyKv`，即 wrangler.toml 裡改名保留的 `INSTALLER_KV_LEGACY`／
+ * `PEER_INSTALLER_KV_LEGACY`）問一次；問到就順手寫回 DO，之後同一把 key 就不必
+ * 再問舊 KV——資料隨用戶實際的請求自然搬家，不必停機跑一次性批次遷移。
+ * `delete` 兩邊都砍，避免刪掉的東西從舊 KV「復活」。`put`（新寫入）只寫 DO，
+ * 舊 KV 從此只讀不寫，讓它自然被前面「一年後過期」的 TTL 收掉。
+ *
+ * @param {DurableObjectNamespace} ns
+ * @param {string} name  固定 id name——整個環境共用單一 DO 實例（跟一顆扁平的 KV
+ *   namespace 語意對齊；安裝精靈流量小，單一實例的循序處理不是瓶頸）。
+ * @param {KVNamespace|null} [legacyKv]  過渡期用的舊 KV binding，沒有就是純 DO
+ *   （youlin-stage 這種從沒真的裝過任何帳號的環境——leo 2026-09-25 查過
+ *   `deployed:` 前綴 0 筆，不需要過渡）。
+ */
+export function kvOverDurableObject(ns, name, legacyKv) {
+  const stub = () => ns.get(ns.idFromName(name));
+  return {
+    async get(key, type) {
+      const res = await stub().fetch(`https://do/get?key=${encodeURIComponent(key)}`);
+      const { value } = await res.json();
+      if (value != null) return type === 'json' ? JSON.parse(value) : value;
+      if (!legacyKv) return null;
+      const legacyRaw = await legacyKv.get(key).catch(() => null);
+      if (legacyRaw == null) return null;
+      // 搬家：找到了就順手寫回 DO（不帶 TTL——舊 KV 那份本身還在、還在倒數，
+      // 兩邊有一份活著即可；下次 get 會先打到 DO 命中，不會再問舊 KV）。
+      await stub().fetch('https://do/put', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, value: legacyRaw }),
+      }).catch(() => {});
+      return type === 'json' ? JSON.parse(legacyRaw) : legacyRaw;
+    },
+    async put(key, value, opts) {
+      await stub().fetch('https://do/put', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, value, expirationTtl: opts && opts.expirationTtl }),
+      });
+    },
+    async delete(key) {
+      await stub().fetch(`https://do/delete?key=${encodeURIComponent(key)}`);
+      if (legacyKv) await legacyKv.delete(key).catch(() => {});
+    },
+    async list({ prefix, limit } = {}) {
+      const qs = new URLSearchParams();
+      if (prefix) qs.set('prefix', prefix);
+      if (limit) qs.set('limit', String(limit));
+      const res = await stub().fetch(`https://do/list?${qs.toString()}`);
+      const { keys } = await res.json();
+      if (!legacyKv) return { keys };
+      // hasDeployRecordForToken() 就是靠這條路：`list({prefix:'deployed:<acc>:', limit:1})`
+      // 當存在性檢查。DO 還沒搬到那把 key 之前，這裡要能在舊 KV 也看得到，
+      // 用戶才不會被誤判成「沒裝過」。內容本身留給後續 get() 的 read-through 去搬。
+      const legacy = await legacyKv.list({ prefix, limit }).catch(() => ({ keys: [] }));
+      const seen = new Set(keys.map((k) => k.name));
+      const merged = keys.slice();
+      for (const k of legacy.keys || []) {
+        if (seen.has(k.name)) continue;
+        seen.add(k.name);
+        merged.push({ name: k.name });
+      }
+      return { keys: limit ? merged.slice(0, limit) : merged };
+    },
+  };
+}
+
+/**
+ * 進 `fetch`/`scheduled` 前先把 `env.INSTALLER_KV`／`env.PEER_INSTALLER_KV` 接上 DO——
+ * 兩顆綁定名換成 `INSTALLER_STORE`／`PEER_INSTALLER_STORE`（見 wrangler.toml）。
+ * 接上之後下面全部程式碼完全不知道背後已經不是 KV。只在還沒被設過時才接（測試會
+ * 直接塞假的 `env.INSTALLER_KV`，那樣就不動它）。
+ *
+ * `INSTALLER_KV_LEGACY`／`PEER_INSTALLER_KV_LEGACY`（真正的 KV binding，過渡期才有，
+ * 見 wrangler.toml）有給就接成 read-through 的來源——**這是過渡期，不是永久雙寫**。
+ * 拔掉的時機寫在 wrangler.toml 那兩段 binding 的註解裡，別只憑記憶判斷。
+ */
+export function attachKvShim(env) {
+  if (env.INSTALLER_STORE && !env.INSTALLER_KV) {
+    env.INSTALLER_KV = kvOverDurableObject(env.INSTALLER_STORE, 'main', env.INSTALLER_KV_LEGACY || null);
+  }
+  if (env.PEER_INSTALLER_STORE && !env.PEER_INSTALLER_KV) {
+    // 🔴 id name 故意跟上面不同（'peer' 不是 'main'）：youlin-stage 的
+    // PEER_INSTALLER_STORE 綁的是**同一個 script 的同一個 class**（沒有真正的對方，
+    // 見 wrangler.toml 該段註解）——若跟 INSTALLER_KV 用同一個 idFromName，兩者會
+    // 撞成同一顆 DO 實例、共用同一份資料，PEER 就再也不是獨立的「對方帳本」了。
+    // prod／staging 的 PEER 本來就透過 script_name 指到另一個 script，天生隔離，
+    // 但統一用不同 id name 沒有壞處、也讓三個環境的規則保持一致（D90）。
+    env.PEER_INSTALLER_KV = kvOverDurableObject(env.PEER_INSTALLER_STORE, 'peer', env.PEER_INSTALLER_KV_LEGACY || null);
+  }
+  return env;
+}
 
 // 辨識碼驗證中央服務（landing）。可用 env.LANDING_BASE 覆蓋（換官方帳號時）。
 const DEFAULT_LANDING_BASE = 'https://arcrun-landing.uncle6-me.workers.dev';
@@ -251,7 +431,11 @@ import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
   { id: 'account',   label: '確認你的 Cloudflare 帳號' },
-  { id: 'cache',     label: '建立快取空間' },
+  // 🔴 inkstone/arcrun-rag#217 comment 11318（總管看畫面抓到）：這一步原本叫「建立快取空間」
+  // （KV），但它做的其實是整批解析帳號資源（D1／Vectorize，KV 那部分因 Arcrun#98 已經沒有
+  // 任何 worker 宣告 requires.kv，這裡永遠是 0）。id 沿用 'cache' 不改（`setStep('cache', …)`
+  // 呼叫點多，改 id 風險大於收益），只把使用者看得到的字改成不撒謊的說法。
+  { id: 'cache',     label: '準備你的雲端資源' },
   { id: 'database',  label: '建立知識庫資料庫' },
   { id: 'schema',    label: '建立資料表結構' },
   { id: 'deploy',    label: '部署你的專屬服務' },
@@ -656,7 +840,7 @@ function cfErrorHint(status, code, msg) {
   if (status === 401) return '請回到首頁重新連結你的 Cloudflare 帳號。';
   // 🔴 Arcrun#191：舊文案是「請回到首頁重新授權，並在 Cloudflare 頁面上確認所有權限都有勾選」。
   //    那句話**叫用戶去做一件他做不到的事**：要哪些 scope 是我們寫死在授權網址裡的
-  //    （`OAUTH_SCOPES` 六項 → :3689 直接塞進 authUrl），Cloudflare 的授權屏只讓他選**帳號**，
+  //    （`OAUTH_SCOPES` 五項 → :3689 直接塞進 authUrl），Cloudflare 的授權屏只讓他選**帳號**，
   //    沒有逐項勾權限這個 UI。他會在那一頁找一個不存在的東西，找不到就以為是自己弄錯了
   //    ——**假出路比沒有出路更貴**（同 :4038 那段自己寫過的「不給假出路」）。
   //    403 的真相只有一個：**我們要的權限不夠**，那是我們這邊的事。
@@ -2127,15 +2311,60 @@ async function seedCredential(token, accountId, cypherBase, apiKey, name, value,
   });
   if (!res.ok) {
     // 保留端點原文（同 #191「判斷不准讀譯文」的形狀）——它會說是 401 還是 502
-    throw new Error(`目錄端點回 HTTP ${res.status}${await briefBody(res)}`);
+    const err = new Error(`目錄端點回 HTTP ${res.status}${await briefBody(res)}`);
+    // #196 c11733：讓外層重試分得出「暫時性（401/5xx，金鑰輪換剛換完還沒生效）」
+    //   與「端點沒上線（404，重試也沒用）」。訊息一字不動，只多掛一格。
+    err.status = res.status;
+    throw err;
   }
   const j = await res.json().catch(() => null);
   if (!j || !j.success || !j.secret_ref || !j.secret_script) {
-    throw new Error(`目錄端點回了看不懂的內容（缺 secret_ref/secret_script）：${JSON.stringify(j)}`);
+    const err = new Error(`目錄端點回了看不懂的內容（缺 secret_ref/secret_script）：${JSON.stringify(j)}`);
+    // #196 c11733：回應本身壞掉＝重試也不會變好，標成永久失敗，外層不要重試
+    err.permanent = true;
+    throw err;
   }
   // ② 值（只有安裝器做得到；secret 名稱用端點回的 ref，不自己算）
   await putWorkerSecretDirect(token, accountId, j.secret_script, j.secret_ref, value);
   return j.secret_ref;
+}
+
+// #196 c11733：更新安裝時，安裝器先換 KBDB_INTERNAL_TOKEN，**緊接著**種
+//   kbdb_internal_token 進 credential。那一刻 cypher 身上的新 secret 還在 CF
+//   傳播中（實測需數秒），目錄端點打 KBDB 回 401 ⇒ seed 失敗 ⇒ 工作流退回舊路
+//   （帶著已被輪換掉的舊值）⇒ 所有寫 KBDB 的節點都 401（假綠的來源）。
+//   ⇒ 這是**暫時性**失敗：等 secret 生效再種一次就成。手動 `--restart` 重種能修好
+//     （c11728 實錄）正是這個道理。這裡把「重種一次」自動化。
+//
+// 只對暫時性錯誤重試（401 金鑰未生效／429／5xx／逾時網路例外）；
+// **不重試** 404（端點根本沒上線——那是 #196/6144 的另一種狀態，重試沒用）
+//   與回應解析錯（err.permanent）。seedCredential 冪等（目錄 ON CONFLICT DO UPDATE、
+//   secret PUT 覆蓋），整支重跑安全。
+const CREDENTIAL_SEED_TRANSIENT_STATUS = new Set([401, 408, 425, 429, 500, 502, 503, 504]);
+function isTransientSeedError(err) {
+  if (!err || err.permanent) return false;              // 回應壞掉＝永久
+  if (err.status === undefined) return true;            // fetch 自己丟的（逾時／網路）＝暫時
+  return CREDENTIAL_SEED_TRANSIENT_STATUS.has(err.status);
+}
+async function seedCredentialWithRetry(
+  token, accountId, cypherBase, apiKey, name, value, service, sensitivity,
+  { attempts = 4, backoffMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const ref = await seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity);
+      return { ref, attempts: i + 1 };
+    } catch (e) {
+      lastErr = e;
+      // 最後一次、或不是暫時性錯誤 ⇒ 不再等，直接把錯往上丟（訊息原文保留）
+      if (i === attempts - 1 || !isTransientSeedError(e)) break;
+      await sleep(backoffMs * (i + 1));                 // 2s → 4s → 6s，給 secret 傳播時間
+    }
+  }
+  const err = lastErr || new Error('種 credential 失敗（沒有取得任何回應）');
+  err.attempts = attempts;
+  throw err;
 }
 
 /**
@@ -2816,6 +3045,10 @@ export {
   // inkstone/Arcrun#196：目錄那一半改走實例端點。匯出是為了讓測試直接證明
   // 「它打的是 /credentials/directory、而且一次都沒碰 D1」，不必繞整個 runInstall。
   seedCredential,
+  // #196 c11733：重試包裝（金鑰輪換剛換完的暫時性 401 自動重種）與 verify 結論
+  //   （credential 沒種成就不准回「一切正常」）——匯出讓單元測試直接證明兩件事。
+  seedCredentialWithRetry,
+  verifyStepVerdict,
 };
 
 /**
@@ -3082,7 +3315,7 @@ async function runInstall(env, sid, progress, force) {
       const created = Object.values(r.origin).filter((o) => o === 'created').length;
       await setStep('cache', 'done', adopted > 0
         ? `沿用你原本的 ${adopted} 項資源${created ? `，新增 ${created} 項` : ''}`
-        : `${created} 個快取空間已就緒`);
+        : `${created} 項資源已就緒`);
     } catch (e) {
       await fail('cache', e);
       return;
@@ -3711,11 +3944,16 @@ async function runInstall(env, sid, progress, force) {
     //    時序：必須排在上面 KBDB_INTERNAL_TOKEN 同步之後（端點要打 KBDB 才寫得成目錄），
     //    而它本來就在那個 secretsSynced 區塊後面，順序不用動。
     try {
-      await seedCredential(token, accountId, workerUrl, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high');
+      // #196 c11733：用重試版——金鑰輪換剛換完，cypher 的新 secret 還在傳播，
+      //   目錄端點會回一陣子 401。重試到生效為止（4 次，2/4/6s），把手動 --restart 自動化。
+      const { attempts } = await seedCredentialWithRetry(
+        token, accountId, workerUrl, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high');
       progress.result.credentialSeeded = true;
+      progress.result.credentialSeedAttempts = attempts;
     } catch (e) {
       // 不擋安裝：種失敗就退回舊路（workflow 帶明文 token），但記下來讓驗收看得到。
       progress.result.credentialSeedError = String((e && e.message) || e);
+      if (e && e.attempts) progress.result.credentialSeedAttempts = e.attempts;
     }
 
     // agent skills 種入（本班補洞）：裝完的實例 AI 要能 arcrun_get_skill 拿到
@@ -3849,7 +4087,12 @@ async function runInstall(env, sid, progress, force) {
         }
       }
       if (ok) {
-        await setStep('verify', 'done', '一切正常');
+        // #196 c11733：health 過了 ≠ 一切正常。金鑰目錄沒種進去（credentialSeedError）
+        //   時，工作流會拿到已被輪換掉的舊值 ⇒ 寫 KBDB 全 401（假綠）。所以 verify
+        //   的結論要把「credential 有沒有種成」算進去，不能只憑 /health。
+        //   （重試版通常已把暫時性 401 消掉；走到這裡還有錯＝真的沒種成。）
+        const v = verifyStepVerdict(progress.result);
+        await setStep('verify', v.state, v.note);
       } else {
         // 自檢沒過不算致命 —— 資源都建好了，只是網址還沒生效。
         // 文案必須講清楚「這是正常的、要等、不是壞了」，否則用戶會以為安裝失敗。
@@ -4032,7 +4275,6 @@ ${noticeHtml}
   <h3>這一鍵會幫你做什麼</h3>
   <ul class="plain">
     <li><b>建立一個知識庫資料庫</b>——之後你的所有筆記與資料都存在這裡</li>
-    <li><b>建立一個快取空間</b>——讓查詢跑得更快</li>
     <li><b>啟動你的專屬服務</b>——一個只有你能用的網址，裝好會直接給你</li>
     <li><b>自動做一次健康檢查</b>——確認每個部分都接好了才算完成</li>
   </ul>
@@ -4078,14 +4320,14 @@ ${noticeHtml}
 <details>
   <summary>技術細節（給工程師看的）</summary>
   <pre>授權方式：OAuth 2.0 authorization_code + PKCE (S256)，public client 無 secret
-授權範圍：workers-scripts.write / workers-kv-storage.write / d1.write /
+授權範圍：workers-scripts.write / d1.write /
           vectorize.write / account-settings.read / offline_access
 安裝內容：Workers script ${fmtCount(counts.workerCount)}、KV namespace ${fmtCount(counts.kvCount)}、
           D1 database ${fmtCount(counts.d1Count)}（含 migration）
           ↑ 這三個數字現在讀當前 bundle manifest 現算，manifest 加減零件會自動跟著變，
             不是寫死的（此頁曾把它寫死成固定數字，那個做法已經不用了）
 辨識碼閘：/auth/start 先向 landing /api/verify-code 驗 {email, code}，通過才進 OAuth
-資源沿用：你已經裝過的東西（快取空間／資料庫）一律直接沿用、不會被砍掉重建——
+資源沿用：你已經裝過的東西（資料庫等資源）一律直接沿用、不會被砍掉重建——
           判準是「這顆服務現在實際綁的是哪一個」，不是看名字對不對得上；
           只有確定你完全還沒裝過任何東西時才會新建，新建才用
           arcrun-rag-&lt;email 推導 8 碼&gt; 這個名字（見 shared/resource-rule/，PR #87）
@@ -4095,7 +4337,8 @@ ${noticeHtml}
           與上面「版本：${escapeHtml(bundleVer)}」是兩條互不重疊的線：那個是零件包
           （裝進你自己帳號的那些東西），零件沒動、只改安裝器時只有這個數字會變。
 bundle 依據：建置日 ${escapeHtml(bundleBuiltOf(env))}／釘點 ${escapeHtml(bundleCommitOf(env))}
-token 保存：access_token 存在本安裝器的 KV，隨 session 過期自動清除；
+token 保存：access_token 存在本安裝器自己的資料儲存（inkstone/arcrun-rag#217 起是
+          Durable Object，不是 KV），隨 session 過期自動清除；
           refresh_token 為 rotation 制，每次更新都會寫回新的一把</pre>
 </details>
 `,
@@ -4146,6 +4389,19 @@ function installPage(env) {
 .copy{margin-top:16px;font-size:14px;padding:10px 18px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);cursor:pointer;font-family:inherit}
 .err-card{background:var(--panel);border:1px solid var(--err);border-radius:var(--radius);padding:24px;margin-bottom:20px}
 .err-card h3{color:var(--err);margin:0 0 10px;font-size:17px}
+/* inkstone/arcrun-rag#217 comment 11421（leo 2026-09-26）：安裝完成之後的「下一步」
+   不准接在完成頁下面——那樣使用者看到網址就以為裝完了，根本不會往下滾。
+   改成像 WordPress 裝完跳出首次登入畫面那樣：蓋滿全螢幕的獨立彈窗，逼視覺焦點
+   離開網址卡、落在「你還有一步」上。同一顆 worker 做沒問題（leo 原話准了），
+   紅線只在「不能只是往下面加一張卡」。 */
+#acct-modal-overlay{
+  position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.72);padding:20px;
+}
+#acct-modal-overlay .card{max-width:440px;width:100%;margin:0;animation:modal-in .18s ease-out}
+@keyframes modal-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+.modal-skip{display:block;text-align:center;margin-top:14px;font-size:13px;color:var(--muted);cursor:pointer;background:none;border:0;font-family:inherit;text-decoration:underline}
+.modal-skip:hover{color:var(--text)}
 </style>`,
     env
   );
@@ -4176,7 +4432,7 @@ function esc(s){
 // 不讓「部署你的專屬服務」這類使用者看得懂的字掉成「未知步驟」。
 const STEP_LABELS = {
   account: '確認你的 Cloudflare 帳號',
-  cache: '建立快取空間',
+  cache: '準備你的雲端資源',
   database: '建立知識庫資料庫',
   schema: '建立資料表結構',
   deploy: '部署你的專屬服務',
@@ -4268,7 +4524,6 @@ function renderDone(p){
   var detail = {
     帳號: r.accountName,
     知識庫資料庫: r.databaseName,
-    快取空間: r.cacheName,
     服務名稱: r.scriptName,
     健檢結果: r.health,
     健檢提醒: r.healthWarning,
@@ -4307,10 +4562,91 @@ function renderDone(p){
 
   // t152：MCP 密碼卡的複製鈕已隨卡一併移除（t79：完成頁只給網址）。
 
-  // t79：建立帳號的事件處理器已隨那張卡一起移除——**建帳號在 portal 做**。
+  // t79 原本在這裡拔掉建帳號的事件處理器（「建帳號在 portal 做」）。
+  // inkstone/arcrun-rag#217 comment 11325／11405：那個前提被 Arcrun#98 的零 KV／
+  // Workers Secrets 遷移打破了——portal 首次設定頁沒有 CF token 可用，是死路。
+  // c4fff4c 曾試著把建帳號卡直接接在網址卡下面，被 leo 打回（comment 11421）：
+  // 「人會沒看到，因為他看到網址就覺得完成了」。這次改成**蓋滿全螢幕的獨立彈窗**
+  // （showAccountModal，掛在 document.body，不是 resultEl 裡面）——結構上就不是
+  // 「下面多一張卡」，而是像 WordPress 裝完跳出首次登入畫面那樣的獨立下一步。
+  if (r.url) showAccountModal(r);
+
   // 下載同步小幫手 config.json：純前端從安裝結果組 data URL，內容不經伺服器
   // t75 ③：config.json 下載的事件處理器已隨那張卡一起移除（HTML 沒了它就是死代碼，
   // 留著會讓後人以為那個功能還在——見 mistakes「死代碼＝錯誤環境信號」）。
+}
+
+// inkstone/arcrun-rag#217 comment 11421：安裝完成後的「設定帳號」是**獨立彈窗**，
+// 不是完成頁往下加的卡片。DOM 上刻意掛在 document.body（不是 resultEl）——
+// 這樣就算之後有人手滑把它移進 renderDone 的 html 字串裡，審查也一眼看得出跟
+// t79 網址卡不是同一層。成功後直接 window.location.href 跳進 portal：leo 原話
+// 「你完成首次帳密登入就直接跳到你的 portal 頁面了，所以跳出你的網址這件事完全
+// 沒用」——不再要求使用者自己點連結。
+function showAccountModal(r){
+  if (document.getElementById('acct-modal-overlay')) return; // 避免重複觸發（poll 可能不只打一次 done）
+  var overlay = document.createElement('div');
+  overlay.id = 'acct-modal-overlay';
+  overlay.innerHTML =
+    '<div class="card" role="dialog" aria-modal="true" aria-labelledby="acct-modal-title">'
+    + '<h3 id="acct-modal-title" style="font-size:20px">🎉 安裝完成，還有最後一步</h3>'
+    + '<p style="margin:0 0 18px;color:var(--muted)">設定你的管理員帳密，設定好會直接帶你進去。</p>'
+    + '<label for="acct-email">Email</label>'
+    + '<input id="acct-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false" required>'
+    + '<div style="height:12px"></div>'
+    + '<label for="acct-pw">密碼（至少 8 碼）</label>'
+    + '<input id="acct-pw" type="password" autocomplete="new-password" required>'
+    + '<div style="height:12px"></div>'
+    + '<label for="acct-pw2">再輸入一次密碼</label>'
+    + '<input id="acct-pw2" type="password" autocomplete="new-password" required>'
+    + '<div style="height:16px"></div>'
+    + '<button class="btn" id="acct-submit">建立帳號並登入</button>'
+    + '<p id="acct-status" style="margin:12px 0 0;color:var(--muted);font-size:14px"></p>'
+    + '<button type="button" class="modal-skip" id="acct-skip">這是更新，我已經有帳號 → 前往 Portal</button>'
+    + '</div>';
+  document.body.appendChild(overlay);
+
+  var goToPortal = function(){ window.location.href = r.url; };
+
+  var skipBtn = document.getElementById('acct-skip');
+  if (skipBtn) skipBtn.addEventListener('click', goToPortal);
+
+  var acctBtn = document.getElementById('acct-submit');
+  if (!acctBtn) return;
+  acctBtn.addEventListener('click', function(){
+    var email = document.getElementById('acct-email').value.trim();
+    var pw = document.getElementById('acct-pw').value;
+    var pw2 = document.getElementById('acct-pw2').value;
+    var st = document.getElementById('acct-status');
+    if (!email || pw.length < 8) { st.textContent = '請填 Email，密碼至少 8 碼'; return; }
+    if (pw !== pw2) { st.textContent = '兩次密碼不一樣'; return; }
+    acctBtn.disabled = true;
+    st.textContent = '建立中…';
+    fetch('/api/setup-account', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: email, password: pw, display_name: email.split('@')[0] })
+    }).then(function(res){
+      return res.json().catch(function(){ return {}; }).then(function(d){ return { ok: res.ok, status: res.status, d: d }; });
+    }).then(function(x){
+      if (x.ok && x.d && x.d.ok) {
+        st.textContent = '帳號建好了，正在帶你進去…';
+        goToPortal();
+        return;
+      }
+      acctBtn.disabled = false;
+      if (x.d && x.d.password_applied === false) {
+        // 這台機器之前就設過帳密了（多半是走「更新」的人誤觸這個彈窗）——
+        // 不要一直勸他重試，直接給「前往 portal 用原本帳密登入」的路。
+        st.textContent = (x.d && x.d.error) || '這台機器已經設定過管理員了。';
+        if (skipBtn) skipBtn.textContent = '前往 Portal 用原本的帳密登入';
+      } else {
+        st.textContent = (x.d && x.d.error) || '建立失敗（HTTP ' + x.status + '），請再試一次';
+      }
+    }).catch(function(){
+      acctBtn.disabled = false;
+      st.textContent = '網路好像有問題，請再試一次';
+    });
+  });
 }
 
 function renderError(p){
@@ -4467,6 +4803,7 @@ export default {
   // 紅線核對：掃的是**自己 worker 的 KV**（CF 內部），非 GitHub 輪詢（D20 管的是那個）。
   // 牆鐘：cron scheduled 可跑到 15 分鐘 wall，一輪 budget（3 顆）綽綽有餘。
   async scheduled(event, env, ctx) {
+    attachKvShim(env);
     const list = await env.INSTALLER_KV.list({ prefix: 'prog:' });
     for (const k of list.keys) {
       const sid = k.name.slice('prog:'.length);
@@ -4496,6 +4833,7 @@ export default {
     }
   },
   async fetch(request, env, ctx) {
+    attachKvShim(env);
     const url = new URL(request.url);
     const { pathname } = url;
 
@@ -4532,8 +4870,8 @@ export default {
         pageShell(
           '安裝器尚未設定完成',
           `<h2>安裝器還沒設定好</h2><p class="lead">系統管理員需要先完成設定才能開始安裝。</p>
-           <details open><summary>技術細節</summary><pre>缺少 KV binding：INSTALLER_KV
-請在 wrangler.toml 填入實際的 namespace id 後重新部署。</pre></details>`,
+           <details open><summary>技術細節</summary><pre>缺少 Durable Object binding：INSTALLER_STORE
+請在 wrangler.toml 補上 durable_objects binding + migration 後重新部署。</pre></details>`,
           '',
           env
         ),
@@ -5161,6 +5499,37 @@ async function handleInstallStart(request, env, ctx) {
  *   要新增一條 `'internal'`，得同時加進 `copy-rules.mjs` 的
  *   `WARNING_AUDIENCE_ALLOWLIST`（附理由），否則出貨的文案契約閘當場紅。
  */
+/**
+ * #196 c11733：verify 步驟的結論——**不准只憑 /health 就回「一切正常」**。
+ *
+ * 病史（c11728/c11733 實錄）：更新安裝時金鑰輪換剛換完，credential 種入回一陣子
+ *   401（暫時性）；安裝器把錯吞進 `credentialSeedError` 但**不擋安裝**，而 verify
+ *   當時只看 /health（generation 對得上就回「一切正常」）⇒ **假綠**：工作流拿到
+ *   已被輪換掉的舊值，所有寫 KBDB 的節點都 401。leo 10:46 重裝、#121 灌 120 份都中。
+ *
+ * 修法分兩層：① `seedCredentialWithRetry` 把暫時性 401 重試掉（多數情況這裡就乾淨了）；
+ *   ② 萬一重試完仍沒種成，verify **不准**再說「一切正常」——這一格就是那道防線。
+ *
+ * ⚠️ 這**不**牴觸 #196/6144（leo 2026-09-02 裁「金鑰保管處」那張警告卡不對用戶顯示）：
+ *   那條管的是**完成頁的警告卡**（installWarnings → audience:'internal'），
+ *   收件人是「我們」；本函式管的是 **verify 步驟自己的判定字串**，是另一個載體。
+ *   6144 的前提是「退回舊路仍能用」——c11733 證明金鑰輪換那一路**不能用**（全 401），
+ *   所以「一切正常」在這種情況下是說謊，不是體貼。文案維持系統面、不用嚇人的安全措辭。
+ *
+ * @returns {{state:'done'|'warn', note:string}}
+ */
+function verifyStepVerdict(result) {
+  const r = result || {};
+  if (r.credentialSeedError) {
+    return {
+      state: 'warn',
+      note: '主要服務都裝好了，但內部金鑰的目錄沒有寫進保管處——用到金鑰的工作流可能會失敗。'
+        + '系統已自動重試仍未成功，技術細節在下方，我們會處理。',
+    };
+  }
+  return { state: 'done', note: '一切正常' };
+}
+
 function installWarnings(result) {
   const r = result || {};
   const out = [];
@@ -5400,11 +5769,30 @@ async function handleSetupAccount(request, env) {
     return json({ ok: false, error: '你的安裝還沒完成，等安裝完成後再建立帳號' }, 409);
   }
 
+  // 🔴 inkstone/arcrun-rag#217 comment 11275（併自 inkstone/Arcrun#98 c11272 第 4 點）：
+  //   帳密的家改成 Workers Secrets（leo 09-25），cypher 身上沒有寫 Secrets 的 token，
+  //   `/console/setup`／`/console/setup/reset`／`/portal/admin/bootstrap` 現在收
+  //   `X-CF-Secrets-Token`——安裝器建第一個帳號時要把手上那把 CF token 用這個 header
+  //   帶過去。只用於這一次請求、不落地：跟這支函式其餘部分同一個紀律（帳密只過境，
+  //   report 只留 HTTP 狀態與訊息），這把 token 本來就已經活在 session 裡（`getAccessToken`
+  //   是既有函式，這裡沒有新增任何持久化）。session 過期就直接把錯誤往上拋，讓用戶
+  //   回首頁重新連結——跟原本 getAccessToken 在別處被呼叫時的失敗語意一致。
+  let cfToken;
+  try {
+    cfToken = await getAccessToken(env, sid);
+  } catch (e) {
+    return json({
+      ok: false,
+      error: (e instanceof InstallError && e.message) || '你的授權已經過期，請回到首頁重新連結你的 Cloudflare 帳號。',
+    }, 401);
+  }
+  const secretsHeader = { 'x-cf-secrets-token': cfToken };
+
   const report = { setup: null, login: null, bootstrap: null };
   let sessionToken = '';
 
   // 1. setup（首次）；已設定過會失敗（409）→ 改走 login
-  const setup = await postJson(`${cypherBase}/console/setup`, { email, password }, {});
+  const setup = await postJson(`${cypherBase}/console/setup`, { email, password }, secretsHeader);
   report.setup = { status: setup.status, ok: setup.ok, message: (setup.body && (setup.body.error || setup.body.message)) || null };
   if (setup.ok && setup.body && setup.body.session_token) {
     sessionToken = setup.body.session_token;
@@ -5434,10 +5822,11 @@ async function handleSetupAccount(request, env) {
   }
 
   // 2. portal admin bootstrap（需 console owner session；已有 admin 回 409＝冪等視為已就緒）
+  //    同樣要帶 X-CF-Secrets-Token（見上方 comment 11275 的註解）。
   const boot = await postJson(
     `${cypherBase}/portal/admin/bootstrap`,
     { email, password, display_name: displayName },
-    { authorization: `Bearer ${sessionToken}` }
+    { authorization: `Bearer ${sessionToken}`, ...secretsHeader }
   );
   report.bootstrap = { status: boot.status, ok: boot.ok || boot.status === 409, message: (boot.body && (boot.body.error || boot.body.message)) || null };
 

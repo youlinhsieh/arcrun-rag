@@ -476,15 +476,19 @@ function rollupTree(nodes) {
   nodes.forEach((n) => { byPath[n.path] = n; (kids[n.parent] = kids[n.parent] || []).push(n); });
   const sums = {};
   function walk(n) {
-    const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0 };
+    const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0, inProgress: [] };
     if (!n.skipped || n.total_files > 0) {
       acc.total = n.total_files; acc.synced = n.synced_files; acc.pending = n.pending_files;
       acc.unsupported = n.unsupported_files; acc.excluded = n.excluded_files;
+      // arcrun-rag#213／c10630：走過續讀機制、還沒讀完的大檔——跟其他計數同一套疊法，
+      // 這樣不管在哪一層展開，都看得到底下有沒有正在分次讀的大檔。
+      if (n.in_progress_files && n.in_progress_files.length) acc.inProgress = n.in_progress_files.slice();
     }
     (kids[n.path] || []).forEach((c) => {
       const x = walk(c);
       acc.total += x.total; acc.synced += x.synced; acc.pending += x.pending;
       acc.unsupported += x.unsupported; acc.excluded += x.excluded;
+      if (x.inProgress.length) acc.inProgress = acc.inProgress.concat(x.inProgress);
     });
     sums[n.path] = acc;
     return acc;
@@ -504,6 +508,13 @@ function gapWhy(s) {
   if (s.unsupported > 0) parts.push(s.unsupported + ' 份格式還讀不了');
   if (s.excluded > 0) parts.push(s.excluded + ' 份不在收檔範圍（程式碼等）');
   if (s.pending > 0) parts.push(s.pending + ' 份處理中');
+  // arcrun-rag#213／c10630：大檔一次讀不完時，「處理中」不再是一句話帶過——
+  // 至少讓使用者看得到「正在動、動到哪了」，不是卡住。小檔沒有這份清單，這裡不加東西。
+  if (s.inProgress && s.inProgress.length) {
+    const shown = s.inProgress.slice(0, 3).map((f) => `${f.name} ${f.percent}%`).join('、');
+    const more = s.inProgress.length > 3 ? `等 ${s.inProgress.length} 份` : '';
+    parts.push(`大檔分次讀：${shown}${more}`);
+  }
   return parts.join('・');
 }
 

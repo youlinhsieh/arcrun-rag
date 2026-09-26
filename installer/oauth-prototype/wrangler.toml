@@ -19,28 +19,74 @@ compatibility_flags = ["global_fetch_strictly_public"]
 # 這裡不需要 nodejs_compat。
 
 # ---------------------------------------------------------------------------
-# KV：存 OAuth state、session（token）、安裝進度
+# 存 OAuth state、session（token）、安裝進度——Durable Object（inkstone/arcrun-rag#217）
 # ---------------------------------------------------------------------------
-# ⚠️ 部署前必填：下面的 id 是佔位符，要換成你自己建立的 namespace id。
-#
-#   wrangler kv namespace create INSTALLER_KV
-#   wrangler kv namespace create INSTALLER_KV --preview
-#
-# 指令會印出真實的 id，貼回下面兩個欄位。
+# 🔴 leo 2026-09-25：「KV 只要存在你就會去用，很可能把用戶的服務搞掛」——安裝器自己
+#   （官方帳號）原本也綁一顆 KV namespace，這裡換成 Durable Object。程式碼裡照樣叫
+#   `env.INSTALLER_KV.*`（見 worker.js 的 `InstallerStore`／`attachKvShim`），只是
+#   背後接的東西從 KV namespace 換成 DO stub，行為（get/put/delete/list、TTL）不變。
+#   遷移（`[[migrations]]`，見檔尾）對每個環境各自的 script 獨立套用一次。
 # ---------------------------------------------------------------------------
-[[kv_namespaces]]
-binding = "INSTALLER_KV"
-id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # uncle6 實際值（wiki agent-memory 記載）
-# preview_id 部署不需要（只有 wrangler dev 用）
+[[durable_objects.bindings]]
+name = "INSTALLER_STORE"
+class_name = "InstallerStore"
 
-# t157：對方通道（staging）的 KV，唯讀用——偵測「同帳號被另一通道裝過」（雙通道互蓋警告）。
-# KV 分離後兩通道互不知情，youlin 07-31 就被 staging＋prod 各裝一半成混血實例。
+# t157：對方通道（staging）的 DO，唯讀用——偵測「同帳號被另一通道裝過」（雙通道互蓋警告）。
+# 兩通道互不知情，youlin 07-31 就被 staging＋prod 各裝一半成混血實例。
+# script_name 指向 staging 的 script（跨 script DO 綁定，該 script 要有同一個 class）。
+[[durable_objects.bindings]]
+name = "PEER_INSTALLER_STORE"
+class_name = "InstallerStore"
+script_name = "arcrun-rag-installer-staging"
+
+# ---------------------------------------------------------------------------
+# 過渡期唯讀 KV（inkstone/arcrun-rag#217 comment 11162 審出）——**不是永久雙寫**
+# ---------------------------------------------------------------------------
+# prod 這顆帳號上有現役用戶的 `deployed:<acc>:<sub>` 紀錄（見 worker.js
+# `kvOverDurableObject` 檔頭註解）。DO 剛上線是空的，若直接拔掉這顆 KV binding，
+# 每個舊用戶重新整理/更新時都會被誤判成「沒裝過」、被導去要辨識碼。
+# ⇒ 綁定名從 `INSTALLER_KV` 改成 `INSTALLER_KV_LEGACY`（id 不變——同一顆 namespace，
+#   只是換了個名字讓它變成「來源」而不是「主資料」），`attachKvShim` 接成
+#   read-through：DO 找不到才問它，問到就寫回 DO，之後不再問。
+#
+# 🔴 **拔掉的時機**（別只憑記憶判斷，照這裡的條件核對）：
+#   `deployed:` 系列紀錄的 TTL 是 365 天（見 worker.js `deployBundledWorker`），
+#   代表最久要等一年這顆 namespace 才會完全空掉。但不必真的等一年——
+#   活躍帳號通常在换 DO 後的頭幾週內就會有請求把自己的資料 read-through 搬完，
+#   所以判準是「**觀察期內這顆 legacy binding 還有沒有被問到**」，不是等 TTL：
+#     1. 部署後開始算起，找一段安全窗（建議 ≥60 天，涵蓋久久才回來更新一次的用戶）
+#     2. 這段期間去查 CF Analytics（KV read 次數，這顆 namespace id 見上面 id 值）
+#        是不是趨近於 0——`kvOverDurableObject.get/list` 只在 DO 沒有才會問它，
+#        所以「還有讀量」＝還有東西沒搬完，「讀量掉到 0」＝該搬的都搬完了
+#     3. 讀量掉到 0 之後，把這個 binding 整段刪掉、把 `worker.js` 的
+#        `legacyKv` 參數改回不傳（或留著也無害，只是變成永遠用不到的分支）
 [[kv_namespaces]]
-binding = "PEER_INSTALLER_KV"
-id = "750c23faf0794d3db317c32f596df9a9"  # staging-INSTALLER_KV
+binding = "INSTALLER_KV_LEGACY"
+id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # 就是原本的 prod INSTALLER_KV，資料原封不動
+
+[[kv_namespaces]]
+binding = "PEER_INSTALLER_KV_LEGACY"
+id = "750c23faf0794d3db317c32f596df9a9"  # 原本的 staging-INSTALLER_KV（prod 這邊當唯讀對照用）
 
 [observability]
 enabled = true
+
+# DO class 的遷移紀錄——CF 依「script 名稱＋這份 tag 清單」各自追蹤，三個環境是三個
+# 不同的 script（見各 [env.*] 的 name），所以同一份 [[migrations]] 對三邊分別各套一次，
+# 不會互相污染。
+#
+# 🔴 總管審出（inkstone/arcrun-rag#217 comment 11162）：`new_classes`（經典 KV 型儲存
+# 的 DO）**要付費方案**——查過 youlin 帳號的 subscriptions（CF API），只有
+# `images_v2_stream_basic`／`r2_paid`，沒有 Workers 付費方案 ⇒ `new_classes` 在 youlin
+# 這種免費帳號**部署不了**。免費方案只有 SQLite 型儲存的 DO 能用，遷移語法是
+# `new_sqlite_classes`——`InstallerStore` 用的 `state.storage.get/put/delete/list`
+# 這組 API 在兩種後端上簽章完全相同（SQLite 只是內部儲存機制不同，不改介面），
+# 所以只改這一行，`worker.js` 不用跟著改。
+# 這個 class 本來就沒上線過（第一次部署），第一次就用 SQLite 型別，不會有「已經建好
+# 又要換儲存形態」那種事後很麻煩的遷移。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InstallerStore"]
 
 # t156：安裝自續保底——cron 每 2 分掃自家 KV 的 paused_continue／停滯 running 續跑一輪。
 # 頁面接力仍是主路徑；這裡保證「頁面關了安裝照樣走完」。掃自家 KV 非 GitHub 輪詢（D20 無涉）。
@@ -84,7 +130,9 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 # ---------------------------------------------------------------------------
 # staging 環境（D37，2026-07-31）：與 prod 完全分離的測試場。
 #   部署指令＝ `npx wrangler deploy --env staging --config wrangler.toml`
-#   - 獨立 worker 名＋獨立 INSTALLER_KV（session/進度/金鑰記錄全不與 prod 共用）
+#   - 獨立 worker 名＋獨立 InstallerStore DO（session/進度/金鑰記錄全不與 prod 共用，
+#     inkstone/arcrun-rag#217：原本是獨立 INSTALLER_KV，換 DO 之後隔離方式不變——
+#     每個 script 名下的 DO class 天生互相隔離，不需要額外設定）
 #   - 不綁 custom domain（走 workers.dev）；OAuth redirect_uri 已 PATCH 加進
 #     client 79b44eac 的註冊清單（staging workers.dev callback）
 #   - BUNDLE_BASE 蓋掉 prod 釘點 → Gitea raw 釘 commit（不走 jsDelivr、不碰 GitHub）
@@ -99,19 +147,30 @@ name = "arcrun-rag-installer-staging"
 # 維持現狀、不動 prod 的 compatibility_flags。
 compatibility_flags = ["global_fetch_strictly_public"]
 
-[[env.staging.kv_namespaces]]
-binding = "INSTALLER_KV"
-id = "750c23faf0794d3db317c32f596df9a9"  # staging-INSTALLER_KV（2026-07-31 建）
+[[env.staging.durable_objects.bindings]]
+name = "INSTALLER_STORE"
+class_name = "InstallerStore"
 
-# t157：對方通道（prod）的 KV，唯讀用——雙通道互蓋警告（見 prod 段註解）
+# t157：對方通道（prod）的 DO，唯讀用——雙通道互蓋警告（見 prod 段註解）
+[[env.staging.durable_objects.bindings]]
+name = "PEER_INSTALLER_STORE"
+class_name = "InstallerStore"
+script_name = "arcrun-installer"
+
+# 過渡期唯讀 KV（同 prod 段那整套說明＋拔掉時機——這裡不重複整段，理由一樣）。
+# staging 是測試場但仍可能有人測過、留下 `deployed:` 紀錄，同樣不能讓它們憑空消失。
 [[env.staging.kv_namespaces]]
-binding = "PEER_INSTALLER_KV"
-id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # prod INSTALLER_KV
+binding = "INSTALLER_KV_LEGACY"
+id = "750c23faf0794d3db317c32f596df9a9"  # 原本 staging 自己的 INSTALLER_KV
+
+[[env.staging.kv_namespaces]]
+binding = "PEER_INSTALLER_KV_LEGACY"
+id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # 原本的 prod INSTALLER_KV（staging 這邊當唯讀對照用）
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/f5a5b92"
-BUNDLE_BUILT = "2026-09-22"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/6464f1c"
+BUNDLE_BUILT = "2026-09-25"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
 # SIGNUPS——prod 報名 19 筆裡 8 筆 @example.com 就是這樣污染進去的。
@@ -169,18 +228,21 @@ crons = ["*/2 * * * *"]  # t156 自續保底（同 prod）
 name = "arcrun-installer-youlin-stage"
 compatibility_flags = ["global_fetch_strictly_public"]
 
-[[env.youlin-stage.kv_namespaces]]
-binding = "INSTALLER_KV"
-id = "fb717f4d5e9c449fa4e94ba95857a679"  # INSTALLER_KV_YOULIN_STAGE（2026-09-25 重建，
-# inkstone/arcrun-rag#215：09-01 那顆 fdc2cee1… 已不存在於帳號上（查證：CF API 10013
-# namespace not found）——那段當時只寫了 wrangler.toml 註解，沒有真的建出來或已被清掉，
-# 屬於「09-01 已開頭沒做完」的一部分，這次重新建立。
+[[env.youlin-stage.durable_objects.bindings]]
+name = "INSTALLER_STORE"
+class_name = "InstallerStore"
 
-# 對方通道偵測（t157）在 youlin 沒有真正的「對方」——給一顆空的自己的 KV，
-# 而不是指向 uncle6 的 namespace（跨帳號綁不上，而且那是別人家的資料）。
-[[env.youlin-stage.kv_namespaces]]
-binding = "PEER_INSTALLER_KV"
-id = "ca4a7a4ed1634849bd0bc14a9a397aca"  # PEER_INSTALLER_KV_YOULIN_STAGE（2026-09-25 重建，同上）
+# 對方通道偵測（t157）在 youlin 沒有真正的「對方」——跟 DO 換版前的作法一樣，給一顆
+# 空的自己的 DO（script_name 留白＝綁同一個 script 自己的 class），而不是指向 uncle6
+# 的 namespace（跨帳號綁不上，而且那是別人家的資料）。
+[[env.youlin-stage.durable_objects.bindings]]
+name = "PEER_INSTALLER_STORE"
+class_name = "InstallerStore"
+
+# 🔴 故意不接 `INSTALLER_KV_LEGACY`（inkstone/arcrun-rag#217 comment 11161／11162）：
+# 總管 2026-09-25 實查 youlin-stage 舊的 `INSTALLER_KV`（`fb717f4d…`），`deployed:`
+# 前綴 0 筆——這顆是 09-25 才重建的、還沒有人真的走完部署，沒有東西可搬，
+# 接了也只是白多一顆沒用到的 binding。prod／staging 才需要那段過渡。
 
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
