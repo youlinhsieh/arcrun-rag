@@ -1,10 +1,10 @@
 {
  "_algo": 5,
- "version": "0.18.59",
- "fingerprint": "e5c5cfae5cf6350c",
+ "version": "0.18.61",
+ "fingerprint": "ec409537ca402e68",
  "files": {
   ".gitignore": "c7a98c44ecc882a174720e43dabd4c04d7cf2503586426dcccaa213d5a27df38",
-  "CHANGELOG.md": "3bbfc638fd9fea66dc73d2b757907a4465ce6b9e59dd7f8b2b0396ec5dc1aee9",
+  "CHANGELOG.md": "92f9ae317a80d5cd7a097c67955b97848d27de87aad761fb02058872b92215e7",
   "DAEMON_LINE": "d5019abbdc8a5f2919e9e3510391891cd7fbdf0765bf16ec83caa779f370116d",
   "README.md": "9d92cac236b20a0b183eea3e7f5e39ad492f05192c4ea602eb11c3d09967327f",
   "check-standalone.sh": "65fbce096326791c2f103a51e76d0ad79e9e510e2a7700b49ac2d2d81f73c853",
@@ -76,7 +76,7 @@
   "cmd/arcrun-app/frontend/src/assets/fonts/OFL.txt": "8656c2a27357b3140047a39b27e3cd928256544ad8a004ef77087f761358208c",
   "cmd/arcrun-app/frontend/src/assets/fonts/nunito-v16-latin-regular.woff2": "06f3af3fe52542d40ad9bc14ec03e04deaabd09ec369221cc8f536db1c72bf55",
   "cmd/arcrun-app/frontend/src/assets/images/logo-universal.png": "157a874acd3363634747287c0b01034e9f1eec838a4cf39827dfea789e730494",
-  "cmd/arcrun-app/frontend/src/main.js": "b431d3da404269e9921f5f54f884c379f552cdd1ec4775678bae6383649e3bb8",
+  "cmd/arcrun-app/frontend/src/main.js": "8ecc712b9388d2de34bec50918bd2ddd200933aea601831555a0d4fcdb4ebfcc",
   "cmd/arcrun-app/frontend/src/style.css": "0dd856d4284d8bc6dbdee0316091e943e2181779d6c4bd632ceb7872628e5cc8",
   "cmd/arcrun-app/gen-icons.py": "df5b3b33e500fc564badfc8bd2a9ca6a43f7d7e3b31111c41e3b322137c4c96c",
   "cmd/arcrun-app/go.mod": "8b9e57bcfd44886d1ec06480e033af706ff3fed470786c57074900dd48ecf86f",
@@ -98,14 +98,16 @@
   "convert_pptx.go": "6fa4e1a4485fa66459758b24c1e217181bb0b150e7c84363dc6d20b740562f24",
   "convert_table.go": "5313b96e4d85d65e6c3c8b51e7c0e25aee11a47fdbda534fe8432fbea87836c5",
   "credentialcause.go": "ea2c321e4a931b55523583ab4ae48e3ba30a9d0fc2da5135fab7bc00ff795864",
-  "direct.go": "011ded35573c23c74def2c48ba134ab2a3d5909bc93fa71a4d0d4a3655628a7b",
+  "direct.go": "22e70dfc94940e0b78d68f4e9b9d98815540a36d0361498c9f68f4fefcc6d122",
   "direct_pacing.go": "b54838ce85f72ecd2d3388fa7cf89050c87fb10bd67dca07cd18d49568a8837c",
   "extract.go": "b6b5212ab5107c53da17bf677ac54b040f2f78674b902c8b5750a3befa4a1f23",
-  "extract_gemma.go": "53483c6ea3992759abbae45562bfc418d4df1728b44fa87b3bd30324d28fc4f4",
-  "extract_workersai.go": "b1a2fc568cd843bd4921794a7c6f4178ee81301c9d295ede074c21eee0e6013d",
+  "extract_chunk.go": "8a2b00de699fbbe64dccd89916d3bd10503c701b02859b377b13c6175fde9286",
+  "extract_gemma.go": "90fc010ff1e7dde79233412b729f47315085b0e8762e745e4ab6772f8bcb3fee",
+  "extract_resume.go": "818df999160699b5f7b2d6c76c5a10ce15f514a0e4c07b643e4bd6d4657d7174",
+  "extract_workersai.go": "64d9517141adf2e76221967de610be463f1707760e8062ee787c074b7100b629",
   "folderindex.go": "ff69bf38178bfa5af4e659fb43827b72bd9669c259e048d97e5a3c8c6d0f9f29",
   "foldershape.go": "b1b237f5674674efdc9bdea849b63c571a014e64bec33af42fb7c4769fa7582b",
-  "foldertree.go": "7a7d478f7c6fb75536d149d1a61a0643358d77b3de5e5b043397052923c74784",
+  "foldertree.go": "712ca070dc54bcce2b7b682d566acfdc5cf370ce62b2dd08622a3124a0e2924b",
   "go.mod": "05dacc224af2a6797db86689435f83537efb433ffba521467b95d1099f5e12db",
   "go.sum": "a9c92957ca368462aab32a82a6f51c9586ea07478a7967012986d757e9969ab3",
   "grounding.go": "7152771ab1bb152946209f8e94e52bdf2facc6192b7a8ca018e37fed4557e9c0",
@@ -177,6 +179,6 @@
   "upload.go": "a41bb459eac8f6c114be567a2d7c53bbdb11b0e31f0bda4b78776502664273cb",
   "vault.go": "91d61613d37da5c16b24e08c70d59cf4c9cde9375737573d65921949087f1465",
   "verify-60.sh": "323347b19a366d5bcf8ddb65c9800dde32027d0170675f90e0ea46d6d1fcadc4",
-  "wikishape.go": "75901acc73abaa9b9340f13c110d90e1972207326acf8fc9ea9d6912b88524c1"
+  "wikishape.go": "5d8454746a41f208d2453fbdf7f0d67149868fbe9a2856741f126c331888a946"
  }
 }
