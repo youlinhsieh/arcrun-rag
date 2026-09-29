@@ -272,3 +272,5 @@
 | 2026-09-29 20:36:36 | stage | 0.18.64 | 0.18.63 | ⛔ 擋下 | version-match；filename-carries-version |
 | 2026-09-29 20:36:52 | stage | 0.18.64 | 0.18.64 | ✅ 放行 | — |
 | 2026-09-29 20:42:43 | stage | 0.18.64 | 0.18.64 | ✅ 放行 | — |
+| 2026-09-29 21:22:34 | prod | 0.18.64 | 0.18.59 | ⛔ 擋下 | version-match；filename-carries-version |
+| 2026-09-29 21:22:50 | prod | 0.18.64 | 0.18.59 | ⛔ 擋下 | version-match；filename-carries-version |
