@@ -3913,7 +3913,7 @@ async function runInstall(env, sid, progress, force) {
     // D36 第2步：金鑰獨立寫入 kbdb/cypher 兩顆 worker（已不隨 code 上傳，見 deployBundledWorker）。
     // 順序重要：必須在 worker 部署完成之後（script 要先存在才寫得進 secret）。
     // 冪等：同名 secret 重寫即覆蓋；跳過部署的實例也會走到這裡 ⇒ 金鑰永遠同步。
-    try {
+    {
       // t151 加入 arcrun-mcp：MCP 走 service binding 打 kbdb，但 kbdb 是 fail-closed
       // （t115：沒 token 一律 401），而 mcp/src/lib/kbdb-client.ts 是拿 env.KBDB_INTERNAL_TOKEN
       // 當 Bearer 送。⇒ **只補 service binding 的話，錯誤只會從 500 變成 401，工具還是不能用。**
@@ -3924,14 +3924,45 @@ async function runInstall(env, sid, progress, force) {
       //   `secretSyncError` 一行字（連 `secretsSynced` 都沒設成 true，也沒人在看）。
       //   kbdb 與 cypher 是因為排在迴圈前兩位才「剛好」拿到金鑰——**靠順序活著**。
       //   把 mcp 打進 bundle 之後這條路才第一次真的走得完。
-      for (const sn of ['arcrun-kbdb', 'arcrun-cypher-executor', 'arcrun-mcp']) {
-        await putWorkerSecretDirect(token, accountId, sn, 'KBDB_INTERNAL_TOKEN', kbdbToken);
+      //
+      // 🔴 inkstone/arcrun-rag#230 c15782：舊寫法用單一 for + await，外層只有一個
+      //   try/catch 包住整個迴圈。三顆 PUT 任何一顆失敗（暫時性 CF API 錯誤／該 script
+      //   還沒部署完成）就會讓迴圈當場中止：**已經 PUT 成功的那幾顆變成新 token，
+      //   還沒輪到的維持舊 token**——三顆金鑰悄悄不同步，而 secretsSynced 連 false
+      //   都不會被設（catch 只留一行 secretSyncError，訊息也看不出「是哪幾顆換了、
+      //   哪幾顆沒換」）。改成 Promise.allSettled：三顆各自獨立送出，不會因為前一顆
+      //   炸掉而讓後面兩顆連送都沒送；送完逐顆記錄成功/失敗，只要有一顆沒成功
+      //   就整批標記未同步，並把「哪幾顆已經是新的、哪幾顆還是舊的」寫進錯誤訊息
+      //   ——這批文字會被 buildProgressWarnings（handleInstallStatus 附近）撿去顯示
+      //   給用戶，不再是「寫下來就沒有任何人、任何畫面會再碰它們」的死角。
+      const scriptNames = ['arcrun-kbdb', 'arcrun-cypher-executor', 'arcrun-mcp'];
+      const results = await Promise.allSettled(
+        scriptNames.map((sn) => putWorkerSecretDirect(token, accountId, sn, 'KBDB_INTERNAL_TOKEN', kbdbToken)),
+      );
+      const synced = [];
+      const failed = [];
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          synced.push(scriptNames[i]);
+        } else {
+          failed.push({ script: scriptNames[i], error: String((r.reason && r.reason.message) || r.reason) });
+        }
+      });
+      progress.result.secretsSyncDetail = { synced, failed: failed.map((f) => f.script) };
+      if (failed.length === 0) {
+        // MCP_OWNER_SECRET 的下發已於 2026-08-10 拆除（見上方 ensureKbdbToken 下面那段說明）：
+        // 新世代 /authorize 驗的是 Portal 帳密，沒有任何程式碼會讀那把值。
+        progress.result.secretsSynced = true;
+      } else {
+        progress.result.secretsSynced = false;
+        progress.result.secretSyncError = (
+          `KBDB_INTERNAL_TOKEN 只同步到 ${synced.length}/${scriptNames.length} 顆 worker`
+          + `（已換成新金鑰：${synced.length ? synced.join('、') : '無'}；`
+          + `仍是舊金鑰：${failed.map((f) => f.script).join('、')}）——`
+          + `三顆 worker 現在金鑰不一致，彼此互打會開始 401。失敗細節：`
+          + failed.map((f) => `${f.script}=${f.error}`).join('；')
+        );
       }
-      // MCP_OWNER_SECRET 的下發已於 2026-08-10 拆除（見上方 ensureKbdbToken 下面那段說明）：
-      // 新世代 /authorize 驗的是 Portal 帳密，沒有任何程式碼會讀那把值。
-      progress.result.secretsSynced = true;
-    } catch (e) {
-      progress.result.secretSyncError = String((e && e.message) || e);
     }
 
     // inkstone/arcrun-rag#212：cron trigger 同步（`wrangler.toml` 的 `[triggers]` 只有

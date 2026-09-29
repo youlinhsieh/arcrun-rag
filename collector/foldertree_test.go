@@ -257,6 +257,105 @@ func TestSyncFolderTree整棵一次送(t *testing.T) {
 	}
 }
 
+// TestSyncFolderTree心跳到期強制重送 驗 arcrun-rag#232：資料夾內容從頭到尾
+// 不變，48h TTL 眼看要到期，小幫手也要在那之前把同一棵樹再送一次，
+// 讓雲端的 daemon_active_libs 刷新——不必真的等 48h，直接把時鐘撥過去驗。
+func TestSyncFolderTree心跳到期強制重送(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	defer srv.Close()
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "x.md"), "# X")
+	tree := buildTreeFromDisk(t, root)
+	cfg := &DirectConfig{CypherURL: srv.URL, APIKey: "demo"}
+	m := &Manifest{Root: root, Entries: map[string]*ManifestEntry{}}
+	now := time.Unix(1786900000, 0)
+
+	if res := syncFolderTree(cfg, root, m, tree, false, now); res == nil || res.Status != "ingested" {
+		t.Fatalf("首次應送達：%+v", res)
+	}
+	if hits != 1 {
+		t.Fatalf("首次應打一次，實際 %d", hits)
+	}
+	if m.FolderTreeNextHeartbeat == 0 {
+		t.Fatal("送達後應記下一次心跳到期時間")
+	}
+
+	// 內容完全沒變、也還沒到心跳時間（例如剛過 1 小時，遠小於 48h TTL）→ 不該送
+	// ——不然就不是「心跳」，是每輪都送，失去了①雜湊閘省流量的意義。
+	if again := syncFolderTree(cfg, root, m, tree, false, now.Add(time.Hour)); again != nil {
+		t.Errorf("還沒到心跳時間不該重送：%+v", again)
+	}
+	if hits != 1 {
+		t.Errorf("心跳沒到期不該多打：實際 %d 次", hits)
+	}
+
+	// 內容仍然完全沒變，但已經過了 folderTreeHeartbeatInterval（24h）
+	// ⇒ 就算雜湊閘①本來會擋，心跳到期也要放行，讓雲端在 48h TTL 前收到回報。
+	if beat := syncFolderTree(cfg, root, m, tree, false, now.Add(folderTreeHeartbeatInterval+time.Second)); beat == nil || beat.Status != "ingested" {
+		t.Fatalf("心跳到期應強制重送：%+v", beat)
+	}
+	if hits != 2 {
+		t.Errorf("心跳到期應多打一次，實際共 %d 次", hits)
+	}
+	// 送過之後心跳要重新起算，不能停在原地（否則下一輪又立刻判定到期，變成狂送）。
+	if m.FolderTreeNextHeartbeat <= now.Add(folderTreeHeartbeatInterval+time.Second).Unix() {
+		t.Errorf("心跳送達後應往後重新起算：%+v", m.FolderTreeNextHeartbeat)
+	}
+}
+
+// TestSyncFolderTree升級上來的舊manifest也會補心跳 覆蓋總管審 `33ef1f1` 退回的那個洞
+// （c15799）：manifest 是升級前留下的——已經有 FolderTreeHash（送過很多次），
+// 但新加的 FolderTreeNextHeartbeat 欄位是零值（從沒被問過心跳）。
+// 這跟「真首次」長得一樣（都是 NextHeartbeat == 0），但不能套同一套「不算到期」，
+// 不然樹沒變就會被①的雜湊閘永遠擋住，NextHeartbeat 永遠沒機會被設定。
+func TestSyncFolderTree升級上來的舊manifest也會補心跳(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	defer srv.Close()
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "x.md"), "# X")
+	tree := buildTreeFromDisk(t, root)
+	cfg := &DirectConfig{CypherURL: srv.URL, APIKey: "demo"}
+	now := time.Unix(1786900000, 0)
+
+	// 模擬「升級前就已經同步過」的舊 manifest：FolderTreeHash 是舊版本送出時
+	// 就已經記下的值（跟這輪算出來的 tree.Hash() 一致，代表內容沒變），
+	// 但 FolderTreeNextHeartbeat、FolderTreeNextSend 是升級後新欄位的零值。
+	m := &Manifest{
+		Root:           root,
+		Entries:        map[string]*ManifestEntry{},
+		FolderTreeHash: tree.Hash(),
+	}
+
+	res := syncFolderTree(cfg, root, m, tree, false, now)
+	if res == nil || res.Status != "ingested" {
+		t.Fatalf("升級上來的舊 manifest 應在這一輪就補送心跳：%+v", res)
+	}
+	if hits != 1 {
+		t.Fatalf("應打一次，實際 %d 次", hits)
+	}
+	if m.FolderTreeNextHeartbeat == 0 {
+		t.Fatal("補送之後應該掛上正常的心跳時鐘，不能繼續停在零值")
+	}
+
+	// 補送過一次之後，行為要跟「正常心跳」一致——內容沒變、心跳未到不該再送。
+	if again := syncFolderTree(cfg, root, m, tree, false, now.Add(time.Hour)); again != nil {
+		t.Errorf("補送過一次後，心跳沒到期不該再送：%+v", again)
+	}
+	if hits != 1 {
+		t.Errorf("心跳沒到期不該多打：實際 %d 次", hits)
+	}
+}
+
 func TestSyncFolderTree首次不受最小間隔限制(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

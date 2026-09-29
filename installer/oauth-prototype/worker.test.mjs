@@ -2529,6 +2529,48 @@ test('🔴 2026-08-10 一次安裝只佈署一代認證：不再下發 MCP_OWNER
   assert.equal(JSON.parse(kbdbTok[0].body).type, 'secret_text');
 });
 
+// 🔴 inkstone/arcrun-rag#230 c15782：舊寫法是單一 for + await，三顆任何一顆 PUT 失敗
+// 就讓迴圈當場中止——已經 PUT 成功的那幾顆變成新 token，還沒輪到的維持舊 token，
+// 三顆金鑰悄悄不同步，而且 secretsSynced 連 false 都不會被設。這個 test 逼一顆
+// （排在中間的 arcrun-cypher-executor）失敗，驗兩件事：①另外兩顆各自獨立照送
+// （不會因為中間那顆炸掉，最後一顆 arcrun-mcp 就連送都沒送到）；②失敗要誠實
+// 反映在 secretsSynced/secretSyncError/secretsSyncDetail，不能吞掉或裝作全部成功。
+test('🔴 #230 金鑰同步三顆有一顆失敗：不中止其他兩顆，且誠實回報成不一致態（不再吞掉）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-secret-partial-fail';
+  await seedInstallSession(env, sid, 'partial@test.example');
+  installStallFixFetch({ coreCount: 2 }); // 2 < 3/輪 ⇒ 一輪裝完，續走到 secret 區塊
+  const innerFetch = globalThis.fetch; // 疊一層：只攔 cypher-executor 的 /secrets PUT
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (/\/workers\/scripts\/arcrun-cypher-executor\/secrets$/.test(url)
+        && (init.method || 'GET').toUpperCase() === 'PUT') {
+      return new Response(JSON.stringify({ success: false, errors: [{ message: 'temporary CF API error' }] }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return innerFetch(input, init);
+  };
+  try {
+    const { ctx } = makeCtx();
+    const res = await worker.fetch(reqStart(sid, {}), env, ctx);
+    if (res.body) { const rd = res.body.getReader(); for (;;) { const x = await rd.read(); if (x.done) break; } }
+  } finally {
+    restoreFetch();
+  }
+
+  const prog = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.equal(prog.result.secretsSynced, false,
+    '有一顆沒同步到＝整批不算同步完成，不准謊報 true');
+  assert.ok(prog.result.secretSyncError, '要留下看得懂的錯誤訊息，不能只是靜默失敗');
+  assert.match(prog.result.secretSyncError, /arcrun-cypher-executor/, '訊息要點名哪一顆失敗');
+  assert.match(prog.result.secretSyncError, /不一致|401/, '訊息要講出後果：三顆金鑰不一致、互打會 401');
+  assert.deepEqual(prog.result.secretsSyncDetail.synced.sort(), ['arcrun-kbdb', 'arcrun-mcp'].sort(),
+    '另外兩顆各自獨立送出，不能因為中間那顆炸掉就連沒輪到的也不送');
+  assert.deepEqual(prog.result.secretsSyncDetail.failed, ['arcrun-cypher-executor']);
+});
+
 // ---------------------------------------------------------------------------
 // skills 種入（封測斷點：裝完的實例 AI 拿不到「怎麼寫意圖工作流」等 playbook）
 // ---------------------------------------------------------------------------

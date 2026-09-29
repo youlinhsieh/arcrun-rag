@@ -157,6 +157,14 @@ type Manifest struct {
 	FolderTreeFailHash  string `json:"folder_tree_fail_hash,omitempty"`
 	FolderTreeNextRetry int64  `json:"folder_tree_next_retry,omitempty"`
 	FolderTreeNextSend  int64  `json:"folder_tree_next_send,omitempty"`
+
+	// FolderTreeNextHeartbeat＝**內容沒變也要**強制重送的到期時間
+	// （`folderTreeHeartbeatInterval`，見 foldertree.go 該常數的說明；
+	// `inkstone/arcrun-rag#232`）。與上面三個欄位不同：那三個管「內容有變時」
+	// 怎麼節流／退避，這一個管「內容沒變」時要不要照樣送一次去刷新雲端的
+	// 存活判準（`daemon_active_libs` 48h TTL）——沒有它，靜止的資料夾會被
+	// ①那道雜湊閘永遠擋住，48h 後 portal 就會誤判小幫手斷線。
+	FolderTreeNextHeartbeat int64 `json:"folder_tree_next_heartbeat,omitempty"`
 }
 
 // QueueTakedown 記一筆「這個舊路徑（連同當時的頁名）還沒在雲端下架」的待辦。

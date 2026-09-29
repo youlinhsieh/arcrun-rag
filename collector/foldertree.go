@@ -94,6 +94,25 @@ const (
 	// **首次送出不受此限**（m.FolderTreeHash == ""）——指定資料夾的當下就要看得見它，
 	// 那正是 arcrun-rag#106 的重點。
 	folderTreeMinInterval = 2 * time.Minute
+
+	// folderTreeHeartbeatInterval：**內容沒變**的情況下，最久多久也要重送一次
+	// （`inkstone/arcrun-rag#232`，母票 `inkstone/Arcrun#266`）。
+	//
+	// 🔴 為什麼需要這道閘：雲端 portal 判斷小幫手「還活著」看的是
+	// `daemon_active_libs`（48h TTL，收到 folder-tree 回報就刷新——Arcrun 那一側
+	// `5ed8683` 已改成這樣）。而 syncFolderTree 平常靠內容雜湊擋重送
+	// （①那道閘）：資料夾內容幾天不動，雜湊就永遠不變，就永遠不送，
+	// ⇒ 48h 一到 portal 就顯示「小幫手沒連上」——**小幫手明明還開著**。
+	//
+	// 解法不是另開一條心跳線（驗收條件明講「不另開第二套存活機制」），
+	// 是讓這棵樹本身變成心跳：內容沒變也好，隔一段時間**強制**送一次同樣的樹，
+	// 讓收端刷新同一把 `daemon_active_libs`。
+	//
+	// 間隔取 TTL 的一半（24h），留一倍安全邊界：小幫手不必分秒不差地趕在
+	// 48h 前送達，即使某一輪因為額度或網路暫時失敗，還有將近 24h 可以重試。
+	// 對照 folderTreeMinInterval 的算法：24h 一次、一個資料夾一天最多 1 次
+	// KV 寫入，不是「不必要的雲端流量」（驗收條件另一句）。
+	folderTreeHeartbeatInterval = 24 * time.Hour
 )
 
 // FolderNode＝樹上的一個節點（＝地端的一個資料夾）。
@@ -378,7 +397,8 @@ func (t FolderTree) Hash() string {
 //
 // 冪等／防撞四層（前三層同 inventory.go 的慣例，刻意不另立一套）：
 //
-//	①整棵樹的內容雜湊記在 manifest.folder_tree_hash，沒變不送；
+//	①整棵樹的內容雜湊記在 manifest.folder_tree_hash，沒變不送——**除非心跳到期**
+//	  （見下方 ①之一）；
 //	②同一份內容剛失敗過 → 退避窗口內不重撞；
 //	③**成功送過之後有最小間隔**（folderTreeMinInterval，理由見該常數）；
 //	④收端整棵覆寫（同一個 library 一把 KV），重送不堆副本、也不會留下半棵樹。
@@ -387,6 +407,26 @@ func (t FolderTree) Hash() string {
 // 空資料夾從頭到尾都沒有事件（arcrun-rag#106 的情境本身），漏掉這一送，
 // 「指定了資料夾雲端就看得到」這件事永遠不會發生。
 // ——但正因為拿掉了那道閘，才必須補上第③層，否則初次同步會變成每 5 秒送一次。
+//
+// ①之一：**心跳**（`inkstone/arcrun-rag#232`）——①那道雜湊閘天生的副作用是
+// 「內容不動就永遠不送」，而雲端判斷小幫手存活看的正是「有沒有收到 folder-tree
+// 回報」（`daemon_active_libs`，48h TTL）。所以①要多問一句：就算內容沒變，
+// 有沒有久到心跳到期（`m.FolderTreeNextHeartbeat`）？到期了就當作①沒擋住，
+// 照樣往下走（仍然受②③既有的退避／節流保護，不會因為心跳而失控狂送）。
+// 首次同步（`m.FolderTreeNextHeartbeat == 0` 且 `m.FolderTreeHash == ""`）不算到期，
+// 正常走①的雜湊閘即可——心跳倒數要從「送出第一次」才開始算。
+//
+// 🔴 **升級情境**（總管審 `33ef1f1` 退回，c15799）：`FolderTreeNextHeartbeat`
+// 這個欄位是本票新加的，**已經在跑的小幫手**升級後 manifest 只有舊欄位
+// （`FolderTreeHash != ""`），新欄位是零值——跟「首次同步」長得一樣，
+// 但意義完全不同：它不是「還沒送過第一次」，是「送過很多次，只是從來沒被
+// 問過心跳」。用同一套「== 0 不算到期」去判斷這兩種情境，會讓升級上來的人
+// 永遠卡在①的雜湊閘（樹沒變 ⇒ 永遠不送 ⇒ 永遠沒有機會設定
+// `FolderTreeNextHeartbeat` ⇒ 永遠是 0），本票要解的正是這批人。
+// ⇒ 用 `FolderTreeHash != ""` 分辨兩種「NextHeartbeat == 0」：
+// 有 hash 沒心跳 ＝ 升級 ＝ 視為心跳到期，讓它在這一輪就補送並掛上心跳時鐘
+// （送出後跟首次同步一樣，走 folderTreeMinInterval 的節流，不會狂送）；
+// 沒 hash 也沒心跳 ＝ 真首次 ＝ 維持原判斷，走①的雜湊閘。
 //
 // 🔴 **整棵樹一次送**（本檔早先的版本切成每批 20 個節點，已拿掉）：
 // 分批的唯一理由是「收端每個節點一次 KBDB 寫入＝一個 subrequest」，而收端
@@ -398,14 +438,20 @@ func (t FolderTree) Hash() string {
 // 但誠實回報 failed，不假綠。
 func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderTree, dryRun bool, now time.Time) *DirectResult {
 	h := tree.Hash()
-	if h != "" && h == m.FolderTreeHash {
-		return nil // ①內容沒變
+	// 到期＝正常倒數到了；或是「升級上來、有 hash 卻從沒被問過心跳」的舊 manifest
+	// （見上方檔頭「升級情境」段）——兩者都要讓①的雜湊閘放行。
+	upgradedWithoutHeartbeat := m.FolderTreeNextHeartbeat == 0 && m.FolderTreeHash != ""
+	heartbeatDue := (m.FolderTreeNextHeartbeat != 0 && now.Unix() >= m.FolderTreeNextHeartbeat) || upgradedWithoutHeartbeat
+	if h != "" && h == m.FolderTreeHash && !heartbeatDue {
+		return nil // ①內容沒變，且心跳還沒到期
 	}
 	if h != "" && h == m.FolderTreeFailHash && now.Unix() < m.FolderTreeNextRetry {
 		return nil // ②同一份內容剛失敗過，退避窗口內不重撞
 	}
 	// ③首次送出不受最小間隔限制（指定資料夾的當下就要看得見它）；之後才節流。
-	if m.FolderTreeHash != "" && now.Unix() < m.FolderTreeNextSend {
+	// 心跳到期也不受這道節流卡住——它本來就是為了在內容不變時仍能送出而存在的，
+	// 兩者間隔差了一個量級（2 分鐘 vs 24 小時）不會互相打架。
+	if m.FolderTreeHash != "" && now.Unix() < m.FolderTreeNextSend && !heartbeatDue {
 		return nil
 	}
 	res := &DirectResult{Type: "folder_tree", Path: absRoot}
@@ -463,6 +509,9 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 	m.FolderTreeFailHash = ""
 	m.FolderTreeNextRetry = 0
 	m.FolderTreeNextSend = now.Add(folderTreeMinInterval).Unix()
+	// 不管這次是內容真的變了、還是心跳到期才送的，都重新起算下一次心跳——
+	// 心跳要的是「收端多久沒收到就會過期」，起算點永遠是**最後一次成功送達**。
+	m.FolderTreeNextHeartbeat = now.Add(folderTreeHeartbeatInterval).Unix()
 	return res
 }
 
