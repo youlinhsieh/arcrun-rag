@@ -271,7 +271,7 @@ class_name = "InstallerStore"
 
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/61011e1"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/774726c"
 BUNDLE_BUILT = "2026-09-29"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。

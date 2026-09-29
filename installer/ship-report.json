@@ -8901,8 +8901,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.35 已存在：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/installer-1.0.35"
     },
     {
      "id": "release-check",
@@ -8911,9 +8911,9 @@
      "note": null
     }
    ],
-   "sourceCommit": "Arcrun@d71601511d3c",
+   "sourceCommit": "Arcrun@e364addde707",
    "machine": "9f06f3113188",
-   "ts": 1790694146474
+   "ts": 1790696148570
   }
  }
 }
