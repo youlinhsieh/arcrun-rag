@@ -31,13 +31,20 @@ compatibility_flags = ["global_fetch_strictly_public"]
 name = "INSTALLER_STORE"
 class_name = "InstallerStore"
 
-# t157：對方通道（staging）的 DO，唯讀用——偵測「同帳號被另一通道裝過」（雙通道互蓋警告）。
-# 兩通道互不知情，youlin 07-31 就被 staging＋prod 各裝一半成混血實例。
-# script_name 指向 staging 的 script（跨 script DO 綁定，該 script 要有同一個 class）。
+# t157：原本用跨 script DO 綁定（script_name 指向 staging）偵測「同帳號被另一通道
+# 裝過」（雙通道互蓋警告）。**2026-09-29 拔掉 script_name**（InkStoneCo#202
+# c15957 雞生蛋死結）：CF 要求「對方 script 已經匯出那個 class」才准建跨 script
+# 綁定，但 `[env.staging]` 從 inkstone/arcrun-rag#216（2026-09-25）起已不在出貨
+# 管線裡、不會再被 `ship.mjs` 重新部署 ⇒ 它永遠不會匯出新架構的 `InstallerStore`
+# class ⇒ 這條跨 script 綁定讓 prod **每一次**部署都會撞 CF 10061 卡死，不是一次性
+# 問題。拔掉 script_name 之後改成跟 `[env.youlin-stage]`（見該段落同款註解）一樣的
+# 自綁模式：這個 binding 名字下接的是**自己 script 裡的同一個 class**，不是真的
+# 對方——**雙通道互蓋警告功能因此變成永遠偵測不到**（worker.js 那段 `env.PEER_INSTALLER_STORE
+# && !env.PEER_INSTALLER_KV` 的邏輯本身沒壞，只是現在讀到的『對方』資料永遠是空的自己人）。
+# 這是拿掉一個非阻斷性警告功能換回「prod 能部署」，屬於行為變更，交總管審過再上。
 [[durable_objects.bindings]]
 name = "PEER_INSTALLER_STORE"
 class_name = "InstallerStore"
-script_name = "arcrun-rag-installer-staging"
 
 # ---------------------------------------------------------------------------
 # 過渡期唯讀 KV（inkstone/arcrun-rag#217 comment 11162 審出）——**不是永久雙寫**
@@ -161,11 +168,14 @@ compatibility_flags = ["global_fetch_strictly_public"]
 name = "INSTALLER_STORE"
 class_name = "InstallerStore"
 
-# t157：對方通道（prod）的 DO，唯讀用——雙通道互蓋警告（見 prod 段註解）
+# t157：原本跨 script 指回 prod（"arcrun-installer"）——2026-09-29 拔掉
+# script_name（InkStoneCo#202 c15957，理由與死結全文見 prod 段落 `PEER_INSTALLER_STORE`
+# 那段註解）。改成自綁同 script 的 class，雙通道互蓋警告在這個環境同樣變成
+# 偵測不到——這裡是被動端（staging 沒被 ship.mjs 部署），純粹為了對稱、避免
+# 有人手動重部 staging 時反過來卡死 prod。
 [[env.staging.durable_objects.bindings]]
 name = "PEER_INSTALLER_STORE"
 class_name = "InstallerStore"
-script_name = "arcrun-installer"
 
 # 過渡期唯讀 KV（同 prod 段那整套說明＋拔掉時機——這裡不重複整段，理由一樣）。
 # staging 是測試場但仍可能有人測過、留下 `deployed:` 紀錄，同樣不能讓它們憑空消失。
