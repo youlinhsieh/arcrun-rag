@@ -1,10 +1,10 @@
 {
  "_algo": 5,
- "version": "0.18.64",
- "fingerprint": "c8f9eb11f480694b",
+ "version": "0.18.63",
+ "fingerprint": "cc67d91300bb7cff",
  "files": {
   ".gitignore": "c7a98c44ecc882a174720e43dabd4c04d7cf2503586426dcccaa213d5a27df38",
-  "CHANGELOG.md": "7f7a950e99e6db9cbdc37d1252be74a732f4f8582d85f76d351dfc6f94b1a122",
+  "CHANGELOG.md": "e3c8b940a3842c2f33f2d7d1cbb721020733b271c4ab0ea616ca8360a0fb9fbc",
   "DAEMON_LINE": "d5019abbdc8a5f2919e9e3510391891cd7fbdf0765bf16ec83caa779f370116d",
   "README.md": "9d92cac236b20a0b183eea3e7f5e39ad492f05192c4ea602eb11c3d09967327f",
   "check-standalone.sh": "65fbce096326791c2f103a51e76d0ad79e9e510e2a7700b49ac2d2d81f73c853",
@@ -62,7 +62,7 @@
   "cmd/arcrun-app/diagnostics_export.go": "19328a384d653a24c557f5ee7497d62f1c1eaeba37976819b07e44f002b8862b",
   "cmd/arcrun-app/dock_darwin.go": "25f07f57eea6dbacdc4eaf652ad56b83b4641ec6392f6a4a4943b67f3f24156a",
   "cmd/arcrun-app/dock_other.go": "b5f7bb020ec20c9ed27436b5be15aa16798a180d1bf200b4158c5bdbfe3e6be7",
-  "cmd/arcrun-app/feedback.go": "dfb702a4873ae2212d32106a320ee627454dee168295373ae353781ff909280e",
+  "cmd/arcrun-app/feedback.go": "bab4205a29e5505320c881c58c5601d83dda45945bb47246e48a0c2e486cbb6f",
   "cmd/arcrun-app/folder_badge.go": "ee2b3a62fc7424816268267e573be5b59174d1fcc3a492dded6b9b220506b1a5",
   "cmd/arcrun-app/frontend/index.html": "9f9fb22a12341bf13dfd46979b262b22f2db9221bbf0f8a4d0d06ad8fe49bc19",
   "cmd/arcrun-app/frontend/package-lock.json": "a4020582cf3fb5f2413451d5d5498a54ceadae153d28e3f59f81f6a7b2c97caa",
