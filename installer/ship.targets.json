@@ -315,7 +315,7 @@
       "requiresArm": true,
       "armTicket": {
         "repo": "InkStoneCo",
-        "issue": 140,
+        "issue": 202,
         "coversMainPush": true,
         "_": [
           "2026-09-22（inkstone/ISEP#30 comment 10739，總管交辦）：leo 只要在這張載體票",
@@ -323,7 +323,7 @@
           "gitea-arm-request.sh／gitea-arm-check.sh，也不必貼 .github-armed 或",
           "/tmp/.main-push-ok。核對邏輯見 installer/scripts/ticket-arm-guard.mjs；",
           "owner 寫死 inkstone（不接受覆蓋，安全邊界同 scripts/lib/gitea-arm-common.sh）。",
-          "`issue: 140` 是目前這一輪里程碑的 InkStoneCo 載體票——**里程碑換了就要改這個號碼**，",
+          "`issue: 202` 是目前這一輪的 InkStoneCo 開閘票（2026-09-29 由已關的 #140 改指 #202＝地端清單，prod 出貨是它第 5 項）——**里程碑換了就要改這個號碼**，",
           "改錯號碼的後果只是「查不到 ARM ⇒ 擋下」（fail-closed），不會誤放行到別張票。",
           "`coversMainPush: true`：這張票的 ARM 同時當成 main-push-guard 的授權來源",
           "（見 ship.mjs 的 version 站），總管不必再逐筆看 commit 貼戳記——這是明講的取捨，",
