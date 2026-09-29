@@ -17,10 +17,9 @@ package main
 // 🔴 Telegram 通知（票上②）完全在 workflow 內部處理，本檔不知道、也不需要知道
 // 它成功與否——那一步失敗不該讓學員以為自己的回報沒送到（票已經真的開成了）。
 //
-// 🔴 這條線目前只送到「第一個已連線的知識庫帳號」所在的 cypher 實例；多帳號時
-// 回報固定走 accounts[0]，與 buildDiagnosticsPayload 對 cloud 診斷的既有假設一致
-// （UI 上暫時沒有「選哪個帳號回報」的必要——回報的是小幫手本身或某個知識庫的問題，
-// 不是特定資料夾，帳號選擇不影響票會不會開成）。
+// 🔴 多帳號時依序試每個已連線帳號，第一個送得到的就算成功（不再寫死 accounts[0]：
+// 該帳號雲端版本太舊沒有 feedback_report 時會 404，2026-09-29 Mac 實測撞到）。
+// 回報的是小幫手本身或某個知識庫的問題，不是特定資料夾，走哪個帳號都不影響票會不會開成。
 
 import (
 	"bytes"
@@ -68,46 +67,79 @@ func (a *App) SubmitFeedback(text string, attachDiagnostics bool) error {
 	if err != nil || len(cfg.Accounts) == 0 {
 		return fmt.Errorf("還沒連上任何知識庫，沒有地方可以送出（先在左側「連上知識庫」）")
 	}
-	acc := cfg.Accounts[0]
-	if strings.TrimSpace(acc.CypherURL) == "" || strings.TrimSpace(acc.Namespace) == "" {
+
+	// 🔴 不再寫死 accounts[0]（2026-09-29 Mac 實測：accounts[0] 的雲端版本太舊、
+	// 沒有 feedback_report → 404，而且原本把伺服器回應原文（含「請先執行 acr push」
+	// 這種開發者指令）直接丟給學員）。改成依序試每個帳號：某個帳號送不出去（雲端太舊、
+	// 暫時連不上⋯）就換下一個，只要有一個送到就算成功；全部都不行才回錯誤，
+	// 且錯誤一律是人話、不帶伺服器原文。
+	var lastErr error
+	usable := 0
+	allNotInstalled := true
+	for _, acc := range cfg.Accounts {
+		if strings.TrimSpace(acc.CypherURL) == "" || strings.TrimSpace(acc.Namespace) == "" {
+			continue
+		}
+		usable++
+		payload := feedbackPayload{
+			Text:     text,
+			Version:  version,
+			Instance: firstNonEmptyFeedback(acc.InstanceName, acc.Namespace),
+			OS:       runtime.GOOS,
+		}
+		if attachDiagnostics {
+			payload.Diagnostics = a.buildDiagnosticsPayload()
+		}
+		err, notInstalled := postFeedback(acc, payload)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !notInstalled {
+			allNotInstalled = false
+		}
+	}
+	if usable == 0 {
 		return fmt.Errorf("這個知識庫帳號設定不完整，無法送出——請重新連線一次")
 	}
+	if allNotInstalled {
+		return fmt.Errorf("沒送出去：你的雲端知識庫版本還比較舊，還不能接收回報。請到 Portal 更新後再試一次（你寫的內容還在，不會消失）")
+	}
+	return lastErr
+}
 
-	payload := feedbackPayload{
-		Text:     text,
-		Version:  version,
-		Instance: firstNonEmptyFeedback(acc.InstanceName, acc.Namespace),
-		OS:       runtime.GOOS,
+// postFeedback 送一個帳號。notInstalled=true 代表該帳號的雲端沒有 feedback_report
+// （404，通常是雲端版本比小幫手舊），呼叫端可以換別的帳號試。
+// 回給學員的錯誤字串不含伺服器回應原文（可能夾帶開發者指令）。
+func postFeedback(acc accountCfg, payload feedbackPayload) (err error, notInstalled bool) {
+	body, merr := json.Marshal(payload)
+	if merr != nil {
+		return fmt.Errorf("組回報內容失敗：%w", merr), false
 	}
-	if attachDiagnostics {
-		payload.Diagnostics = a.buildDiagnosticsPayload()
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("組回報內容失敗：%w", err)
-	}
-	req, err := http.NewRequest(http.MethodPost, feedbackWorkflowURL(acc.CypherURL, acc.Namespace), bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("沒送出去，請再試一次（%v）", err)
+	req, rerr := http.NewRequest(http.MethodPost, feedbackWorkflowURL(acc.CypherURL, acc.Namespace), bytes.NewReader(body))
+	if rerr != nil {
+		return fmt.Errorf("沒送出去，請再試一次（%v）", rerr), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Arcrun-API-Key", acc.Namespace)
 
-	resp, err := feedbackHTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("沒送出去，請再試一次（網路錯誤：%v）", err)
+	resp, derr := feedbackHTTP.Do(req)
+	if derr != nil {
+		return fmt.Errorf("沒送出去，請再試一次（網路錯誤：%v）", derr), false
 	}
 	defer resp.Body.Close()
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("沒送出去：雲端版本較舊，還不能接收回報，請到 Portal 更新後再試一次"), true
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("沒送出去，請再試一次（伺服器回應 %d：%s）", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return fmt.Errorf("沒送出去，請再試一次（伺服器暫時有問題，代碼 %d）", resp.StatusCode), false
 	}
 
 	var out struct {
 		Success bool `json:"success"`
 		Data    struct {
-			Success bool `json:"success"`
+			Success bool   `json:"success"`
 			Error   string `json:"error"`
 		} `json:"data"`
 	}
@@ -120,10 +152,10 @@ func (a *App) SubmitFeedback(text string, attachDiagnostics bool) error {
 			if msg == "" {
 				msg = "工作流回報失敗"
 			}
-			return fmt.Errorf("沒送出去，請再試一次（%s）", msg)
+			return fmt.Errorf("沒送出去，請再試一次（%s）", msg), false
 		}
 	}
-	return nil
+	return nil, false
 }
 
 func firstNonEmptyFeedback(vs ...string) string {
