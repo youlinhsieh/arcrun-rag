@@ -21,7 +21,7 @@
 #     machine_label＝人看的稱呼（使用者可改，只影響顯示）。
 #     舊版 daemon 不帶 ⇒ 卡上這兩格是空字串，portal 顯示「未知來源」，行為與從前一致。
 #
-# 佔位參數（push-demo-workflow.sh sed 代入）：__NAMESPACE__ / __KBDB_BASE__ / __CODE_URL__ / __HTTP_REQ_URL__
+# 佔位參數（push-demo-workflow.sh sed 代入）：__NAMESPACE__ / __KBDB_BASE__ / __CODE_URL__ / __HTTP_REQ_URL__ / __CYPHER_BASE__（c14501 B① 新增，trigger_wiki_cluster 呼叫同租戶 rag_cluster_auto 用）
 # blocks/triplets 寫法與 rag_ingest / rag_ingest_direct 逐欄一致 → 檢索/圖譜一視同仁。
 
 name: rag_ingest_card
@@ -59,6 +59,45 @@ flow:
   - "pool_constants >> ON_SUCCESS >> parse_card"
   - "parse_card >> 對每個 block >> post_block"
   - "parse_card >> 對每個 rel >> post_triplet"
+  # inkstone/arcrun-rag#13 c14501 B①：卡片解析成功後另開一條 ON_SUCCESS 分支（不影響
+  # 上面兩條既有 FOREACH），內部呼叫同租戶 rag_cluster_auto（use_type=wiki）做分群、
+  # 寫進 cluster_membership——不新開 Gitea webhook，觸發點就在同一個實例內。
+  # 🔴 已知限制（誠實列，未解）：只有部署過 rag_cluster_auto 的實例（目前只有 youlin
+  # stage）這條分支才會真的寫進 cluster_membership；`rag_cluster_auto` 尚未加進本檔
+  # 最上方註解說的 compile-workflows.mjs FILES 清單，一般使用者的實例裝不到它，這條
+  # 分支會打 404——但那只是**這條新分支自己**沒效果，不影響上面兩條既有分支寫
+  # block/triplet（各自獨立的 ON_SUCCESS/FOREACH 邊，同 `parse_card` 的三條出邊互不
+  # 牽連），**也不影響外層 rag_ingest_card 的 success**（trigger_wiki_cluster 接了
+  # ON_FAIL 邊吸收失敗，見下方節點與 flow 段落 c14569 註解）。要讓一般使用者也
+  # 收到分群，需要另外把 rag_cluster_auto 也編進安裝器（不在這張票的範圍內）。
+  - "parse_card >> ON_SUCCESS >> prep_cluster_wiki"
+  - "prep_cluster_wiki >> ON_SUCCESS >> trigger_wiki_cluster"
+  # inkstone/Arcrun#60（c15303/c15318/c15319/c15326/c15437）：parse_card 成功後的第四條
+  # 出邊（跟上面 block/rel 兩個 FOREACH、prep_cluster_wiki 那條互不牽連，同一個道理——
+  # 各自獨立的 ON_SUCCESS 邊）。這條做「entity description ＋ 概念歸屬（LLM 判斷）」，
+  # 內部呼叫獨立的 rag_entity_concept workflow（不在本圖裡插節點，理由見該檔檔頭：
+  # parse_card 與既有 FOREACH 之間插入更多 POST 節點會讓 FOREACH 的 context nested-scan
+  # 失準，同 trigger_wiki_cluster 的血統——內部呼叫，一般使用者的實例沒裝就 404，
+  # 由 ON_FAIL 吸收，不影響外層 rag_ingest_card 的 success，也不影響卡片本身寫進 KBDB
+  # （那條路徑早在 parse_card 已完成）。
+  - "parse_card >> ON_SUCCESS >> prep_entity_concept"
+  - "prep_entity_concept >> ON_SUCCESS >> trigger_entity_concept"
+  - "prep_entity_concept >> ON_FAIL >> entity_concept_absorb_prep_fail"
+  - "trigger_entity_concept >> ON_FAIL >> entity_concept_absorb_fail"
+  # c14949：prep_cluster_wiki 拒收未代入樣板字串時的 ON_FAIL 邊（同下面
+  # trigger_wiki_cluster 那條的精神——分群這條分支失敗不該波及外層 success，
+  # 這裡用獨立的吸收節點而不是共用 wiki_cluster_absorb_fail，因為兩者失敗原因不同，
+  # 共用會讓 reason 文字對不上真正發生的事）。
+  - "prep_cluster_wiki >> ON_FAIL >> wiki_cluster_absorb_prep_fail"
+  # inkstone/arcrun-rag#13 c14569：trigger_wiki_cluster 打的 rag_cluster_auto 尚未進
+  # compile-workflows.mjs 的 FILES 清單，一般使用者的實例上這個節點會 404
+  # ⇒ http_request 零件正確回 {success:false}（見 registry/components/http_request/main.go）。
+  # inkstone/Arcrun#254（已併 main、待部署）讓「沒有 ON_FAIL 邊接住的節點失敗」會讓
+  # 整個 execution 的外層 success 變 false——沒有這條邊的話，一般使用者每收一張卡，
+  # rag_ingest_card 外層都會回 success:false（即使 block/triplet 都正常寫入）。
+  # 修法：比照 rag-ingest-cards.local.yaml 的 fetch_index 用法，接一條 ON_FAIL 邊——
+  # 讓「rag_cluster_auto 不存在／打不到」被吸收成正常結束，不影響外層 success。
+  - "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail"
 
 config:
   # ── #14 upsert 前置：先刪同 page_name 的舊資料（leo 08-04 裁「用真 DELETE，不是 deprecate」）──
@@ -74,8 +113,26 @@ config:
   prep:
     component: "__CODE_URL__"
     code: |
-      const pageName = String(input.page_name || 'unknown');
-      const path = String(input.path || (pageName + '.md'));
+      // 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把
+      // 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，
+      // 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。
+      // code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。
+      function isUnresolvedTemplate(v) {
+        return typeof v === 'string' && /^\{\{[\w.]+\}\}$/.test(v);
+      }
+      const rawPageName = input.page_name;
+      if (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {
+        throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');
+      }
+      const pageName = String(rawPageName);
+      // 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`
+      // 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是
+      // truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。
+      // 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進
+      // source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。
+      const rawPath = input.path;
+      const path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))
+        ? (pageName + '.md') : String(rawPath);
       const srcUri = 'kb://' + path;
       // `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前
       // 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的
@@ -207,7 +264,15 @@ config:
     code: |
       const md = String(input.card == null ? '' : input.card);
       const pageName = String(input.page_name || 'unknown');
-      const srcPath = String(input.path || (pageName + '.md'));
+      // 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致
+      // （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine
+      // 兩格在這個節點裡的既有做法）。
+      function isUnresolvedTemplateLocal(v) {
+        return typeof v === 'string' && /^\{\{[\w.]+\}\}$/.test(v);
+      }
+      const rawPathLocal = input.path;
+      const srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))
+        ? (pageName + '.md') : String(rawPathLocal);
       const srcUri = 'kb://' + srcPath;
       const lib = String(input.library || 'kb');
       // 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。
@@ -391,3 +456,238 @@ config:
         # 不像 values 路徑靜默丟掉）——但 machine 已是 PORTAL_TEMPLATE_SEEDS 的既有欄位，
         # ensurePortalTemplates 對既有實例會 PATCH 補上，不需要本檔額外處理。
         machine: "{{pool_constants.data.machine_id}}"
+
+  # ── inkstone/arcrun-rag#13 c14501 B①：wiki 卡片寫入即自動分群 ──────────────────
+  # parse_card 成功後的第三條出邊（跟上面兩條 FOREACH 平行，互不牽連）。
+  # 只做整形，不碰 KBDB——實際讀/決策/寫都在 rag_cluster_auto 那支既有的 workflow裡，
+  # 這裡只是內部呼叫它，同一支分群邏輯不重造第二份（見 workflows/cluster/ 那條 SDD）。
+  # c14949（承接 c14946「還沒通的」第 3 條）：呼叫端沒帶 page_name 時，模板引擎不會
+  # 回傳 undefined／'unknown'，而是把 `{{input.page_name}}` 這串字面文字原封不動塞進來
+  # （decide.js 的 opt() helper 抓到的同一個真限制，見 rag_cluster_auto_decide_node.js
+  # 檔頭註解）——`parse_card` 自己的 `input.page_name || 'unknown'` 判斷對這種情況一律
+  # 誤判成「有傳」，於是這裡原本直接照抄 `'kb://' + pageName`，把字面上的
+  # `kb://{{input.page_name}}` 當成真的 item_id 送進分群（stage 上已撞到一筆真實資料，
+  # 見 inkstone/arcrun-rag#13 comment 14946）。修法：拒收看起來像沒被代入的樣板字串，
+  # 不把它送進分群——這不影響卡片本身寫進 KBDB（那條路徑在 parse_card 已經完成，
+  # 這裡只是 parse_card 之後獨立的第三條出邊，見上面的說明）。
+  # 🔴 c15011（總管 stage 實跑抓到的真限制，跟 prod-write-guard 那類「以為 return
+  # {success:false} 就會被 ON_FAIL 接住」是同一種誤解，這次撞在 `code` 零件上）：
+  # `code` 零件的沙箱（registry/components/code/sandbox.mjs runCode）**永遠**把
+  # user code 正常 return 的值包成 `{success:true, data:<那個值>}`——不管那個值
+  # 裡面自己塞了什麼 `success` 欄位，都只是 `data` 底下的普通資料，不會被讀出來
+  # 影響外層信封的 success。graph-executor 的 `isFailure()` 只看外層（頂層）的
+  # `success`／`error`，所以上一輪寫的 `return {success:false, error:...}`
+  # **外層仍然是 success:true**，走的是 ON_SUCCESS，`trigger_wiki_cluster` 照樣
+  # 被呼叫、`ON_FAIL` 邊從沒被觸發——這正是總管在 stage 撞到「B 不帶 page_name
+  # 卻寫進 item_id "#"」的真因。
+  # 唯一能讓外層信封真的變成 `{success:false,...}` 的方法是 **throw**——
+  # sandbox.mjs 的 `evalCode` 抓到 user code 丟出的例外時，才會回
+  # `{success:false, error, error_type:'UserCodeError'}`（見該檔 `err()`），
+  # 這才是 `isFailure()` 認得、會真的觸發 ON_FAIL 路由的形狀。
+  prep_cluster_wiki:
+    component: "__CODE_URL__"
+    input:
+      page_name: "{{parse_card.data.page_name}}"
+      blocks: "{{parse_card.data.blocks}}"
+      # inkstone/arcrun-rag#13 c15294/c15323 第 1/2/3 點（leo 09-28 裁決＋總管 c15323
+      # 退回要求跟上）：分群/hub/目錄要以「子庫」為邊界——library 早在 `prep` 節點
+      # 就用同一份預設邏輯算好（`String(input.library || 'kb')`），這裡直接沿用，
+      # 不再另一套猜法。
+      library: "{{prep.data.const_library}}"
+    code: |
+      function looksUnsubstituted(v) {
+        return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim());
+      }
+      var rawPageName = input.page_name;
+      if (rawPageName === undefined || rawPageName === null || rawPageName === '' ||
+          looksUnsubstituted(rawPageName) || String(rawPageName) === 'unknown') {
+        throw new Error('page_name 未代入或缺失（收到：' + JSON.stringify(rawPageName) + '），拒收未代入的樣板字串，不觸發分群');
+      }
+      var pageName = String(rawPageName);
+      var blocks = Array.isArray(input.blocks) ? input.blocks : [];
+      // c15345（總管實測：00-INDEX 讀回的摘要是「# 頁名」標題行，不是真摘要）：blocks[0]
+      // 通常只是 H1 標題那個 chunk（parse_card 以標題切塊，「## 摘要」另成一塊）。
+      // 改成跟 kbdb library-index.ts 的 GLOSS_HEADINGS 同一套慣例去找摘要段
+      // （兩套段名都收：雲端重萃「## 摘要」／本機 daemon「## 一句話定義」），
+      // 找不到才退回 blocks[0]（沒有摘要段的卡至少還有個開頭可看）。
+      var GLOSS_HEADINGS_LOCAL = ['## 摘要', '## 一句話定義'];
+      var glossBlock = null;
+      for (var bi = 0; bi < blocks.length; bi++) {
+        var bc = String(blocks[bi].content || '');
+        for (var hi = 0; hi < GLOSS_HEADINGS_LOCAL.length; hi++) {
+          if (bc.indexOf(GLOSS_HEADINGS_LOCAL[hi]) === 0) { glossBlock = bc; break; }
+        }
+        if (glossBlock) break;
+      }
+      var snippetSource = glossBlock !== null ? glossBlock : (blocks.length ? String(blocks[0].content || '') : '');
+      var snippet = snippetSource
+        .split('\n')
+        .filter(function (l) { return GLOSS_HEADINGS_LOCAL.indexOf(l.trim()) === -1; })
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+      // library 理論上 `prep` 一定會給值（沒帶就退回 'kb'），這裡再防禦一次未代入的
+      // 樣板字面字串，跟 page_name 同一套檢查邏輯。
+      var rawLibrary = input.library;
+      var library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstituted(rawLibrary))
+        ? 'kb' : String(rawLibrary);
+      // c15323 第 3 點（總管退回「一列一卡＋摘要」只有 title 沒摘要）：
+      // item_title 保持「pageName+片段」不變（分群 TF-IDF 沿用這個組合文字，避免
+      // 動到既有分群精度）；item_summary 是給卡層級目錄列顯示用的純片段，不進分群。
+      return { success: true, item_id: 'kb://' + pageName,
+               item_title: (pageName + ' ' + snippet).trim(),
+               item_summary: snippet || pageName,
+               item_library: library };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  trigger_wiki_cluster:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__CYPHER_BASE__/webhooks/named/rag_cluster_auto/query"
+    headers:
+      Content-Type: "application/json"
+      X-Arcrun-API-Key: "__NAMESPACE__"
+    body_json:
+      action: "opened"
+      use_type: "wiki"
+      item_id: "{{prep_cluster_wiki.data.item_id}}"
+      item_title: "{{prep_cluster_wiki.data.item_title}}"
+      item_summary: "{{prep_cluster_wiki.data.item_summary}}"
+      item_labels: []
+      library: "{{prep_cluster_wiki.data.item_library}}"
+
+  # inkstone/arcrun-rag#13 c14569：純吸收節點，接住 trigger_wiki_cluster 的 ON_FAIL 邊。
+  # 一般使用者的實例沒裝 rag_cluster_auto 時，trigger_wiki_cluster 打 404、
+  # http_request 零件回 {success:false}——這裡固定回 success:true，讓「分群沒發生」
+  # 停在這一支分支自己身上，不會讓整個 rag_ingest_card 的外層 success 變 false
+  # （inkstone/Arcrun#254 的 deriveExecutionVerdict：節點失敗只要有 ON_FAIL 邊接住
+  # 就不算未處理）。有裝 rag_cluster_auto 的實例（如 youlin stage）trigger_wiki_cluster
+  # 直接成功，不會走到這裡。
+  wiki_cluster_absorb_fail:
+    component: "__CODE_URL__"
+    code: |
+      return { success: true, wiki_cluster_skipped: true, reason: 'rag_cluster_auto not installed or unreachable on this instance' };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # c14949：純吸收節點，接住 prep_cluster_wiki 的 ON_FAIL 邊（呼叫端沒帶／帶了未代入
+  # 樣板字串的 page_name）。同 wiki_cluster_absorb_fail 的精神——分群這條分支失敗
+  # 不該波及外層 success、也不該影響卡片本身寫進 KBDB（那條路徑早在 parse_card
+  # 就已完成）；分開一個節點只是為了 reason 文字誠實對應真正發生的事。
+  wiki_cluster_absorb_prep_fail:
+    component: "__CODE_URL__"
+    # 🔴 c15011：prep_cluster_wiki 現在用 throw 失敗（見該節點註解），沙箱對
+    # 「user code 丟例外」的封裝是 `{success:false, error, error_type}`——
+    # **沒有** `.data` 包一層（`.data` 只在 user code 正常 return 時才有，見
+    # sandbox.mjs 的 `{success:true, data:<回傳值>}` vs `err()` 的
+    # `{success:false, error, error_type}` 兩種形狀）。原本綁
+    # `{{prep_cluster_wiki.data.error}}` 對著一個不存在的路徑，只會拿到
+    # undefined／沒代入的字面字串——改綁 `{{prep_cluster_wiki.error}}`（頂層）。
+    input:
+      prep_error: "{{prep_cluster_wiki.error}}"
+    code: |
+      return { success: true, wiki_cluster_skipped: true, reason: String(input.prep_error || 'page_name invalid, cluster trigger skipped') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # ── inkstone/Arcrun#60：parse_card 之後獨立的第四條出邊 ──────────────────────
+  # 🔴 實測抓到、追出根因的真限制（記在這裡，供下一個接手的人參考，問題不在
+  # arcrun-rag，在 Arcrun 核心 `cypher-executor/src/graph-executor.ts` 的
+  # `executeNode` 處理某節點多條出邊的迴圈：`for (const edge of outEdges) { ...
+  # case 'ON_SUCCESS': result = await this.executeNode(nextNode, ...) }`——
+  # 迴圈裡的 `result` 是共用變數，處理**第一條** ON_SUCCESS 邊時就把 `result`
+  # 整個換成那條邊底下子節點（可能是好幾層之後）的輸出；等迴圈輪到**第二條**
+  # ON_SUCCESS 邊（本節點），`propagateCtx(context, result, node.id)` 傳進去的
+  # `result` 早已不是 `parse_card` 自己的輸出，而是第一條分支（`prep_cluster_wiki`
+  # 那條）用剩的——於是 `ctx.parse_card` 被寫成錯的值，任何具名參照
+  # `{{parse_card.data.X}}` 在「parse_card 的第二條以後的 ON_SUCCESS 分支」裡
+  # 一律讀不到（不管 X 是 `rels`、`entities_json` 或任何欄位，親測都一樣）。
+  # 這是 Arcrun 核心的 bug，不是 arcrun-rag 該修的（CLAUDE.md「非改核心不可→
+  # 回報總管開 issue」），繞開法：本節點完全不碰 `parse_card.*`，改用
+  # `{{input.card_content}}`／`{{input.page_name}}`（原始 workflow input，
+  # 走 `context`／`baseCtx` 不走會被污染的 `result`，全程可靠——`trigger_wiki_cluster`
+  # 的 `card_content` 引用能一直正常也是靠這條路）自己重解析一次「## 關聯」，
+  # 邏輯與 `parse_card` 逐字一致（同一份規則，只是各自維護一份，同檔內
+  # `library`／`machine` 兩格在 `parse_card` 自己也是這樣做，見該節點註解）。
+  # 已回報：inkstone/Arcrun#276。
+  prep_entity_concept:
+    component: "__CODE_URL__"
+    input:
+      card: "{{input.card_content}}"
+      page_name: "{{input.page_name}}"
+      library: "{{prep.data.const_library}}"
+    code: |
+      function looksUnsubstitutedLocal(v) {
+        return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim());
+      }
+      var md = String(input.card == null ? '' : input.card);
+      var relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(md);
+      var seen = {};
+      var entities = [];
+      if (relSec) {
+        var lines = relSec[1].split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(lines[i]);
+          if (!m) continue;
+          var pair = [String(m[1] || '').trim(), String(m[3] || '').trim()];
+          for (var k = 0; k < pair.length; k++) {
+            var e = pair[k];
+            if (!e || e === 'knowledge-base' || seen[e]) continue;
+            seen[e] = true;
+            entities.push(e);
+          }
+        }
+      }
+      if (entities.length === 0) {
+        throw new Error('本卡「## 關聯」段沒有可處理的 entity（沒有這段，或裡面沒有 A>>B>>C 格式的行）');
+      }
+      var rawLibrary = input.library;
+      var library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstitutedLocal(rawLibrary))
+        ? 'kb' : String(rawLibrary);
+      return { success: true, entities_json: JSON.stringify(entities), library: library };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  trigger_entity_concept:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__CYPHER_BASE__/webhooks/named/rag_entity_concept/query"
+    headers:
+      Content-Type: "application/json"
+      X-Arcrun-API-Key: "__NAMESPACE__"
+    body_json:
+      entities_json: "{{prep_entity_concept.data.entities_json}}"
+      library: "{{prep_entity_concept.data.library}}"
+      card_content: "{{input.card_content}}"
+
+  # 純吸收節點，接住 trigger_entity_concept 的 ON_FAIL 邊。一般使用者的實例沒裝
+  # rag_entity_concept 時打 404，http_request 零件回 {success:false}——這裡固定回
+  # success:true，讓「這條分支沒發生」停在自己身上，不波及外層 rag_ingest_card 的
+  # success（同 wiki_cluster_absorb_fail 的精神）。有裝的實例（如 youlin stage）
+  # trigger_entity_concept 直接成功，不會走到這裡。
+  entity_concept_absorb_fail:
+    component: "__CODE_URL__"
+    code: |
+      return { success: true, entity_concept_skipped: true, reason: 'rag_entity_concept not installed or unreachable on this instance' };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # 純吸收節點，接住 prep_entity_concept 的 ON_FAIL 邊（這張卡沒有可處理的 entity）。
+  # 同 wiki_cluster_absorb_prep_fail 的精神——prep_entity_concept 用 throw 失敗，
+  # 沙箱封裝成 {success:false, error}（沒有 .data 那層），綁 `.error`（頂層）。
+  entity_concept_absorb_prep_fail:
+    component: "__CODE_URL__"
+    input:
+      prep_error: "{{prep_entity_concept.error}}"
+    code: |
+      return { success: true, entity_concept_skipped: true, reason: String(input.prep_error || 'no entities extracted, entity/concept trigger skipped') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096

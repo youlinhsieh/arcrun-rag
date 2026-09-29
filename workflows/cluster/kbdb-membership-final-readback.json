@@ -1,0 +1,5 @@
+[
+ {"item_id":"Arcrun#243","cluster_id":"demo-fetchrelay-1","action":"new","record_id":"rec_c26e0c1e-bea5-43c2-a88a-4d8fdaf5da2b"},
+ {"item_id":"ISEP#190","cluster_id":"demo-gov-1","action":"attach","sim":0.3909060279148578,"record_id":"rec_c2f4a333-48e1-47ab-9c73-21472e405a58"},
+ {"item_id":"ISEP#191","cluster_id":"demo-gov-1","action":"new","record_id":"rec_4a55ea36-4b6c-4f45-af24-30f6518895cf"}
+]

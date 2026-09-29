@@ -114,6 +114,10 @@ BUNDLE_BUILT = "2026-09-22"
 # DEFAULT_SITE_BASE / DEFAULT_DOCS_BASE 常數完全相同——本次部署對 prod 行為零改變。
 SITE_BASE = "https://rag.arcrun.dev"
 DOCS_BASE = "https://rag.arcrun.dev/docs"
+# arcrun-rag#218：這台（prod）安裝器自己的 origin。prod 的公開入口是 custom domain
+# install.arcrun.dev（非 workers.dev），與 worker.js 的 DEFAULT_INSTALLER_ORIGIN
+# 常數完全相同——本次部署對 prod 行為零改變，只是同上面三個一樣把真相源搬進設定檔。
+INSTALLER_ORIGIN = "https://install.arcrun.dev"
 
 # ---------------------------------------------------------------------------
 # 注意：本安裝器不需要任何 secret。
@@ -138,6 +142,12 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 #   - BUNDLE_BASE 蓋掉 prod 釘點 → Gitea raw 釘 commit（不走 jsDelivr、不碰 GitHub）
 #   - BUNDLE_BUILT＝釘點 manifest.built（D37 單一真相源：換釘點時跟著 manifest 改）
 #   - DEPLOY_ENV=staging → 首頁版本字串帶 +staging，一眼分辨
+#
+# 🔴 inkstone/arcrun-rag#216（2026-09-25）：**這個環境仍存在，但出貨管線已不使用**。
+#   `installer/ship.targets.json` 的 `targets.stage` 改指下面的 `[env.youlin-stage]`
+#   （youlin 帳號，只用 CLOUDFLARE_API_TOKEN_YOULIN_CC_USE 就能出）。這裡不刪除、
+#   不停用，worker／KV 照常活著——只是 `ship.mjs --target stage` 不會再部署到這裡。
+#   別把它當死碼清掉；也別誤以為它還是出貨管線在測的那一站。
 # ---------------------------------------------------------------------------
 [env.staging]
 name = "arcrun-rag-installer-staging"
@@ -169,7 +179,7 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # 原本的 prod INSTALLER_KV（staging
 
 [env.staging.vars]
 DEPLOY_ENV = "staging"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/4a73fe8"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/2c81ea6"
 BUNDLE_BUILT = "2026-09-26"
 # P10（2026-08-07）：改指回 landing-staging（獨立 SIGNUPS KV），不再打 prod。
 # 08-07 實查：舊值 https://rag.arcrun.dev 讓 stage 的辨識碼驗證全部寫/查 prod 的
@@ -182,6 +192,11 @@ LANDING_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
 # stage 文件站完全連不到，只能靠使用者自己記住裸網址）。
 SITE_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
 DOCS_BASE = "https://arcrun-docs-staging.uncle6-me.workers.dev/docs"
+# arcrun-rag#218：這台安裝器（arcrun-rag-installer-staging）自己的 workers.dev
+# origin，部署 cypher 時注入成 INSTALLER_ORIGIN（worker.js installerOrigin(env)），
+# 讓 portal 版本檢查／「前往安裝精靈」連結指回這台，不再恆指 prod install.arcrun.dev。
+# 值與 landing/wrangler.toml [env.staging] 的 INSTALL_BASE 同一個座標。
+INSTALLER_ORIGIN = "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
 
 # 下面這行原本注解說「worker→同帳號 workers.dev 的 fetch 會被 CF 擋（1042 族）」，
 # 因此當初才把 LANDING_BASE 繞去 prod 的 custom domain——這正是污染的根因。
@@ -246,8 +261,8 @@ class_name = "InstallerStore"
 
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main"
-BUNDLE_BUILT = "2026-09-25"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/f5a5b92"
+BUNDLE_BUILT = "2026-09-22"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。
 # 現在指向同一批本票新部署、住在 youlin 帳號的 landing／docs stage worker。
@@ -258,6 +273,12 @@ BUNDLE_BUILT = "2026-09-25"
 LANDING_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
 SITE_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
 DOCS_BASE = "https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs"
+# arcrun-rag#218：這台安裝器自己的 workers.dev origin，部署 cypher 時注入成
+# INSTALLER_ORIGIN（worker.js installerOrigin(env)），讓 portal 版本檢查／
+# 「前往安裝精靈」連結指回這台，不再恆指 prod install.arcrun.dev。
+# 值與 landing/wrangler.toml [env.youlin-stage] 的 INSTALL_BASE 同一個座標
+# （name = "arcrun-installer-youlin-stage" 這個 worker 本身的 workers.dev 網址）。
+INSTALLER_ORIGIN = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
 
 [env.youlin-stage.observability]
 enabled = true

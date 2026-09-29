@@ -78,36 +78,46 @@ func TestQuotaGuaranteeText_TodayVsTomorrow(t *testing.T) {
 	}
 }
 
-// arcrun-rag#59（2026-08-10 leo 實查）：dailyCount==0 時三句話原本會自相矛盾——
-// 「今天已經幫你整理了 0 份」搭「可以換一個模型」，一份都沒成功那額度是誰用掉的？
-// 真兇是嵌入（向量化）與萃取共用同一份 Workers AI 額度（不受萃取模型選擇影響）——
-// 這支測試釘住：dailyCount==0 時不准再建議換模型，且仍照實講「整理了 0 份」（不假裝有成果）。
-func TestBuildQuotaNotice_ZeroDailyCount_NoModelSwitchSuggestion(t *testing.T) {
+// arcrun-rag#59（2026-08-11 leo 用 Cloudflare Analytics 實測 leo21c 後翻案）：
+// dailyCount==0 時的訊息不准指名歸咎「是誰吃掉額度」，也不准對「換模型」下確定判斷——
+// 因為 daemon 看不到 neuron 分項，任何歸咎都是編造；而實測顯示吃額度的是萃取 LLM
+// （llama-4-scout 99.9%），不是向量化，舊版「換模型救不了、額度被向量化用掉」剛好講反。
+// 這支測試釘住新的誠實骨架：只講 daemon 確知的事（0 份成功＋撞到上限＋升級是保證出口），
+// 且用 workersai_starved 這個 Kind 讓畫面不把「0 份」當成就慶祝。
+func TestBuildQuotaNotice_ZeroDailyCount_HonestNoAttribution(t *testing.T) {
 	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
 	resetAt := nextQuotaResetTaiwan(now)
 	notice := buildQuotaNotice(now, 0, resetAt)
 
-	if !strings.Contains(notice.Achievement, "0") {
-		t.Errorf("成就句仍要照實講 0 份：%q", notice.Achievement)
+	// 畫面靠 Kind 區分，不再走「成就 🎉」那張卡。
+	if notice.Kind != "workersai_starved" {
+		t.Errorf("dailyCount==0 應標 Kind=workersai_starved（畫面才不會慶祝 0 份），got %q", notice.Kind)
 	}
-	// 注意：文案裡允許出現「換」這個字（要誠實講「換模型救不了」），
-	// 禁的是舊版那句**推薦**換模型的措辭「可以換一個模型」。
-	if strings.Contains(notice.ExitOptions, "可以換一個模型") {
-		t.Errorf("dailyCount==0 時不該再建議換模型（結構上做不到：嵌入不管選哪個萃取模型都走 "+
-			"Workers AI）：%q", notice.ExitOptions)
+	if notice.Headline == "" || notice.Usage == "" {
+		t.Errorf("starved 卡靠 headline/usage 講清楚狀況，不該空：headline=%q usage=%q", notice.Headline, notice.Usage)
 	}
+	// 🔴 不准指名歸咎（那是 daemon 看不到、只能編造的東西）。
+	all := notice.Headline + notice.Usage + notice.ExitOptions + notice.Guarantee + notice.Combined()
+	for _, banned := range []string{"向量化", "重新整理索引", "換模型救不了", "換一個模型救不了", "可以換一個模型"} {
+		if strings.Contains(all, banned) {
+			t.Errorf("dailyCount==0 訊息不該出現指名歸咎／確定的換模型判斷 %q：%q", banned, all)
+		}
+	}
+	// 升級 Cloudflare 是與「誰吃掉額度」無關、永遠成立的出口，不該被拿掉。
 	if !strings.Contains(notice.ExitOptions, "升級") {
-		t.Errorf("升級 Cloudflare 是這個情境下唯一真的有效的出口，不該被拿掉：%q", notice.ExitOptions)
+		t.Errorf("升級 Cloudflare 是這個情境下保證有效的出口，不該被拿掉：%q", notice.ExitOptions)
 	}
-	// 三句話合起來仍要能被 ClassifyFailure 歸進額度分類（靠 Achievement 句的
-	// 「幫你整理了」字樣，不靠 Guarantee 句的「會自動恢復」——這個分支刻意不承諾自動恢復）。
+	// Achievement 仍保留「幫你整理了」子字串，讓 ClassifyFailure 照舊歸進額度分類。
+	if !strings.Contains(notice.Achievement, "幫你整理了") {
+		t.Errorf("Achievement 要保留「幫你整理了」供 ClassifyFailure 歸類：%q", notice.Achievement)
+	}
 	if got := ClassifyFailure(notice.Combined()); got != FailQuotaExhausted {
-		t.Fatalf("dailyCount==0 的三句話也該歸進額度分類，got %q（訊息：%s）", got, notice.Combined())
+		t.Fatalf("dailyCount==0 的訊息也該歸進額度分類，got %q（訊息：%s）", got, notice.Combined())
 	}
 	// 絕不含裸露錯誤碼（沿用既有骨架的紅線）。
 	for _, banned := range []string{"4006", "502", "HTTP", "neurons"} {
-		if strings.Contains(notice.Combined(), banned) {
-			t.Errorf("不該出現裸露的錯誤碼 %q：%q", banned, notice.Combined())
+		if strings.Contains(all, banned) {
+			t.Errorf("不該出現裸露的錯誤碼 %q：%q", banned, all)
 		}
 	}
 }

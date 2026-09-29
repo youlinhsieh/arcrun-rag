@@ -1,0 +1,829 @@
+{
+ "name": "rag_cluster_auto",
+ "description": "inkstone/arcrun-rag#13 c14501 B①：decide 泛化成多 use_type（ticket/wiki/mistakes 共用同一支邏輯／同一個 workflow），呼叫端傳 use_type/item_id/item_title/item_labels 就能服務非開票的用途（例如 rag_ingest_card 寫入新卡後內部呼叫這裡，use_type=wiki）；不傳這些欄位時完全比照 c14360 A 之前的開票路徑行為（use_type 預設 'ticket'）。門檻/上限讀 KBDB cluster_criteria（append-only，最新一筆生效）。這是實際部署到 youlin stage 的定義（金鑰/租戶已換回 __NAMESPACE__/__CYPHER_BASE__ 佔位符，同 workflows/gitea_ticket_triage.yaml 慣例；重推時照 arcrun-rag scripts 既有的佔位符代入法代入實際值，不要手改 yuga3bse 進版控）。",
+ "graph": {
+  "id": "rag_cluster_auto",
+  "name": "rag_cluster_auto",
+  "nodes": [
+   {
+    "id": "input",
+    "type": "Input",
+    "componentId": "input",
+    "label": "input"
+   },
+   {
+    "id": "filter_opened",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "filter_opened",
+    "data": {
+     "condition": "action == opened",
+     "input": {
+      "action": "{{input.action}}"
+     }
+    }
+   },
+   {
+    "id": "resolve_use_type",
+    "type": "Component",
+    "componentId": "code",
+    "label": "resolve_use_type",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_resolve_use_type_node.js__",
+     "input": {
+      "use_type": "{{input.use_type}}",
+      "library": "{{input.library}}"
+     },
+     "limits": {
+      "timeout_ms": 500,
+      "max_output_bytes": 4096
+     }
+    }
+   },
+   {
+    "id": "read_criteria",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "read_criteria",
+    "data": {
+     "method": "GET",
+     "url": "__CYPHER_BASE__/kbdb/records/by-template/cluster_criteria?limit=200&field=use_type&value={{resolve_use_type.data.criteria_use_type}}",
+     "headers": {
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     }
+    }
+   },
+   {
+    "id": "read_group",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "read_group",
+    "data": {
+     "method": "GET",
+     "url": "__CYPHER_BASE__/kbdb/records/by-template/cluster_group?limit=30&field=use_type&value={{resolve_use_type.data.group_use_type}}",
+     "headers": {
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     }
+    }
+   },
+   {
+    "id": "decide",
+    "type": "Component",
+    "componentId": "code",
+    "label": "decide",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_decide_node.js__",
+     "input": {
+      "group_raw": "{{read_group.data.body}}",
+      "cypher_base": "__CYPHER_BASE__",
+      "criteria_raw": "{{read_criteria.data.body}}",
+      "use_type": "{{input.use_type}}",
+      "item_id": "{{input.item_id}}",
+      "item_title": "{{input.item_title}}",
+      "item_labels": "{{input.item_labels}}",
+      "repo": "{{input.repository.full_name}}",
+      "number": "{{input.issue.number}}",
+      "title": "{{input.issue.title}}",
+      "labels": "{{input.issue.labels}}",
+      "library": "{{input.library}}",
+      "item_summary": "{{input.item_summary}}"
+     },
+     "limits": {
+      "timeout_ms": 3000,
+      "max_output_bytes": 262144
+     }
+    }
+   },
+   {
+    "id": "write_membership",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "write_membership",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "cluster_membership",
+      "values": {
+       "use_type": "{{decide.data.use_type}}",
+       "item_id": "{{decide.data.item_id}}",
+       "item_title": "{{decide.data.item_title}}",
+       "item_labels_json": "{{decide.data.item_labels_json}}",
+       "action": "{{decide.data.action}}",
+       "cluster_id": "{{decide.data.cluster_id}}",
+       "vec_json": "{{decide.data.vec_json}}",
+       "sim": "{{decide.data.sim}}",
+       "decided_at": "{{decide.data.decided_at}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "write_group",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "write_group",
+    "data": {
+     "method": "{{decide.data.group_write_method}}",
+     "url": "{{decide.data.group_write_url}}",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "cluster_group",
+      "values": {
+       "use_type": "{{decide.data.use_type}}",
+       "cluster_id": "{{decide.data.cluster_id}}",
+       "centroid_json": "{{decide.data.final_centroid_json}}",
+       "size": "{{decide.data.cluster_member_count}}",
+       "rep_labels_json": "{{decide.data.group_rep_labels_json}}",
+       "member_ids_json": "{{decide.data.group_member_ids_json}}",
+       "updated_at": "{{decide.data.decided_at}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "check_hub_exists",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "check_hub_exists",
+    "data": {
+     "method": "GET",
+     "url": "__CYPHER_BASE__/kbdb/records/by-template/cluster_hub?limit=200&field=use_type&value={{resolve_use_type.data.group_use_type}}",
+     "headers": {
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     }
+    }
+   },
+   {
+    "id": "hub_editor",
+    "type": "Component",
+    "componentId": "code",
+    "label": "hub_editor",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_hub_editor_node.js__",
+     "input": {
+      "hub_check_body": "{{check_hub_exists.data.body}}",
+      "cluster_member_count": "{{decide.data.cluster_member_count}}",
+      "hub_threshold": "{{decide.data.hub_threshold}}",
+      "chapter_budget": "{{decide.data.chapter_budget}}",
+      "cluster_id": "{{decide.data.cluster_id}}",
+      "use_type": "{{decide.data.use_type}}",
+      "member_titles_json": "{{decide.data.cluster_member_titles_json}}",
+      "member_ids_json": "{{decide.data.cluster_member_ids_json}}",
+      "merge_candidate_cluster_id": "{{decide.data.merge_candidate_cluster_id}}",
+      "merge_candidate_sim": "{{decide.data.merge_candidate_sim}}"
+     },
+     "limits": {
+      "timeout_ms": 2000,
+      "max_output_bytes": 65536
+     }
+    }
+   },
+   {
+    "id": "gate_create_hub",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "gate_create_hub",
+    "data": {
+     "condition": "action == create_hub",
+     "input": {
+      "action": "{{hub_editor.data.action}}"
+     }
+    }
+   },
+   {
+    "id": "build_hub_card",
+    "type": "Component",
+    "componentId": "workers_ai_chat",
+    "label": "build_hub_card",
+    "data": {
+     "prompt": "{{hub_editor.data.hub_prompt}}"
+    }
+   },
+   {
+    "id": "finalize_hub_card",
+    "type": "Component",
+    "componentId": "code",
+    "label": "finalize_hub_card",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_finalize_hub_card_node.js__",
+     "input": {
+      "llm_text": "{{build_hub_card.text}}",
+      "member_ids_json": "{{hub_editor.data.member_ids_json}}"
+     },
+     "limits": {
+      "timeout_ms": 2000,
+      "max_output_bytes": 65536
+     }
+    }
+   },
+   {
+    "id": "post_hub_card",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_hub_card",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "cluster_hub",
+      "values": {
+       "use_type": "{{hub_editor.data.use_type}}",
+       "cluster_id": "{{hub_editor.data.cluster_id}}",
+       "title": "{{finalize_hub_card.data.hub_title}}",
+       "summary": "{{finalize_hub_card.data.hub_summary}}",
+       "member_ids_json": "{{hub_editor.data.member_ids_json}}",
+       "promoted_at": "{{finalize_hub_card.data.promoted_at}}",
+       "source_ticket": "inkstone/arcrun-rag#13 c14669（③ 總編輯，結構信號自動升格，無人工判定）"
+      }
+     }
+    }
+   },
+   {
+    "id": "post_toc_entry",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_toc_entry",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "wiki_toc",
+      "values": {
+       "use_type": "{{hub_editor.data.use_type}}",
+       "cluster_id": "{{hub_editor.data.cluster_id}}",
+       "title": "{{finalize_hub_card.data.hub_title}}",
+       "hub_record_id": "",
+       "member_count": "{{hub_editor.data.member_count}}",
+       "updated_at": "{{finalize_hub_card.data.promoted_at}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "gate_split",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "gate_split",
+    "data": {
+     "condition": "action == propose_split",
+     "input": {
+      "action": "{{hub_editor.data.action}}"
+     }
+    }
+   },
+   {
+    "id": "build_split_proposal",
+    "type": "Component",
+    "componentId": "code",
+    "label": "build_split_proposal",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_build_split_proposal_node.js__",
+     "input": {
+      "cluster_id": "{{hub_editor.data.cluster_id}}",
+      "member_count": "{{hub_editor.data.member_count}}",
+      "chapter_budget": "{{hub_editor.data.chapter_budget}}",
+      "member_titles_json": "{{hub_editor.data.member_titles_json}}"
+     },
+     "limits": {
+      "timeout_ms": 2000,
+      "max_output_bytes": 65536
+     }
+    }
+   },
+   {
+    "id": "post_split_proposal",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_split_proposal",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "cluster_split_proposal",
+      "values": {
+       "use_type": "{{hub_editor.data.use_type}}",
+       "cluster_id": "{{hub_editor.data.cluster_id}}",
+       "member_count": "{{hub_editor.data.member_count}}",
+       "budget": "{{hub_editor.data.chapter_budget}}",
+       "proposed_action": "{{build_split_proposal.data.proposed_action}}",
+       "detail": "{{build_split_proposal.data.detail}}",
+       "status": "pending",
+       "created_at": "{{build_split_proposal.data.created_at}}",
+       "source_ticket": "inkstone/arcrun-rag#13 c14669（③ 總編輯，提案不直接搬動既有卡）"
+      }
+     }
+    }
+   },
+   {
+    "id": "gate_merge",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "gate_merge",
+    "data": {
+     "condition": "action == propose_merge",
+     "input": {
+      "action": "{{hub_editor.data.action}}"
+     }
+    }
+   },
+   {
+    "id": "build_merge_proposal",
+    "type": "Component",
+    "componentId": "code",
+    "label": "build_merge_proposal",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_build_merge_proposal_node.js__",
+     "input": {
+      "cluster_id": "{{hub_editor.data.cluster_id}}",
+      "member_count": "{{hub_editor.data.member_count}}",
+      "chapter_budget": "{{hub_editor.data.chapter_budget}}",
+      "merge_candidate_cluster_id": "{{hub_editor.data.merge_candidate_cluster_id}}",
+      "merge_target_hub_title": "{{hub_editor.data.merge_target_hub_title}}",
+      "merge_candidate_sim": "{{hub_editor.data.merge_candidate_sim}}"
+     },
+     "limits": {
+      "timeout_ms": 2000,
+      "max_output_bytes": 65536
+     }
+    }
+   },
+   {
+    "id": "post_merge_proposal",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_merge_proposal",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "cluster_split_proposal",
+      "values": {
+       "use_type": "{{hub_editor.data.use_type}}",
+       "cluster_id": "{{hub_editor.data.cluster_id}}",
+       "member_count": "{{hub_editor.data.member_count}}",
+       "budget": "{{hub_editor.data.chapter_budget}}",
+       "proposed_action": "{{build_merge_proposal.data.proposed_action}}",
+       "detail": "{{build_merge_proposal.data.detail}}",
+       "status": "pending",
+       "created_at": "{{build_merge_proposal.data.created_at}}",
+       "source_ticket": "inkstone/arcrun-rag#13 c14825（③ 總編輯 merge 提案，群 vs 群重疊偵測，提案不直接搬動既有卡）"
+      }
+     }
+    }
+   },
+   {
+    "id": "gate_link",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "gate_link",
+    "data": {
+     "condition": "should_link == true",
+     "input": {
+      "should_link": "{{decide.data.should_link}}"
+     }
+    }
+   },
+   {
+    "id": "write_link_forward",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "write_link_forward",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "triplet",
+      "values": {
+       "subject": "{{decide.data.item_id}}",
+       "predicate": "相關",
+       "object": "{{decide.data.related_item_id}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "write_link_backward",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "write_link_backward",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "triplet",
+      "values": {
+       "subject": "{{decide.data.related_item_id}}",
+       "predicate": "相關",
+       "object": "{{decide.data.item_id}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "gate_toc_card",
+    "type": "Component",
+    "componentId": "if_control",
+    "label": "gate_toc_card",
+    "data": {
+     "condition": "toc_should_write == true",
+     "input": {
+      "toc_should_write": "{{decide.data.toc_should_write}}"
+     }
+    }
+   },
+   {
+    "id": "post_card_toc_entry",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_card_toc_entry",
+    "data": {
+     "method": "POST",
+     "url": "__KBDB_BASE__/entries",
+     "headers": {
+      "Authorization": "Bearer {{credential.kbdb_internal_token}}",
+      "Content-Type": "application/json"
+     },
+     "body_json": {
+      "entry_type": "block",
+      "page_name": "00-INDEX",
+      "owner_id": "__NAMESPACE__",
+      "content": "- [[{{decide.data.item_page_name}}]] {{decide.data.item_summary}}",
+      "metadata_json": "{\"source\":\"kb://00-INDEX#{{decide.data.decided_at}}\",\"source_path\":\"\",\"library\":\"{{decide.data.library}}\",\"machine\":\"\",\"embed\":false}"
+     }
+    }
+   },
+   {
+    "id": "prep_hub_members",
+    "type": "Component",
+    "componentId": "code",
+    "label": "prep_hub_members",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_prep_hub_members_node.js__",
+     "input": {
+      "member_ids_json": "{{hub_editor.data.member_ids_json}}",
+      "hub_title": "{{finalize_hub_card.data.hub_title}}",
+      "index_lines_raw": "{{get_index_lines.data.body}}"
+     },
+     "limits": {
+      "timeout_ms": 1000,
+      "max_output_bytes": 8192
+     }
+    }
+   },
+   {
+    "id": "post_hub_link_fwd",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_hub_link_fwd",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "triplet",
+      "values": {
+       "subject": "{{member.id}}",
+       "predicate": "相關",
+       "object": "{{member.hub_title}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "post_hub_link_back",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_hub_link_back",
+    "data": {
+     "method": "POST",
+     "url": "__CYPHER_BASE__/kbdb/records",
+     "headers": {
+      "Content-Type": "application/json",
+      "X-Arcrun-API-Key": "__NAMESPACE__"
+     },
+     "body_json": {
+      "template": "triplet",
+      "values": {
+       "subject": "{{member.hub_title}}",
+       "predicate": "相關",
+       "object": "{{member.id}}"
+      }
+     }
+    }
+   },
+   {
+    "id": "post_hub_index_line",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_hub_index_line",
+    "data": {
+     "method": "POST",
+     "url": "__KBDB_BASE__/entries",
+     "headers": {
+      "Authorization": "Bearer {{credential.kbdb_internal_token}}",
+      "Content-Type": "application/json"
+     },
+     "body_json": {
+      "entry_type": "block",
+      "page_name": "00-INDEX",
+      "owner_id": "__NAMESPACE__",
+      "content": "- [[{{finalize_hub_card.data.hub_title}}]] {{finalize_hub_card.data.hub_summary}}（收 {{hub_editor.data.member_count}} 篇）",
+      "metadata_json": "{\"source\":\"kb://00-INDEX#{{finalize_hub_card.data.promoted_at}}\",\"source_path\":\"\",\"library\":\"{{decide.data.library}}\",\"machine\":\"\",\"embed\":false}"
+     }
+    }
+   },
+   {
+    "id": "get_index_lines",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "get_index_lines",
+    "data": {
+     "method": "GET",
+     "url": "__KBDB_BASE__/entries?page_name=00-INDEX&library={{decide.data.library}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+     "headers": {
+      "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+     }
+    }
+   },
+   {
+    "id": "delete_index_line",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "delete_index_line",
+    "data": {
+     "method": "DELETE",
+     "url": "__KBDB_BASE__/entries/{{member.index_line_id}}",
+     "headers": {
+      "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+     }
+    }
+   },
+   {
+    "id": "build_hub_card_content",
+    "type": "Component",
+    "componentId": "code",
+    "label": "build_hub_card_content",
+    "data": {
+     "code": "__SEE_rag_cluster_auto_build_hub_card_content_node.js__",
+     "input": {
+      "member_ids_json": "{{hub_editor.data.member_ids_json}}",
+      "hub_title": "{{finalize_hub_card.data.hub_title}}",
+      "hub_summary": "{{finalize_hub_card.data.hub_summary}}"
+     },
+     "limits": {
+      "timeout_ms": 1000,
+      "max_output_bytes": 16384
+     }
+    }
+   },
+   {
+    "id": "post_hub_card_entry",
+    "type": "Component",
+    "componentId": "http_request",
+    "label": "post_hub_card_entry",
+    "data": {
+     "method": "POST",
+     "url": "__KBDB_BASE__/entries",
+     "headers": {
+      "Authorization": "Bearer {{credential.kbdb_internal_token}}",
+      "Content-Type": "application/json"
+     },
+     "body_json": {
+      "entry_type": "block",
+      "page_name": "{{finalize_hub_card.data.hub_title}}",
+      "owner_id": "__NAMESPACE__",
+      "content": "{{build_hub_card_content.data.hub_card_content}}",
+      "metadata_json": "{\"source\":\"kb://hub#{{finalize_hub_card.data.promoted_at}}\",\"source_path\":\"\",\"library\":\"{{decide.data.library}}\",\"machine\":\"\",\"embed\":false}"
+     }
+    }
+   }
+  ],
+  "edges": [
+   {
+    "from": "input",
+    "to": "filter_opened",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "filter_opened",
+    "to": "resolve_use_type",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "resolve_use_type",
+    "to": "read_criteria",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "read_criteria",
+    "to": "read_group",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "read_group",
+    "to": "decide",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "decide",
+    "to": "write_membership",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "write_membership",
+    "to": "write_group",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "check_hub_exists",
+    "to": "hub_editor",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "hub_editor",
+    "to": "gate_create_hub",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_create_hub",
+    "to": "build_hub_card",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "gate_create_hub",
+    "to": "gate_split",
+    "type": "ON_FALSE"
+   },
+   {
+    "from": "build_hub_card",
+    "to": "finalize_hub_card",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "finalize_hub_card",
+    "to": "post_hub_card",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_split",
+    "to": "build_split_proposal",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "build_split_proposal",
+    "to": "post_split_proposal",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "post_hub_card",
+    "to": "post_toc_entry",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_split",
+    "to": "gate_merge",
+    "type": "ON_FALSE"
+   },
+   {
+    "from": "gate_merge",
+    "to": "build_merge_proposal",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "build_merge_proposal",
+    "to": "post_merge_proposal",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "write_group",
+    "to": "gate_link",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_link",
+    "to": "write_link_forward",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "write_link_forward",
+    "to": "write_link_backward",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "write_link_backward",
+    "to": "gate_toc_card",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_link",
+    "to": "gate_toc_card",
+    "type": "ON_FALSE"
+   },
+   {
+    "from": "gate_toc_card",
+    "to": "post_card_toc_entry",
+    "type": "ON_TRUE"
+   },
+   {
+    "from": "post_card_toc_entry",
+    "to": "check_hub_exists",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "gate_toc_card",
+    "to": "check_hub_exists",
+    "type": "ON_FALSE"
+   },
+   {
+    "from": "prep_hub_members",
+    "to": "post_hub_link_fwd",
+    "iterator": "member",
+    "type": "FOREACH"
+   },
+   {
+    "from": "prep_hub_members",
+    "to": "post_hub_link_back",
+    "iterator": "member",
+    "type": "FOREACH"
+   },
+   {
+    "from": "prep_hub_members",
+    "to": "delete_index_line",
+    "iterator": "member",
+    "type": "FOREACH"
+   },
+   {
+    "from": "post_toc_entry",
+    "to": "post_hub_index_line",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "get_index_lines",
+    "to": "prep_hub_members",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "post_hub_index_line",
+    "to": "build_hub_card_content",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "build_hub_card_content",
+    "to": "post_hub_card_entry",
+    "type": "ON_SUCCESS"
+   },
+   {
+    "from": "post_hub_card_entry",
+    "to": "get_index_lines",
+    "type": "ON_SUCCESS"
+   }
+  ]
+ },
+ "_note_decide_code_placeholder": "本檔 decide.data.code 為節省重複故寫 __SEE_rag_cluster_auto_decide_node.js__；實際部署/重推時把 workflows/cluster/rag_cluster_auto_decide_node.js 的完整內容貼進這個欄位（deploy_rag_cluster_auto.py 會自動做這件事）。stage 上真正跑的就是這份 JS，兩邊沒有第二份分歧實作。",
+ "_note_http_request_body_shape": "c14360 A 這輪抓到的真 bug：http_request 節點的輸出是 { data: { body: <字串> } }——`.data.body` 是**還沒 parse 的 JSON 字串**，不是已剝殼的物件。之前一版直接綁 `{{read_membership.data.body.records}}` 對字串取欄位一律拿到 undefined，讓 decide 誤以為『沒有既有群』（existing_cluster_count 永遠是 0，但因為早期測試票彼此都夠不像，沒被發現）。正確寫法是整個綁 `{{node.data.body}}`（字串），在 code 節點裡用 JSON.parse 一次再取 `.records`。",
+ "_note_optional_field_template_literal": "c14501 B① 這輪抓到的另一個真 bug：呼叫方沒帶 use_type/item_id/item_title/item_labels 這類可選欄位時，模板引擎**不是**回傳 undefined 或空字串，而是把 `{{input.x}}` 這串字面文字原封不動塞進 decide 的 input——用『`input.x ? ... : 預設值`』判斷『有沒有傳』對這種情況一律誤判成『有傳』（第一次上線就把票的路徑弄壞：既有 ticket 事件跑出 criteria_source=fallback_default、item_id 變成一段沒解析的模板字）。修法是 decide 內的 opt() helper（見 rag_cluster_auto_decide_node.js），把『長得像沒被代入的模板字串』一併當成沒傳。任何以後再加的可選 input 欄位都要透過 opt()，不要裸用三元判斷。",
+ "_note_notify_removed_c14542": "c14542：拿掉了原本 write_membership 之後的 notify_done 節點——那是每次分群（每張票、每張 wiki 卡）都會發一則 Telegram 給 leo 的例行通知，跟 gitea_ticket_triage 的分診通知疊在一起，加上 inkstone/ISEP#232 上線後 mistakes 用途也會觸發，一天會響非常多次，而『這筆歸進第幾群』不是需要 leo 回應的事（CLAUDE.md 規則五：只有要他回一個詞的事才值得響）。現況沒有任何『需要人看』的信號（proposal §5 的三個結構信號——共鄰密度／孤兒聚團／扇出超額——都還沒實作，size_cap 滿了目前只是讓 decide 略過那個候選群，不會產生特殊事件），所以這次是單純拿掉，不是換成『有條件才通知』——等結構信號真的做出來，才是重新接通知的時機，接的位置會是「信號亮起時」而不是每次寫 membership 都接。",
+ "_note_c14669_editorial": "c14669（③ 總編輯，milestone 73 R4）：write_membership 成功後多一段「結構信號」判斷——不靠人工判定，靠 decide 算出來的 cluster_member_count 對比 cluster_criteria 的 hub_threshold／chapter_budget（讀法同 sim_threshold／size_cap，append-only、沒設就給 4／10 預設值）。check_hub_exists 用既有的 by-source 路由（同 c14569 用的那個端點）查這個 cluster_id 有沒有 cluster_hub 記錄；hub_editor 三選一：create_hub（沒 hub 且達門檻）／propose_split（有 hub 且超章節預算）／noop。create_hub 走 workers_ai_chat（免金鑰）看著同群成員標題寫摘要卡，finalize_hub_card 解析成 title/summary 寫進既有的 cluster_hub template（tpl_0d743488，另一輪已建好），再寫一筆 wiki_toc 當目錄項；propose_split 純機械組字（不叫 LLM），寫進新建的 cluster_split_proposal template，status=pending——只留提案，不直接搬動任何既有卡（紅線）。decide.js 節點程式碼真身放在 rag_cluster_auto_decide_node.js；hub_editor／finalize_hub_card／build_split_proposal 三個 code 節點的真身另外放在同目錄 rag_cluster_auto_hub_editor_node.js 等四個檔案，deploy_rag_cluster_auto.py 部署時逐一貼進對應欄位，跟 decide 的做法一致（不重複維護兩份）。",
+ "_note_c14825_merge_proposal": "c14825（承接 c14824「還沒通的」第 1 條）：補上 merge 提案分支。decide.js 新增「群 vs 群」重疊比較（只跟已達 hub_threshold 的其他群比較，排除自己），算出merge_candidate_cluster_id/sim；hub_editor 在 hasHub && memberCount>chapterBudget 時，若候選群也已有 hub 且相似度 >= MERGE_SIM_THRESHOLD（寫死 0.5，同 hub_threshold/chapter_budget 的已知限制：cluster_criteria 沒有這格可覆寫）則選 propose_merge，否則沿用原本的 propose_split。merge 提案沿用既有 cluster_split_proposal template （proposed_action='merge'，target 資訊寫進 detail 文字），沒有新增 KBDB template。",
+ "_note_c14926_unreachable_root_cause_and_fix": "inkstone/arcrun-rag#13 c14926：分群在 stage 上安靜地停了（`read_membership` GET 回 `{\"success\":false,\"error\":\"unreachable\"}`）。真因不在這個 workflow 的定義，是 Arcrun 引擎側：youlin 帳號部署的 `arcrun-http-request`（http_request 零件獨立 Worker，`wasmWorkerUrl()` 解出的 URL 是 `arcrun-http-request.{WORKER_SUBDOMAIN}.workers.dev`，這裡是 `arcrun-http-request.arcrun-yuga3bse.workers.dev`）跑的是**遠早於 `inkstone/Arcrun#92`（2026-08-12 修「回應太大就 unreachable」）的舊 bundle**——用 CF API 直接抓回該 Worker 的部署內容比對，完全沒有 `oversizeResponseEnvelope`／`HOST_TOO_LARGE`／`declaredCapacity` 這些 #92 引入的符號，`writeOut` 還是舊版無容量檢查、直接 `.set(data)` 覆寫超界，對應 main.go 的 `outBuf[:outLen]` 切片越界 → TinyGo panic → WASM `unreachable` trap，跟 #92 commit message 描述的機制完全吻合。`inkstone/Arcrun#253`（2026-09-27 provenance 記錄）雖然聲稱已在同一個 youlin/`arcrun-yuga3bse` 帳號重編部署驗證過，但那份記錄看來對不上這次實測到的部署內容——已另開 `inkstone/Arcrun` 票記錄這個落差（provenance 綠燈≠部署內容真的更新，機制本身有缺口）。**已在本輪把 `arcrun-http-request` 用當前 main（含 #92 修法）重新 `wrangler deploy` 到 youlin stage 修好**（`cd .component-builds/http_request && pnpm install && CLOUDFLARE_ACCOUNT_ID=<youlin> CLOUDFLARE_API_TOKEN=<youlin> npx wrangler deploy -c wrangler.stage.toml`）；重推後探針改回可預期的『回應太大』結構化錯誤，不再是原始 unreachable trap。但 `read_membership` 本身仍是『讀全表再篩 use_type』的設計（proposal §4 講的『任何階段都不讀全量 index』還沒做到），74 筆混合 use_type 的測試資料本身就已經逼近 64KB 上限——單靠修好 http_request 零件只解決『崩潰』，不解決『資料再長還是會撞這個上限』。這輪同時把 `limit=200` 收緊成 `limit=25`（`by-template` 已驗證過的『新到舊排序＋真分頁』，見 c14360 系列筆記）：不管 `cluster_membership` 總筆數長到多大，`read_membership` 單次拿到的 bytes 都被壓在這 25 筆的範圍內（本地實測 74 筆裡最大單筆 2.8KB，25 筆最壞情況約 70KB 內、一般情況遠低於 32KB），不會再隨全庫成長線性膨脹到撞 64KB。**代價誠實列出**：25 筆是跨全部 use_type 混合排序後的最新 25 筆，不是『這個 use_type 的最新 25 筆』（`by-template` 沒有欄位過濾，`by-source` 目前只對 `triplet` 開放白名單），流量大的 use_type 之間會互相擠掉對方的可見視窗，导致跨 use_type 流量很雜時舊群認不出來、被誤判成 new——這不是新引入的缺陷（filter 本來就在 decide.js 裡對讀回結果做，不是在讀取端做），只是把『何時會撞頂』從『總筆數』改成『混合流量的最近視窗』，是明確的過渡態，真正的解仍是 proposal 原定的持久索引／向量檢索（O(k)，不讀全表）。",
+ "_note_c14949_persistent_group_index": "inkstone/arcrun-rag#13 c14949（承接 c14946「還沒通的」第 1 條）：把「每次決策都重讀整張 cluster_membership、自己在記憶體裡依 cluster_id 加總 centroid」（c14926 那次 unreachable SEV 的病灶，違反規格 §2「不變量：任何階段不讀全量 index」）換成真正的持久群索引 cluster_group（規格 §3.3 早就預留、c14669 那輪已建好 template 但從沒接上）：read_group（GET .../cluster_group?limit=100）取代 read_membership 成為 decide 的候選群來源，筆數＝現有群數 m（不隨事件數 n 成長），天然也不會被別的 use_type 的流量擠出視窗（不用等 KBDB 補『按欄位過濾』這個路由能力才能解決）。cluster_group 用**真的原地更新**（PATCH /kbdb/records/:id，cypher-executor 既有端點，mira-dissolve T2.1 就是為了這個用途補的）而不是 append-only 補新的一筆——這是跟 cluster_membership／cluster_criteria 刻意不同的地方：那兩張表的歷史本身有價值（決策軌跡／門檻沿革要能回溯），但 cluster_group 只是一份『現在』的快照索引，append 只會讓它跟 membership 犯同一種病。write_group 節點的 method／url 由 decide 動態算出（{{decide.data.group_write_method}}／{{decide.data.group_write_url}}，attach 且找得到既有 group record_id → PATCH 那一筆；new 或防禦性地找不到 record_id → POST 開新的），這是已驗證過的『http_request 節點的 method／url 本身可以整段模板化』寫法（見 workflows/ship_check_live.json 既有先例），不需要用 if_control 分支（分支會撞 graph-executor.ts 的 fan-in 語意——inDeg 是靜態算的，若讓 PATCH／POST 兩條分支各自連回同一個下游節點，那個節點的 fan-in remaining 永遠等不到第二個分支觸發，會直接卡死，不是能用的形狀）。write_membership（append-only audit trail）維持不變，只是不再被讀回用來算 centroid——它現在純粹是寫入端的歷史記錄，成本只在寫入這一步，不會再造成讀取端的 O(n) 問題。cluster_group 的 member_ids_json 這格改存 [{id,title}] 物件陣列（不是純 id 字串陣列）——因為 hub_editor／build_hub_card 需要標題才寫得出摘要卡，而 cluster_group 這個 template 目前宣告的 slots 沒有另一格『member_titles_json』可加（同 hub_threshold／chapter_budget 那個『KBDB 無法幫既有 template 加 slot』的已知限制），member_ids_json 本身只是一個字串欄位，格式由我們自己定，不受既有資料相容性限制（cluster_group 這個 template 部署以來 0 筆真資料，這輪才第一次真的接上讀寫）。**誠實列出的取捨**：這是全新的持久索引，不會自動回填既有 cluster_membership 累積的歷史群（ticket_auto／wiki 兩個桶目前的資料多半是歷次驗收留下的測試痕跡，不是需要保留連續性的真實生產資料——youlin stage 本來就是『隨便炸、壞了重裝』的測試場，見 wiki ops-facts.md）。部署後第一個真事件會看到既有『概念上』的舊群被當成 new 重新開始，這是預期中的一次性行為，不是 bug。",
+ "_note_c15294_c15323": "inkstone/arcrun-rag#13 c15294/c15323：①attach 時新舊卡互相寫一筆 triplet(相關)（不重寫任何卡）②新 KBDB 虛擬表 wiki_toc_item（卡層級列，含 summary，item_id 唯一識別），每次 wiki 卡 new/attach 都寫一筆③hub 產生時 finalize_hub_card 之後另一條分支 prep_hub_members 對每個成員 FOREACH 寫雙向 triplet(相關) 連去 hub_title（graph 節點名＝hub 標題文字，同 c14669 demo-gov-1 那次手動示範的慣例）④ read_group／check_hub_exists 的伺服端過濾值（resolve_use_type.data.group_use_type）已補上 library 子庫後綴，跟 decide.js 的 USE_TYPE 算法逐字一致，否則會撞回「子庫看不到自己既有群」的誤判⑤ 讀取端收斂契約：workflows/cluster/toc_reader.py（純讀，不改資料）示範同一 cluster_id 若 cluster_hub 已有一筆，该 cluster_id 底下的 wiki_toc_item 卡列一律收斂顯示成該 hub 一列（附 summary＋member_count）；沒有 hub 的 cluster_id 才逐列顯示各自的卡列。子庫邊界＝use_type 桶名裡的 library 後綴（wiki__<library>），不同 library 天生不會撞名，上一層（其他 library）的 wiki_toc/wiki_toc_item/cluster_hub 從未被寫入，保證不動。",
+ "_note_c15345": "inkstone/arcrun-rag#13 c15345（總管裁決）：目錄真身＝00-INDEX 卡（Arcrun/kbdb/src/actions/library-index.ts 既有機制），走跟其他卡同一條 /entries 寫入路徑，不建虛擬表、不打包metadata_json。每次 wiki 卡 new/attach（toc_should_write）寫一列 `- [[page_name]] 摘要` 到該庫的 00-INDEX；hub 產生時：①寫一列 hub 摘要（post_hub_index_line）②讀回目前的00-INDEX 列（get_index_lines）③per-member 迴圈裡各自 DELETE 掉自己那一列（找 content 含`[[page_name]]` 的那筆）——net 效果＝該 cluster 的成員列全部消失、只剩 1 列 hub，kbdb_get_index/kbdb_get_card 讀到的是真的收斂結果，不是另一份自建的目錄。",
+ "_note_c15411": "inkstone/arcrun-rag#13 c15411（總管實測：目錄那一列點下去是死連結，hub 只存在 cluster_hub 記帳用的虛擬表，不是庫裡一張真的卡）：新增 build_hub_card_content（純組字，不打網路）+ post_hub_card_entry（POST __KBDB_BASE__/entries，page_name=hub 標題），hub 現在是真的一張 KBDB 卡——kbdb_get_index 列得到它、kbdb_get_card(庫,hub標題) 讀得到介紹＋成員清單（[[page_name]] 連結，跟 00-INDEX 行、triplet 三邊命名逐字一致，從目錄點下去點得過去）。插入點：post_hub_index_line -> build_hub_card_content -> post_hub_card_entry -> get_index_lines，維持單線鏈接（同這輪稍早抓到的 fork 會斷具名參照那個限制，不再新增任何一條平行 ON_SUCCESS 出邊）。",
+ "_note_c15422": "inkstone/arcrun-rag#13 c15422（承接 c15418 抓到的真 bug）：hub 收斂只對 FOREACH 的第 1 個成員生效，2～N 個成員完全沒被收斂——根因是 prep_hub_members 底下掛了「FOREACH 目標節點本身還有下游鏈」（post_hub_link_fwd -> post_hub_link_back -> gate_delete_index_line -> delete_index_line，FOREACH 目標之後還有 3 跳），跟這支引擎目前唯一驗證過會對多個項目都生效的形狀（parse_card 對每個 block/對每個 rel，FOREACH 目標本身就是葉節點、沒有下游）不同款。修法：拆成三條**平行、各自單跳**的 FOREACH 邊，都直接掛在 prep_hub_members 底下（post_hub_link_fwd／post_hub_link_back／delete_index_line 三個都變成葉節點，互不相接），跟 parse_card 那兩條既有平行 FOREACH 邊同一種掛法。gate_delete_index_line 節點整個移除——原本用來擋「member.index_line_id 是空字串就不送 DELETE」，改成無條件送 DELETE；真實流程裡每個成員在被收進 hub 之前都已經各自寫過一列 00-INDEX（c15345 機制），index_line_id 理論上不會是空的，若真的遇到空字串，DELETE 打到 `__KBDB_BASE__/entries/`（尾端無 id）在 KBDB 路由層應該只是404/405，http_request 零件的既有慣例是非 2xx 不 throw、不影響其他平行分支——這是刻意的取捨，不是沒想到，若之後要補防呆，方向是在 prep_hub_members.js 裡把空 id 的member 分流到不同陣列、給一個穩定的葉節點目標，而不是重新掛一個下游鏈式 gate。"
+}

@@ -85,9 +85,9 @@ export const PHANTOM_INSTRUCTION =
 export const REVIEWED_EXCEPTIONS = [
   {
     match: /沒有建立或改動任何資源/,
-    why: 'resource-rule 的 blockers 原文——`shared/resource-rule/rule.mjs` 是 Leo/Arcrun 的'
+    why: 'resource-rule 的 blockers 原文——`shared/resource-rule/rule.mjs` 是 inkstone/Arcrun 的'
       + '逐位元組鏡射（MIRROR.json 標「不准手改」，resource-rule-gate 會擋出貨）'
-      + '⇒ 要改得改上游 Leo/Arcrun 再跑同步腳本。',
+      + '⇒ 要改得改上游 inkstone/Arcrun 再跑同步腳本。',
   },
 ];
 

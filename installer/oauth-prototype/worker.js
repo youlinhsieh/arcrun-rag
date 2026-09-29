@@ -248,6 +248,17 @@ function docsBase(env) {
   return (env && env.DOCS_BASE ? String(env.DOCS_BASE) : DEFAULT_DOCS_BASE).replace(/\/+$/, '');
 }
 
+// arcrun-rag#218（inkstone/Arcrun#98 c11358 的後半）：托管安裝器自己的 origin，
+// 部署 cypher-executor 時注入成 INSTALLER_ORIGIN，讓 portal 的版本檢查按鈕與
+// 「前往安裝精靈」連結跟著「實際安裝它的那台安裝器」走，不再恆指 prod。
+// 與 LANDING_BASE/SITE_BASE 同一個模式：可用 env.INSTALLER_ORIGIN 覆蓋
+// （staging/youlin-stage 段落各自的 wrangler.toml vars 設自己的 workers.dev 網址），
+// prod 沿用預設值（custom domain install.arcrun.dev）＝零行為改變。
+const DEFAULT_INSTALLER_ORIGIN = 'https://install.arcrun.dev';
+function installerOrigin(env) {
+  return (env && env.INSTALLER_ORIGIN ? String(env.INSTALLER_ORIGIN) : DEFAULT_INSTALLER_ORIGIN).replace(/\/+$/, '');
+}
+
 // P0-3 逾時偵測：安裝進度超過這個時間沒有任何更新，視為卡死（waitUntil 被中斷）。
 // 各步驟之間、自檢輪詢每輪都會回寫進度，正常間隔遠小於此值。
 // stall 判定門檻。**必須大於最長的單一步驟**——07-29 事故：自我檢查最長重試約 3 分鐘
@@ -2762,6 +2773,11 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     // ⇒ 不新增第二個要維護的座標。只在 cypher 這顆宣告（cypher-executor/src/types.ts 的
     // Bindings 只有這一顆有這個欄位；UI 沒有）。
     ...(entry.name && entry.name.includes('cypher') ? { PORTAL_MAIL_RELAY_BASE: landingBase(env) } : {}),
+    // arcrun-rag#218（inkstone/Arcrun#98 c11358 後半）：cypher 讀 env.INSTALLER_ORIGIN
+    // 決定 portal 版本檢查／「前往安裝精靈」連結該指去哪台安裝器（Arcrun 647f174 已接好
+    // 讀值那半）。值＝這個環境（stage/prod/youlin-stage）自己的 installerOrigin(env)，
+    // 跟 PORTAL_MAIL_RELAY_BASE 同一個模式——不新增第二個要維護的座標。
+    ...(entry.name && entry.name.includes('cypher') ? { INSTALLER_ORIGIN: installerOrigin(env) } : {}),
     // t151：MCP 的租戶對齊。**這兩個不給就是「連得上但什麼都查不到」的假通**——
     // partner-auth.ts:60 的預設是 `MCP_OWNER_NAMESPACE || "leo"` ⇒ 用戶實例發出的 access token
     // 會綁在 namespace `leo` 這個分區，而他的卡片是寫在自己的租戶分區底下

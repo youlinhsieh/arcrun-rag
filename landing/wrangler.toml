@@ -5,6 +5,20 @@ main = "worker.js"
 compatibility_date = "2026-07-01"
 account_id = "58309bb90fd93ad6d0fe0aae99170e9d"
 
+# 🔴 D90（2026-08-14）：本行原本**只加在 [env.staging]**——跟
+#   installer/oauth-prototype/wrangler.toml 一模一樣的違規，第二個現場。
+#   D90 立條時只逐鍵查了安裝器那一份，這一份是**環境對等閘上線後第一次掃出來的**
+#   （installer/scripts/env-parity-gate.mjs）。⇒ 這正是「規則早就寫在那裡，
+#   但沒有任何機制驗證有沒有照做」——人工查一份，機器查全部。
+#
+#   為什麼 prod 同樣需要它：landing prod 跑在 rag.arcrun.dev、要去 fetch
+#   INSTALL_BASE＝install.arcrun.dev 取版本號，**兩者同一個 zone（arcrun.dev）**
+#   ——那正是 CF 1042（同 zone worker→worker）針對的情境，不是 staging 專屬的坑。
+#   而我們的測試全都在**有**這個 flag 的 stage 上做 ⇒ prod 這條路等於沒驗過。
+#
+#   修法方向同 installer：**把 prod 補成跟 stage 一樣**，不是把 stage 的拿掉。
+compatibility_flags = ["global_fetch_strictly_public"]
+
 kv_namespaces = [
   { binding = "SIGNUPS", id = "ab7b1520e25b4438a7e782cbfae22429" }
 ]
@@ -44,6 +58,11 @@ DOCS_BASE = "https://rag.arcrun.dev/docs"
 #     system-dev/docs/3-specs/pending-changes.md P10。
 #   - 不綁 custom domain（走 workers.dev）；要換成 staging-rag.arcrun.dev
 #     需 leo 手動加 DNS（wrangler 登入態沒有 DNS 權限），清單見該次交付回報。
+#
+# 🔴 inkstone/arcrun-rag#216（2026-09-25）：**這個環境仍存在，但出貨管線已不使用**。
+#   `installer/ship.targets.json` 的 `targets.stage` 改指下面的 `[env.youlin-stage]`
+#   （youlin 帳號）。這裡不刪除、不停用，worker／KV 照常活著——只是 `ship.mjs
+#   --target stage` 不會再部署到這裡。別把它當死碼清掉。
 # ---------------------------------------------------------------------------
 [env.staging]
 name = "arcrun-landing-staging"

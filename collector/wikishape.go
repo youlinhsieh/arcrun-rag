@@ -583,7 +583,13 @@ func renderConceptCard(c WikiConcept, cardName, docCard string, origin SourceOri
 
 // ── 落地：BuildWikiDoc（萃取成功）／MarkDocNoConcept（標空）／RemoveWikiDoc（下架）──
 
+// ensureWikiIgnored 對一個 `.wiki/` 做兩件「宣告這是我們的」的事：
+// ① 對 git 隱形（自帶 .gitignore，只寫一次、不覆蓋）
+// ② 對作業系統隱形（Windows 掛 FILE_ATTRIBUTE_HIDDEN；其他平台 no-op，見 owndir.go）
+// ② 放在 ① 的「已存在就 return」之前：升級前建的 .wiki 已經有 .gitignore，
+// 但還沒有隱藏屬性，這一輪寫到它就要順手補上（inkstone/arcrun-rag#193）。
 func ensureWikiIgnored(wikiDir string) {
+	markOwnDirHidden(wikiDir)
 	target := filepath.Join(wikiDir, ".gitignore")
 	if _, err := os.Stat(target); err == nil {
 		return

@@ -24,6 +24,10 @@
  *   · 帶主機的 Gitea 位址：`git.uncle6.me/Leo/…`、`git@git.uncle6.me:Leo/…`（owner 不分大小寫，
  *     Gitea 的 owner 本來就不分大小寫）
  *   · 登錄簿裡 `host: gitea` 的 `repoSlug` 是 `Leo/…`
+ *   · 不帶主機、也沒有 `host` 欄位可比對的 `upstream: 'Leo/…'`（如
+ *     resource-rule-sync.mjs 的鏡射來源記錄）——`upstream` 這個鍵在本 repo
+ *     語意上就是 gitea 來源 repo，見到裸 slug 一樣擋（arcrun-rag#223：
+ *     這種寫法之前沒被抓到，`upstream: 'Leo/Arcrun'` 撞牆才補上）
  *   · 註解行（`#`、`//`、`*` 開頭）與登錄簿的 `_` 說明欄不算——那是在講歷史，不是在連
  */
 import { readFileSync } from 'node:fs';
@@ -47,7 +51,11 @@ export function checkTargets(cfg) {
     if (typeof node === 'string') {
       const key = path.split('.').pop();
       const isGiteaSlug = key === 'repoSlug' && parent && parent.host === 'gitea';
-      if (PERSONAL_NS_URL.test(node) || (isGiteaSlug && PERSONAL_NS_SLUG.test(node))) {
+      // `upstream` 這個鍵在本 repo 只用來記「鏡射來源是哪個 gitea repo」
+      // （resource-rule-sync.mjs／MIRROR.json），沒有 host 欄位可比對，
+      // 但語意上就是 gitea slug，不帶主機的裸 slug 也要擋（arcrun-rag#223）。
+      const isUpstreamSlug = key === 'upstream';
+      if (PERSONAL_NS_URL.test(node) || ((isGiteaSlug || isUpstreamSlug) && PERSONAL_NS_SLUG.test(node))) {
         hits.push({ path, value: node });
       }
       return;
@@ -73,11 +81,19 @@ export function isCommentLine(line) {
  * 掃一份文字檔的非註解行。
  * @returns {{line:number, text:string}[]}
  */
+/**
+ * 不帶主機的 `upstream: 'Leo/xxx'`／`upstream = "Leo/xxx"` 這種寫法（.mjs 原始碼裡的
+ * 物件字面量，不是 JSON，所以 checkTargets 的 walk 碰不到）。只認 `upstream` 這個鍵，
+ * 不做通用裸 slug 掃描——通用掃會把 `Leo/arcrun-rag#79 …`／`這張票是 Leo/Arcrun#97`
+ * 這類歷史票號引用也抓進來（見 checkTargets 註解），那不是本閘要擋的東西。
+ */
+const PERSONAL_NS_BARE_UPSTREAM = /\bupstream\s*[:=]\s*['"]leo\//i;
+
 export function checkText(text) {
   const hits = [];
   String(text).split('\n').forEach((l, i) => {
     if (isCommentLine(l)) return;
-    if (PERSONAL_NS_URL.test(l)) hits.push({ line: i + 1, text: l.trim() });
+    if (PERSONAL_NS_URL.test(l) || PERSONAL_NS_BARE_UPSTREAM.test(l)) hits.push({ line: i + 1, text: l.trim() });
   });
   return hits;
 }

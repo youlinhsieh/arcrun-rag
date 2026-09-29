@@ -23,6 +23,11 @@
     <nav id="nav"></nav>
 
     <div class="side-foot">
+      <!-- 固定位置的求救入口（inkstone/arcrun-rag#210）：leo 2026-09-20「側邊欄有個問號按鈕」——
+           放在 side-foot 而不是某個分頁裡，是因為這裡在任何頁面、任何捲動位置都看得到，
+           不必先搞懂「疑難排解在哪一頁」。三件事（打字回報／匯出診斷檔／文件與 FAQ）
+           都在按下去之後同一個地方，不分散。 -->
+      <button class="ico help-btn" id="helpBtn" title="需要協助？" aria-label="需要協助？打字回報、匯出診斷檔、或查看文件與常見問題">?</button>
       <div class="ver" id="ver"></div>
     </div>
   </aside>

@@ -141,6 +141,13 @@ type FolderNode struct {
 	// 讀完的那幾份——c10630「小檔一次就 100%，大檔顯示已經處理了多少%」要的資料。
 	// 只列**這一層直接放的**（同 TotalFiles 那句「不含子資料夾」），子樹合計由畫面疊。
 	InProgressFiles []LargeFileProgress `json:"in_progress_files,omitempty"`
+
+	// Included＝使用者手動把這個資料夾「收進來」了（#136 驗收 5／6／7 的逃生口）。
+	// 用來讓畫面分得出「系統預設跳過（可以按『收進來』）」與「使用者已經選了要收
+	// （可以按『取消收進來』收回）」——前者靠 Skipped，後者靠這一格。
+	// 一旦強制收錄生效，這一層的檔就進了收檔範圍 ⇒ Skipped 自然變 false，
+	// 光看 Skipped 就分不出「本來就沒被跳過」與「被使用者救回來了」，所以要這一格。
+	Included bool `json:"included,omitempty"`
 }
 
 // LargeFileProgress＝一份還沒讀完的大檔目前的進度（0-100）。
@@ -273,6 +280,18 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 		n := ensure(ed.Path)
 		n.Skipped = true
 		n.SkipReason = ed.Reason
+	}
+
+	// #136 驗收 5／6／7：標出使用者手動「收進來」的資料夾。這一格與收檔判準是同一份來源
+	//（plan.ForceIncludeDirs，direct.go 從 folder-includes.json 掛上），畫面才不會與實際
+	// 收的檔對不起來。標的是使用者選的那個節點本身——它底下的子節點跟著被收，但畫面上
+	// 只需要在「他按過的那一格」給出「取消收進來」的入口。
+	for _, fi := range plan.ForceIncludeDirs {
+		if fi == "" {
+			continue
+		}
+		n := ensure(fi)
+		n.Included = true
 	}
 
 	out := make([]FolderNode, 0, len(nodes))

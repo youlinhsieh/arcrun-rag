@@ -1,0 +1,90 @@
+# rag_entity_dedupe — 收斂「同一個 entity 有多句 description」的舊資料（inkstone/Arcrun#264）
+#
+# 背景：rag_entity_concept 的 existingDesc 判斷曾經只看單一子庫（field=library），
+# 但 entity 節點在知識圖上是跨庫共用的，於是同一個人從第 2、3 個子庫送卡進來時，
+# 又各寫一條新的 description（LLM 每次措辭略有不同，object 值不同，KBDB 不會視為
+# 重複）。查詢面已經在 rag_entity_concept 修好（Arcrun#264 c1：fetch_global_desc，
+# 跨庫核對存在性），但**已經寫進去的舊重複**不會自己消失，需要這支一次性/可重跑的
+# 收斂工具：對每個 subject，只留一條 description（保留 record_id 最小的那條，
+# 其餘刪除），讓「讀的人只會拿到一句」（驗收條件二）。
+#
+# 零 SQL：全程走 KBDB 既有的 GET /records/by-template 與 DELETE /records/:id，
+# 不新增表、不動 schema。可重跑（冪等）：沒有重複的 subject 不會被動到。
+#
+# 觸發：
+#   POST {cypher}/webhooks/named/rag_entity_dedupe/query
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{}'
+#   （不帶參數＝只回報不刪；確認清單無誤後帶 {"dry_run":"false"} 才真的刪）
+
+name: rag_entity_dedupe
+description: >
+  收斂「同一個 entity 跨庫累積出多句 description」的舊資料：對每個 subject 只留一條
+  description，其餘刪除（predicate=description 的三元組專用，零向量、零 SQL）。
+  可重跑；預設只回報，帶 dry_run=false 才刪。（inkstone/Arcrun#264）
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_all_desc"
+  - "fetch_all_desc >> ON_SUCCESS >> pick_dupes"
+  - "pick_dupes >> 對每個 dupe_record >> delete_dupe"
+
+config:
+  fetch_all_desc:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=description&owner_id=__NAMESPACE__&limit=2000"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 對每個 subject 分組，保留 record_id 字典序最小的一條（穩定、不用猜 created_at
+  # 欄位存不存在），其餘標成待刪。dry_run=true 時只回報，不進入刪除的 FOREACH
+  # （dupe_record 陣列回空，FOREACH 自然 0 次）。
+  pick_dupes:
+    component: "__CODE_URL__"
+    input:
+      body: "{{fetch_all_desc.data.body}}"
+      dry_run: "{{input.dry_run}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var parsed = parse(input.body);
+      var records = (parsed && Array.isArray(parsed.records)) ? parsed.records : [];
+      var bySubject = {};
+      for (var i = 0; i < records.length; i++) {
+        var rec = records[i] || {};
+        var v = rec.values || {};
+        var subj = String(v.subject || '');
+        var id = String(rec.record_id || rec.id || '');
+        if (!subj || !id) continue;
+        if (!bySubject[subj]) bySubject[subj] = [];
+        bySubject[subj].push({ id: id, object: String(v.object || '') });
+      }
+      var dupeGroups = [];
+      var dupe_record = [];
+      var isDryRun = String(input.dry_run) !== 'false'; // 預設只回報；明確帶 dry_run=false 才刪（總管 09-28：會刪資料的工具預設不動手）
+      for (var subj in bySubject) {
+        var group = bySubject[subj];
+        if (group.length <= 1) continue;
+        group.sort(function (a, b) { return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0); });
+        var keep = group[0];
+        var drop = group.slice(1);
+        dupeGroups.push({ subject: subj, keep_id: keep.id, keep_text: keep.object,
+                           drop_ids: drop.map(function (d) { return d.id; }),
+                           drop_texts: drop.map(function (d) { return d.object; }) });
+        if (!isDryRun) {
+          for (var d = 0; d < drop.length; d++) dupe_record.push({ record_id: drop[d].id });
+        }
+      }
+      return { success: true, dupe_groups: dupeGroups, dupe_group_count: dupeGroups.length,
+               dupe_record: dupe_record, will_delete: dupe_record.length, dry_run: isDryRun,
+               total_description_records: records.length };
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 2097152
+
+  delete_dupe:
+    component: "__HTTP_REQ_URL__"
+    method: DELETE
+    url: "__KBDB_BASE__/records/{{dupe_record.record_id}}"
+    headers:
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"

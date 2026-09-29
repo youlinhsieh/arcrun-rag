@@ -111,8 +111,13 @@ const workspaceIgnoreBody = "# 這個資料夾是 Arcrun RAG 同步小幫手的�
 //
 // 冪等且不覆蓋：檔案已存在就什麼都不做（使用者可能自己改過內容）。
 // 失敗一律靜默——寫不進去最多是 git status 多一行 untracked，不值得中斷同步。
+//
+// 2026-09-10（inkstone/arcrun-rag#193）：同時對作業系統宣告這是我們的目錄
+// （Windows 掛隱藏屬性，見 owndir.go）。放在「.gitignore 已存在就 return」之前，
+// 升級前建好的 `.arcrun-rag/` 下一輪就會補上屬性；目錄還不存在時等建好再掛。
 func EnsureWorkspaceIgnored(absRoot string) {
 	dir := filepath.Join(absRoot, workspaceRelDir)
+	markOwnDirHidden(dir)
 	target := filepath.Join(dir, ".gitignore")
 	if _, err := os.Stat(target); err == nil {
 		return
@@ -120,5 +125,6 @@ func EnsureWorkspaceIgnored(absRoot string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
+	markOwnDirHidden(dir)
 	_ = os.WriteFile(target, []byte(workspaceIgnoreBody), 0o644)
 }

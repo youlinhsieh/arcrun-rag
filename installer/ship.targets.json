@@ -69,9 +69,15 @@
       "CLOUDFLARE_ACCOUNT_ID，認證靠 leo 家目錄的 wrangler OAuth 登入態 ⇒ 雲端 container 部署不了，",
       "且同一條線換一台機器就換一個身分部署。地端值住 products/arcrun-rag/.env 的 UNCLE6_CF_API_KEY；",
       "雲端值由 leo 貼進 claude.ai Cloud environment 的環境變數，**同一個名字** UNCLE6_CF_API_KEY",
-      "（不是另立 CLOUDFLARE_API_TOKEN_UNCLE6——一把鑰匙一個名字，兩邊查得到同一個名字才叫「同一條路」）。"
+      "（不是另立 CLOUDFLARE_API_TOKEN_UNCLE6——一把鑰匙一個名字，兩邊查得到同一個名字才叫「同一條路」）。",
+      "",
+      "inkstone/arcrun-rag#216（2026-09-25）：`targets.stage` 三站改指 youlin 帳號之後，",
+      "這裡跟著補一筆——不補的話 `cloudflareDeployEnv()` 會在 `credentialNameFor()` 直接丟錯",
+      "（帳號沒宣告鑰匙，不猜、不退回 OAuth，見 cf-credential.mjs）。值＝雲端既有環境變數",
+      "CLOUDFLARE_API_TOKEN_YOULIN_CC_USE（頂層 credentials-map.md 已收錄，非新憑證）。"
     ],
-    "58309bb90fd93ad6d0fe0aae99170e9d": { "name": "UNCLE6_CF_API_KEY", "note": "uncle6（官方件：安裝器／文件站／郵差，stage 與 prod 同帳號）" }
+    "58309bb90fd93ad6d0fe0aae99170e9d": { "name": "UNCLE6_CF_API_KEY", "note": "uncle6（官方件：安裝器／文件站／郵差，prod 恆在此帳號）" },
+    "1129efd7df2e8899d537e9c8fbabb6cb": { "name": "CLOUDFLARE_API_TOKEN_YOULIN_CC_USE", "note": "youlin（AI stage，#216 起 targets.stage 三站改指這裡，雲端 container 免 uncle6 金鑰也能出 stage）" }
   },
 
   "targets": {
@@ -112,16 +118,23 @@
         "shaLen": 7
       },
       "installer": {
+        "_": [
+          "inkstone/arcrun-rag#216（2026-09-25）：改指 youlin（AI stage），",
+          "不再是 uncle6 帳號底下的 `staging` env——那個 env／worker/KV 仍在（見",
+          "wrangler.toml [env.staging] 段落註解），只是出貨管線不再指過去。",
+          "母票 #215：youlin-stage 三站已建好並驗過（安裝器/docs-site/landing 互連通、",
+          "瀏覽器實走 OAuth 授權導向 CF 登入頁）。"
+        ],
         "cwd": "installer/oauth-prototype",
         "config": "wrangler.toml",
-        "wranglerEnv": "staging",
-        "varsSection": "env.staging.vars",
+        "wranglerEnv": "youlin-stage",
+        "varsSection": "env.youlin-stage.vars",
         "mirrorConstants": false,
-        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
-        "accountNote": "uncle6（官方件所在帳號）；staging worker 與 prod 同帳號不同 worker 名"
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "accountNote": "youlin（AI stage，#216 起；資料與帳密與 uncle6 staging／prod 完全分離）"
       },
       "verify": {
-        "installerBase": "https://arcrun-rag-installer-staging.uncle6-me.workers.dev"
+        "installerBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
       },
       "delivery": {
         "_": [
@@ -256,25 +269,43 @@
       },
 
       "docsSite": {
-        "_": "s2（stage-environment SDD）：文件站 stage 版，2026-08-09 加。同帳號不同 worker 名，不掛網域。",
+        "_": [
+          "s2（stage-environment SDD）：文件站 stage 版，2026-08-09 加。同帳號不同 worker 名，不掛網域。",
+          "inkstone/arcrun-rag#216（2026-09-25）：改指 youlin（AI stage）。",
+          "uncle6 的 `arcrun-docs-staging`（[env.staging]）仍在，出貨管線不再指過去。",
+          "",
+          "`siteBase`／`installBase`（#216 加）：docs-site 是純靜態站（Astro SSG），沒有",
+          "runtime 讀得到 wrangler.toml 的 `[vars]`——build 時要用 `PUBLIC_SITE_BASE`／",
+          "`PUBLIC_INSTALL_BASE` 這兩個環境變數把跨站導覽（SiteNav.astro）指對地方，見",
+          "docs-site/src/components/SiteNav.astro。值＝這個目標宣告的 landing／installer",
+          "網址（與上面 mailRelay.verifyUrl／verify.installerBase 同源，不手填字串常數）。"
+        ],
         "cwd": "docs-site",
         "config": "wrangler.toml",
-        "wranglerEnv": "staging",
-        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
-        "verifyUrl": "https://arcrun-docs-staging.uncle6-me.workers.dev/docs/"
+        "wranglerEnv": "youlin-stage",
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "verifyUrl": "https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs/",
+        "siteBase": "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev",
+        "installBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
       },
       "mailRelay": {
         "_": [
           "郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）。",
           "在此之前 landing 完全不在出貨管線裡（STEPS／登錄簿都沒有它），只能靠人手動",
           "`wrangler deploy`——2026-08-11 實測就是這樣漏的：stage 手動部署過（有 D62 路由），",
-          "prod 從沒推過（/api/send-password-reset 404，還在跑 D62 之前的舊碼）。"
+          "prod 從沒推過（/api/send-password-reset 404，還在跑 D62 之前的舊碼）。",
+          "",
+          "inkstone/arcrun-rag#216（2026-09-25）：改指 youlin（AI stage）。",
+          "uncle6 的 `arcrun-landing-staging`（[env.staging]）仍在，出貨管線不再指過去。",
+          "youlin-stage 的 EMAIL_ENABLED=false（見 landing/wrangler.toml 該段註解：",
+          "arcrun.dev 這顆 zone 只在 uncle6 帳號，是否委給 youlin 是結構決策，不在本票裁）——",
+          "verify-mail-relay 只要求代寄路由『不是 404』，503 email_disabled 一樣算通過。"
         ],
         "cwd": "landing",
         "config": "wrangler.toml",
-        "wranglerEnv": "staging",
-        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
-        "verifyUrl": "https://arcrun-landing-staging.uncle6-me.workers.dev"
+        "wranglerEnv": "youlin-stage",
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "verifyUrl": "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
       }
     },
 
@@ -464,14 +495,22 @@
           "漏填不再是出貨時的一行警告，是登錄簿驗證階段就不准開跑。",
           "",
           "wranglerEnv=null ⇒ 走 wrangler.toml 的預設環境（就是掛 rag.arcrun.dev/docs/* 的那顆）。",
-          "⚠️ 這一欄會讓**下一次 prod 出貨**同時部署文件站；它與其他 prod 步驟一樣受 D20 人閘管。"
+          "⚠️ 這一欄會讓**下一次 prod 出貨**同時部署文件站；它與其他 prod 步驟一樣受 D20 人閘管。",
+          "",
+          "`siteBase`／`installBase`（inkstone/arcrun-rag#216，2026-09-25）：與 stage 那一欄",
+          "同一組鍵——**故意不從 mailRelay.verifyUrl／verify.installerBase 繼承**：",
+          "prod 那兩個是 workers.dev 的 fallback 網址（給 verify 站探活用），使用者真正看到的",
+          "是掛在 custom domain 上的 rag.arcrun.dev／install.arcrun.dev。值與 SiteNav.astro",
+          "的預設值（沒指定 PUBLIC_* 時的行為）完全相同——本次加這兩個欄位對 prod 建置零改變。"
         ],
         "cwd": "docs-site",
         "config": "wrangler.toml",
         "wranglerEnv": null,
         "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
         "accountNote": "uncle6；rag.arcrun.dev/docs/* 就是這顆 worker（arcrun-docs）",
-        "verifyUrl": "https://rag.arcrun.dev/docs/"
+        "verifyUrl": "https://rag.arcrun.dev/docs/",
+        "siteBase": "https://rag.arcrun.dev",
+        "installBase": "https://install.arcrun.dev"
       }
     }
   }

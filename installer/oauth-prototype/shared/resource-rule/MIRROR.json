@@ -1,13 +1,13 @@
 {
   "_": [
-    "這個目錄是 Leo/Arcrun 的 shared/resource-rule/ 的逐位元組鏡射，由",
+    "這個目錄是 inkstone/Arcrun 的 shared/resource-rule/ 的逐位元組鏡射，由",
     "installer/scripts/resource-rule-sync.mjs 產生。**不准手改**。",
     "規則要改就改上游（Arcrun repo），然後重跑同步腳本；",
     "installer/scripts/resource-rule-gate.mjs 會在每次出貨的 preflight 核對這些指紋，對不上就拒絕出貨。"
   ],
-  "upstream": "Leo/Arcrun",
+  "upstream": "inkstone/Arcrun",
   "upstream_dir": "shared/resource-rule",
-  "upstream_commit": "03833405d71928e230c2d81863c0b48236059e8b",
+  "upstream_commit": "2b9c349decceb720d1b6a510075cddd3fd2fb5b8",
   "files": {
     "README.md": "0e957ce2655c5ffeee6bad4682f0fbd85a0c5882494e2b74a70777b89d1e3bb9",
     "cf-resource-api.mjs": "6fd5e08d2d80a8c70499d8a75d68752d4b494871f536d68a6088eaa668a1dd2d",

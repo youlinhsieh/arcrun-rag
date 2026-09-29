@@ -27,6 +27,11 @@ zone_name = "arcrun.dev"
 #   - 不綁 custom domain（已裁決，`status.md:6764`：「Stage 直接用 workers.dev 不行？
 #     反正只有你我用」）——用 `arcrun-docs-staging.<sub>.workers.dev/docs/` 即可
 #   - 同帳號（uncle6，官方機制層）不同 worker 名 ⇒ 不覆蓋 prod 的 `arcrun-docs`
+#
+# 🔴 inkstone/arcrun-rag#216（2026-09-25）：**這個環境仍存在，但出貨管線已不使用**。
+#   `installer/ship.targets.json` 的 `targets.stage` 改指下面的 `[env.youlin-stage]`
+#   （youlin 帳號）。這裡不刪除、不停用，worker 照常活著——只是 `ship.mjs --target
+#   stage` 不會再部署到這裡。別把它當死碼清掉。
 # ---------------------------------------------------------------------------
 [env.staging]
 name = "arcrun-docs-staging"

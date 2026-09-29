@@ -1,0 +1,50 @@
+{
+  "purpose": "inkstone/arcrun-rag#13 c14501 B①：一張新知識卡寫進來後，同一支分群邏輯（rag_cluster_auto）自動歸群、寫成 cluster_membership（use_type=wiki）——不新增 Gitea webhook，觸發點是 rag_ingest_card 內部呼叫。",
+  "steps": [
+    {
+      "step": "seed_criteria",
+      "action": "POST /kbdb/records template=cluster_criteria use_type=wiki sim_threshold=0.22 size_cap=8",
+      "note": "確保 wiki 用途有一筆 cluster_criteria 可讀（原本 09-27 就寫過一筆，這次補一筆較新的，行為一致）"
+    },
+    {
+      "step": "manual_probe_before_wiring",
+      "action": "POST rag_cluster_auto/query {use_type:'wiki', item_id:'kb://c14501-test-note.md#0', item_title:'...'}",
+      "result": "action=new, cluster_id=wiki-kbc14501testnotemd0-1790560399065",
+      "note": "先確認 decide 泛化後 wiki 路徑本身正確，再接真正的自動觸發"
+    },
+    {
+      "step": "patch_rag_ingest_card",
+      "action": "workflows/cluster/patch_rag_ingest_card_wiki_trigger.py：在 parse_card 後加 ON_SUCCESS 分支 prep_cluster_wiki -> trigger_wiki_cluster，既有 FOREACH 寫 block/triplet 分支不動",
+      "membership_wiki_count_before": 1
+    },
+    {
+      "step": "real_ingest_call",
+      "action": "POST rag_ingest_card/query（真實 payload：page_name=c14501-ingest-test，card_content 是一段測試筆記）",
+      "no_manual_mcp_or_curl_for_clustering": true,
+      "auto_triggered_notify_text": "[cluster-auto] use_type=wiki item=kb://c14501-ingest-test 已自動分群：attach -> wiki-kbc14501testnotemd0-1790560399065（既有群數 1，門檻 0.22／來源 kbdb_cluster_criteria）"
+    },
+    {
+      "step": "readback",
+      "membership_wiki_count_after": 2,
+      "new_record": {
+        "record_id": "rec_3b2c9ffa-1e7e-4604-afbf-5835f99d5417",
+        "item_id": "kb://c14501-ingest-test",
+        "action": "attach",
+        "cluster_id": "wiki-kbc14501testnotemd0-1790560399065",
+        "sim": 0.42433421239575275
+      },
+      "regression_check": {
+        "action": "kbdb_search('c14501 自動觸發驗收筆記')",
+        "found_block": true,
+        "block_entry_id": "e_ab4584b2-3c5f-4135-8865-1e0c65d878f2",
+        "note": "既有的『萃卡寫進 KBDB blocks』行為沒有被新分支影響，正常寫入"
+      }
+    },
+    {
+      "step": "ticket_path_regression",
+      "before_fix": "第一版忘了處理『未代入的可選欄位是字面模板字串非 undefined』，導致開票路徑跑出 criteria_source=fallback_default、use_type={{input.use_type}} 這種壞值",
+      "after_fix_with_opt_helper": "e2e-sandbox#9201 重跑：use_type=ticket_auto, item_id=inkstone/e2e-sandbox#9201, criteria_source=kbdb_cluster_criteria, 門檻 0.22 —— 跟 c14360 A 驗過的行為一致"
+    }
+  ],
+  "verdict": "同一個 decide 邏輯（同一支 code）泛化後，ticket 開票路徑行為不變（回歸測試通過），wiki 卡片寫入路徑新增且驗證通過（真實 ingest 呼叫後 membership 自動多一筆，沒有手動 MCP/curl）。"
+}

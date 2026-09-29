@@ -1,0 +1,22 @@
+{
+  "purpose": "inkstone/arcrun-rag#13 c14542：分群例行結果不再發 Telegram 給 leo；順手抓到部署殼 deploy_rag_cluster_auto.py 的錯網域 bug。",
+  "change": "從 rag_cluster_auto graph 移除 write_membership 之後的 notify_done 節點與 ON_SUCCESS 邊，不換成任何有條件通知（目前沒有可用的『需要人看』信號）。",
+  "bug_found": {
+    "symptom": "拿掉 notify_done 後用 deploy_rag_cluster_auto.py 重推，rag_cluster_auto/query 每次都回 HTTP 530 / error code 1016（Cloudflare origin DNS error），但把完全相同的 graph 部署成別的名字（debug_probe_c14542d）卻正常。",
+    "root_cause": "deploy_rag_cluster_auto.py 的 cypher_base 預設值是 f'https://arcrun-cypher-executor.{ns}.workers.dev'（namespace='yuga3bse' 直接接 workers.dev），但 youlin 實際的 CF 帳號子網域是 'arcrun-yuga3bse'，兩者不是同一個字串去掉字首的關係——組出一個不存在的網域。",
+    "why_easy_to_miss": "http_request 零件不把非 2xx 回應當節點失敗，錯誤訊息只是混進正常回應的 data.body；arcrun_list_recent_executions 的 verdict 仍顯示 success。這支部署殼先前只在『重建 graph 給 arcrun_validate_yaml dry-run 驗證』時用過，dry-run 不驗網域可連性，所以 bug 一直沒被抓到，直到這輪第一次真的執行它才現形。",
+    "fix": "拿掉自動猜測，改成 ARCRUN_CYPHER_BASE 必填環境變數（同 install/push-workflow-update.sh 既有慣例）；補上 User-Agent: curl/8.5.0 避免 WAF 403（其他部署腳本都有這行，這支先前沒撞到是因為從沒真的跑過）。"
+  },
+  "verification": {
+    "before_fix": "curl 直接打 rag_cluster_auto/query 回 {\"error\":\"HTTP 530\",\"status\":530,\"body\":\"error code: 1016\"}，重試 5 次、刪除重建都一樣",
+    "isolation_test": "把同一份 graph 部署成 debug_probe_c14542 / b / c / d 四個遞增規模的探測 workflow，逐步加回 filter_opened / read_criteria / read_membership / decide / write_membership，每一步都成功——證明問題不在圖的結構或內容，而在部署腳本組出的網域字串本身錯了",
+    "after_fix": {
+      "action": "修正 deploy_rag_cluster_auto.py 後用 ARCRUN_NS=yuga3bse ARCRUN_CYPHER_BASE=https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev python3 deploy_rag_cluster_auto.py 重推",
+      "ticket_path_result": {"item_id": "inkstone/e2e-sandbox#9304", "action": "attach", "sim": 0.4303314829119351},
+      "wiki_path_result": {"item_id": "kb://c14542-debug-ingest", "action": "new"},
+      "telegram_echo_in_response": false,
+      "note": "兩條路徑都正常寫入 KBDB，且回應內容不再包含任何 notify_leo/Telegram API 的回顯——確認例行分群結果不再推播"
+    }
+  },
+  "cleanup": "四個 debug_probe_c14542* 探測 workflow 已全數 DELETE，stage 不留無主的工作流"
+}

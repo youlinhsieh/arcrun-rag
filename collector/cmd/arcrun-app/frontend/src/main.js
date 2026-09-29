@@ -26,6 +26,13 @@ applyTheme((() => { try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'd
 $('themeBtn').onclick = () =>
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 
+// 求救入口（inkstone/arcrun-rag#210）：跟 themeBtn 一樣掛在側邊欄外殼、只綁一次——
+// 不是 renderPage() 換出來的內容，不能放進 wire()（那裡每次換頁都會重跑）。
+// 🔴 走「換頁」不走 openSheet()：style.css :248 的既有規約明寫「覆蓋層只給
+// 『確認刪除』這類必須打斷的動作，設定頁一律走右側換頁」——這是一頁內容
+// （三張卡＋一個表單），不是一次性確認，混用會違反這條既有規約。
+$('helpBtn').onclick = () => { page = 'help'; renderNav(); renderPage(); };
+
 let state = null;
 // page：'apps'（App 啟動器）| 'app:<accIdx>:<id>' | 'home' | 'ai' | 'update' | 'lib:<idx>'
 //
@@ -126,7 +133,7 @@ function pageHome(s) {
           </div>`).join('')}
       </div>
     </div>
-    ${cardQuota(s.quota, s.progress)}
+    ${cardQuota(s.quota, s.progress, s.accounts)}
     ${cardQuotaMeter(s.quotaMeter)}
     ${cardTrouble(s)}
     ${cardProgress(s.progress)}
@@ -244,25 +251,49 @@ function cardTrouble(s) {
 // 三句話原文全部來自後端 QuotaNotice（quota.go 組的），這裡不重組字串——
 // 避免同一件事在 status.json、診斷檔、畫面各說各話（措辭漂移）。
 // 排隊數取自同一份 s.progress（t210 統計層），讓「還剩多少」也有答案。
-function cardQuota(q, p) {
+// accounts＝s.accounts（首頁帳號列表），只用來判斷「現在看守幾個知識庫」——
+// inkstone/arcrun-rag#207：只顧一台知識庫的人不用被多告訴一件事；
+// 一旦看守超過一台，就必須講出「爆的是哪一台」，不然使用者會以為爆的是自己正在看的那台
+// （leo 2026-09-19 實測：測付費的 leo21c，卻被免費的 youlin 爆掉那則訊息誤導）。
+function cardQuota(q, p, accounts) {
   if (!q) return '';
   const pending = p && p.pending > 0
     ? `<div class="d" style="margin-top:6px">還有 <b>${p.pending}</b> 份排隊中——會自動接著跑，你不用重丟。</div>` : '';
+  const multi = accounts && accounts.length > 1;
+  const account = multi && q.account
+    ? `<div class="d" style="margin-top:2px;opacity:.75">爆掉的是這個知識庫：<b>${esc(q.account)}</b>（你看守的其他知識庫不受影響）</div>`
+    : '';
   // arcrun-rag#197：雲端資料庫（D1）額度用完是另一種卡——沒有「成就」可講，
   // 用戶要的是：哪一種額度、上限多少／用到哪、幾點恢復、要不要自己做事。文字全來自後端。
   if (q.kind === 'd1_read' || q.kind === 'd1_write') {
     return `
     <div class="card" data-quota-kind="${esc(q.kind)}">
       <h3>${esc(q.headline)}</h3>
+      ${account}
       <div class="d" style="margin-top:6px">${esc(q.usage)}。</div>
       <div class="d" style="margin-top:6px"><b>${esc(q.guarantee)}</b>。</div>
       ${pending}
       <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
     </div>`;
   }
+  // arcrun-rag#59：這一輪 0 份成功、額度就用完了。舊版走下面那張卡會印
+  // 「今天已經幫你整理了 0 份 🎉」——「0 份」配 🎉 自相矛盾，正是本票要修的病。
+  // 這種情況沒有「成就」可慶祝，改用後端給的 headline/usage（後端也不再編造是誰吃掉額度）。
+  if (q.kind === 'workersai_starved') {
+    return `
+    <div class="card" data-quota-kind="workersai_starved">
+      <h3>${esc(q.headline)}</h3>
+      <div class="d" style="margin-top:6px">${esc(q.usage)}。</div>
+      <div class="d" style="margin-top:6px"><b>${esc(q.guarantee)}</b>。</div>
+      ${pending}
+      <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
+      <div class="acts"><button class="ghost" data-openurl="https://rag.arcrun.dev/docs/">看看怎麼做</button></div>
+    </div>`;
+  }
   return `
     <div class="card">
       <h3>${esc(q.achievement)} 🎉</h3>
+      ${account}
       <div class="d" style="margin-top:6px">今天的免費 AI 額度用完了，先休息一下。<b>${esc(q.guarantee)}</b>。</div>
       ${pending}
       <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
@@ -578,6 +609,9 @@ function renderFolderTree(path) {
     let why = n.skipped
       ? (n.skip_reason || '（小幫手沒說明理由）')
       : gapWhy(s);
+    // #136 驗收 7：使用者已經手動把這個資料夾收進來了 ⇒ 這一列的「為什麼」講的是他的選擇，
+    // 而不是系統的預設判斷（那句已經被他覆寫掉了）。
+    if (n.included) why = '你選了要收這個資料夾的檔案（可以收回）';
     // 收檔策略那句話（原本掛在樹的上方，leo 圈掉了）改掛在**根那一列**——
     // 它講的就是這個監看根，點根的數字就看得到，資訊沒有消失。
     if (n.parent === '-' && tree.reason) why = why ? `${tree.reason}（${why}）` : tree.reason;
@@ -593,7 +627,18 @@ function renderFolderTree(path) {
       + `>${shown}</span>`;
     html += row + `</div>`;
     if (why && (treeState.why[path] || {})[n.path]) {
-      html += `<div class="ftwhy" style="padding-left:${indent + 21}px">${esc(why)}</div>`;
+      // #136 驗收 5／7：被跳過但底下有檔的資料夾 ⇒ 給「收進來」；已收進來的 ⇒ 給「取消收進來」。
+      // 🔴 只在**走進去過、確實有檔**（total_files > 0）的跳過節點上給「收進來」——
+      //    整棵沒走進去的（node_modules、巢狀 repo，total_files === 0）就算強制收，後端的
+      //    走訪剪枝仍然擋著，按了不會生效，所以不給那顆假按鈕。
+      const canInclude = n.skipped && n.total_files > 0 && !n.included;
+      let act = '';
+      if (n.included) {
+        act = `<button class="ftinc" data-tiroot="${esc(path)}" data-tinode="${esc(n.path)}" data-tiact="exclude">取消收進來</button>`;
+      } else if (canInclude) {
+        act = `<button class="ftinc" data-tiroot="${esc(path)}" data-tinode="${esc(n.path)}" data-tiact="include">收進來</button>`;
+      }
+      html += `<div class="ftwhy" style="padding-left:${indent + 21}px">${esc(why)}${act}</div>`;
     }
     if (open) kids.forEach(emit);
   }
@@ -679,6 +724,42 @@ function wireTree() {
     el.onclick = toggle;
     el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } };
   });
+  // #136 驗收 5／7：「收進來」／「取消收進來」。
+  document.querySelectorAll('[data-tinode]').forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); setNodeInclude(el.dataset.tiroot, el.dataset.tinode, el.dataset.tiact === 'include', el); };
+  });
+}
+
+// setNodeInclude 把使用者的「收進來／取消收進來」寫進後端，然後重讀這棵樹。
+// 後端寫完會立刻觸發一次同步（見 IncludeFolder），但同步跑完才會重出樹，中間有延遲
+// ——所以先把按鈕停用並顯示「處理中…」，再定時重讀，讓畫面追上真實狀態。
+async function setNodeInclude(root, np, include, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = include ? '收進來…' : '收回…'; }
+  try {
+    if (include) await go.IncludeFolder(root, np);
+    else await go.ExcludeFolder(root, np);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = include ? '收進來' : '取消收進來'; }
+    const box = $(treeBoxId(root));
+    if (box) { const m = document.createElement('div'); m.className = 'err'; m.textContent = '沒設定成功：' + String(err); box.appendChild(m); }
+    return;
+  }
+  // 重讀樹：同步一跑完，後端就會把新的樹寫回 folder-trees.json，這一列的狀態就會翻面。
+  // 保留這一列的「為什麼」是展開的（treeState.why 不動），使用者的視線不會跳掉。
+  await reloadFolderTree(root);
+}
+
+// reloadFolderTree 強制重新向後端要一次這棵樹（丟掉畫面暫存），保留展開狀態。
+async function reloadFolderTree(root) {
+  const box = $(treeBoxId(root));
+  try {
+    const t = await go.GetFolderTree(root);
+    treeState.data[root] = t || null;
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="err">讀不到這個資料夾的結構：${esc(String(e))}</div>`;
+    return;
+  }
+  renderFolderTree(root);
 }
 
 function pageLib(s, idx) {
@@ -764,26 +845,88 @@ function pageUpdate(s) {
       <div style="margin-top:14px">${note}</div>
       <div class="acts">${action}</div>
     </div>
-    <div class="card">
-      <h3>需要協助？</h3>
-      <div class="d">安裝、更新、把知識庫接到你的 AI，說明文件都寫在這裡。</div>
-      <div class="acts"><button id="uDocs">開啟使用說明</button></div>
-    </div>
     ${cardDiagnostics()}`;
 }
 
-// 疑難排解／匯出診斷檔（t213，2026-08-08）：leo 直接指令「一顆按鈕下載一個檔案，
-// 把檔案發給我」——這裡是那顆按鈕真正住的地方（不是雲端 portal 網頁，那邊碰不到
-// 這台電腦上的資料）。按下去在**這台電腦**上合併本機統計＋雲端統計成一份 JSON，
-// 彈系統存檔對話框讓你選位置存。只有數字/狀態，不含你的任何文件內容。
+// 疑難排解／求救（inkstone/arcrun-rag#210，取代 t213 舊版）：舊版把「匯出診斷檔」
+// 單獨放在這頁最下面，leo 自己都找不到（見票 comment 10302：他把「版本與更新頁最
+// 底下」跟「Portal 完全沒有按鈕」搞混，連做這個系統的人都會混淆，何況學員）。
+// ⇒ 求救**只有一個入口**：左下角「？」（pageHelp，見下）。這裡不再重複放一份
+// 「疑難排解」卡片——票上明講「不准有兩個同名的東西」，此處只留指路。
 function cardDiagnostics() {
   return `
     <div class="card">
-      <h3>疑難排解</h3>
-      <div class="d">搜尋或同步有問題時，可以匯出一份診斷檔給我們，幫你更快找到問題（只有統計數字，不含你的任何文件內容）。</div>
+      <h3>需要幫忙？</h3>
+      <div class="d">打字回報問題、匯出診斷檔、或查看文件與常見問題，都在左下角「?」裡，任何一頁都找得到。</div>
+    </div>`;
+}
+
+// 求救頁（inkstone/arcrun-rag#210）：leo 2026-09-20「這裏連說明都沒有，但有 3 件事：
+// 1）匯出；2）打字回報；3）查看文件及 FAQ，這三件事都是用戶求救的大方，
+// 但分開在多個位置，可以都放在一起」——三件事同一個地方，桌面端三件都做得到
+// （雲端 Portal 版本第 1 件只能引導去開小幫手，見同票 comment 10305）。
+// 走一般換頁（跟 pageAI／pageUpdate 同一套），不走 openSheet 覆蓋層——
+// style.css :248 明寫覆蓋層只給「確認刪除」這類必須打斷的動作用。
+function pageHelp(s) {
+  return `
+    <div class="card">
+      <h3>需要協助？</h3>
+      <div class="d">遇到問題時，這裡是唯一入口——不用另外找信箱或開 GitHub。</div>
+    </div>
+
+    <div class="card">
+      <h3>1・打字回報問題</h3>
+      <div class="d">寫下你遇到的狀況，按送出就會直接送到我們手上。</div>
+      <textarea id="fbText" rows="5" placeholder="請描述你遇到的狀況…" style="width:100%;box-sizing:border-box"></textarea>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+        <input type="checkbox" id="fbAttach" checked/>
+        <span>附上診斷檔（只有統計數字，不含你的任何文件內容）</span>
+      </label>
+      <div class="err" id="fbErr" style="display:none;margin-top:8px"></div>
+      <div class="d" id="fbStatus" style="margin-top:8px"></div>
+      <div class="acts"><button class="primary" id="fbSend">送出</button></div>
+    </div>
+
+    <div class="card">
+      <h3>2・匯出診斷檔</h3>
+      <div class="d">只想自己先存一份、之後再附上也可以。</div>
       <div class="acts"><button id="uDiag">匯出診斷檔</button></div>
       <div class="d" id="uDiagStatus" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h3>3・文件與常見問題</h3>
+      <div class="d">安裝、更新、把知識庫接到你的 AI，完整說明都在這裡。</div>
+      <div class="acts"><button id="uDocs">開啟使用說明</button></div>
     </div>`;
+}
+
+// submitFeedback：送出失敗時**內容不能消失**（票上紅字要求）——只有送出成功才清空
+// textarea，失敗的話學員不用重打一次。
+async function submitFeedback() {
+  const textEl = $('fbText');
+  const err = $('fbErr');
+  const status = $('fbStatus');
+  const btn = $('fbSend');
+  const text = (textEl.value || '').trim();
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  if (!text) {
+    if (err) { err.textContent = '請先寫下你遇到的狀況再送出。'; err.style.display = 'block'; }
+    return;
+  }
+  const attach = !!($('fbAttach') && $('fbAttach').checked);
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = '送出中…';
+  try {
+    await go.SubmitFeedback(text, attach);
+    if (status) status.textContent = '已送出，謝謝你的回報！';
+    textEl.value = '';
+  } catch (ex) {
+    if (status) status.textContent = '';
+    if (err) { err.textContent = String(ex); err.style.display = 'block'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── 第一次打開的引導（issue #23，從 #18 拆出來）──
@@ -1100,6 +1243,7 @@ function renderPage() {
   else if (page.startsWith('lib:')) html = pageLib(state, Number(page.slice(4)));
   else if (page === 'ai') html = pageAI(state);
   else if (page === 'update') html = pageUpdate(state);
+  else if (page === 'help') html = pageHelp(state);
   else html = pageHome(state);
   // 每個庫頁底下都給「新增知識庫帳號」入口
   if (page === 'home' && state.accounts && state.accounts.length) {
@@ -1111,7 +1255,11 @@ function renderPage() {
 
 function wire() {
   const on = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
+  // uDocs／uDiag／fbSend：求救頁（pageHelp，inkstone/arcrun-rag#210）專用，
+  // 求救只有一個入口，不再散落在別的頁面。
   on('uDocs', () => go.OpenURL('https://rag.arcrun.dev/docs/'));
+  on('uDiag', exportDiagnostics);
+  on('fbSend', submitFeedback);
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
   on('hAcct', showConnect); on('obConnect', showConnect);
@@ -1120,7 +1268,6 @@ function wire() {
   on('obBack', () => { obStep = 1; renderPage(); });
   on('aiSave', saveAI);
   on('uCheck', checkUpdate); on('uDownload', downloadUpdate); on('uApply', applyUpdate);
-  on('uDiag', exportDiagnostics);
   document.querySelectorAll('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
   document.querySelectorAll('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
   document.querySelectorAll('[data-updatekb]').forEach((b) => {

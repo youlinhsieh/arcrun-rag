@@ -34,6 +34,21 @@ test('登錄簿：ssh 形式與 Gitea repoSlug 指 Leo/ 也擋', () => {
   assert.deepEqual(checkTargets(cfg).map((h) => h.path).sort(), ['a.remote', 'rr.repoSlug']);
 });
 
+test('登錄簿：upstream 欄位是裸 slug（沒有 host 可比對）也擋（arcrun-rag#223）', () => {
+  const cfg = { upstream: 'Leo/Arcrun', upstream_dir: 'shared/resource-rule' };
+  assert.deepEqual(checkTargets(cfg).map((h) => h.path), ['upstream']);
+});
+
+test('文字檔：.mjs 原始碼裡的 `upstream: \'Leo/…\'` 也擋，票號引用不擋（arcrun-rag#223）', () => {
+  const src = [
+    "  upstream: 'Leo/Arcrun',",
+    "  note: '這張票是 Leo/Arcrun#97',",
+  ].join('\n');
+  const hits = checkText(src);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 1);
+});
+
 test('登錄簿：指 inkstone／GitHub 的 Leo 同名 slug／說明欄裡的歷史票號，都不擋', () => {
   const cfg = { targets: { stage: {
     _: ['Leo/arcrun-rag#79 第一個驗收條件', 'git.uncle6.me/Leo/arcrun-rag-bundles-staging 是舊址'],
@@ -81,7 +96,15 @@ test('真的登錄簿＋安裝器設定：ship.mjs 開跑時的檢查是乾淨�
  * · github-publish-sanitize.py：它本身就是「擋讀者被帶去 Leo/arcrun-rag」的檢查器，
  *   那串網址是它要抓的樣本，不是它要連的地方。
  * · system-dev/：system-dev-template 的套件本體（由上游 template 發佈、不是出貨線），
- *   它的 `Leo/system-dev-template` 另案處理（inkstone 那份匿名讀 404，照改會壞掉安裝）。
+ *   整包排除是因為它是外部套件的內容，不是本 repo 要維護的出貨線程式碼。
+ *   `system-dev/scripts/install.sh`／`update.sh` 已於 arcrun-rag#223 改指
+ *   `inkstone/system-dev-template`（原本指 `Leo/system-dev-template`）——
+ *   舊註解說「inkstone 那份匿名讀 404，照改會壞掉安裝」，但 #223 實測：
+ *   `Leo/system-dev-template` 與 `inkstone/system-dev-template` 兩份**現在都是
+ *   private，匿名 curl 一律 404**，改指 inkstone 不會讓安裝「變得更壞」，只是
+ *   把既有的壞（curl | bash 對匿名使用者本來就會 404）換一個更該死的地方而已；
+ *   要讓 `curl | bash` 真的能用，得由 leo 把 `inkstone/system-dev-template`
+ *   設成 public（跨 repo 可見度決策，不在本閘/本測試處理範圍）。
  */
 const ALLOW = [
   /^scripts\/github-publish-sanitize\.py$/,

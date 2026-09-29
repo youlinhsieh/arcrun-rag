@@ -151,7 +151,11 @@
       成品新鮮度（送出去的執行檔＝這顆 commit 編的）；
       **資源規則閘**（Leo/Arcrun#97：安裝器不准自己照名字建資源——鏡射指紋／沒人自己建 CF 資源／
       真的接上共用規則／三種情境測試，見 installer/scripts/resource-rule-gate.mjs）；
-      文案契約閘（leo 拍板拿掉的句子沒有回來）
+      文案契約閘（leo 拍板拿掉的句子沒有回來）；
+      **環境對等閘**（D90：把每一份 wrangler 設定的 prod 與 stage 逐鍵比一次，
+      差異只准落在身分白名單——名稱／對外網址／憑證與資源 id／環境標記；
+      flag、相容性設定、功能開關、程式路徑、資源形狀一律不准差。
+      見 installer/scripts/env-parity-gate.mjs）
 
   - id: public-docs
     名字: 掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）

@@ -1049,6 +1049,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		if qs.inCooldown(now) {
 			accSt.QuotaCooldownUntil = qs.CooldownUntil.Format(time.RFC3339)
 			notice := qs.noticeNow(now)
+			// inkstone/arcrun-rag#207：原地標明是哪一台雲端撞的，多帳號時前端才分得出
+			// 「爆的是這一台」還是別台（不然使用者會以為自己正在看的那台爆了）。
+			notice.Account = accHost
 			accSt.QuotaMessage = &notice
 			// 冷卻中一定代表萃取沒就緒——浮到頂層讓托盤「狀態：」直接看得到，
 			// 不必展開帳號才發現「為什麼今天都沒有動靜」。
@@ -1064,6 +1067,8 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 萃取還被多擋一段；D1 的狀態每分鐘由 /health 重新確認（cloudquota.go）。
 		if st, ok := activeD1Quota(accCfg.CypherURL, now); ok {
 			notice := buildD1QuotaNotice(st.kind, now, st.until)
+			// inkstone/arcrun-rag#207：同上，D1 額度用完那張卡也要標明是哪一台雲端。
+			notice.Account = accHost
 			accSt.QuotaMessage = &notice
 			extractorOK = false
 			extractorError = notice.Headline + "。" + notice.Guarantee
@@ -1583,6 +1588,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		// daemon 自己的工作區先自我忽略，之後落卡/收容/身分標記檔才不會弄髒使用者的
 		// git status（#105 驗收條件就是「跑一輪 git status 必須乾淨」）。
 		EnsureWorkspaceIgnored(absRoot)
+		// inkstone/arcrun-rag#193：升級前長出來的每一層 .wiki 也要對 Windows 檔案總管隱形，
+		// 照 wiki 帳本點名補屬性（非 Windows 直接 return，零成本）。新建的由 ensureWikiIgnored 順手掛。
+		hideKnownWikiDirs(absRoot)
 		mig := MigrateCardNames(absRoot)
 		if mig.Moved > 0 {
 			results = append(results, DirectResult{
@@ -1685,6 +1693,11 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// arcrun-rag#104：走訪之前先問「這個資料夾是什麼」——是開發專案就只讀它整理好的
 	// wiki（沒有 wiki 才退到文件區），是一般資料夾／筆記庫才全收。見 ingestplan.go。
 	plan := PlanIngest(absRoot)
+
+	// #136 驗收 5／6／7：掛上使用者手動開的逃生口。**記得住**就是靠這裡——
+	// 這份清單住在磁碟（folder-includes.json），每一輪掃描都重新讀，所以使用者按過的
+	// 「收進來」下一輪照樣生效。空清單＝什麼都沒開＝行為與從前完全相同（守「不改預設判準」）。
+	plan.ForceIncludeDirs = LoadForceIncludeStore(ForceIncludeStorePath(cfg.Manifest)).For(absRoot)
 
 	// 🔴 2026-08-16：這裡以前還手捏了**第二張**排除表
 	//（`skipDirNames := {"system-dev": true}`，daemon-beta task 2 的 template 產物區保護），

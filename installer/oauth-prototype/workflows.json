@@ -296,12 +296,20 @@
       "post_const_machine >> ON_SUCCESS >> pool_constants",
       "pool_constants >> ON_SUCCESS >> parse_card",
       "parse_card >> 對每個 block >> post_block",
-      "parse_card >> 對每個 rel >> post_triplet"
+      "parse_card >> 對每個 rel >> post_triplet",
+      "parse_card >> ON_SUCCESS >> prep_cluster_wiki",
+      "prep_cluster_wiki >> ON_SUCCESS >> trigger_wiki_cluster",
+      "parse_card >> ON_SUCCESS >> prep_entity_concept",
+      "prep_entity_concept >> ON_SUCCESS >> trigger_entity_concept",
+      "prep_entity_concept >> ON_FAIL >> entity_concept_absorb_prep_fail",
+      "trigger_entity_concept >> ON_FAIL >> entity_concept_absorb_fail",
+      "prep_cluster_wiki >> ON_FAIL >> wiki_cluster_absorb_prep_fail",
+      "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail"
     ],
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "const pageName = String(input.page_name || 'unknown');\nconst path = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         const_library: constLibrary, const_machine: constMachine };\n",
+        "code": "// 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把\n// 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，\n// 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。\n// code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。\nfunction isUnresolvedTemplate(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPageName = input.page_name;\nif (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {\n  throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');\n}\nconst pageName = String(rawPageName);\n// 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`\n// 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是\n// truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。\n// 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進\n// source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。\nconst rawPath = input.path;\nconst path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))\n  ? (pageName + '.md') : String(rawPath);\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         const_library: constLibrary, const_machine: constMachine };\n",
         "input": {
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
@@ -359,7 +367,7 @@
       },
       "parse_card": {
         "component": "__CODE_URL__",
-        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\nconst srcPath = String(input.path || (pageName + '.md'));\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
+        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\n// 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致\n// （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine\n// 兩格在這個節點裡的既有做法）。\nfunction isUnresolvedTemplateLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPathLocal = input.path;\nconst srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))\n  ? (pageName + '.md') : String(rawPathLocal);\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
         "input": {
           "card": "{{input.card_content}}",
           "page_name": "{{input.page_name}}",
@@ -482,10 +490,107 @@
             "machine": "{{pool_constants.data.machine_id}}"
           }
         }
+      },
+      "prep_cluster_wiki": {
+        "component": "__CODE_URL__",
+        "input": {
+          "page_name": "{{parse_card.data.page_name}}",
+          "blocks": "{{parse_card.data.blocks}}",
+          "library": "{{prep.data.const_library}}"
+        },
+        "code": "function looksUnsubstituted(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\nvar rawPageName = input.page_name;\nif (rawPageName === undefined || rawPageName === null || rawPageName === '' ||\n    looksUnsubstituted(rawPageName) || String(rawPageName) === 'unknown') {\n  throw new Error('page_name 未代入或缺失（收到：' + JSON.stringify(rawPageName) + '），拒收未代入的樣板字串，不觸發分群');\n}\nvar pageName = String(rawPageName);\nvar blocks = Array.isArray(input.blocks) ? input.blocks : [];\n// c15345（總管實測：00-INDEX 讀回的摘要是「# 頁名」標題行，不是真摘要）：blocks[0]\n// 通常只是 H1 標題那個 chunk（parse_card 以標題切塊，「## 摘要」另成一塊）。\n// 改成跟 kbdb library-index.ts 的 GLOSS_HEADINGS 同一套慣例去找摘要段\n// （兩套段名都收：雲端重萃「## 摘要」／本機 daemon「## 一句話定義」），\n// 找不到才退回 blocks[0]（沒有摘要段的卡至少還有個開頭可看）。\nvar GLOSS_HEADINGS_LOCAL = ['## 摘要', '## 一句話定義'];\nvar glossBlock = null;\nfor (var bi = 0; bi < blocks.length; bi++) {\n  var bc = String(blocks[bi].content || '');\n  for (var hi = 0; hi < GLOSS_HEADINGS_LOCAL.length; hi++) {\n    if (bc.indexOf(GLOSS_HEADINGS_LOCAL[hi]) === 0) { glossBlock = bc; break; }\n  }\n  if (glossBlock) break;\n}\nvar snippetSource = glossBlock !== null ? glossBlock : (blocks.length ? String(blocks[0].content || '') : '');\nvar snippet = snippetSource\n  .split('\\n')\n  .filter(function (l) { return GLOSS_HEADINGS_LOCAL.indexOf(l.trim()) === -1; })\n  .join(' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 300);\n// library 理論上 `prep` 一定會給值（沒帶就退回 'kb'），這裡再防禦一次未代入的\n// 樣板字面字串，跟 page_name 同一套檢查邏輯。\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstituted(rawLibrary))\n  ? 'kb' : String(rawLibrary);\n// c15323 第 3 點（總管退回「一列一卡＋摘要」只有 title 沒摘要）：\n// item_title 保持「pageName+片段」不變（分群 TF-IDF 沿用這個組合文字，避免\n// 動到既有分群精度）；item_summary 是給卡層級目錄列顯示用的純片段，不進分群。\nreturn { success: true, item_id: 'kb://' + pageName,\n         item_title: (pageName + ' ' + snippet).trim(),\n         item_summary: snippet || pageName,\n         item_library: library };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "trigger_wiki_cluster": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__CYPHER_BASE__/webhooks/named/rag_cluster_auto/query",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Arcrun-API-Key": "__NAMESPACE__"
+        },
+        "body_json": {
+          "action": "opened",
+          "use_type": "wiki",
+          "item_id": "{{prep_cluster_wiki.data.item_id}}",
+          "item_title": "{{prep_cluster_wiki.data.item_title}}",
+          "item_summary": "{{prep_cluster_wiki.data.item_summary}}",
+          "item_labels": [],
+          "library": "{{prep_cluster_wiki.data.item_library}}"
+        }
+      },
+      "wiki_cluster_absorb_fail": {
+        "component": "__CODE_URL__",
+        "code": "return { success: true, wiki_cluster_skipped: true, reason: 'rag_cluster_auto not installed or unreachable on this instance' };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "wiki_cluster_absorb_prep_fail": {
+        "component": "__CODE_URL__",
+        "input": {
+          "prep_error": "{{prep_cluster_wiki.error}}"
+        },
+        "code": "return { success: true, wiki_cluster_skipped: true, reason: String(input.prep_error || 'page_name invalid, cluster trigger skipped') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "prep_entity_concept": {
+        "component": "__CODE_URL__",
+        "input": {
+          "card": "{{input.card_content}}",
+          "page_name": "{{input.page_name}}",
+          "library": "{{prep.data.const_library}}"
+        },
+        "code": "function looksUnsubstitutedLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\nvar md = String(input.card == null ? '' : input.card);\nvar relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nvar seen = {};\nvar entities = [];\nif (relSec) {\n  var lines = relSec[1].split('\\n');\n  for (var i = 0; i < lines.length; i++) {\n    var m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(lines[i]);\n    if (!m) continue;\n    var pair = [String(m[1] || '').trim(), String(m[3] || '').trim()];\n    for (var k = 0; k < pair.length; k++) {\n      var e = pair[k];\n      if (!e || e === 'knowledge-base' || seen[e]) continue;\n      seen[e] = true;\n      entities.push(e);\n    }\n  }\n}\nif (entities.length === 0) {\n  throw new Error('本卡「## 關聯」段沒有可處理的 entity（沒有這段，或裡面沒有 A>>B>>C 格式的行）');\n}\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstitutedLocal(rawLibrary))\n  ? 'kb' : String(rawLibrary);\nreturn { success: true, entities_json: JSON.stringify(entities), library: library };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "trigger_entity_concept": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__CYPHER_BASE__/webhooks/named/rag_entity_concept/query",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Arcrun-API-Key": "__NAMESPACE__"
+        },
+        "body_json": {
+          "entities_json": "{{prep_entity_concept.data.entities_json}}",
+          "library": "{{prep_entity_concept.data.library}}",
+          "card_content": "{{input.card_content}}"
+        }
+      },
+      "entity_concept_absorb_fail": {
+        "component": "__CODE_URL__",
+        "code": "return { success: true, entity_concept_skipped: true, reason: 'rag_entity_concept not installed or unreachable on this instance' };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "entity_concept_absorb_prep_fail": {
+        "component": "__CODE_URL__",
+        "input": {
+          "prep_error": "{{prep_entity_concept.error}}"
+        },
+        "code": "return { success: true, entity_concept_skipped: true, reason: String(input.prep_error || 'no entities extracted, entity/concept trigger skipped') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
       }
     },
     "placeholders": [
       "__CODE_URL__",
+      "__CYPHER_BASE__",
       "__HTTP_REQ_URL__",
       "__KBDB_BASE__",
       "__NAMESPACE__"
@@ -581,6 +686,54 @@
           "type": "Component",
           "componentId": "post_triplet",
           "label": "post_triplet"
+        },
+        {
+          "id": "prep_cluster_wiki",
+          "type": "Component",
+          "componentId": "prep_cluster_wiki",
+          "label": "prep_cluster_wiki"
+        },
+        {
+          "id": "trigger_wiki_cluster",
+          "type": "Component",
+          "componentId": "trigger_wiki_cluster",
+          "label": "trigger_wiki_cluster"
+        },
+        {
+          "id": "prep_entity_concept",
+          "type": "Component",
+          "componentId": "prep_entity_concept",
+          "label": "prep_entity_concept"
+        },
+        {
+          "id": "trigger_entity_concept",
+          "type": "Component",
+          "componentId": "trigger_entity_concept",
+          "label": "trigger_entity_concept"
+        },
+        {
+          "id": "entity_concept_absorb_prep_fail",
+          "type": "Component",
+          "componentId": "entity_concept_absorb_prep_fail",
+          "label": "entity_concept_absorb_prep_fail"
+        },
+        {
+          "id": "entity_concept_absorb_fail",
+          "type": "Component",
+          "componentId": "entity_concept_absorb_fail",
+          "label": "entity_concept_absorb_fail"
+        },
+        {
+          "id": "wiki_cluster_absorb_prep_fail",
+          "type": "Component",
+          "componentId": "wiki_cluster_absorb_prep_fail",
+          "label": "wiki_cluster_absorb_prep_fail"
+        },
+        {
+          "id": "wiki_cluster_absorb_fail",
+          "type": "Component",
+          "componentId": "wiki_cluster_absorb_fail",
+          "label": "wiki_cluster_absorb_fail"
         }
       ],
       "edges": [
@@ -657,6 +810,46 @@
           "to": "post_triplet",
           "type": "FOREACH",
           "iterator": "rel"
+        },
+        {
+          "from": "parse_card",
+          "to": "prep_cluster_wiki",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_cluster_wiki",
+          "to": "trigger_wiki_cluster",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "parse_card",
+          "to": "prep_entity_concept",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_entity_concept",
+          "to": "trigger_entity_concept",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_entity_concept",
+          "to": "entity_concept_absorb_prep_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "trigger_entity_concept",
+          "to": "entity_concept_absorb_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "prep_cluster_wiki",
+          "to": "wiki_cluster_absorb_prep_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "trigger_wiki_cluster",
+          "to": "wiki_cluster_absorb_fail",
+          "type": "ON_FAIL"
         }
       ]
     }
@@ -844,6 +1037,255 @@
           "to": "deprecate_triplet",
           "type": "FOREACH",
           "iterator": "dead_record"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-entity-concept.local.yaml",
+    "name": "rag_entity_concept",
+    "description": "entity description（一句話文字）＋ 概念歸屬（LLM 判斷、寫成「X >> 屬於 >> concept」 文字三元組）。零向量：不讀不寫任何嵌入。description 去重（Arcrun#264）與概念目錄 （Arcrun#265）都跨庫查詢，只有「這個 entity 在本庫是否已歸類」的 membership 判斷 仍限定本庫。（inkstone/Arcrun#60／#264／#265）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> fetch_lib_triplets",
+      "fetch_lib_triplets >> ON_SUCCESS >> fetch_global_desc",
+      "fetch_global_desc >> ON_SUCCESS >> fetch_global_concepts",
+      "fetch_global_concepts >> ON_SUCCESS >> prep_llm",
+      "prep_llm >> ON_SUCCESS >> ask_llm",
+      "prep_llm >> ON_FAIL >> absorb_no_work",
+      "ask_llm >> ON_SUCCESS >> parse_llm",
+      "parse_llm >> 對每個 desc_item >> post_description",
+      "parse_llm >> 對每個 concept_item >> post_concept"
+    ],
+    "config": {
+      "fetch_lib_triplets": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=library&value={{input.library}}&owner_id=__NAMESPACE__&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_global_desc": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=description&owner_id=__NAMESPACE__&limit=500",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_global_concepts": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=2000",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "prep_llm": {
+        "component": "__CODE_URL__",
+        "input": {
+          "entities_raw": "{{input.entities_json}}",
+          "card_content": "{{input.card_content}}",
+          "library": "{{input.library}}",
+          "lib_triplets_body": "{{fetch_lib_triplets.data.body}}",
+          "global_desc_body": "{{fetch_global_desc.data.body}}",
+          "global_concepts_body": "{{fetch_global_concepts.data.body}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar entities = parse(input.entities_raw);\nentities = Array.isArray(entities) ? entities : [];\nvar seen = {};\nvar uniq = [];\nfor (var i = 0; i < entities.length; i++) {\n  var e = String(entities[i] || '').trim();\n  if (!e || e === 'knowledge-base' || seen[e]) continue;\n  seen[e] = true;\n  uniq.push(e);\n}\nif (uniq.length === 0) throw new Error('沒有可處理的 entity（entities_json 空或全被過濾）');\n\nvar parsedTriplets = parse(input.lib_triplets_body);\nvar records = (parsedTriplets && Array.isArray(parsedTriplets.records)) ? parsedTriplets.records : [];\nvar existingConcept = {};   // subject -> 有沒有「屬於」（已存在，限本子庫——membership 判斷不變）\nfor (var r = 0; r < records.length; r++) {\n  var v = (records[r] && records[r].values) || {};\n  var subj = String(v.subject || '');\n  var pred = String(v.predicate || '');\n  var obj = String(v.object || '');\n  if (!subj) continue;\n  if (pred === '屬於' && obj) existingConcept[subj] = true;\n}\n// Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改讀跨庫查詢結果\n// （field=predicate&value=屬於，不帶 library）——不管哪個子庫先用過的概念名稱，\n// 這裡都收進目錄，讓 LLM 照抄既有名稱，不會因為換了子庫又重新命名一個同義詞。\nvar parsedGlobalConcepts = parse(input.global_concepts_body);\nvar globalConceptRecords = (parsedGlobalConcepts && Array.isArray(parsedGlobalConcepts.records)) ? parsedGlobalConcepts.records : [];\nvar conceptMembers = {};    // concept(object) -> [members(subject)]，跨庫 hub 目錄\nfor (var cr = 0; cr < globalConceptRecords.length; cr++) {\n  var cv = (globalConceptRecords[cr] && globalConceptRecords[cr].values) || {};\n  var csubj = String(cv.subject || '');\n  var cobj = String(cv.object || '');\n  if (!csubj || !cobj || String(cv.predicate || '') !== '屬於') continue;\n  if (!conceptMembers[cobj]) conceptMembers[cobj] = [];\n  if (conceptMembers[cobj].indexOf(csubj) === -1) conceptMembers[cobj].push(csubj);\n}\n// Arcrun#264：existingDesc 改讀跨庫查詢結果（field=predicate&value=description，\n// 不帶 library）——同一個 entity 不管哪個子庫先寫過 description，這裡都算「已存在」，\n// 不會因為換一個子庫又被判定成新的而重寫一次。\nvar parsedGlobalDesc = parse(input.global_desc_body);\nvar globalDescRecords = (parsedGlobalDesc && Array.isArray(parsedGlobalDesc.records)) ? parsedGlobalDesc.records : [];\nvar existingDesc = {};      // subject -> 有沒有 description（跨庫已存在）\nfor (var g = 0; g < globalDescRecords.length; g++) {\n  var gv = (globalDescRecords[g] && globalDescRecords[g].values) || {};\n  var gsubj = String(gv.subject || '');\n  if (gsubj && String(gv.predicate || '') === 'description') existingDesc[gsubj] = true;\n}\n// 冪等：只處理「描述或概念歸屬還缺一項」的 entity，同一張卡重送不會重複寫。\n// Arcrun#264：todo 只決定「要不要送 LLM」；真正決定「寫哪一半」的是下面\n// 每個 entity 各自的 needsDesc／needsConcept 旗標（傳給 parse_llm，各自過濾\n// 出只需要的那一半才 POST——不然即使這裡跨庫查到 description 已存在，\n// 只是概念缺（本庫沒有），還是會連著把 description 也重寫一次）。\nvar todo = [];\nvar flags = {};\nfor (var t = 0; t < uniq.length; t++) {\n  var name = uniq[t];\n  var needsDesc = !existingDesc[name];\n  var needsConcept = !existingConcept[name];\n  if (needsDesc || needsConcept) {\n    todo.push(name);\n    flags[name] = { needsDesc: needsDesc, needsConcept: needsConcept };\n  }\n}\nif (todo.length === 0) {\n  throw new Error('__ALL_ALREADY_DESCRIBED__：本次 entity 皆已有 description 與屬於關係，不重複寫');\n}\nvar conceptDirLines = [];\nfor (var c in conceptMembers) {\n  conceptDirLines.push('- 「' + c + '」（現有成員：' + conceptMembers[c].slice(0, 8).join('、') + '）');\n}\nreturn {\n  success: true,\n  todo_json: JSON.stringify(todo),\n  flags_json: JSON.stringify(flags),\n  concept_directory: conceptDirLines.length ? conceptDirLines.join('\\n') : '（目前這個庫還沒有任何概念節點）',\n  card_snippet: String(input.card_content || '').slice(0, 4000),\n  library: String(input.library || 'kb'),\n};\n",
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 262144
+        }
+      },
+      "absorb_no_work": {
+        "component": "__CODE_URL__",
+        "input": {
+          "prep_error": "{{prep_llm.error}}"
+        },
+        "code": "return { success: true, entity_concept_skipped: true, reason: String(input.prep_error || 'nothing to do') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "ask_llm": {
+        "component": "workers_ai_chat",
+        "prompt": "你是知識圖譜的實體歸類器。下面是一段卡片內容（用來理解實體的背景，不必全部用到）：\n\n{{prep_llm.data.card_snippet}}\n\n要處理的實體清單（每一個都必須輸出，一個不漏）：\n{{prep_llm.data.todo_json}}\n\n目前已存在的概念節點目錄（如果某個實體明顯適合歸入其中一個，請完全照抄該概念的名稱字串；只有真的沒有一個合適時才創造一個新的概念名稱，新名稱要是抽象類別，例如「科技公司執行長」，不是具體關係）：\n{{prep_llm.data.concept_directory}}\n\n請針對清單裡每一個實體，輸出：\n1. description：一句話描述這個實體是什麼（根據上面的卡片內容或你自己的知識，客觀陳述，不要意見、不要臆測未知資訊）。\n2. concept：這個實體所屬的抽象概念類別（不是具體關係、不是與其他實體的關係，是它「是一種什麼」的類別）。\n\n只輸出 JSON，格式為陣列，每一項 {\"entity\":\"...\",\"description\":\"...\",\"concept\":\"...\"}，不要有任何其他文字、不要 markdown code fence、不要前言或說明。"
+      },
+      "parse_llm": {
+        "component": "__CODE_URL__",
+        "input": {
+          "llm_response": "{{ask_llm.data.response}}",
+          "llm_text": "{{ask_llm.text}}",
+          "llm_choices": "{{ask_llm.data.choices}}",
+          "library": "{{prep_llm.data.library}}",
+          "flags_raw": "{{prep_llm.data.flags_json}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nfunction extractArrayFromText(text) {\n  text = String(text == null ? '' : text).trim();\n  var fence = /^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/.exec(text);\n  if (fence) text = fence[1].trim();\n  var start = text.indexOf('[');\n  var end = text.lastIndexOf(']');\n  if (start === -1 || end === -1 || end < start) {\n    throw new Error('LLM 輸出裡找不到 JSON 陣列：' + text.slice(0, 300));\n  }\n  try { return JSON.parse(text.slice(start, end + 1)); } catch (e) {\n    throw new Error('LLM JSON 陣列解析失敗：' + String(e) + ' / raw=' + text.slice(0, 300));\n  }\n}\nvar arr;\nif (Array.isArray(input.llm_response)) {\n  arr = input.llm_response;\n} else if (typeof input.llm_text === 'string' && input.llm_text) {\n  arr = extractArrayFromText(input.llm_text);\n} else {\n  var content = '';\n  try { content = input.llm_choices[0].message.content; } catch (e) { content = ''; }\n  arr = extractArrayFromText(content);\n}\nif (!Array.isArray(arr) || arr.length === 0) throw new Error('LLM 輸出的陣列是空的或不是陣列');\nvar library = String(input.library || 'kb');\nvar flags = parse(input.flags_raw) || {};\nvar descItems = [];\nvar conceptItems = [];\nvar itemCount = 0;\nfor (var j = 0; j < arr.length; j++) {\n  var it = arr[j] || {};\n  var entity = String(it.entity || '').trim();\n  var description = String(it.description || '').trim();\n  var concept = String(it.concept || '').trim();\n  if (!entity || !description || !concept) continue;\n  var f = flags[entity];\n  if (!f) continue;   // LLM 吐出沒被要求處理的 entity，忽略（不寫）\n  itemCount++;\n  if (f.needsDesc) descItems.push({ entity: entity, description: description, library: library });\n  if (f.needsConcept) conceptItems.push({ entity: entity, concept: concept, library: library });\n}\nif (itemCount === 0) throw new Error('LLM 輸出的項目全部缺欄位、或都不在待處理清單裡（entity/description/concept 至少一項空白，或 entity 不在 todo）');\nreturn {\n  success: true,\n  desc_items: descItems,\n  concept_items: conceptItems,\n  desc_count: descItems.length,\n  concept_count: conceptItems.length,\n};\n",
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 262144
+        }
+      },
+      "post_description": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/records",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "template": "triplet",
+          "owner_id": "__NAMESPACE__",
+          "values": {
+            "subject": "{{desc_item.entity}}",
+            "predicate": "description",
+            "object": "{{desc_item.description}}",
+            "library": "{{desc_item.library}}"
+          }
+        }
+      },
+      "post_concept": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/records",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "template": "triplet",
+          "owner_id": "__NAMESPACE__",
+          "values": {
+            "subject": "{{concept_item.entity}}",
+            "predicate": "屬於",
+            "object": "{{concept_item.concept}}",
+            "library": "{{concept_item.library}}"
+          }
+        }
+      }
+    },
+    "placeholders": [
+      "__ALL_ALREADY_DESCRIBED__",
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "fetch_lib_triplets",
+          "type": "Component",
+          "componentId": "fetch_lib_triplets",
+          "label": "fetch_lib_triplets"
+        },
+        {
+          "id": "fetch_global_desc",
+          "type": "Component",
+          "componentId": "fetch_global_desc",
+          "label": "fetch_global_desc"
+        },
+        {
+          "id": "fetch_global_concepts",
+          "type": "Component",
+          "componentId": "fetch_global_concepts",
+          "label": "fetch_global_concepts"
+        },
+        {
+          "id": "prep_llm",
+          "type": "Component",
+          "componentId": "prep_llm",
+          "label": "prep_llm"
+        },
+        {
+          "id": "ask_llm",
+          "type": "Component",
+          "componentId": "ask_llm",
+          "label": "ask_llm"
+        },
+        {
+          "id": "absorb_no_work",
+          "type": "Component",
+          "componentId": "absorb_no_work",
+          "label": "absorb_no_work"
+        },
+        {
+          "id": "parse_llm",
+          "type": "Component",
+          "componentId": "parse_llm",
+          "label": "parse_llm"
+        },
+        {
+          "id": "post_description",
+          "type": "Component",
+          "componentId": "post_description",
+          "label": "post_description"
+        },
+        {
+          "id": "post_concept",
+          "type": "Component",
+          "componentId": "post_concept",
+          "label": "post_concept"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "fetch_lib_triplets",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_lib_triplets",
+          "to": "fetch_global_desc",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_global_desc",
+          "to": "fetch_global_concepts",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_global_concepts",
+          "to": "prep_llm",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_llm",
+          "to": "ask_llm",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_llm",
+          "to": "absorb_no_work",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "ask_llm",
+          "to": "parse_llm",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "parse_llm",
+          "to": "post_description",
+          "type": "FOREACH",
+          "iterator": "desc_item"
+        },
+        {
+          "from": "parse_llm",
+          "to": "post_concept",
+          "type": "FOREACH",
+          "iterator": "concept_item"
         }
       ]
     }

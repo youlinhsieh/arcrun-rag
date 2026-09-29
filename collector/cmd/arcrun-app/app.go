@@ -596,7 +596,16 @@ func (a *App) GetState() UIState {
 	st.Skipped = buildSkipped(sync)
 	st.Progress = buildProgress(sync)
 	st.Quota = pickQuotaNotice(sync, time.Now()) // P8：額度冷卻中 ⇒ 首頁畫三句話卡
-	st.QuotaMeter = sync.QuotaMeter              // #209：常駐用量表（collector 已算好，這裡不重算）
+	// inkstone/arcrun-rag#207：collector 只填得出 host（instanceHostOf），這裡換成
+	// 使用者自己取的暱稱／Email（跟畫面上帳號列表同一套名字，st.Accounts 剛剛才建好）；
+	// 找不到對應帳號就照舊顯示 host（比空白好，至少分得出「不是我這台」）。
+	// 複製一份再改，不動 sync（pickQuotaNotice 回的是 status.json 解出來那份的指標）。
+	if st.Quota != nil && st.Quota.Account != "" {
+		q := *st.Quota
+		q.Account = accountLabel(st.Accounts, q.Account)
+		st.Quota = &q
+	}
+	st.QuotaMeter = sync.QuotaMeter // #209：常駐用量表（collector 已算好，這裡不重算）
 	// 引擎有問題才把「回報問題」卡叫出來（含記錄檔路徑）。
 	// 沒事時不顯示——否則「哪裡看 log」會變成常駐噪音，真出事時反而沒人看。
 	st.EngineTrouble = !collectorAlive()
@@ -703,6 +712,21 @@ func accountName(a accountCfg) string {
 		return s
 	}
 	return shortHost(a.CypherURL)
+}
+
+// accountLabel 把 QuotaNotice.Account 的 host key（instanceHostOf 的產物，
+// 例如 arcrun-cypher-executor.leo21c.workers.dev）換成使用者看得懂的名字。
+//
+// inkstone/arcrun-rag#207：找 st.Accounts 裡 Host 相同的那一筆，回它的 Name
+// （accountName 早就算好的暱稱／Email／host 三層 fallback）；一筆都對不上
+// 就照原樣回傳 host——寧可顯示技術字串，也不要把「哪一台」的線索憑空丟掉。
+func accountLabel(accounts []UIAccount, host string) string {
+	for _, a := range accounts {
+		if a.Host == host {
+			return a.Name
+		}
+	}
+	return host
 }
 
 func shortHost(u string) string {
@@ -1019,6 +1043,55 @@ func (a *App) GetFolderTree(path string) (*collector.FolderTree, error) {
 		}
 	}
 	return nil, nil
+}
+
+// forceIncludeStorePath 回傳逃生口清單檔的路徑，與 GetFolderTree 同一套 manifest 假設
+// ——這樣 App 寫的檔與 collector 讀的檔必然是同一個。
+func forceIncludeStorePath() string {
+	manifest := filepath.Join(appDir(), "manifest.json")
+	if cfg, err := loadCfg(); err == nil && strings.TrimSpace(cfg.Manifest) != "" {
+		manifest = cfg.Manifest
+	}
+	return collector.ForceIncludeStorePath(manifest)
+}
+
+// IncludeFolder＝使用者站在畫面上一個被跳過的子資料夾，按「收進來」（#136 驗收 5）。
+//
+// rootPath＝監看根的絕對路徑（樹的 Root）；relDir＝那個子資料夾相對根的路徑（節點的 path）。
+// 寫進 folder-includes.json 後**立刻觸發一次同步**——使用者按下去就看得到那些檔開始進來，
+// 不必等下一輪自動掃描。記得住（驗收 6）靠的是這份檔案本身：collector 每輪都重讀它。
+func (a *App) IncludeFolder(rootPath, relDir string) error {
+	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(relDir) == "" {
+		return fmt.Errorf("要收哪個資料夾？")
+	}
+	path := forceIncludeStorePath()
+	store := collector.LoadForceIncludeStore(path)
+	if store.Add(rootPath, relDir) {
+		if err := store.Save(path); err != nil {
+			return err
+		}
+	}
+	// 立刻生效：collector 下一輪掃描讀這份清單，這一發訊號就是叫它現在跑。
+	return a.SyncNow()
+}
+
+// ExcludeFolder＝使用者改變主意，把先前「收進來」的子資料夾收回（#136 驗收 7）。
+//
+// 只把那筆從清單拿掉——已經送上雲端的檔不在這支的職責裡（那是「移除並收回」那條路，
+// 見 RemoveFolder）。拿掉之後這個資料夾回到系統的預設判斷（docs-only 就照舊不收），
+// 下一輪自然停止再收它底下的新檔。
+func (a *App) ExcludeFolder(rootPath, relDir string) error {
+	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(relDir) == "" {
+		return fmt.Errorf("要收回哪個資料夾？")
+	}
+	path := forceIncludeStorePath()
+	store := collector.LoadForceIncludeStore(path)
+	if store.Remove(rootPath, relDir) {
+		if err := store.Save(path); err != nil {
+			return err
+		}
+	}
+	return a.SyncNow()
 }
 
 // ── 托盤會呼叫的兩個動作（t194）──

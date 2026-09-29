@@ -1,0 +1,345 @@
+# rag_entity_concept — entity 的「description ＋ 概念歸屬」，由 LLM 判斷、寫成文字三元組
+#
+# inkstone/Arcrun#60（c15302/c15303/c15318/c15319/c15326/c15437 leo 定案＋總管修正）：
+#   意思相近但不是完全相等的 entity（黃仁勳／TimCook／Zuckerberg／Amodei）不合成 alias，
+#   也不存「距離」數字——改成「同屬一個概念節點」的**文字**三元組
+#   （黃仁勳 >> 屬於 >> 科技公司執行長），由 LLM 讀 entity 的一句 description ＋
+#   既有概念目錄（hub 清單）判斷歸屬，不讀不寫任何向量。換嵌入模型 ＝ 沒有東西要重刷。
+#
+# 由 rag_ingest_card 的 parse_card 之後另開一條分支呼叫（同 trigger_wiki_cluster 的血統：
+# 內部呼叫既有 workflow，不在 rag_ingest_card 自己的圖裡插節點——那條圖已有明文警告：
+# parse_card 與既有兩個 FOREACH（block/rel）之間插入新的 POST 節點會讓 FOREACH 的
+# nested-scan 找不到 context，所以本功能整個搬到自己的 workflow，用 http_request 呼叫，
+# 對呼叫端只是「成功或 404，不影響外層 rag_ingest_card 的 success」）。
+#
+# 紅線（c15318/c15319 不變）：
+#   - entity 有一句 description（文字），不存向量。
+#   - 相近 entity 歸到同一個概念節點（文字關係「屬於」），由 LLM 判斷，不由向量判斷。
+#   - 完全相等仍走既有 alias（本票不擴它，這裡完全不碰 alias）。
+#   - 不新增任何向量資料；既有向量原樣保留（本工作流全程不打 /embed，也不寫
+#     metadata_json.embed——只用 POST /records 寫 triplet template，那條路徑本身
+#     不觸發嵌入，見 kbdb/src/routes/records.ts vs entries.ts 的差別）。
+#   - 冪等：同一個 entity 已經有 description（跨庫核對，Arcrun#264）與「屬於」
+#     （本庫核對）兩者都齊，不重複寫（prep_llm 見下）。
+#
+# inkstone/Arcrun#264（總管 2026-09-28 stage youlin 實測）：existingDesc 原本只查
+# fetch_lib_triplets（field=library，本子庫），但知識圖上的 entity 節點是**跨庫共用**的
+# （`kbdb_graph_neighbors(entity)` 直接聚合所有子庫的邊）——同一個人第 2、第 3 次從不同
+# 子庫送卡進來，本子庫查不到既有 description，就又寫一條（LLM 每次措辭略有不同，object
+# 值不同，KBDB 不會視為重複）。修法：description 的存在判斷改成**跨庫**（新增
+# fetch_global_desc，field=predicate&value=description，不帶 library），
+# 只看「這個 entity 在任何庫是否已經有一句 description」；「屬於」的概念歸屬與目錄
+# 仍照舊限定同一子庫（子庫隔離設計本身沒問題，本票只治 description 那半）。
+#
+# inkstone/Arcrun#265（總管 2026-09-28 stage youlin 實測）：#264 治好 description 那半後，
+# 「屬於」概念歸屬還留著同一個病的另一半——**給 LLM 看的「現有概念目錄」原本只查
+# fetch_lib_triplets（本子庫）**，於是每個新子庫都從空目錄開始，同一批人被不同子庫的
+# LLM 各自取了不同的抽象類別名（黃仁勳在 arcrun60-verify 被歸「企業執行長」，換一個
+# 子庫測試又被歸「科技公司執行長」——意思相同，字面不同，知識圖上長成兩個概念節點）。
+# 修法：新增 fetch_global_concepts（field=predicate&value=屬於，不帶 library），把
+# 「這個租戶下所有庫已經用過的概念名稱」做成目錄餵給 LLM，讓它照抄既有名稱而不是重新
+# 命名。**membership 判斷（entity 在本庫是否已有屬於）仍照舊限定同一子庫**——子庫各自
+# 記錄「這個庫裡的這個人屬於哪個類別」是對的設計，只有「LLM 看到的類別名稱清單」要
+# 跨庫，兩者是不同的東西，不要混在一起改。
+# 已經分岔的舊資料（企業執行長／科技公司執行長）由另一支收斂工具處理：
+# workflows/rag-concept-dedupe.local.yaml（同 rag_entity_dedupe 血統，LLM 判斷同義組、
+# 預設只回報，dry_run=false 才真的把非 canonical 的概念名 PATCH 成 canonical）。
+#
+# 觸發（內部呼叫，rag_ingest_card 的 trigger_entity_concept 節點打這個）：
+#   POST {cypher}/webhooks/named/rag_entity_concept/query
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"entities_json":"[\"黃仁勳\",\"TimCook\"]","library":"kb","card_content":"..."}'
+#   entities_json：JSON 字串（不是陣列）——http_request body_json 對「code 節點輸出的
+#   陣列/物件」不可靠展開（同 rag-extract-one.local.yaml 檔頭記過的限制），呼叫端一律
+#   先 JSON.stringify 再送，這裡用 JSON.parse 還原。
+
+name: rag_entity_concept
+description: >
+  entity description（一句話文字）＋ 概念歸屬（LLM 判斷、寫成「X >> 屬於 >> concept」
+  文字三元組）。零向量：不讀不寫任何嵌入。description 去重（Arcrun#264）與概念目錄
+  （Arcrun#265）都跨庫查詢，只有「這個 entity 在本庫是否已歸類」的 membership 判斷
+  仍限定本庫。（inkstone/Arcrun#60／#264／#265）
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_lib_triplets"
+  - "fetch_lib_triplets >> ON_SUCCESS >> fetch_global_desc"
+  - "fetch_global_desc >> ON_SUCCESS >> fetch_global_concepts"
+  - "fetch_global_concepts >> ON_SUCCESS >> prep_llm"
+  - "prep_llm >> ON_SUCCESS >> ask_llm"
+  - "prep_llm >> ON_FAIL >> absorb_no_work"
+  - "ask_llm >> ON_SUCCESS >> parse_llm"
+  - "parse_llm >> 對每個 desc_item >> post_description"
+  - "parse_llm >> 對每個 concept_item >> post_concept"
+
+config:
+  # 撈這個子庫（library）目前所有三元組，client 端（prep_llm）只用來判斷
+  # **membership**：predicate=屬於 的 subject → 這個 entity 在本庫是否已經歸類過
+  # （決定要不要再寫一次，子庫各自記錄是對的設計，不動）。
+  # （Arcrun#264 之前這裡也篩 predicate=description 當去重依據，Arcrun#265 之前
+  #  這裡也篩出「現有概念目錄」——兩者檢查範圍都只到本子庫，但 description 與
+  #  概念名稱都是跨庫共用的東西 ⇒ 換一個子庫就從空白重來一次。
+  #  description 的去重已搬到 fetch_global_desc（#264），概念目錄已搬到
+  #  fetch_global_concepts（#265）——這裡現在只留 membership 判斷。）
+  fetch_lib_triplets:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=library&value={{input.library}}&owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # Arcrun#264：description 的存在判斷改跨庫——field=predicate&value=description，
+  # 不帶 library，撈的是「這個租戶下所有庫、所有 entity 已經有的 description」。
+  fetch_global_desc:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=description&owner_id=__NAMESPACE__&limit=500"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改跨庫——field=predicate&value=屬於，
+  # 不帶 library，撈的是「這個租戶下所有庫已經寫過的『屬於』三元組」。membership 判斷
+  # （某個 entity 在本庫是否已經有屬於，決定要不要再寫一次）仍讀 fetch_lib_triplets
+  # 的本庫結果，兩者職責分開（見檔頭 #265 說明）。
+  fetch_global_concepts:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=2000"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  prep_llm:
+    component: "__CODE_URL__"
+    input:
+      entities_raw: "{{input.entities_json}}"
+      card_content: "{{input.card_content}}"
+      library: "{{input.library}}"
+      lib_triplets_body: "{{fetch_lib_triplets.data.body}}"
+      global_desc_body: "{{fetch_global_desc.data.body}}"
+      global_concepts_body: "{{fetch_global_concepts.data.body}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var entities = parse(input.entities_raw);
+      entities = Array.isArray(entities) ? entities : [];
+      var seen = {};
+      var uniq = [];
+      for (var i = 0; i < entities.length; i++) {
+        var e = String(entities[i] || '').trim();
+        if (!e || e === 'knowledge-base' || seen[e]) continue;
+        seen[e] = true;
+        uniq.push(e);
+      }
+      if (uniq.length === 0) throw new Error('沒有可處理的 entity（entities_json 空或全被過濾）');
+
+      var parsedTriplets = parse(input.lib_triplets_body);
+      var records = (parsedTriplets && Array.isArray(parsedTriplets.records)) ? parsedTriplets.records : [];
+      var existingConcept = {};   // subject -> 有沒有「屬於」（已存在，限本子庫——membership 判斷不變）
+      for (var r = 0; r < records.length; r++) {
+        var v = (records[r] && records[r].values) || {};
+        var subj = String(v.subject || '');
+        var pred = String(v.predicate || '');
+        var obj = String(v.object || '');
+        if (!subj) continue;
+        if (pred === '屬於' && obj) existingConcept[subj] = true;
+      }
+      // Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改讀跨庫查詢結果
+      // （field=predicate&value=屬於，不帶 library）——不管哪個子庫先用過的概念名稱，
+      // 這裡都收進目錄，讓 LLM 照抄既有名稱，不會因為換了子庫又重新命名一個同義詞。
+      var parsedGlobalConcepts = parse(input.global_concepts_body);
+      var globalConceptRecords = (parsedGlobalConcepts && Array.isArray(parsedGlobalConcepts.records)) ? parsedGlobalConcepts.records : [];
+      var conceptMembers = {};    // concept(object) -> [members(subject)]，跨庫 hub 目錄
+      for (var cr = 0; cr < globalConceptRecords.length; cr++) {
+        var cv = (globalConceptRecords[cr] && globalConceptRecords[cr].values) || {};
+        var csubj = String(cv.subject || '');
+        var cobj = String(cv.object || '');
+        if (!csubj || !cobj || String(cv.predicate || '') !== '屬於') continue;
+        if (!conceptMembers[cobj]) conceptMembers[cobj] = [];
+        if (conceptMembers[cobj].indexOf(csubj) === -1) conceptMembers[cobj].push(csubj);
+      }
+      // Arcrun#264：existingDesc 改讀跨庫查詢結果（field=predicate&value=description，
+      // 不帶 library）——同一個 entity 不管哪個子庫先寫過 description，這裡都算「已存在」，
+      // 不會因為換一個子庫又被判定成新的而重寫一次。
+      var parsedGlobalDesc = parse(input.global_desc_body);
+      var globalDescRecords = (parsedGlobalDesc && Array.isArray(parsedGlobalDesc.records)) ? parsedGlobalDesc.records : [];
+      var existingDesc = {};      // subject -> 有沒有 description（跨庫已存在）
+      for (var g = 0; g < globalDescRecords.length; g++) {
+        var gv = (globalDescRecords[g] && globalDescRecords[g].values) || {};
+        var gsubj = String(gv.subject || '');
+        if (gsubj && String(gv.predicate || '') === 'description') existingDesc[gsubj] = true;
+      }
+      // 冪等：只處理「描述或概念歸屬還缺一項」的 entity，同一張卡重送不會重複寫。
+      // Arcrun#264：todo 只決定「要不要送 LLM」；真正決定「寫哪一半」的是下面
+      // 每個 entity 各自的 needsDesc／needsConcept 旗標（傳給 parse_llm，各自過濾
+      // 出只需要的那一半才 POST——不然即使這裡跨庫查到 description 已存在，
+      // 只是概念缺（本庫沒有），還是會連著把 description 也重寫一次）。
+      var todo = [];
+      var flags = {};
+      for (var t = 0; t < uniq.length; t++) {
+        var name = uniq[t];
+        var needsDesc = !existingDesc[name];
+        var needsConcept = !existingConcept[name];
+        if (needsDesc || needsConcept) {
+          todo.push(name);
+          flags[name] = { needsDesc: needsDesc, needsConcept: needsConcept };
+        }
+      }
+      if (todo.length === 0) {
+        throw new Error('__ALL_ALREADY_DESCRIBED__：本次 entity 皆已有 description 與屬於關係，不重複寫');
+      }
+      var conceptDirLines = [];
+      for (var c in conceptMembers) {
+        conceptDirLines.push('- 「' + c + '」（現有成員：' + conceptMembers[c].slice(0, 8).join('、') + '）');
+      }
+      return {
+        success: true,
+        todo_json: JSON.stringify(todo),
+        flags_json: JSON.stringify(flags),
+        concept_directory: conceptDirLines.length ? conceptDirLines.join('\n') : '（目前這個庫還沒有任何概念節點）',
+        card_snippet: String(input.card_content || '').slice(0, 4000),
+        library: String(input.library || 'kb'),
+      };
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144
+
+  # entity 沒查到既有描述/歸屬時，throw 出來的訊息就是「沒事做」——固定回成功，
+  # 不讓「這批全部已處理過」的正常狀況變成一次失敗紀錄。同 rag-ingest-card.local.yaml
+  # 的 wiki_cluster_absorb_prep_fail 精神一致。
+  absorb_no_work:
+    component: "__CODE_URL__"
+    input:
+      prep_error: "{{prep_llm.error}}"
+    code: |
+      return { success: true, entity_concept_skipped: true, reason: String(input.prep_error || 'nothing to do') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # inkstone/Arcrun#60 c15464（總管糾正）：不新開一條 Gemini＋credential 的路——同一條
+  # 管線（rag_cluster_auto 的 build_hub_card）已經在用 `workers_ai_chat` 零件（Cloudflare
+  # Workers AI，走實例自己的 AI binding，免金鑰），stage youlin 今天實跑成功過
+  # （c15411/c15417/c15431）。照既有的走：這裡也用它，不新增任何 credential。
+  # 零件契約（見 arcrun/cypher-executor/src/lib/api-recipe-seeds.ts 的
+  # `workers_ai_chat` recipe）：`data.prompt` 一個字串欄位，輸出在**頂層** `.text`
+  # （不是 `.data.body`——那是 http_request 零件的形狀，這支是 recipe 零件，
+  # 血統對照 rag_cluster_auto.deployed.json 的 build_hub_card→finalize_hub_card
+  # 讀 `{{build_hub_card.text}}`）。回應已經過 server 端 sanitize（answer_marker／
+  # strip_prefixes），但不保證乾淨 JSON，parse_llm 仍要自己找 `[...]` 邊界。
+  ask_llm:
+    component: "workers_ai_chat"
+    prompt: "你是知識圖譜的實體歸類器。下面是一段卡片內容（用來理解實體的背景，不必全部用到）：\n\n{{prep_llm.data.card_snippet}}\n\n要處理的實體清單（每一個都必須輸出，一個不漏）：\n{{prep_llm.data.todo_json}}\n\n目前已存在的概念節點目錄（如果某個實體明顯適合歸入其中一個，請完全照抄該概念的名稱字串；只有真的沒有一個合適時才創造一個新的概念名稱，新名稱要是抽象類別，例如「科技公司執行長」，不是具體關係）：\n{{prep_llm.data.concept_directory}}\n\n請針對清單裡每一個實體，輸出：\n1. description：一句話描述這個實體是什麼（根據上面的卡片內容或你自己的知識，客觀陳述，不要意見、不要臆測未知資訊）。\n2. concept：這個實體所屬的抽象概念類別（不是具體關係、不是與其他實體的關係，是它「是一種什麼」的類別）。\n\n只輸出 JSON，格式為陣列，每一項 {\"entity\":\"...\",\"description\":\"...\",\"concept\":\"...\"}，不要有任何其他文字、不要 markdown code fence、不要前言或說明。"
+
+  # 🔴 實測抓到的真限制：`workers_ai_chat` recipe 的 response_map（text_path:'response'）
+  # 只在 Workers AI 回應的 `response` 欄位是**字串**時才產生 `.text`（見
+  # `recipe-payload.ts` `applyResponseMap`：`typeof picked !== 'string'` 直接回
+  # `text: undefined`）。llama-4-scout 對「只輸出 JSON」這種提示詞，常常把
+  # `response` 直接吐成**已解析好的陣列/物件**（不是字串）——這時 `.text` 不存在，
+  # 但 `.data.response` 就是我要的東西（甚至比自己 parse 字串更乾淨）。所以這裡
+  # 兩路都收：`.data.response` 是陣列就直接用；不是就退回 `.text`／
+  # `.data.choices[0].message.content`（OpenAI 相容形狀，兩者都是原始回應保底）
+  # 自己找 JSON 陣列邊界解析。
+  # Arcrun#264：parse_llm 現在把每一項拆成兩條各自的 FOREACH 名單——
+  # `desc_items`（只放 needsDesc 的）與 `concept_items`（只放 needsConcept 的）。
+  # LLM 仍然對 todo 裡每個 entity 都輸出 description＋concept（分類判斷本身需要
+  # description 當語意輸入），但**只有真的缺那一半的 entity 才會被排進對應名單去
+  # POST**——這樣「這個庫缺概念、但這個 entity 別的庫已經寫過 description」的情況，
+  # 才不會連著把 description 也重寫一次。
+  parse_llm:
+    component: "__CODE_URL__"
+    input:
+      llm_response: "{{ask_llm.data.response}}"
+      llm_text: "{{ask_llm.text}}"
+      llm_choices: "{{ask_llm.data.choices}}"
+      library: "{{prep_llm.data.library}}"
+      flags_raw: "{{prep_llm.data.flags_json}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function extractArrayFromText(text) {
+        text = String(text == null ? '' : text).trim();
+        var fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text);
+        if (fence) text = fence[1].trim();
+        var start = text.indexOf('[');
+        var end = text.lastIndexOf(']');
+        if (start === -1 || end === -1 || end < start) {
+          throw new Error('LLM 輸出裡找不到 JSON 陣列：' + text.slice(0, 300));
+        }
+        try { return JSON.parse(text.slice(start, end + 1)); } catch (e) {
+          throw new Error('LLM JSON 陣列解析失敗：' + String(e) + ' / raw=' + text.slice(0, 300));
+        }
+      }
+      var arr;
+      if (Array.isArray(input.llm_response)) {
+        arr = input.llm_response;
+      } else if (typeof input.llm_text === 'string' && input.llm_text) {
+        arr = extractArrayFromText(input.llm_text);
+      } else {
+        var content = '';
+        try { content = input.llm_choices[0].message.content; } catch (e) { content = ''; }
+        arr = extractArrayFromText(content);
+      }
+      if (!Array.isArray(arr) || arr.length === 0) throw new Error('LLM 輸出的陣列是空的或不是陣列');
+      var library = String(input.library || 'kb');
+      var flags = parse(input.flags_raw) || {};
+      var descItems = [];
+      var conceptItems = [];
+      var itemCount = 0;
+      for (var j = 0; j < arr.length; j++) {
+        var it = arr[j] || {};
+        var entity = String(it.entity || '').trim();
+        var description = String(it.description || '').trim();
+        var concept = String(it.concept || '').trim();
+        if (!entity || !description || !concept) continue;
+        var f = flags[entity];
+        if (!f) continue;   // LLM 吐出沒被要求處理的 entity，忽略（不寫）
+        itemCount++;
+        if (f.needsDesc) descItems.push({ entity: entity, description: description, library: library });
+        if (f.needsConcept) conceptItems.push({ entity: entity, concept: concept, library: library });
+      }
+      if (itemCount === 0) throw new Error('LLM 輸出的項目全部缺欄位、或都不在待處理清單裡（entity/description/concept 至少一項空白，或 entity 不在 todo）');
+      return {
+        success: true,
+        desc_items: descItems,
+        concept_items: conceptItems,
+        desc_count: descItems.length,
+        concept_count: conceptItems.length,
+      };
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144
+
+  # 寫「entity >> description >> 一句話」——文字，不是向量；template=triplet 既有 slot，
+  # 不加表、不加新 schema。POST /records（非 /entries）這條路徑本身不觸發嵌入。
+  post_description:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/records"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      template: "triplet"
+      owner_id: "__NAMESPACE__"
+      values:
+        subject: "{{desc_item.entity}}"
+        predicate: "description"
+        object: "{{desc_item.description}}"
+        library: "{{desc_item.library}}"
+
+  # 寫「entity >> 屬於 >> concept」——同屬一個概念節點的文字關係，不是 alias、不是距離數字。
+  post_concept:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/records"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      template: "triplet"
+      owner_id: "__NAMESPACE__"
+      values:
+        subject: "{{concept_item.entity}}"
+        predicate: "屬於"
+        object: "{{concept_item.concept}}"
+        library: "{{concept_item.library}}"

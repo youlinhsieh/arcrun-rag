@@ -51,11 +51,23 @@ type QuotaNotice struct {
 	ExitOptions string `json:"exit_options"` // 可以換一個模型，或升級 Cloudflare（每月 5 美元）
 	Guarantee   string `json:"guarantee"`    // 不花錢也沒關係，今天/明天早上 8:00 會自動恢復
 	ResumeAt    string `json:"resume_at"`    // RFC3339，預期恢復時間（供機器判斷冷卻是否結束）
-	// arcrun-rag#197：哪一種額度。空＝Workers AI（舊的三句話，status.json 向後相容）；
-	// d1_read／d1_write＝雲端資料庫（見 cloudquota.go）。畫面依它決定標題，不猜字串。
+	// arcrun-rag#197：哪一種額度。空＝Workers AI 一般用完（舊的三句話，status.json 向後相容）；
+	// d1_read／d1_write＝雲端資料庫（見 cloudquota.go）；
+	// workersai_starved＝Workers AI 額度用完且這一輪 0 份成功（#59，畫面不慶祝「0 份」）。
+	// 畫面依它決定標題，不猜字串。
 	Kind     string `json:"kind,omitempty"`
 	Headline string `json:"headline,omitempty"` // 一句話講「哪一種額度用完了」
 	Usage    string `json:"usage,omitempty"`    // 上限多少、用了多少（查得到時；查不到也照講上限）
+	// Account＝這則通知是哪一台雲端知識庫發的（key＝instanceHostOf(cypherURL)，
+	// 與 QuotaMeter.Account 同一套 key）。
+	//
+	// 🔴 存在理由（inkstone/arcrun-rag#207，leo 2026-09-19 實測）：多帳號時（例如同時連
+	// leo21c 付費帳號與 youlin 免費帳號）只有其中一台雲端會爆額度，但這張卡在有這個欄位之前
+	// 沒有任何地方講「是哪一台」——leo 在測付費的 leo21c，卻以為爆的是 leo21c，
+	// 因為畫面上只有三句話、沒有帳號識別。由 direct.go 在組出 notice 的當下原地填入
+	// （與 AccountSyncStatus 同一個 accHost），App 端可選擇性換成使用者看得懂的暱稱
+	// （accountName／accountLabel），前端只負責畫，不重新判斷。
+	Account string `json:"account,omitempty"`
 }
 
 // Combined 把三句話接成一句完整訊息（給只有單一 error 欄位可用的地方，如 DirectResult.Error）。
@@ -83,14 +95,27 @@ func (n QuotaNotice) Combined() string {
 func buildQuotaNotice(now time.Time, dailyCount int, resetAt time.Time) QuotaNotice {
 	achievement := fmt.Sprintf("今天已經幫你整理了 %d 份", dailyCount)
 	if dailyCount == 0 {
+		// 🔴 arcrun-rag#59（2026-08-11 leo 用 Cloudflare Analytics 實測 leo21c 後翻案）：
+		// 舊訊息把額度歸咎「向量化／重新整理索引」，並斷言「換一個模型救不了」。
+		// 兩句都經不起驗證——實測那天吃光額度的是**萃取 LLM**（llama-4-scout 佔 99.9%），
+		// 向量化（bge-m3）只用了 11 neurons。若真是萃取在吃，把萃取換到非 Workers AI 的來源
+		// （如 Gemini，見 #58）反而**能**卸掉負載 ⇒「換模型救不了」剛好講反。
+		// 根本問題：daemon 看不到「額度是被哪個消耗者用掉的」（沒有 neuron 分項可讀），
+		// 任何指名歸咎都是編造。這裡只講 daemon 確實知道的事：
+		//   ① 這一輪一份都沒整理成功 ② 已經撞到今天的免費上限
+		//   ③ 唯一保證移除每日上限的出口是升級 Cloudflare（與是誰吃掉額度無關，永遠成立）
+		//   ④ 等重置也行，但若用量持續吃緊可能再撞——不做「明天就會跑完」這種做不到的承諾
+		// Achievement 保留「幫你整理了」子字串供 ClassifyFailure 歸類；畫面靠 Kind 區分，
+		// 不把「0 份」當成就慶祝（frontend 的 workersai_starved 卡另畫，見 main.js）。
 		return QuotaNotice{
+			Kind:        "workersai_starved",
+			Headline:    "今天的免費 AI 額度已經用完了",
 			Achievement: achievement,
-			ExitOptions: "換一個模型救不了這個：你的雲端知識庫本身也在用同一份免費額度做別的事" +
-				"（例如重新整理索引），額度是在那邊被用光的，不是被這次的整理用掉的。" +
-				"真正能解除限制的只有升級 Cloudflare（每月 5 美元，移除每日免費上限）",
+			Usage:       "這一輪一份都還沒整理成功，就遇到了今天的免費 AI 額度上限",
+			ExitOptions: "升級 Cloudflare（每月 5 美元起）可以移除每日免費上限",
 			Guarantee: fmt.Sprintf(
-				"額度會在%s早上 8:00 重置，但如果同一件事還在佔用額度，你可能會再撞到同一面牆——"+
-					"不是保證接下來就會一路處理完",
+				"額度會在%s早上 8:00 重置，但如果額度持續吃緊，可能會再遇到同一個上限——"+
+					"不是保證接下來就會一路跑完",
 				quotaResetDayWord(now, resetAt)),
 			ResumeAt: resetAt.Format(time.RFC3339),
 		}

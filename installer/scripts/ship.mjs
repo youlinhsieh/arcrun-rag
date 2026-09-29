@@ -96,25 +96,27 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { syncManifest, verifyManifest } from './release.mjs';
+import { syncManifest, verifyManifest, RELEASE_STATE_FILE } from './release.mjs';
+// #47：出貨落帳這一站——這次出的東西同一趟進版控，不靠人記得 commit。
+import { commitShipOutputs } from './worktree-commit.mjs';
 // CHANGELOG_REL＝雲端引擎（`1.4.x`）那條線；DAEMON_CHANGELOG_REL＝桌面版（`v0.18.x`）那條。
 // 🔴 兩條線 2026-08-18（D95 第一輪）拆開之後**不可以再混用**：daemon 的三站問的是後者，
 //   問錯那份檔案的症狀不是報錯，是「找不到已發佈版本段 ⇒ 安靜跳過」（見 daemon-in-bundle-gate.mjs 檔頭）。
 import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
-import { requireDaemonInBundle } from './daemon-in-bundle-gate.mjs';
+import { requireDaemonInBundle, GATE_LOG_REL as DAEMON_IN_BUNDLE_GATE_LOG_REL } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
 //   d20-guard 解的是「殼層 hook 看不見 node 子行程」的**GitHub 接觸**那一半；
 //   這一支解同一個形狀的另一半：**推 main**。2026-08-18 出貨線就是這樣把
 //   inkstone/arcrun-collector 的 main 推壞的，而一個閘都沒響。
-import { assertPushAllowed, unarmed as unarmedDestinations, claimGrants as claimMainPushGrants, armCommand, normRemote as normRemoteId } from './main-push-guard.mjs';
+import { assertPushAllowed, unarmed as unarmedDestinations, claimGrants as claimMainPushGrants, armCommand, normRemote as normRemoteId, GATE_LOG_REL as MAIN_PUSH_GATE_LOG_REL } from './main-push-guard.mjs';
 import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
 import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
-import { requireFreshDaemonSource } from './daemon-freshness.mjs';
+import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL } from './daemon-freshness.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
@@ -178,6 +180,7 @@ import { alignMirrorWithRemote } from './mirror-align.mjs';
 import { runtimeProblems as orgNamespaceProblems, explain as explainOrgNamespace } from './org-namespace-gate.mjs';
 
 installConsoleRedaction();
+import { runGate as runEnvParityGate, NEXT_STEPS as PARITY_NEXT_STEPS } from './env-parity-gate.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
@@ -520,6 +523,7 @@ const ctx = {
   mainPushGrants: null, // 推 main 的授權（preflight 一次領走，每次推 main 用掉一格，InkStoneCo#56）
   sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
   arcrunHeadSha: null, // 來源 repo 的完整 40 碼 HEAD（見 preflight／source-pin）——釘子分支比對用全碼，不用前綴
+  worktreeStamps: [], // #47：pin 站寫完釘子那一刻的 [{rel,sha256}]，落帳站用來擋「寫完到 commit 之間被別人蓋掉」
 };
 
 /**
@@ -1118,6 +1122,36 @@ const STEPS = [
     throw new Error(`文案契約閘不過：\n${(copyContract.stdout || '') + (copyContract.stderr || '')}`);
   }
   lines.push('文案契約閘：通過（leo 拍板拿掉的句子沒有回來）');
+
+  // (b6) 環境對等閘（`D90`，2026-08-14）─────────────────────────────────────
+  //
+  // leo：「你爲什麼不把 **prod 跟 stage 跟 cli 做到一模一樣**？
+  //       **有一個不對的部分以後每次都會擔心。**」
+  //
+  // 擋的是「**stage 測過的，prod 不見得成立**」——只要兩邊有一個**行為**差異，
+  // 「在 stage 測過就等於 prod 會一樣」這個前提就破了，而且壞法是隱形的：
+  // **stage 全綠、prod 炸給用戶看，而我們永遠測不出來**（因為我們只在 stage 測）。
+  // 實撞：`compatibility_flags` 只加在 `[env.staging]`，註解寫「prod 的呼叫方是
+  // custom domain 不踩這條」——但 CF 的 1042 看的是目標不是呼叫方。
+  //
+  // 為什麼在 preflight 而不是 deploy 站：理由同 (b4)——deploy 站有「線上已是這版
+  // 就跳過」的快路徑（擺那裡＝跳過部署也跳過檢查），而且**預演就該看得到**。
+  // ⚠️ 名字別跟站表上的 `parity` 那一站搞混：那一站比的是兩份 bundle 的**內容**，
+  //    這道閘比的是兩個環境的**設定**。判準（什麼算身分、什麼算行為、為什麼）
+  //    全寫在 `installer/scripts/env-parity-gate.mjs` 檔頭。
+  const parity = runEnvParityGate(REPO_ROOT);
+  if (!parity.ok) {
+    throw new Error(
+      'stage 與 prod 有行為差異，拒絕出貨（D90）——這是設計，不是故障：\n\n' +
+      parity.sections.filter((s) => !s.ok)
+        .map((s) => `     ✗ ${s.name}\n${s.problems.map((p) => `       - ${p}`).join('\n')}`).join('\n\n') +
+      `\n\n     stage 存在的唯一理由是「在這裡測過，prod 就會一樣」。\n` +
+      `     有一個行為差異，這個前提就破了 ⇒ 這次出貨前面每一站的綠燈都失去意義。\n\n` +
+      PARITY_NEXT_STEPS);
+  }
+  lines.push(
+    `環境對等閘：${parity.pairs} 對 prod⇄stage 全過` +
+    `（差異全落在身分白名單：名稱／對外網址／資源 id／環境標記）`);
 
   // (c) bundle repo：不存在就照登錄簿長出來（selftest）；存在就驗 origin 與登錄簿相符。
   //     🔴 這一條就是「打錯位置也會被它修正」的實體：本機那個資料夾指到別的 repo ⇒ 當場擋。
@@ -1897,6 +1931,11 @@ const STEPS = [
   writeFileSync(tomlPath, toml);
   if (js !== jsBefore) writeFileSync(jsPath, js);
   ctx.pinChanged = true;
+  // 🔴 #47：**寫完的那一刻**就記下釘子檔的指紋。落帳站（檔尾）commit 前再算一次，
+  //   對不上＝這兩份手抄本在「寫完到 commit 之間」被別人 checkout／restore 蓋掉一半
+  //   （23:45:01 寫入 → 23:45:10 被蓋，正是本票事故）⇒ 當場停，不 commit 半套。
+  const stamp = (abs) => ({ rel: relative(REPO_ROOT, abs), sha256: createHash('sha256').update(readFileSync(abs)).digest('hex') });
+  ctx.worktreeStamps = [stamp(tomlPath), ...(js !== jsBefore ? [stamp(jsPath)] : [])];
   return { status: 'done', detail: [
     `[${T.installer.varsSection}] BUNDLE_BASE = ${ctx.pinUrl}`,
     `[${T.installer.varsSection}] BUNDLE_BUILT = ${built}`,
@@ -1978,7 +2017,16 @@ const STEPS = [
   }
 
   // ── ② 建 → 鏡射 → 部署 ────────────────────────────────────────────────
-  shLive('npm', ['run', 'build'], cwd);
+  // inkstone/arcrun-rag#216：docs-site 是純靜態站（Astro SSG），沒有 runtime 可以像
+  // worker 那樣讀 wrangler.toml 的 [vars] ⇒ 跨站導覽（SiteNav.astro）要在 build 時
+  // 用 PUBLIC_SITE_BASE／PUBLIC_INSTALL_BASE 這兩個 Astro 環境變數指對地方，否則
+  // 不管出到哪個目標，導覽列「首頁」「安裝」永遠指向 prod（D90 撞：行為與身分脫鉤）。
+  // 值來自登錄簿的 docsSite.siteBase／docsSite.installBase（不手填字串常數）；
+  // 兩個目標都已宣告，未宣告時保持不帶 env（沿用 SiteNav.astro 的 prod 預設值）。
+  const buildEnv = {};
+  if (D.siteBase) buildEnv.PUBLIC_SITE_BASE = D.siteBase;
+  if (D.installBase) buildEnv.PUBLIC_INSTALL_BASE = D.installBase;
+  shLive('npm', ['run', 'build'], cwd, Object.keys(buildEnv).length ? buildEnv : undefined);
   // dist/ 是 astro 的建置輸出；wrangler.toml 的 [assets] directory 指 ./deploy（含 docs/
   // 子目錄，對齊 astro base:'/docs'）——用 rsync --delete 鏡射，不留舊檔殘骸。
   shLive('rsync', ['-a', '--delete', join(cwd, 'dist') + '/', join(cwd, 'deploy', 'docs') + '/'], cwd);
@@ -2011,7 +2059,11 @@ const STEPS = [
       + '       ② rsync 有沒有把 dist/ 鏡射進 deploy/docs/　③ wrangler 是不是部署到這顆 worker\n'
       + `     ⚠️ **不要**為了讓這道閘變綠而把版本說明頁加回 docs-site——leo 2026-08-17：「這個頁面刪除。」`);
   }
-  return { status: 'done', detail: [`帳號 ${D.accountId}｜env ${D.wranglerEnv || '(預設環境)'}`, ...docsCred.lines, ...r.lines] };
+  return { status: 'done', detail: [
+    `帳號 ${D.accountId}｜env ${D.wranglerEnv || '(預設環境)'}`,
+    `跨站導覽 PUBLIC_SITE_BASE=${D.siteBase || '(未宣告，沿用 SiteNav.astro 預設值)'}｜PUBLIC_INSTALL_BASE=${D.installBase || '(未宣告，沿用 SiteNav.astro 預設值)'}`,
+    ...docsCred.lines, ...r.lines,
+  ] };
 }},
 
 // ── 7.6 mailRelay：郵差（D62「忘記密碼」代寄），2026-08-11 加（arcrun-rag#38／#69／#25）──
@@ -3036,7 +3088,7 @@ if (CONFIRM && !VERIFY_ONLY && ctx.release) {
   const table = renderComparisonTable(REPO_ROOT, ctx.release);
   console.log('\n' + table + '\n');
   writeFileSync(reportPath(REPO_ROOT), table + '\n');
-  console.log(`📋 已寫入 installer/ship-report.md ＋ installer/ship-report.json（記得跟這次出貨一起 commit）`);
+  console.log(`📋 已寫入 installer/ship-report.md ＋ installer/ship-report.json（全程成功時由檔尾「出貨落帳」自動進版控，#47）`);
 
   // ── 兩欄件數：不只印出來，對不齊就讓這次出貨是紅的（leo 2026-08-11 #77 驗收條件）──
   // 「暫存站有的，上架也有」——只印一行字讓人自己看，跟沒有是一樣的
@@ -3127,4 +3179,48 @@ if (T.bundles.remote !== 'local-selftest') {
   setBranchTip(ctx.arcrunRepo, pinBranch, ctx.arcrunHeadSha);
   console.log(`   🎫 釘子分支 \`${pinBranch}\` → ${ctx.arcrunHeadSha.slice(0, 7)}` +
     (before && before !== ctx.arcrunHeadSha ? `（原本 ${before.slice(0, 7)}）` : before ? '（沒動，已經是這顆）' : '（新建）'));
+}
+
+// ── 出貨落帳：這次出的東西，同一趟進版控（inkstone/arcrun-rag#47）──────────────
+// 走到這裡＝真的 --confirm 全程成功（verify／delivery／release-record／預演／失敗都已提前 exit）。
+// 在此之前，pin／version／report／各 gate-log 都只寫了**磁碟**，版控裡還沒有——
+// 而「有沒有進版控」取決於「有沒有人記得 commit」。這個窗口裡 repo 同時有三、四位
+// subagent 在跑，任何人一個 git checkout 就把釘子蓋回舊值，且**半套不報錯**
+// （線上跑已部署的那份，版控裡是另一份，下一次出貨從錯的基準開始）。
+//   ⇒ 這一段把「記得 commit」從人的責任變成管線的最後一步：
+//      ① 落帳後 git status 對這些檔是乾淨的（本票驗收 1）
+//      ② pin 站寫完那一刻的指紋對不上 ⇒ 有人中途動過釘子檔 ⇒ 當場停（本票驗收 2）
+//      ③ 稽核留痕（ship-report）在同一個 commit 裡（本票驗收 3）
+// 🔴 只本機 commit、不 push——推 main 仍受 main-push-guard 管，與這裡無關。
+// 🔴 selftest 不落帳：它不推不部署、沒有人會讀它，落帳只會往 main 灌測試噪音（同釘子分支的排除）。
+if (T.bundles.remote !== 'local-selftest') {
+  const ownedRel = [
+    RELEASE_STATE_FILE,                       // installer/release-state.json（version 站）
+    INSTALLER_VERSION_REL,                     // installer/oauth-prototype/version.mjs（version 站烙指紋）
+    'installer/ship-report.json', 'installer/ship-report.md', // 稽核留痕（ship-report.mjs）
+    DAEMON_IN_BUNDLE_GATE_LOG_REL, MAIN_PUSH_GATE_LOG_REL,     // 各 gate 擋下/放行都記一行
+    RELEASE_LINE_GATE_LOG_REL, DAEMON_FRESHNESS_GATE_LOG_REL,
+    ...(T.installer ? [
+      join(T.installer.cwd, T.installer.config),  // wrangler.toml（pin 站）
+      join(T.installer.cwd, 'worker.js'),         // worker.js 常數（pin 站，鏡射目標才動）
+    ] : []),
+  ];
+  try {
+    const pin7 = (ctx.headSha || '').slice(0, 7);
+    const r = commitShipOutputs({
+      repoRoot: REPO_ROOT, ownedRel, stamps: ctx.worktreeStamps,
+      message: `chore(ship): ${ctx.release} 出貨落帳（${TARGET_NAME}）— 釘子 ${pin7}\n\n`
+        + `出貨線自動落帳（inkstone/arcrun-rag#47）：這次出的釘子／版本／稽核留痕同一趟進版控，`
+        + `不靠人記得 commit。來源 ${ctx.sourceCommit || '(未知)'}。只本機 commit，未 push。`,
+    });
+    const mark = r.status === 'skip' ? '⏭ 跳過' : '✅ 已落帳';
+    console.log(`   📒 出貨落帳 ${mark}`);
+    for (const d of r.detail) console.log(`     ${d}`);
+  } catch (e) {
+    // 竄改偵測命中（或 git 出錯）：ship 已經部署出去了，但版控落不了帳 ⇒ 這是稽核缺口，
+    // 要**吵到讓人看見**，不能安靜吞掉（同 push 站留痕失敗的處理）。
+    console.error(`\n❌ 出貨已完成，但落帳失敗——版控裡沒有這次出的東西（稽核缺口仍在）：`);
+    console.error(String(e.message).split('\n').map((l) => `   ${l}`).join('\n'));
+    process.exit(1);
+  }
 }

@@ -120,3 +120,4 @@
 | 2026-09-26 00:29:58 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward f5a5b92→HEAD，12 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-09-26 20:23:15 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ⛔ 擋下 | 機械檢查：這一推會刪掉遠端 main 上的 1 個檔：daemon/Arcrun-0.18.59.msix |
 | 2026-09-26 20:23:40 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6464f1c→HEAD，16 個檔有變（含 1 個刪除，--allow-deletions 放行）、.gitignore 沒變短 |
+| 2026-09-26 20:40:34 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 4a73fe8→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |

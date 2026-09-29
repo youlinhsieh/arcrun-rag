@@ -72,6 +72,18 @@ type IngestPlan struct {
 	// 刻意不收（見 wantsPath 的說明），但一定要列出來——不然使用者只會覺得東西不見了。
 	OtherWikiDirs []string `json:"other_wiki_dirs,omitempty"`
 
+	// ForceIncludeDirs＝使用者手動「強制收錄」的子資料夾（相對 slash 路徑，
+	// `inkstone/arcrun-rag#136` 驗收 5／6／7 的逃生口）。
+	//
+	// 🔴 它只**放寬收檔範圍那一層**（docs-only 只讀文件區／curated-wiki 只讀那份 wiki），
+	//    不碰其餘任何判準——使用者強制收一個資料夾，並不會因此把裡面的 node_modules、
+	//    鎖定檔或機器產的卡也收進來（那些關卡在 forceIncluded 之外照擋）。
+	//    空的時候整套邏輯與從前一模一樣，所以「不改預設判準」這條紅線是靠**空清單**守的。
+	//
+	// 來源＝ForceIncludeStore（folder-includes.json），由 direct.go 在 PlanIngest 之後掛上；
+	// PlanIngest 本身不讀它，判準才留得住可測性。
+	ForceIncludeDirs []string `json:"force_include_dirs,omitempty"`
+
 	// ── 以下不外露成 JSON：判準的材料，不是給使用者看的結論 ──────────────────
 	// ignore＝使用者自己寫的 `.gitignore` 的**內容**（見 ignorerules.go）。
 	// 🔴 只用內容，不把「有沒有這個檔」當門檻——leo 2026-08-16：他的 KB 筆記庫也有 git，
@@ -592,6 +604,11 @@ func (p IngestPlan) ExcludesPathWhy(relSlash, absRoot string) (bool, string) {
 // docs-only 只讀文件區。**它們是好的判斷，錯的只是它們以前長在剪枝上**
 // ——把「不收」實作成「不走進去」，代價是使用者連自己有哪些子資料夾都看不到。
 func (p IngestPlan) CollectsDirWhy(relSlash string) (bool, string) {
+	// 使用者手動開的逃生口（#136 驗收 5）：這個資料夾（或它的某個祖先）被強制收錄
+	// ⇒ 收檔範圍那幾條讓路。理由給使用者看的是「你選了要收這裡」，不是系統的預設判斷。
+	if p.forceIncluded(relSlash) {
+		return true, ""
+	}
 	switch p.Mode {
 	case IngestCuratedWiki:
 		if !onPathTo(relSlash, p.WikiRelDir) {
@@ -673,6 +690,12 @@ func (p IngestPlan) KeepsFile(relSlash string) bool {
 	if p.Mode == IngestCuratedWiki && IsMarked(filepath.Base(relSlash)) && isUnderCardDir(relSlash) {
 		return false
 	}
+	// 使用者手動開的逃生口（#136 驗收 5）：檔案落在被強制收錄的資料夾底下 ⇒ 收。
+	// 放在收檔範圍判斷之前、但在上面所有排除關卡（.gitignore／鎖定檔／機器卡）之後
+	// ——強制收「一個資料夾」不等於連裡面的雜訊一起收（見 ForceIncludeDirs 的說明）。
+	if p.forceIncluded(folderOfRel(relSlash)) {
+		return true
+	}
 	switch p.Mode {
 	case IngestCuratedWiki:
 		return strings.HasPrefix(relSlash, p.WikiRelDir+"/")
@@ -685,6 +708,23 @@ func (p IngestPlan) KeepsFile(relSlash string) bool {
 		return !strings.Contains(relSlash, "/") // 根層說明檔
 	}
 	return true
+}
+
+// forceIncluded 回答「這個資料夾（相對 slash 路徑）是不是使用者手動強制收錄的、
+// 或落在某個被強制收錄的資料夾底下」（#136 驗收 5）。
+//
+// 只比對「自己或祖先」——使用者選了 `pms_v1_legacy`，它底下的 `pms-backup` 也要一起收；
+// 但選了 `pms_v1_legacy` 不代表它的**兄弟**資料夾也收。
+func (p IngestPlan) forceIncluded(relSlash string) bool {
+	if relSlash == "" {
+		return false
+	}
+	for _, fi := range p.ForceIncludeDirs {
+		if relSlash == fi || strings.HasPrefix(relSlash, fi+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // OverridesTemplateOwned 回答「這個檔雖然被 TemplateOwns 認成『開發用的』，

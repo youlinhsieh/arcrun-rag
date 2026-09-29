@@ -1,0 +1,11 @@
+{
+ "cluster_hub_record": {"record_id":"rec_94fa8fab-b9aa-44a8-b70a-b8e7d564e324","title":"工人自律機制清單（ISEP 治理）","cluster_id":"demo-gov-1","member_ids":["ISEP#191","ISEP#190"]},
+ "triplets_written": [
+   {"record_id":"rec_377f0357-80bd-41a6-b5c9-288ac0168523","subject":"ISEP#191","predicate":"屬於","object":"工人自律機制清單（ISEP 治理）"},
+   {"record_id":"rec_9d7f5013-1d62-4669-9870-5cb64e389c2e","subject":"ISEP#190","predicate":"屬於","object":"工人自律機制清單（ISEP 治理）"}
+ ],
+ "kbdb_graph_neighbors_verify": {
+   "subject":"ISEP#191",
+   "result": {"neighbors":[{"node":"工人自律機制清單（ISEP 治理）","predicate":"屬於","from":"ISEP#191","depth":1,"direction":"out"}],"count":1}
+ }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * resource-rule-sync.mjs — 把上游 `Leo/Arcrun` 的 `shared/resource-rule/` 原封搬到
+ * resource-rule-sync.mjs — 把上游 `inkstone/Arcrun` 的 `shared/resource-rule/` 原封搬到
  * 安裝器 import 得到的位置（`installer/oauth-prototype/shared/resource-rule/`），
  * 並記下「這份是從哪顆 commit 的哪些位元組來的」。
  *
@@ -172,12 +172,12 @@ export function syncMirror(arcrunRoot, mirrorDir = MIRROR_DIR) {
   }
   const manifest = {
     _: [
-      '這個目錄是 Leo/Arcrun 的 shared/resource-rule/ 的逐位元組鏡射，由',
+      '這個目錄是 inkstone/Arcrun 的 shared/resource-rule/ 的逐位元組鏡射，由',
       'installer/scripts/resource-rule-sync.mjs 產生。**不准手改**。',
       '規則要改就改上游（Arcrun repo），然後重跑同步腳本；',
       'installer/scripts/resource-rule-gate.mjs 會在每次出貨的 preflight 核對這些指紋，對不上就拒絕出貨。',
     ],
-    upstream: 'Leo/Arcrun',
+    upstream: 'inkstone/Arcrun',
     upstream_dir: 'shared/resource-rule',
     upstream_commit: gitHead(arcrunRoot),
     files,

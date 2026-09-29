@@ -33,3 +33,4 @@ collector/cmd/arcrun-app/frontend/wailsjs/
 # 打包產物：.app bundle 不進版控，也別讓 Spotlight 把它們當成「裝好的 App」
 # （leo 2026-08-05：Launchpad 搜 arc 跑出 4 個 Arcrun，其中兩個是 commit 進 repo 的 v0.0.1 退役 fyne 版）
 collector/cmd/**/*.app
+__pycache__/

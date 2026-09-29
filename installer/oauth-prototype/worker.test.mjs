@@ -1284,6 +1284,50 @@ test('arcrun-rag#38/#69/#25 deployBundledWorker：非 cypher 的顆（如 UI）�
   }
 });
 
+test('arcrun-rag#218 deployBundledWorker：cypher 拿到 INSTALLER_ORIGIN（＝installerOrigin(env)，實例 portal 版本檢查／安裝精靈連結該指去哪台安裝器）', async () => {
+  // inkstone/Arcrun#98 c11358：portal 以前把「版本檢查」與「前往安裝精靈」兩處都寫死
+  // install.arcrun.dev，stage 裝的實例因此把用戶帶去 prod 安裝器。Arcrun 647f174 已讓
+  // cypher 讀 env.INSTALLER_ORIGIN；這一半是安裝器部署時要把「自己的 origin」交代給它。
+  const env = { BUNDLE_BASE: BASE, INSTALLER_ORIGIN: 'https://arcrun-rag-installer-staging.uncle6-me.workers.dev' };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.INSTALLER_ORIGIN, 'https://arcrun-rag-installer-staging.uncle6-me.workers.dev',
+      'cypher 的 INSTALLER_ORIGIN 應該＝這個環境的 installerOrigin(env)，不是空的');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('arcrun-rag#218 deployBundledWorker：env 沒給 INSTALLER_ORIGIN 時，cypher 仍拿到預設值 install.arcrun.dev（prod 行為零改變）', async () => {
+  // 對齊既有 landingBase()/siteBase() 的行為：未覆蓋時退回 DEFAULT_INSTALLER_ORIGIN
+  // （prod 官方安裝器 custom domain）——這正是「prod 裝的實例為什麼仍會指向 prod」的答案。
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.INSTALLER_ORIGIN, 'https://install.arcrun.dev');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('arcrun-rag#218 deployBundledWorker：非 cypher 的顆（如 UI）不灌 INSTALLER_ORIGIN', async () => {
+  // cypher-executor/src/types.ts 的 Bindings 只有這一顆宣告這個欄位；灌給別顆是死變數。
+  const env = { BUNDLE_BASE: BASE, INSTALLER_ORIGIN: 'https://arcrun-rag-installer-staging.uncle6-me.workers.dev' };
+  const { captured } = installBundleFetch();
+  try {
+    const uiEntry = { ...baseEntry, name: 'arcrun-rag-ui' };
+    await deployBundledWorker(env, 'tok', 'acct-123', uiEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.INSTALLER_ORIGIN, undefined, 'UI 不需要、也不該拿到安裝器 origin');
+  } finally {
+    restoreFetch();
+  }
+});
+
 test('P0-4 deployBundledWorker：binding 需求對上已建資源（kv/d1 id 正確）', async () => {
   const env = { BUNDLE_BASE: BASE };
   const { captured } = installBundleFetch();

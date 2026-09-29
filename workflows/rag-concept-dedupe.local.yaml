@@ -1,0 +1,216 @@
+# rag_concept_dedupe — 收斂「已經分岔的同義概念節點」（inkstone/Arcrun#265 驗收條件二）
+#
+# 背景：rag_entity_concept 的「概念目錄」原本只查本子庫（fetch_lib_triplets），每個
+# 新子庫都從空目錄開始，LLM 就重新命名——同一批「科技公司執行長」類的人，在
+# arcrun60-verify 被歸「企業執行長」，換一個子庫測試又被歸「科技公司執行長」，意思
+# 相同、字面不同，知識圖上長成兩個概念節點。查詢面已經在 rag_entity_concept 修好
+# （Arcrun#265：fetch_global_concepts，跨庫核對既有概念目錄），但**已經寫進去的舊
+# 分岔**不會自己收斂，需要這支一次性/可重跑的工具：讀出所有「屬於」三元組，按概念
+# 名稱分組，交給 LLM 判斷哪幾組名稱意思相同（同義），選一個 canonical 名稱，把非
+# canonical 那幾組的三元組 PATCH 成 canonical（改 object 欄位，subject/predicate 不動）。
+#
+# 零 SQL：全程走 KBDB 既有的 GET /records/by-template 與 PATCH /records/:id，不新增
+# 表、不動 schema。可重跑（冪等）：LLM 沒判斷出同義組，或已經收斂過的名稱，不會被動到。
+#
+# 與 rag_entity_dedupe（Arcrun#264）的差異：那支收斂的是「同一個 subject 有多句
+# description」（完全對同一個人動手，不需要語意判斷）；這支收斂的是「不同名稱的概念
+# 節點其實是同一個類別」，需要 LLM 判斷語意等價，風險更高（誤判會把不該合併的類別
+# 併在一起）——所以比 rag_entity_dedupe 更保守：**預設只回報**，帶 dry_run=false 才
+# 真的 PATCH；且每次都把 LLM 判斷出的合併組原文列在回應裡，方便人核對後才決定要不要
+# 真的執行。
+#
+# 觸發：
+#   POST {cypher}/webhooks/named/rag_concept_dedupe/query
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{}'
+#   （不帶參數＝只回報 LLM 判斷出的合併組，不寫；確認清單無誤後帶 {"dry_run":"false"} 才真的 PATCH）
+#
+# 未進安裝器的 compile-workflows.mjs FILES 清單——同 rag_entity_dedupe，純 ops 工具，
+# 不隨裝機器種給客戶，需要時一次性推上要收斂的實例。
+
+name: rag_concept_dedupe
+description: >
+  收斂「已經分岔的同義概念節點」（例：企業執行長／科技公司執行長）：讀出所有「屬於」
+  三元組、按概念名稱分組，LLM 判斷哪些名稱同義並選一個 canonical，把非 canonical 的
+  三元組 PATCH 成 canonical（只改 object，零向量、零 SQL）。可重跑；預設只回報 LLM
+  判斷出的合併組，帶 dry_run=false 才真的寫。（inkstone/Arcrun#265）
+
+flow:
+  - "input >> ON_SUCCESS >> fetch_all_concepts"
+  - "fetch_all_concepts >> ON_SUCCESS >> group_concepts"
+  - "group_concepts >> ON_SUCCESS >> ask_llm"
+  - "group_concepts >> ON_FAIL >> absorb_no_concepts"
+  - "ask_llm >> ON_SUCCESS >> parse_llm"
+  - "parse_llm >> ON_FAIL >> absorb_no_groups"
+  - "parse_llm >> 對每個 rewrite_record >> patch_concept"
+
+config:
+  # 撈這個租戶下所有「屬於」三元組（跨庫，不帶 library）——概念節點本身是跨庫共用的，
+  # 要收斂就要看到全部，不能只看一個子庫。
+  fetch_all_concepts:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=2000"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 按概念名稱（object）分組，列出每組的成員數與抽樣成員，餵給 LLM 判斷同義。
+  group_concepts:
+    component: "__CODE_URL__"
+    input:
+      body: "{{fetch_all_concepts.data.body}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var parsed = parse(input.body);
+      var records = (parsed && Array.isArray(parsed.records)) ? parsed.records : [];
+      var byConcept = {}; // concept name -> [{id, subject, library}]
+      for (var i = 0; i < records.length; i++) {
+        var rec = records[i] || {};
+        var v = rec.values || {};
+        var obj = String(v.object || '');
+        var id = String(rec.record_id || rec.id || '');
+        var subj = String(v.subject || '');
+        var lib = String(v.library || '');
+        if (!obj || !id) continue;
+        if (!byConcept[obj]) byConcept[obj] = [];
+        byConcept[obj].push({ id: id, subject: subj, library: lib });
+      }
+      var conceptNames = Object.keys(byConcept);
+      if (conceptNames.length === 0) throw new Error('__NO_CONCEPTS__：目前沒有任何「屬於」三元組，無事可做');
+      var conceptListLines = conceptNames.map(function (name) {
+        var members = byConcept[name];
+        var sampleSubjects = members.slice(0, 5).map(function (m) { return m.subject; });
+        return '- 「' + name + '」（' + members.length + ' 個成員，例：' + sampleSubjects.join('、') + '）';
+      });
+      return {
+        success: true,
+        concept_directory: conceptListLines.join('\n'),
+        by_concept_json: JSON.stringify(byConcept),
+        concept_count: conceptNames.length,
+        total_records: records.length,
+      };
+    limits:
+      timeout_ms: 5000
+      max_output_bytes: 2097152
+
+  # 沒有任何「屬於」三元組時，throw 出來的訊息就是「沒事做」——固定回成功，
+  # 不讓「這個租戶還沒有任何概念節點」的正常狀況變成一次失敗紀錄。
+  absorb_no_concepts:
+    component: "__CODE_URL__"
+    input:
+      prep_error: "{{group_concepts.error}}"
+    code: |
+      return { success: true, concept_dedupe_skipped: true, reason: String(input.prep_error || 'no concepts') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # 同 rag_entity_concept 的 ask_llm 血統：走既有 workers_ai_chat 零件（Cloudflare
+  # Workers AI，免金鑰），不新開一條 Gemini＋credential 的路。
+  ask_llm:
+    component: "workers_ai_chat"
+    prompt: "你是知識圖譜的概念節點審核者。下面是知識圖上所有「屬於」概念節點的名稱清單（跨庫聚合）：\n\n{{group_concepts.data.concept_directory}}\n\n有些名稱意思完全相同，只是字面用詞不同（例如「企業執行長」與「科技公司執行長」，都是指同一種抽象類別）——這通常是不同批次的 LLM 對同一個類別取了不同名字。請找出所有這樣的同義組：每組選一個最精簡、最通用的名稱當作 canonical（優先選成員數較多、或用詞更抽象通用的那個），列出這組裡所有應該被合併掉的名稱（含 canonical 自己）。\n\n🔴 只列出真的意思相同的組——不相關或只是有點像的概念（例如「企業執行長」與「創業家」）不要合併，一組至少要有 2 個名稱。沒有任何同義組時輸出空陣列 []。\n\n只輸出 JSON，格式為陣列，每一項 {\"canonical\":\"...\",\"members\":[\"...\",\"...\"]}，members 裡的每個名稱都必須完全照抄上面清單裡出現過的字串，不要有任何其他文字、不要 markdown code fence、不要前言或說明。"
+
+  # 同 rag_entity_concept 的 parse_llm：workers_ai_chat 的 response 可能是已解析陣列
+  # （.data.response）也可能是字串（.text／choices[0].message.content），兩路都收。
+  parse_llm:
+    component: "__CODE_URL__"
+    input:
+      llm_response: "{{ask_llm.data.response}}"
+      llm_text: "{{ask_llm.text}}"
+      llm_choices: "{{ask_llm.data.choices}}"
+      by_concept_raw: "{{group_concepts.data.by_concept_json}}"
+      dry_run: "{{input.dry_run}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      function extractArrayFromText(text) {
+        text = String(text == null ? '' : text).trim();
+        var fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text);
+        if (fence) text = fence[1].trim();
+        var start = text.indexOf('[');
+        var end = text.lastIndexOf(']');
+        if (start === -1 || end === -1 || end < start) {
+          throw new Error('LLM 輸出裡找不到 JSON 陣列：' + text.slice(0, 300));
+        }
+        try { return JSON.parse(text.slice(start, end + 1)); } catch (e) {
+          throw new Error('LLM JSON 陣列解析失敗：' + String(e) + ' / raw=' + text.slice(0, 300));
+        }
+      }
+      var arr;
+      if (Array.isArray(input.llm_response)) {
+        arr = input.llm_response;
+      } else if (typeof input.llm_text === 'string' && input.llm_text) {
+        arr = extractArrayFromText(input.llm_text);
+      } else {
+        var content = '';
+        try { content = input.llm_choices[0].message.content; } catch (e) { content = ''; }
+        arr = extractArrayFromText(content);
+      }
+      if (!Array.isArray(arr)) throw new Error('LLM 輸出不是陣列');
+
+      var byConceptRaw = parse(input.by_concept_raw) || {};
+      var validNames = {};
+      for (var k in byConceptRaw) validNames[k] = true;
+
+      var isDryRun = String(input.dry_run) !== 'false'; // 預設只回報；明確帶 dry_run=false 才寫（同 rag_entity_dedupe 慣例：會改資料的工具預設不動手）
+      var mergeGroups = [];
+      var rewrite_record = [];
+      var totalRewrites = 0;
+      for (var i = 0; i < arr.length; i++) {
+        var it = arr[i] || {};
+        var canonical = String(it.canonical || '').trim();
+        var membersRaw = Array.isArray(it.members) ? it.members : [];
+        var members = membersRaw.map(function (m) { return String(m || '').trim(); }).filter(function (m) { return m && validNames[m]; });
+        if (!canonical || !validNames[canonical] || members.length < 2) continue; // canonical 必須是清單上真的存在的名稱，且這組至少 2 個成員才算同義組
+        var toRewrite = members.filter(function (m) { return m !== canonical; });
+        if (toRewrite.length === 0) continue; // 全部成員就是 canonical 自己，沒有要改的
+        var groupRecordCount = 0;
+        for (var j = 0; j < toRewrite.length; j++) {
+          var name = toRewrite[j];
+          var recs = byConceptRaw[name] || [];
+          for (var r = 0; r < recs.length; r++) {
+            groupRecordCount++;
+            totalRewrites++;
+            if (!isDryRun) rewrite_record.push({ record_id: recs[r].id, canonical: canonical });
+          }
+        }
+        mergeGroups.push({ canonical: canonical, absorbed: toRewrite, record_count: groupRecordCount });
+      }
+      if (mergeGroups.length === 0) throw new Error('__NO_SYNONYM_GROUPS__：LLM 沒有判斷出需要合併的同義概念（清單裡的概念名稱目前互不重疊）');
+      return {
+        success: true,
+        merge_groups: mergeGroups,
+        merge_group_count: mergeGroups.length,
+        rewrite_record: rewrite_record,
+        will_rewrite: totalRewrites,
+        dry_run: isDryRun,
+      };
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144
+
+  # LLM 沒判斷出任何同義組時，throw 出來的訊息就是「沒事做」——固定回成功，
+  # 不讓「目前概念名稱已經互不重疊」的正常狀況變成一次失敗紀錄。
+  absorb_no_groups:
+    component: "__CODE_URL__"
+    input:
+      parse_error: "{{parse_llm.error}}"
+    code: |
+      return { success: true, concept_dedupe_skipped: true, reason: String(input.parse_error || 'no synonym groups') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # 只改 object（概念名稱），subject／predicate／library 都不動——同一個 subject 在
+  # 同一個 library 底下原本就只有一條「屬於」（membership 判斷保證），改完仍是一條。
+  patch_concept:
+    component: "__HTTP_REQ_URL__"
+    method: PATCH
+    url: "__KBDB_BASE__/records/{{rewrite_record.record_id}}"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      values:
+        object: "{{rewrite_record.canonical}}"

@@ -1,0 +1,49 @@
+{
+  "purpose": "inkstone/arcrun-rag#13 c14360 A 驗收：門檻改讀 KBDB cluster_criteria 後，改一個值、判定跟著變",
+  "seed_cluster": {
+    "cluster_id": "zq-seed-c14360",
+    "member": "seed#zq-clean-test",
+    "vec_json": "{\"zqalphacrit\":0.5,\"zqbetacrit\":0.5,\"zqgammacrit\":0.5,\"zqdeltacrit\":0.5}",
+    "note": "刻意用無意義英文字彙，確保跟庫裡任何既有票/教訓內容都不會意外重疊"
+  },
+  "runs": [
+    {
+      "step": "before",
+      "criteria_state": "cluster_criteria(use_type=ticket).sim_threshold = 0.22（proposal 原定初值，未改動）",
+      "probe_ticket": "inkstone/e2e-sandbox#9103",
+      "probe_title": "zqalphacrit uniqueword0 uniqueword1 uniqueword2 uniqueword3 uniqueword4 uniqueword5",
+      "computed_sim_to_seed": 0.1889822365046136,
+      "decision": "new",
+      "applied_sim_threshold": 0.22,
+      "criteria_source": "kbdb_cluster_criteria",
+      "raw_notify_text": "[cluster-auto] inkstone/e2e-sandbox#9103 已自動分群：new -> ticket_auto-inkstonee2esandbox9103-1790559290223（既有群數 5，門檻 0.22／來源 kbdb_cluster_criteria）"
+    },
+    {
+      "step": "criteria_changed",
+      "action": "POST /kbdb/records template=cluster_criteria use_type=ticket sim_threshold=0.15（append-only，新寫一筆；讀回排序是新到舊，取第一筆命中者為生效值）",
+      "new_record_id": "rec_b607ee0e-c378-428c-acbc-74b064afcac6"
+    },
+    {
+      "step": "after",
+      "criteria_state": "cluster_criteria(use_type=ticket).sim_threshold = 0.15（剛寫入的那筆）",
+      "probe_ticket": "inkstone/e2e-sandbox#9105",
+      "probe_title": "zqalphacrit uniqueword11 uniqueword12 uniqueword13 uniqueword14 uniqueword15",
+      "computed_sim_to_seed": 0.1889822365046136,
+      "decision": "attach",
+      "attached_to_cluster_id": "zq-seed-c14360",
+      "applied_sim_threshold": 0.15,
+      "criteria_source": "kbdb_cluster_criteria",
+      "raw_notify_text": "[cluster-auto] inkstone/e2e-sandbox#9105 已自動分群：attach -> zq-seed-c14360（既有群數 7，門檻 0.15／來源 kbdb_cluster_criteria）"
+    },
+    {
+      "step": "restore",
+      "action": "POST /kbdb/records template=cluster_criteria use_type=ticket sim_threshold=0.22（append-only 補一筆改回原值，不影響已跑過的 membership 紀錄）",
+      "new_record_id": "rec_b4782f5c-f56b-40bd-a4e0-efd8c28878db"
+    }
+  ],
+  "verdict": "同一組近乎相同 sim（0.189）的探測票，只改 KBDB 裡的門檻值（0.22→0.15），不重推工作流，判定從 new 變成 attach——門檻確實來自 KBDB，不再寫死。",
+  "bugs_found_and_fixed_this_round": [
+    "http_request 節點輸出 .data.body 是 JSON 字串不是已剝殼物件，原本綁 .data.body.records 對字串取欄位一律 undefined（existing_cluster_count 一直是 0，早期測試票剛好都夠不像才沒被發現）——改成整段 parse 一次再取 .records",
+    "by-template 讀回是新到舊排序，不是插入序由舊到新——原本用 forEach 覆蓋取『最後一筆』其實拿到最舊的那筆；改成取第一筆命中 use_type 的 record"
+  ]
+}

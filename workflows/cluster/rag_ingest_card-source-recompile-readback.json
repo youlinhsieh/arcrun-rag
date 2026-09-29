@@ -1,0 +1,40 @@
+{
+  "purpose": "inkstone/arcrun-rag#13 c14526：wiki 分群分支從執行期 patch 腳本改成長在 workflows/rag-ingest-card.local.yaml 源頭定義裡，安裝器 workflows.json 也帶著它，避免『源頭沒動、下次重推會蓋掉』的漂移。",
+  "why": "總管驗收 c14522 時指出：patch_rag_ingest_card_wiki_trigger.py 只改了 stage 上跑的那份，沒有動 workflows/rag-ingest-card.local.yaml 這份源頭；installer/src/workflows.json 是安裝器打包用的產物，也還是舊的。兩個後果：①下次從 repo 重推 stage，wiki 分群分支會被源頭的舊定義蓋掉而悄悄消失；②使用者裝到的是 workflows.json 那份，永遠不會有這條分支。",
+  "steps": [
+    {
+      "step": "edit_source",
+      "file": "workflows/rag-ingest-card.local.yaml",
+      "change": "parse_card 新增第三條 ON_SUCCESS 出邊：prep_cluster_wiki -> trigger_wiki_cluster（跟既有兩條 FOREACH 平行、互不牽連），內容與先前 patch 腳本寫進 stage 的那兩個節點逐字一致"
+    },
+    {
+      "step": "recompile",
+      "command": "CYPHER_BASE=https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev CYPHER_NS=yuga3bse node installer/scripts/compile-workflows.mjs",
+      "result": "rag_ingest_card 重編圖（flow 有變）：nodes=17 edges=16（原本 15/14），照本 repo 既有的產生方式，沒有手改 workflows.json 的內容",
+      "check_after": "node installer/scripts/compile-workflows.mjs --check → 通過（workflows.json 與 4 支 YAML 一致）"
+    },
+    {
+      "step": "push_from_source",
+      "command": "NS=yuga3bse CYPHER=... KBDB=... HTTPREQ=... CODE=... bash install/push-workflow-update.sh rag_ingest_card",
+      "note": "用本 repo既有的『新版實例補推單一 workflow』工具（讀 installer/src/workflows.json 裡已編譯好的 graph），不是再手動組 payload",
+      "result": "✅ rag_ingest_card 已部署"
+    },
+    {
+      "step": "real_ingest_call_after_source_repush",
+      "action": "POST rag_ingest_card/query（page_name=c14526-source-recompile-test，真實 card_content）",
+      "membership_wiki_count_before": 2,
+      "membership_wiki_count_after": 3,
+      "new_record": {
+        "record_id": "rec_cfaf1031-1521-4c48-9f11-a9849d76847d",
+        "item_id": "kb://c14526-source-recompile-test",
+        "action": "attach"
+      },
+      "verdict": "從源頭重編、重推之後，端到端驗法（開票即分群那套的姊妹版：卡片寫入即分群）仍然過，沒有靠執行期 patch。"
+    },
+    {
+      "step": "cleanup",
+      "action": "刪除 workflows/cluster/patch_rag_ingest_card_wiki_trigger.py（不再需要，源頭+安裝器已經帶著這條分支）"
+    }
+  ],
+  "known_limitation_unchanged_from_before": "trigger_wiki_cluster 呼叫的 rag_cluster_auto 目前不在 compile-workflows.mjs 的 FILES 清單裡，一般使用者的實例裝不到它——這條新分支在沒有 rag_cluster_auto 的實例上會打 404，但那只是這條分支自己失敗，不影響 parse_card 另外兩條既有 FOREACH 邊（各自獨立，互不牽連）。要讓一般使用者也收到分群，需要另外把 rag_cluster_auto 編進安裝器，不在這張票的範圍內，已在 YAML 註解與 README 裡誠實記錄。"
+}
