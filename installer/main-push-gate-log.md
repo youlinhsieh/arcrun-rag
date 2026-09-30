@@ -133,3 +133,7 @@
 | 2026-09-29 21:50:16 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 19 次） |
 | 2026-09-29 23:00:12 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 27deab5→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-09-29 23:34:11 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 61011e1→HEAD，2 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-29 23:36:49 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-09-29 23:39:43 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-09-30 12:53:38 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 774726c→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-09-30 12:55:38 | git.uncle6.me/inkstone/arcrun-rag | ship/1.4.81-oauth-n8n | ✅ 放行 | 目標不是 main／master |
