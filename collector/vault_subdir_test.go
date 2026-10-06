@@ -215,13 +215,13 @@ func runSyncOnce(t *testing.T, watch string) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaEchoStub(t)()
+	defer pageEchoStub(t)()
 
 	cfg := &DirectConfig{
 		WatchFolders: []string{watch},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)

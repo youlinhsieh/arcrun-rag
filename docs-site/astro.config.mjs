@@ -69,7 +69,6 @@ export default defineConfig({
           label: '遇到問題',
           items: [
             { label: '常見問題', slug: 'help/faq' },
-            { label: 'Gemini 金鑰被擋（403）', slug: 'help/gemini-403' },
             // 「版本說明」不再是本站的一頁（見上面 redirects 那段）——側欄直接送去 GitHub。
             { label: '版本說明（GitHub）', link: 'https://github.com/youlinhsieh/arcrun-rag/releases', attrs: { target: '_blank' } },
           ],

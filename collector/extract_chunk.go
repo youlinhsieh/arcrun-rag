@@ -1,5 +1,5 @@
 // extract_chunk.go — 把過長的純文字切成幾段、以及把幾段各自的萃取結果併回同一份
-// DocExtract。任何萃取路（workers-ai／未來的 gemma 分段）共用同一套切法與併法。
+// DocExtract。任何萃取路（現只有 workers-ai）共用同一套切法與併法。
 //
 // 出處：本檔的切段／併卡邏輯移植自 `claude/213-large-file-chunking`（commit `49ce014`）
 // 的 `extract_workersai_chunk.go`——`inkstone/arcrun-rag#213` c10625 核可時點名

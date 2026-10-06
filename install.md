@@ -16,14 +16,14 @@
 系統自動同步你的檔案、用 LLM 把原稿重寫成定稿知識卡、順手萃出三元組建知識圖譜，存進 KBDB 供三種模式查詢。分成幾層：
 
 1. **知識資料夾 ＋ 同步器（collector daemon）**：你指定一個或多個資料夾，同步器固定間隔掃一輪（預設每 5 秒），用**內容雜湊（sha256）**判斷哪些檔案真的新增／修改／刪除（先用 mtime+size 快篩，變了才重算雜湊；改名以雜湊配對，不會誤下架）。**不經 git、不經任何版本庫**。docx/pptx/pdf 在你的電腦上轉成純文字。
-2. **萃取（原稿 → 定稿知識卡）**：同步器把轉好的純文字送去 LLM 重寫成定稿卡（一句話定義／要點／關鍵實體／知識關聯）。預設走 **Workers AI**——打的是**你自己那套實例**的 `/portal/daemon/extract`，用你自己 Cloudflare 帳號內建的 AI，**不必申請任何金鑰**；也可以改用 Google Gemini（需自備 AI Studio key）。原始檔案（docx/pdf…）本身不出你的電腦，送出去的是本機轉出的純文字，回來的是知識卡。
+2. **萃取（原稿 → 定稿知識卡）**：同步器把轉好的純文字送去 LLM 重寫成定稿卡（一句話定義／要點／關鍵實體／知識關聯）。走的是**你自己那套實例**的 `/portal/daemon/extract`：雲端版用你自己 Cloudflare 帳號內建的 Workers AI，企業私有雲同一條路改接 Ollama 等模型——**同步器本身不持有任何 LLM 金鑰**，不必申請、也不會再有金鑰存在你電腦的設定檔裡。原始檔案（docx/pdf…）本身不出你的電腦，送出去的是本機轉出的純文字，回來的是知識卡。
 3. **收卡入庫**：每張定稿卡 POST 進你實例的 `rag_ingest_card` 工作流 → 寫成 KBDB 的 blocks ＋三元組（知識圖譜的邊）。從資料夾刪檔則打 `rag_takedown_direct`，把對應內容標成 `deprecated` 下架（append-only、不物理刪，查詢自動略過）。**只有定稿卡進檢索，原稿不進庫**（LLM Wiki 策略；這是它跟「裸 RAG 切塊直餵向量庫」的差別）。
 4. **KBDB（儲存與檢索層）**：Cloudflare D1 供關鍵詞查詢；內容向量化存進 Cloudflare Vectorize（index `arcrun-kbdb-embed-m3`：bge-m3／1024 維／cosine）供語義查詢；三元組構成圖譜，也是總庫知識地圖的基礎。
 5. **查詢面**：Portal（人用的網頁：搜尋／知識卡／總圖／問 AI）＋ MCP Server（把端點掛給你的 AI，讓它直接查）。問答走 `rag_chat` 工作流——keyword＋semantic＋graph 三路檢索後由 AI 組出**帶出處**的答案。
 
 ```mermaid
 flowchart LR
-    A[知識資料夾<br>md/docx/pdf] -->|同步器 content-hash 偵測<br>本機轉純文字| B[LLM 萃取定稿卡<br>Workers AI 預設／Gemini 選配]
+    A[知識資料夾<br>md/docx/pdf] -->|同步器 content-hash 偵測<br>本機轉純文字| B[LLM 萃取定稿卡<br>實例自己的 AI（Workers AI／Ollama）]
     B -->|每張卡 POST| C[rag_ingest_card<br>工作流]
     C --> D[(KBDB<br>D1 + Vectorize<br>blocks + 三元組)]
     A -.->|刪檔| T[rag_takedown_direct<br>標 deprecated]

@@ -32,7 +32,8 @@ description: 一分鐘搞懂 Arcrun RAG 在幫你做什麼。
 
 :::note
 從 v0.15.6 起，整理檔案用的是你自己 Cloudflare 帳號內建的 AI，
-**不必去 Google 申請 API Key**。想改用 Gemini 是進階選項，一般人不需要碰。
+**不必去 Google 申請 API Key**，小幫手也不會再要你貼任何金鑰。
+要換成別的 AI（例如公司自己架的模型），由管理知識庫的人在知識庫那一端設定。
 :::
 
 ## 下一步

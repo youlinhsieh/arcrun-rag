@@ -79,14 +79,14 @@ func TestWiring_雲端說沒寫進去就不准蓋已送達的章(t *testing.T) {
 		_, _ = io.WriteString(w, realFailingEnvelope)
 	}))
 	defer srv.Close()
-	defer gemmaCardStub(t, cardFixture("報銷規則", "財務"))()
+	defer extractCardStub(t, cardFixture("報銷規則", "財務"))()
 
 	manifestPath := filepath.Join(t.TempDir(), "m.json")
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     manifestPath,
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)

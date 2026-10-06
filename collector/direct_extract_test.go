@@ -30,19 +30,6 @@ func cardFixture(subject, object string) string {
 		`"relations":[]}]}`
 }
 
-// gemmaCardStub 讓 Gemini 替身回傳一份萃取 JSON（t176 起產品只走 gemma 路，
-// 測試也跟著走真實路徑——不再用 claude stub，否則測的是產品走不到的分支＝假綠）。
-func gemmaCardStub(t *testing.T, cardBody string) func() {
-	t.Helper()
-	return gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"candidates": []map[string]any{{
-				"content": map[string]any{"parts": []map[string]any{{"text": cardBody}}},
-			}},
-		})
-	})
-}
-
 // 完整鏈（gemma 替身版）：丟原稿 → 萃卡落地本地 → 只有「卡片」被 POST 到 rag_ingest_card
 // → 原文從未離開本機 → manifest 標 ingested（下一輪不重送）。
 func TestDirectExtractorModeE2E(t *testing.T) {
@@ -74,13 +61,13 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 
 	// Gemini 替身：把原稿萃成卡（B2 合格四段卡，否則新增的品質 lint 會擋下——
 	// 本測試聚焦 ingest 路，非 lint，lint 自身測試見 lint_test.go）
-	defer gemmaCardStub(t, cardFixture("報銷規則", "財務"))()
+	defer extractCardStub(t, cardFixture("報銷規則", "財務"))()
 
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
@@ -161,13 +148,13 @@ func TestDirectExtractorRemovedClearsLocalCard(t *testing.T) {
 	defer srv.Close()
 
 	// Gemini 替身：萃卡落地（B2 合格四段卡，過品質 lint）
-	defer gemmaCardStub(t, cardFixture("報銷規則", "財務"))()
+	defer extractCardStub(t, cardFixture("報銷規則", "財務"))()
 
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", RemovedWF: "rag_takedown_direct",
 		// 單檔刪除＝removed ratio 100%，預設 0.4 防呆會壓下事件；本測試聚焦下架路，放寬到 1.0
 		//（1 > 1.0×1 為 false → 事件放行）。
@@ -217,12 +204,12 @@ func TestDirectExtractorRemovedNoLocalCardOK(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaCardStub(t, cardFixture("a", "b"))()
+	defer extractCardStub(t, cardFixture("a", "b"))()
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", RemovedWF: "rag_takedown_direct",
 		MaxRemoved: 1.0,
 	}
@@ -251,7 +238,7 @@ func TestDirectExtractorFailKeepsRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Gemini 替身回 500＝萃取失敗（真實失敗模式：模型端出錯）
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"boom"}`))
 	})()
@@ -259,7 +246,7 @@ func TestDirectExtractorFailKeepsRetry(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    "https://x.example", Namespace: "demo", APIKey: "demo",
-		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test", MaxRemoved: DefaultMaxRemovedRatio,
+		Extractor: "workers-ai", ExtractorExplicit: true, MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
 	_, fileResults := splitInventory(results) // 結構先行：總覽卡另計（此處 cypher 不通，總覽也 failed）
@@ -274,7 +261,7 @@ func TestDirectExtractorFailKeepsRetry(t *testing.T) {
 	}
 }
 
-// t108 Test B：makeAccountSubConfig 必須繼承機器層 Extractor/GeminiAPIKey/CardIngestWF 等，
+// t108 Test B：makeAccountSubConfig 必須繼承機器層 Extractor/CardIngestWF 等，
 // 帳號層（AccountConfig）無這些欄位時一律繼承機器層——驗收到 rag_ingest_card 而非 rag_ingest_direct。
 func TestMultiAccountInheritsExtractor(t *testing.T) {
 	root := t.TempDir()
@@ -282,8 +269,8 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Gemini 替身：輸出一張最簡卡片
-	defer gemmaCardStub(t, cardFixture("doc", "kb"))()
+	// 雲端萃取替身：輸出一張最簡卡片
+	defer extractCardStub(t, cardFixture("doc", "kb"))()
 
 	var hitCard, hitDirect bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -299,12 +286,11 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// 機器層有 Extractor+GeminiAPIKey；帳號層 AccountConfig 無這些欄位（正是 t108 場景）
+	// 機器層有 Extractor；帳號層 AccountConfig 沒設（正是 t108 場景）
 	cfg := &DirectConfig{
 		Manifest:  filepath.Join(t.TempDir(), "m.json"),
 		Library:   "kb",
-		Extractor: "gemma", ExtractorExplicit: true,
-		GeminiAPIKey: "k-test",
+		Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card",
 		IngestWF:     "rag_ingest_direct",
 		RemovedWF:    "rag_takedown_direct",
@@ -324,7 +310,7 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 		t.Error("不應打 rag_ingest_direct（原文不出機，違反四步定稿）")
 	}
 	if !hitCard {
-		t.Error("應打 rag_ingest_card（機器層 extractor=gemma 應被帳號繼承）")
+		t.Error("應打 rag_ingest_card（機器層 extractor 應被帳號繼承）")
 	}
 }
 
@@ -332,8 +318,9 @@ func TestMultiAccountInheritsExtractor(t *testing.T) {
 //
 // 🔴 t182 更新（leo 08-04 起 workers-ai 成為預設）：`extractor:""` 已**不再**代表
 // 「舊制直送」——LoadDirectConfig/RunDirectOnce 會把它正規化成 workers-ai。
-// 要測「舊制直送模式擋二進位」，必須把 config 逼進那條路：這裡用 ExtractorExplicit
-// 明示、且不給任何可用引擎，才是真正的「無萃取器」狀態。
+// 🔴 inkstone/arcrun-rag#58：本機金鑰的引擎已拔除，「選了 Gemini 卻沒有金鑰」這個停點不復存在。
+// 本測現在驗的是：一份轉不出文字的「PDF」走 workers-ai 路時，在**轉檔層**就失敗，
+// 位元組／原文不會上雲、也不會退回舊制直送端點。
 //
 // ⚠️ 本測試守的契約沒變、也不准放寬：**原始二進位永遠不出用戶的電腦**。
 // workers-ai 路一樣守——它送的是 ConvertToText 之後的純文字（extract_workersai.go），
@@ -365,9 +352,7 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
 		Library: "kb",
-		// t182：明示「使用者選過、但沒有可用引擎」＝真正的無萃取器狀態。
-		// （不能只寫 Extractor:""——那現在會被正規化成 workers-ai，測不到這條防禦閘。）
-		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "",
+		Extractor: "workers-ai", ExtractorExplicit: true,
 		IngestWF:   "rag_ingest_direct",
 		RemovedWF:  "rag_takedown_direct",
 		MaxRemoved: DefaultMaxRemovedRatio,
@@ -386,38 +371,30 @@ func TestExtractorEmptyBlocksNonTextDirect(t *testing.T) {
 	if len(fileResults) != 1 || fileResults[0].Status != "failed" {
 		t.Fatalf("results=%+v", fileResults)
 	}
-	// t182：這裡是「選了 Gemini 卻沒有金鑰」⇒ 停在萃取層、誠實報缺什麼。
-	// 本測真正要守的契約沒變、也仍然綠：**PDF 不得被直送上雲**（上面的 leaked）。
-	if !strings.Contains(fileResults[0].Error, "gemini_api_key") {
-		t.Errorf("錯誤訊息不符：%q", fileResults[0].Error)
+	// 失敗要說得出原因（不准安靜消失）；本測要守的契約是：**PDF 不得被直送上雲**（上面的 leaked）。
+	if !strings.Contains(fileResults[0].Error, "轉檔失敗") {
+		t.Errorf("錯誤訊息應指出是轉檔層擋下：%q", fileResults[0].Error)
 	}
 }
 
 // ── t181：預設一律走 Workers AI（免金鑰）──────────────────────────────────────
 //
-// leo 2026-08-04 特別交代（這是本測存在的理由）：
-//
-//	「default 用 Workers AI，你要用 Gemini 要**特別去選取**，**不管你現在是否有填金鑰**」
-//	「只要更新版本，就已經 default workers AI 了，除非去一個地方切換你指定的 AI 來源」
-//	「不然我會有很多質疑，**花在解釋為什麼 Gemini 不管用上**」
-//
-// ⇒ 判準是 ExtractorExplicit（使用者主動選過），**不是**「有沒有金鑰」。
+// leo 2026-08-04：「只要更新版本，就已經 default workers AI 了」。
+// 🔴 inkstone/arcrun-rag#58（leo 2026-10-01）：引擎不再可選——無論 config 殘留什麼舊值
+// （gemma／claude、有沒有「主動選過」），一律 workers-ai。
 func TestT181DefaultsToWorkersAI(t *testing.T) {
 	cases := []struct {
 		name      string
 		extractor string
 		explicit  bool
-		key       string
 		want      string
 	}{
-		{"新用戶（什麼都沒設）", "", false, "", "workers-ai"},
-		{"舊 config 有 gemma 但沒主動選", "gemma", false, "", "workers-ai"},
-		// 🔴 最關鍵的一則：**有金鑰也照樣先走 Workers AI**
-		{"有金鑰但沒主動選＝仍走雲端 AI", "gemma", false, "AIza-xxx", "workers-ai"},
-		{"殘留 claude 且沒主動選", "claude", false, "", "workers-ai"},
-		// 主動選過才尊重他的選擇
-		{"主動選了 Gemini", "gemma", true, "AIza-xxx", "gemma"},
-		{"主動選了雲端 AI", "workers-ai", true, "", "workers-ai"},
+		{"新用戶（什麼都沒設）", "", false, "workers-ai"},
+		{"舊 config 有 gemma 但沒主動選", "gemma", false, "workers-ai"},
+		{"殘留 claude 且沒主動選", "claude", false, "workers-ai"},
+		// 以前「主動選了 Gemini」會被尊重；現在那條路已拔除 ⇒ 一樣是 workers-ai
+		{"舊 config 主動選過 Gemini", "gemma", true, "workers-ai"},
+		{"主動選了雲端 AI", "workers-ai", true, "workers-ai"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -429,13 +406,11 @@ func TestT181DefaultsToWorkersAI(t *testing.T) {
 				APIKey:            "demo",
 				Extractor:         c.extractor,
 				ExtractorExplicit: c.explicit,
-				GeminiAPIKey:      c.key,
 				MaxRemoved:        DefaultMaxRemovedRatio,
 			}
 			RunDirectOnce(cfg, false) // 空資料夾＝零事件，只看預設邏輯把 Extractor 定成什麼
 			if cfg.Extractor != c.want {
-				t.Errorf("Extractor=%q want=%q（explicit=%v key=%q）",
-					cfg.Extractor, c.want, c.explicit, c.key)
+				t.Errorf("Extractor=%q want=%q（explicit=%v）", cfg.Extractor, c.want, c.explicit)
 			}
 		})
 	}

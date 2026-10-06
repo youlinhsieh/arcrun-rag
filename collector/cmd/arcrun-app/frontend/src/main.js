@@ -800,22 +800,15 @@ function pageLib(s, idx) {
 }
 
 function pageAI(s) {
-  const gem = s.engine === 'gemma';
+  // inkstone/arcrun-rag#58：整理文件的 AI 一律在你的知識庫（雲端）裡跑，這台電腦只轉發文字，
+  // 不再有「選引擎」「貼金鑰」——所以這一頁只剩說明，沒有任何輸入欄位。
   return `
     <div class="card">
-      <h3>用哪個 AI 幫你整理文件？</h3>
-      <label class="radio"><input type="radio" name="ai" value="cloud" ${gem ? '' : 'checked'}/>
-        <span><b>雲端 AI</b>（推薦・不必申請任何金鑰）<br/>
-        <span class="d">用你自己 Cloudflare 帳號內建的 AI，不需要任何金鑰、不必去別的網站申請。</span></span></label>
-      <label class="radio"><input type="radio" name="ai" value="gemini" ${gem ? 'checked' : ''}/>
-        <span><b>Google Gemini</b>（需要自己申請金鑰）<br/>
-        <span class="d">進階選項。要自己去 aistudio.google.com 申請一把 API Key。</span></span></label>
-      <div class="field">
-        <div class="lb">Gemini 金鑰${s.geminiKey ? '（目前已設定，清空並儲存即可刪除）' : ''}</div>
-        <input type="text" id="k" placeholder="貼上你的 Gemini API Key"/>
-      </div>
-      <div class="err" id="aiErr" style="display:none"></div>
-      <div class="acts"><button class="primary" id="aiSave">儲存</button></div>
+      <h3>AI 怎麼幫你整理文件？</h3>
+      <div class="d">整理文件的 AI 在<b>你的知識庫那一端</b>執行，這台電腦只負責把文字送過去、
+        把整理好的卡片收回來。<br/>
+        <b>你不需要申請、也不需要貼上任何金鑰。</b>要換成別的 AI（例如公司自己的模型），
+        由管理知識庫的人在知識庫那一端設定，這裡不用動。</div>
     </div>`;
 }
 
@@ -1170,7 +1163,7 @@ function pageApp(accIdx, id) {
 // 🔴 為什麼一定要 iframe（這是桌面端與 Portal 的關鍵差異，不是潔癖）：
 //    Portal 是網頁，把 App 的 HTML 直接 innerHTML 進去，那段 script 最多拿到
 //    同一頁的 fetch 與 session token。**桌面這半不一樣**——這裡的 window 上掛著
-//    `window.go.main.App`：`Connect`／`SetAI`／`RemoveFolder(…, takedown=true, cleanupLocal=true)`
+//    `window.go.main.App`：`Connect`／`RemoveFolder(…, takedown=true, cleanupLocal=true)`
 //    全都在上面。直接 innerHTML ＝ 任何一個 App 的作者都能刪掉使用者雲端的知識
 //    ——#138 之後**連他硬碟上的整理稿也刪得掉**，這道窄門只會越來越重要。
 //    ⇒ `sandbox="allow-scripts"`（**不給** allow-same-origin ⇒ 不同源，
@@ -1266,7 +1259,6 @@ function wire() {
   on('obInstall', () => go.OpenURL('https://install.arcrun.dev/'));
   on('obNext', () => { obStep = 2; renderPage(); });
   on('obBack', () => { obStep = 1; renderPage(); });
-  on('aiSave', saveAI);
   on('uCheck', checkUpdate); on('uDownload', downloadUpdate); on('uApply', applyUpdate);
   document.querySelectorAll('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
   document.querySelectorAll('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
@@ -1529,14 +1521,6 @@ function showConnect() {
         } catch (ex) { $('err').textContent = String(ex); $('err').style.display = 'block'; }
       };
     });
-}
-
-async function saveAI() {
-  const useGemini = document.querySelector('input[name=ai]:checked').value === 'gemini';
-  try {
-    await go.SetAI(useGemini, $('k').value.trim());
-    state = await go.GetState(); renderPage();
-  } catch (ex) { $('aiErr').textContent = String(ex); $('aiErr').style.display = 'block'; }
 }
 
 async function checkUpdate() {

@@ -175,7 +175,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 
 	// legacy fallback：舊雲端（不認得 prompt）回 `card`（舊格式 markdown）。
 	// 與 gemma 舊路同一套淨化與落卡（第一行必須是「# <頁名>」），#60 保護不動。
-	card := cleanGemmaCard(legacyCard, pageName)
+	card := cleanLegacyCard(legacyCard, pageName)
 	if !strings.HasPrefix(card, "# ") {
 		return nil, fmt.Errorf("萃出內容不像卡片（未以 # 開頭）：%.120s", card)
 	}

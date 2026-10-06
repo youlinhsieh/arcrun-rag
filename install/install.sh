@@ -15,7 +15,7 @@ set -uo pipefail
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"      # repo 的 install/
 REPO_ROOT="$(cd "$INSTALL_DIR/.." && pwd)"        # arcrun-rag repo 根
 
-# ── .env（選配：repo 根放 .env 可提供 GEMINI_API_KEY / AUTO_DIGEST 等；不進版控）──
+# ── .env（選配：repo 根放 .env 可提供 AUTO_DIGEST 等；不進版控）──
 if [ -f "$REPO_ROOT/.env" ]; then
   set -a; . "$REPO_ROOT/.env"; set +a
 fi
@@ -38,11 +38,11 @@ GITEA_BASE="http://127.0.0.1:$GITEA_PORT"
 KBDB_BASE="http://127.0.0.1:$KBDB_PORT"
 CYPHER_BASE="http://127.0.0.1:$CYPHER_PORT"
 # ── 自動精耕開關（G11，leo 2026-07-13 拍板預設開）───────────────────────
-#   AUTO_DIGEST=true（預設）：每檔 ingest 完自動接 rag_wiki_digest（Gemini 精耕）。
-#   ⚠ 每檔一次 Gemini API 呼叫＝token 花費；量大可設 AUTO_DIGEST=false 改手動/批次。
-#   需要 GEMINI_API_KEY（.env 或環境變數）；沒 key 自動降級為關（誠實告知，不假裝）。
-AUTO_DIGEST="${AUTO_DIGEST:-true}"
-GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+#   AUTO_DIGEST=true：每檔 ingest 完自動接 rag_wiki_digest（走實例自己的 Workers AI，免金鑰；
+#   inkstone/arcrun-rag#58 起不再打 Gemini）。
+#   🔴 本機 self-hosted（miniflare）沒有 Workers AI binding ⇒ 預設 false（尚未在本機實測 true 的行為），
+#   雲端實例走安裝器、不經本腳本。
+AUTO_DIGEST="${AUTO_DIGEST:-false}"
 mkdir -p "$STATE" "$LOGS"
 
 step()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*"; }
@@ -66,11 +66,7 @@ command -v git >/dev/null || die "缺 git"
 docker ps >/dev/null 2>&1 || die "docker 不可用（OrbStack/Docker Desktop 要先開）"
 [ -d "$ARCRUN_REPO/kbdb" ] || die "找不到 Arcrun 引擎 checkout（${ARCRUN_REPO}）；git clone https://github.com/youlinhsieh/Arcrun.git"
 command -v markitdown >/dev/null && ok "markitdown 有（docx/pptx/pdf 轉檔可用）" || echo "⚠ markitdown 沒裝（docx 轉檔不可用；pip install 'markitdown[docx,pptx,pdf]'）"
-if [ "$AUTO_DIGEST" = "true" ] && [ -z "$GEMINI_API_KEY" ]; then
-  AUTO_DIGEST=false
-  echo "⚠ AUTO_DIGEST 預設開但沒有 GEMINI_API_KEY → 自動精耕本次關閉（repo 根 .env 補 GEMINI_API_KEY=<key> 後重跑即開）"
-fi
-[ "$AUTO_DIGEST" = "true" ] && ok "自動精耕：開（每檔 ingest 完自動跑 Gemini；每檔一次 API 呼叫）" || echo "ℹ 自動精耕：關（精耕改手動觸發，見完成頁 5)）"
+[ "$AUTO_DIGEST" = "true" ] && ok "自動精耕：開（每檔 ingest 完自動跑 Workers AI 精耕）" || echo "ℹ 自動精耕：關（精耕改手動觸發，見完成頁 5)）"
 ok "前置檢查通過"
 
 # ── 步驟 1：Gitea 本機容器 ────────────────────────────────────────────────
@@ -184,9 +180,9 @@ for src in rag-ingest.yaml graph-neighbors.local.yaml rag-wiki-digest.yaml; do
   wf="${src%.local.yaml}"; wf="${wf%.yaml}"
   sed -e "s|__NAMESPACE__|$NS|g" \
       -e "s|__KBDB_BASE__|$KBDB_BASE|g" \
+      -e "s|__CYPHER_BASE__|$CYPHER_BASE|g" \
       -e "s|__GITEA_BASE__|$GITEA_BASE|g" \
       -e "s|__GITEA_TOKEN__|$GITEA_TOKEN|g" \
-      -e "s|__GEMINI_API_KEY__|$GEMINI_API_KEY|g" \
       -e "s|__HTTP_REQ_URL__|http://127.0.0.1:$HTTPREQ_PORT|g" \
       -e "s|__CODE_URL__|http://127.0.0.1:$CODE_PORT|g" \
       -e "s|__LIBRARY__|$LIBRARY|g" \
@@ -229,13 +225,13 @@ cat <<EOF
      keyword : curl "$KBDB_BASE/entries/search?q=<關鍵字>&owner_id=$NS"
      graph   : curl "$CYPHER_BASE/q/$NS/graph_neighbors?node=knowledge-base&depth=2&template=triplet&namespace=$NS&kbdb_base=$KBDB_BASE"
      semantic: 加 &mode=semantic（本機無 Vectorize → 誠實降級 keyword＋capability_hint）
-  5. LLM 精耕（Gemini）：
+  5. LLM 精耕（Workers AI）：
      自動接鏈（AUTO_DIGEST）目前＝$AUTO_DIGEST
-       開＝每檔 ingest 完自動長出 wiki-<頁名> 精耕頁（每檔一次 Gemini API 呼叫）。
+       開＝每檔 ingest 完自動長出 wiki-<頁名> 精耕頁（每檔一次 AI 呼叫）。
        關/手動觸發：
      curl -X POST "$CYPHER_BASE/webhooks/named/rag_wiki_digest/query" \\
        -H "X-Arcrun-API-Key: $NS" -H 'Content-Type: application/json' \\
-       -d '{"page_name":"<文件頁名>","gemini_key":"<你的key>"}'
+       -d '{"page_name":"<文件頁名>"}'
   6. 刪檔＝從庫下架：從資料夾刪掉檔案 → 對應 entries/triplet 標 deprecated
      （append-only 不物理刪；graph 查詢自動略過 deprecated）。
 

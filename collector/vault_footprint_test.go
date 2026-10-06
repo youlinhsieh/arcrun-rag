@@ -47,33 +47,20 @@ import (
 	"testing"
 )
 
-// gemmaEchoStub＝會**看請求是哪一頁**、回傳對應那一頁合格萃取 JSON 的 Gemini 替身。
+// pageEchoStub＝會**看請求是哪一頁**、回傳對應那一頁合格萃取 JSON 的雲端萃取替身。
 //
-// 為什麼不能沿用 gemmaCardStub（固定回同一份）：這一支測試的 fixture 是「真的有
+// 為什麼不能沿用 extractCardStub（固定回同一份）：這一支測試的 fixture 是「真的有
 // 既有頁面的 vault」，一輪會萃好幾份（journals、pages、丟進去的原稿）。固定回同一份
 // 會讓多份文件的概念卡同名互撞（wikishape 的佔用保護會擋下）⇒ 測試綠不了，
-// 而那是替身的問題不是產品的問題。頁名從 wikiExtractPrompt 的「檔名：<頁名>）」裡取回來。
-func gemmaEchoStub(t *testing.T) func() {
+// 而那是替身的問題不是產品的問題。頁名取自請求的 page_name 欄位。
+func pageEchoStub(t *testing.T) func() {
 	t.Helper()
-	return gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Contents []struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"contents"`
-		}
+	return extractStub(t, func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		prompt := ""
-		if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 {
-			prompt = req.Contents[0].Parts[0].Text
-		}
-		page := "未知頁"
-		if i := strings.Index(prompt, "檔名："); i >= 0 {
-			rest := prompt[i+len("檔名："):]
-			if j := strings.Index(rest, "）"); j >= 0 {
-				page = rest[:j]
-			}
+		page := req["page_name"]
+		if page == "" {
+			page = "未知頁"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
@@ -186,7 +173,7 @@ func TestVaultFootprint_EveryNewFileIsMarked(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaEchoStub(t)()
+	defer pageEchoStub(t)()
 
 	before := snapshotTree(t, root)
 	logTree(t, "跑之前", before)
@@ -195,7 +182,7 @@ func TestVaultFootprint_EveryNewFileIsMarked(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
@@ -290,14 +277,14 @@ func TestPlainFolderFootprint_EveryNewFileIsMarked(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaEchoStub(t)()
+	defer pageEchoStub(t)()
 
 	before := snapshotTree(t, root)
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	if results, exit, _ := RunDirectOnce(cfg, false); exit != 0 {
@@ -343,8 +330,8 @@ func TestVaultFootprint_ForeignWikiFileNotClobbered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer gemmaCardStub(t, cardFixture("會議記錄", "專案"))()
-	if _, err := ExtractWithGemma("k-test", "gemma-test", root, srcRel, testOrigin()); err == nil {
+	defer extractCardStub(t, cardFixture("會議記錄", "專案"))()
+	if _, err := ExtractWithWorkersAI("https://stub.invalid", "k-test", root, srcRel, testOrigin()); err == nil {
 		t.Fatal("目標被佔用時應報錯，不得無聲覆蓋")
 	}
 	data, _ := os.ReadFile(filepath.Join(cardDir, "會議記錄.md"))

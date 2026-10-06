@@ -53,7 +53,7 @@
 #   ③ **`http_request` 的 `body_json` 是顯式白名單，不會被上游 ctx 污染。**
 #      main.go 的 `Input` struct 只認 url/method/headers/body/body_json，其餘欄位
 #      json.Unmarshal 直接丟掉（auth-recipe 零件則會把整個 ctx 攤平當 body ——
-#      那個坑記在 gemini-generate.yaml 檔頭）。節點自己寫的 `url` 也永遠贏過 ctx 裡
+#      那個坑記在 workers-ai-generate.yaml 檔頭）。節點自己寫的 `url` 也永遠贏過 ctx 裡
 #      同名的值（`mergedContext = {...ctx, ...resolvedData}`，resolvedData 在後）
 #      ——這很重要：`after_issue` 的輸出帶著一個叫 `url` 的欄位（票網址），
 #      若沒有這個順序，`notify` 會去打票網址而不是通知端點。

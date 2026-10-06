@@ -1,38 +1,23 @@
-// extract_gemma.go — gemma 本地萃取路（daemon-beta task 4）。
+// extract_prompt.go — 萃取契約（提示詞＋JSON 解析）：全部萃取路共用的唯一一份。
 //
-// prompt 與淨化規則抄自實戰版 rag_extract_one workflow（同一套格式：一句話定義/要點/
-// 關鍵實體/關聯），差別只在跑的位置：workflow 在雲端實例跑、這裡在用戶機器上由 daemon 直呼。
-// 原文內容過境 Gemini API 一次，不落任何雲端儲存（四步定稿邊界）。
-//
-// gemma-4-31b 是思考型模型：parts[0] 常是 thought=true 的思考草稿，真答案在最後一個
-// 非 thought 的 text part（agent-memory §7.6 實撞教訓，讀法照抄）。
+// 🔴 inkstone/arcrun-rag#58（leo 2026-10-01）：本檔原名 extract_gemma.go，曾是 daemon 直呼
+// Google Gemini 的「gemma 路」。那條路連同 `config.json` 裡的明碼 `gemini_api_key` 已拔除——
+// 萃取 AI 一律在雲端（CF 雲＝Workers AI、企業私有雲＝Ollama，走同一條 /portal/daemon/extract），
+// 小幫手只轉發。留下來的是與 LLM 供應商無關的部分：提示詞怎麼寫、模型回的 JSON 怎麼解析。
+// 模型只回 JSON（判斷），格式與落點全由 wikishape.go 機械組裝。
 package collector
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 )
-
-// gemmaBaseURL 可注入（測試用 httptest 替身）。
-var gemmaBaseURL = "https://generativelanguage.googleapis.com"
-
-const defaultLLMModel = "gemma-4-31b-it"
-
-var gemmaHTTP = &http.Client{Timeout: 120 * time.Second}
 
 // wikiExtractPrompt 組出「文件卡＋N 張原子概念卡」的結構化萃取指令（InkStoneCo#44 ④）。
 //
 // 🔴 這是**全部萃取路共用的唯一一份**提示詞（Arcrun#134 起原名 gemmaPrompt 改此名）：
-// gemma 路自己打 Gemini 用它；workers-ai 路把它整段帶去雲端（`prompt` 欄位）給
-// env.AI 跑。契約（提示詞＋parseWikiExtractJSON＋BuildWikiDoc）同住本 package
-// ⇒ 兩條路的卡片形狀由同一份程式碼保證，不再靠「兩邊要一起改」的叮嚀。
+// daemon 把它整段帶去雲端（`prompt` 欄位）給實例自己的 AI 跑。
+// 契約（提示詞＋parseWikiExtractJSON＋BuildWikiDoc）同住本 package ⇒ 卡片形狀由同一份程式碼保證。
 //
 // 🔴 分工：模型只回 JSON（判斷），格式與落點全由 wikishape.go 機械組裝——
 // 模型不寫 markdown、不決定檔名、不碰路徑。Luhmann ②（一卡一概念）在**萃取端**做，
@@ -154,104 +139,11 @@ func parseWikiExtractJSON(text string) (*DocExtract, error) {
 	return &ex, nil
 }
 
-// cleanGemmaCard 淨化思考型模型輸出：取最後一個「# <pageName>」起的內容（前面全是草稿）。
-func cleanGemmaCard(text, pageName string) string {
+// cleanLegacyCard 淨化思考型模型輸出：取最後一個「# <pageName>」起的內容（前面全是草稿）。
+func cleanLegacyCard(text, pageName string) string {
 	marker := "# " + pageName
 	if i := strings.LastIndex(text, marker); i >= 0 {
 		return strings.TrimSpace(text[i:]) + "\n"
 	}
 	return strings.TrimSpace(text) + "\n"
-}
-
-// ExtractWithGemma 讀原稿 → 呼 Gemini 萃卡 → 卡片落地 system-dev/wiki/cards/。
-// 回傳產出的卡片相對路徑（單檔一卡）。
-func ExtractWithGemma(apiKey, model, absRoot, relPath string, origin SourceOrigin) ([]string, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("gemma 萃取路需要 gemini_api_key（config）")
-	}
-	if model == "" {
-		model = defaultLLMModel
-	}
-	raw, err := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(relPath)))
-	if err != nil {
-		return nil, fmt.Errorf("讀原稿失敗：%w", err)
-	}
-
-	// 本地轉檔層（t73/t16，2026-07-27）：任何格式在這裡變成「模型可讀的純文字」。
-	// 純文字檔原樣通過；.docx 等走對應抽取器。**LLM 只會收到文字，永遠不會收到二進位**
-	//（那正是這一層存在的理由——見 convert.go 檔頭與 pdf-extraction-options.md 洞 B）。
-	srcText, err := ConvertToText(relPath, raw)
-	if err != nil {
-		// 這裡刻意**不吞錯**：靜默略過正是 leo 撞到的病（丟檔進去沒反應）。
-		// ErrNoText＝掃描件/空檔，ErrUnsupported＝還沒支援的格式，兩者訊息不同但都要說出來。
-		return nil, fmt.Errorf("轉檔失敗（%s）：%w", relPath, err)
-	}
-
-	pageName := pageNameOf(relPath)
-
-	reqBody, _ := json.Marshal(map[string]any{
-		"contents": []map[string]any{
-			{"parts": []map[string]any{{"text": wikiExtractPrompt(pageName, srcText)}}},
-		},
-		"generationConfig": map[string]any{"temperature": 0.2, "maxOutputTokens": 8192},
-	})
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", gemmaBaseURL, model)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", apiKey)
-	resp, err := gemmaHTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("Gemini API 連線失敗：%w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Gemini API HTTP %d：%.300s", resp.StatusCode, string(body))
-	}
-
-	// 解析：candidates[0].content.parts → 最後一個非 thought 的 text part
-	var parsed struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Thought bool   `json:"thought"`
-					Text    string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("Gemini 回應解析失敗：%w", err)
-	}
-	var text string
-	if len(parsed.Candidates) > 0 {
-		parts := parsed.Candidates[0].Content.Parts
-		for i := len(parts) - 1; i >= 0; i-- {
-			if !parts[i].Thought && parts[i].Text != "" {
-				text = parts[i].Text
-				break
-			}
-		}
-	}
-	if text == "" {
-		return nil, fmt.Errorf("Gemini 回應沒有可用文字（thought-only 或空回應）")
-	}
-
-	// InkStoneCo#44 ④（2026-08-15）：產出改走塑形層——模型回 JSON（判斷），
-	// wikishape.go 機械組裝出規範形的 `.wiki/` 卡（文件卡＋原子概念卡＋索引＋manifest）。
-	// 舊的「單檔一卡落 cards/」由此淘汰（差距表 #6–#10 的現狀）；
-	// #60 的兩條保護換了形式仍在：落點是隱藏目錄（不進筆記軟體）、既有檔一律不覆蓋。
-	ex, perr := parseWikiExtractJSON(text)
-	if perr != nil {
-		return nil, perr
-	}
-	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
-	if berr != nil {
-		return nil, berr
-	}
-	// 沒有可萃概念＝合法結果：不產卡，但 00-INDEX 已列「空」（差距 #10）。
-	return cards, nil
 }

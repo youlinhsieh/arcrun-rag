@@ -67,7 +67,6 @@ type accountCfg struct {
 	//    凡是 collector 的 AccountConfig 有、而 App 會改到的欄位，兩份必須鏡像。
 	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	Extractor       string   `json:"extractor,omitempty"`
-	GeminiAPIKey    string   `json:"gemini_api_key,omitempty"`
 	// PortalSession／PortalSessionExp＝這台電腦對這個知識庫的 portal 登入憑證
 	// （arcrun-rag#137 App 啟動器用；App 詳情與動作只有 portal session 那條路有，
 	// 見 apps.go 檔頭）。**這是 session token 不是密碼**——密碼仍然零落地。
@@ -85,7 +84,6 @@ type directConfig struct {
 	Manifest          string       `json:"manifest"`
 	Extractor         string       `json:"extractor,omitempty"`
 	ExtractorExplicit bool         `json:"extractor_explicit,omitempty"`
-	GeminiAPIKey      string       `json:"gemini_api_key,omitempty"`
 	raw               map[string]any
 }
 
@@ -181,16 +179,54 @@ func loadCfg() (*directConfig, error) {
 	_ = json.Unmarshal(b, &c.raw)
 	// 🔴 自我修復：舊版存出來的 config 可能少了 collector 的必填欄位。
 	//    只補進記憶體不夠——collector 讀的是**磁碟上那份**，所以要寫回去。
-	if fillRequired(c.raw) {
+	// 🔴 inkstone/arcrun-rag#58：同一次回寫順手把舊的明碼 LLM 金鑰抹掉。
+	scrubbed := scrubLegacyLLMKeys(c.raw)
+	if scrubbed {
+		appLog("設定檔裡殘留舊的 AI 金鑰欄位，已抹除（萃取改走雲端 AI，本機不再存金鑰）")
+	}
+	if fillRequired(c.raw) || scrubbed {
 		if out, err := json.MarshalIndent(c.raw, "", "  "); err == nil {
 			_ = os.WriteFile(configPath(), out, 0o600)
 		}
 		if m, ok := c.raw["manifest"].(string); ok {
 			c.Manifest = m
 		}
-		appLog("設定檔缺必填欄位，已自動補上 manifest=%v", c.raw["manifest"])
+		if !scrubbed {
+			appLog("設定檔缺必填欄位，已自動補上 manifest=%v", c.raw["manifest"])
+		}
 	}
 	return c, nil
+}
+
+// scrubLegacyLLMKeys 抹掉 config 裡已拔除的 LLM 欄位（頂層與每個帳號的 gemini_api_key／llm_model），
+// 回報有沒有真的抹過（inkstone/arcrun-rag#58）。
+//
+// 為什麼 App 這邊也要做、不能全丟給 collector：collector 的 LoadDirectConfig 會抹並回寫，
+// 但 App 先開、或 collector 還沒跑時，磁碟上那把明碼就一直躺著；而且 App 自己的 saveCfg
+// 用 raw map 保留未宣告欄位——不抹就會把舊金鑰一路寫回去。
+func scrubLegacyLLMKeys(raw map[string]any) bool {
+	changed := false
+	for _, k := range []string{"gemini_api_key", "llm_model"} {
+		if _, ok := raw[k]; ok {
+			delete(raw, k)
+			changed = true
+		}
+	}
+	if accs, ok := raw["accounts"].([]any); ok {
+		for _, a := range accs {
+			m, ok := a.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, k := range []string{"gemini_api_key", "llm_model"} {
+				if _, ok := m[k]; ok {
+					delete(m, k)
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
 }
 
 // fillRequired 補上 collector 的必填欄位，回報有沒有真的補過。
@@ -223,7 +259,9 @@ func saveCfg(c *directConfig) error {
 	c.raw["accounts"] = accAny
 	c.raw["extractor"] = c.Extractor
 	c.raw["extractor_explicit"] = c.ExtractorExplicit
-	c.raw["gemini_api_key"] = c.GeminiAPIKey
+	// 🔴 inkstone/arcrun-rag#58：萃取 AI 一律在雲端，本機不再存任何 LLM 金鑰。
+	// raw 是「原樣保留未宣告欄位」的容器，舊檔裡的明碼會從這裡**回流**——存檔前必須抹掉。
+	scrubLegacyLLMKeys(c.raw)
 	// 🔴 2026-08-06 leo Windows 封測的真兇：`manifest` 是 collector 的**必填欄位**
 	//    （direct.go 的驗證：`if c.Manifest == "" { missing = append(missing, "manifest") }`），
 	//    而這支從來沒寫過它 ⇒ **全新安裝的機器**（config 從零長出來）永遠缺這一欄
@@ -294,8 +332,7 @@ type UIState struct {
 	StatusSub string      `json:"statusSub"`
 	Syncing   bool        `json:"syncing"`
 	Accounts  []UIAccount `json:"accounts"`
-	Engine    string      `json:"engine"`    // "workers-ai" | "gemma"
-	GeminiKey string      `json:"geminiKey"` // 只回遮罩，不回真值
+	Engine    string      `json:"engine"` // 恆為 "workers-ai"（#58：引擎不再可選）
 	Steps     []Step      `json:"steps"`     // 首頁狀態時間軸（leo #6）
 	Skipped   *UISkipped  `json:"skipped"`   // 讀不了的檔（沒有就是 null，前端不畫）
 	// EngineTrouble＝同步引擎有問題（沒在跑／一直啟動失敗）⇒ 前端才長出「回報問題」卡。
@@ -583,13 +620,7 @@ func (a *App) GetState() UIState {
 		st.Accounts = append(st.Accounts, ui)
 	}
 
-	st.Engine = cfg.Extractor
-	if !cfg.ExtractorExplicit || st.Engine == "" {
-		st.Engine = "workers-ai" // 與 direct.go 的預設判準一致
-	}
-	if strings.TrimSpace(cfg.GeminiAPIKey) != "" {
-		st.GeminiKey = "••••••••"
-	}
+	st.Engine = "workers-ai" // inkstone/arcrun-rag#58：萃取 AI 一律在雲端，與 direct.go 一致
 
 	st.Syncing, st.StatusBig, st.StatusSub = describeStatus(sync)
 	st.Steps = buildSteps(sync, st.Syncing)
@@ -931,34 +962,6 @@ func pruneFinishedRetirements(cfg *directConfig, sync syncStatus) bool {
 		}
 	}
 	return changed
-}
-
-// SetAI 存 AI 設定。
-// 🔴 t190：金鑰**無條件以輸入框為準**（清空＝刪除）——leo 實撞過「金鑰刪不掉」。
-func (a *App) SetAI(useGemini bool, key string) error {
-	cfg, err := loadCfg()
-	if err != nil {
-		return err
-	}
-	engine := "workers-ai"
-	if useGemini {
-		engine = "gemma"
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("選了 Gemini 就要貼上金鑰；不想申請的話請改選「雲端 AI」")
-		}
-	}
-	cfg.Extractor = engine
-	cfg.ExtractorExplicit = true
-	cfg.GeminiAPIKey = key
-	for i := range cfg.Accounts {
-		cfg.Accounts[i].Extractor = engine
-		cfg.Accounts[i].GeminiAPIKey = key
-	}
-	if err := saveCfg(cfg); err != nil {
-		return err
-	}
-	restartWatch()
-	return nil
 }
 
 // OpenURL 用系統瀏覽器開網址（下載頁／說明文件）。

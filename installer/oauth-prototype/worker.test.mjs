@@ -4961,3 +4961,128 @@ test('🔴 #212 cron 同步必須在 deploy 步驟**外面**（整批跳過那�
   assert.ok(secretBlock > 0 && callSites[0] > secretBlock,
     'cron 同步應接在金鑰同步之後——兩者都是「部署完成後無條件跑一遍」的東西');
 });
+
+// ===========================================================================
+// inkstone/arcrun-rag#238（leo 2026-10-06 裁決 B）：沒有常駐 CF token 的實例，改密碼 → 重新授權一次
+// ===========================================================================
+import { parseGrantTargets, parseWorkersDevOrigin, verifyAccountOwnsInstance } from './grant.mjs';
+
+const G_API = 'https://arcrun-cypher-executor.student-sub.workers.dev';
+const G_UI = 'https://arcrun-rag-ui.student-sub.workers.dev';
+
+test('#238 parseGrantTargets：api／ui 必須是同一個 workers.dev 子網域，其餘一律擋', () => {
+  assert.equal(parseGrantTargets(G_API, G_UI).ok, true);
+  assert.equal(parseGrantTargets(G_API, G_UI).api.sub, 'student-sub');
+  // ui 在別人的子網域 → 碼會落到別人手上，不准
+  assert.deepEqual(parseGrantTargets(G_API, 'https://x.attacker.workers.dev'), { ok: false, reason: 'sub_mismatch' });
+  // 不是 workers.dev／不是 https／帶路徑／帶埠號／帶帳密
+  for (const bad of ['http://a.b.workers.dev', 'https://evil.example.com', `${G_API}/x`, 'https://a.b.workers.dev:8443', 'https://u:p@a.b.workers.dev', 'https://b.workers.dev', 'https://a.b.workers.dev.evil.com', '', null]) {
+    assert.equal(parseWorkersDevOrigin(bad), null, String(bad));
+  }
+  assert.deepEqual(parseGrantTargets('nope', G_UI), { ok: false, reason: 'bad_api' });
+  assert.deepEqual(parseGrantTargets(G_API, 'nope'), { ok: false, reason: 'bad_ui' });
+});
+
+/** 假 CF：帳號 acc-1 的子網域是 sub、上面有 scripts。 */
+function fakeCf({ sub, scripts, accounts = [{ id: 'acc-1' }], failSubdomain = false }) {
+  return async (path) => {
+    if (path.startsWith('/accounts?')) return accounts;
+    if (path.endsWith('/workers/subdomain')) {
+      if (failSubdomain) { const e = new Error('boom'); e.status = 500; throw e; }
+      return sub ? { subdomain: sub } : null;
+    }
+    if (path.endsWith('/workers/scripts')) return scripts.map((id) => ({ id }));
+    throw new Error('unexpected ' + path);
+  };
+}
+
+test('#238 verifyAccountOwnsInstance：子網域對得上且有那顆 script ⇒ ok；別人的帳號 ⇒ mismatch；查詢失敗 ⇒ 拋（不可講成 mismatch）', async () => {
+  const api = { script: 'arcrun-cypher-executor', sub: 'student-sub' };
+  assert.equal(await verifyAccountOwnsInstance(fakeCf({ sub: 'student-sub', scripts: ['arcrun-cypher-executor'] }), api), 'ok');
+  assert.equal(await verifyAccountOwnsInstance(fakeCf({ sub: 'someone-else', scripts: ['arcrun-cypher-executor'] }), api), 'mismatch');
+  assert.equal(await verifyAccountOwnsInstance(fakeCf({ sub: 'student-sub', scripts: ['other'] }), api), 'mismatch');
+  await assert.rejects(() => verifyAccountOwnsInstance(fakeCf({ sub: 'student-sub', scripts: [], failSubdomain: true }), api));
+});
+
+test('#238 /auth/start?grant=1：不要辨識碼、記下 api／ui、導 CF 授權頁；壞參數 → 400 不進 OAuth', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const ok = await worker.fetch(new Request(`https://inst.test/auth/start?grant=1&api=${encodeURIComponent(G_API)}&ui=${encodeURIComponent(G_UI)}`), env, { waitUntil() {} });
+  assert.equal(ok.status, 302);
+  assert.match(ok.headers.get('location'), /^https:\/\/dash\.cloudflare\.com\/oauth2\/auth/);
+  const key = [...env.INSTALLER_KV.store.keys()].find((k) => k.startsWith('state:'));
+  const st = JSON.parse(env.INSTALLER_KV.store.get(key));
+  assert.equal(st.grant.api.script, 'arcrun-cypher-executor');
+  assert.equal(st.grant.ui, G_UI);
+  assert.equal(st.inviteVerified, undefined, '不碰辨識碼流程');
+
+  const env2 = { INSTALLER_KV: makeKV() };
+  const bad = await worker.fetch(new Request(`https://inst.test/auth/start?grant=1&api=${encodeURIComponent('https://evil.example.com')}&ui=${encodeURIComponent(G_UI)}`), env2, { waitUntil() {} });
+  assert.equal(bad.status, 400);
+  assert.equal([...env2.INSTALLER_KV.store.keys()].some((k) => k.startsWith('state:')), false);
+});
+
+/** 走完 start → callback，回 callback 的 Response。cfBehavior 決定 CF API 怎麼答。 */
+async function runGrantCallback(env, cf) {
+  const start = await worker.fetch(new Request(`https://inst.test/auth/start?grant=1&api=${encodeURIComponent(G_API)}&ui=${encodeURIComponent(G_UI)}`), env, { waitUntil() {} });
+  const state = new URL(start.headers.get('location')).searchParams.get('state');
+  const sid = /arcrun_sid=([^;]+)/.exec(start.headers.get('set-cookie'))[1];
+  installFetch((url) => {
+    if (url.includes('/oauth2/token')) return { json: { access_token: 'cf-access-token-xyz', refresh_token: 'r', expires_in: 3600 } };
+    if (url.includes('/client/v4/accounts?')) return { json: { success: true, result: cf.accounts || [{ id: 'acc-1' }] } };
+    if (url.endsWith('/workers/subdomain')) return { json: { success: true, result: { subdomain: cf.sub } } };
+    if (url.endsWith('/workers/scripts')) return { json: { success: true, result: (cf.scripts || []).map((id) => ({ id })) } };
+    throw new Error('不該打：' + url);
+  });
+  try {
+    return await worker.fetch(new Request(`https://inst.test/auth/callback?code=c&state=${state}`, { headers: { cookie: `arcrun_sid=${sid}` } }), env, { waitUntil() {} });
+  } finally { restoreFetch(); }
+}
+
+test('#238 授權完整流程：擁有者授權 ⇒ 導回 portal 帶一次性授權碼；cypher 兌換一次成功、第二次 404；碼綁定 api origin', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const cb = await runGrantCallback(env, { sub: 'student-sub', scripts: ['arcrun-cypher-executor'] });
+  assert.equal(cb.status, 302);
+  const loc = new URL(cb.headers.get('location'));
+  assert.equal(loc.origin, G_UI);
+  assert.equal(loc.pathname, '/portal/');
+  const code = loc.searchParams.get('grant');
+  assert.match(code, /^[A-Za-z0-9_-]{20,128}$/);
+  // 沒有建任何安裝 session：授權不等於安裝
+  assert.equal([...env.INSTALLER_KV.store.keys()].some((k) => k.startsWith('sess:')), false);
+  // token 不在導回網址裡
+  assert.equal(loc.toString().includes('cf-access-token-xyz'), false);
+
+  const redeem = (c, api) => worker.fetch(new Request('https://inst.test/api/grant/redeem', { method: 'POST', body: JSON.stringify({ code: c, api_origin: api }) }), env, { waitUntil() {} });
+  // 兌換給「別台實例」→ 404，而且那張碼被燒掉（猜錯也燒）
+  assert.equal((await redeem(code, 'https://other.student-sub.workers.dev')).status, 404);
+  assert.equal((await redeem(code, G_API)).status, 404, '被燒掉了');
+
+  // 重走一輪：正確兌換一次成功
+  const cb2 = await runGrantCallback(env, { sub: 'student-sub', scripts: ['arcrun-cypher-executor'] });
+  const code2 = new URL(cb2.headers.get('location')).searchParams.get('grant');
+  const ok = await redeem(code2, G_API);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await ok.json(), { ok: true, token: 'cf-access-token-xyz' });
+  assert.equal((await redeem(code2, G_API)).status, 404, '一次性');
+});
+
+test('#238 授權：Cloudflare 帳號不是那台實例的擁有者 ⇒ 導回 portal 帶 grant_error=mismatch，不發碼', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const cb = await runGrantCallback(env, { sub: 'someone-else', scripts: ['arcrun-cypher-executor'] });
+  const loc = new URL(cb.headers.get('location'));
+  assert.equal(loc.searchParams.get('grant_error'), 'mismatch');
+  assert.equal(loc.searchParams.get('grant'), null);
+  assert.equal([...env.INSTALLER_KV.store.keys()].some((k) => k.startsWith('grant:')), false);
+});
+
+test('#238 兌換：格式不對／缺欄位／不存在 ⇒ 404 grant_invalid；過期的碼 ⇒ 404', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const post = (b) => worker.fetch(new Request('https://inst.test/api/grant/redeem', { method: 'POST', body: typeof b === 'string' ? b : JSON.stringify(b) }), env, { waitUntil() {} });
+  for (const b of [{}, { code: 'short', api_origin: G_API }, { code: 'x'.repeat(40) }, 'not json', { code: 'x'.repeat(40), api_origin: G_API }]) {
+    const r = await post(b);
+    assert.equal(r.status, 404);
+  }
+  await env.INSTALLER_KV.put('grant:' + 'e'.repeat(40), JSON.stringify({ token: 't', api_origin: G_API, createdAt: Date.now() - 301_000 }));
+  assert.equal((await post({ code: 'e'.repeat(40), api_origin: G_API })).status, 404);
+});

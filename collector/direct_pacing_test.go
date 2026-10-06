@@ -120,7 +120,7 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		// 這條測試只在意「觸發了幾次、依什麼順序送到假 cypher」，卡片內容固定即可。
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
@@ -133,7 +133,7 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 		MaxEventsPerRun: 3,
 	}
@@ -263,7 +263,7 @@ func TestDirect_StarvedBacklog_HealthyFilesEventuallyGetATurn(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{{"text": cardFixture("卡", "測試")}}},
@@ -275,7 +275,7 @@ func TestDirect_StarvedBacklog_HealthyFilesEventuallyGetATurn(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 		MaxEventsPerRun: 3,
 	}
@@ -378,7 +378,7 @@ func TestDirect_ResumeAfterInterruption(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{{"text": cardFixture("卡", "測試")}}},
@@ -392,7 +392,7 @@ func TestDirect_ResumeAfterInterruption(t *testing.T) {
 			WatchFolders: []string{root},
 			Manifest:     manifestPath,
 			CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-			Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+			Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 			CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 			MaxEventsPerRun: 1, // 模擬「只做一件事就被打斷」
 		}
@@ -464,7 +464,7 @@ func TestDirect_RemovedRetriesOnFailureEvenWithIncrementalSave(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{{"text": cardFixture("卡", "測試")}}},
@@ -476,7 +476,7 @@ func TestDirect_RemovedRetriesOnFailureEvenWithIncrementalSave(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", RemovedWF: "rag_takedown_direct",
 		MaxRemoved: 1.0,
 	}

@@ -31,7 +31,7 @@ func TestStatusAndTreeMoveWhileRoundIsStillRunning(t *testing.T) {
 	}
 
 	nameRe := regexp.MustCompile(`檔名：([^）]+)）`)
-	restoreGemma := gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	restoreGemma := extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		name := "a"
 		if m := nameRe.FindStringSubmatch(string(body)); m != nil {
@@ -76,7 +76,7 @@ func TestStatusAndTreeMoveWhileRoundIsStillRunning(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     manifestPath,
 		CypherURL:    cypher.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, _, _ := RunDirectOnce(cfg, false)

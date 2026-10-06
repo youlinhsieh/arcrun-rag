@@ -59,7 +59,7 @@ func TestDirectExtractor_FormatDuplicate_ExtractAndUploadOnce(t *testing.T) {
 
 	// gemma 替身：數萃取被呼叫幾次；每次都回同一張合格卡。
 	var extractCalls int32
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&extractCalls, 1)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
@@ -72,7 +72,7 @@ func TestDirectExtractor_FormatDuplicate_ExtractAndUploadOnce(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 

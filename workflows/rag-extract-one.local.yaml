@@ -14,7 +14,7 @@
 
 name: rag_extract_one
 description: >
-  單檔萃取直鏈：抓原稿 → LLM 萃定稿卡（__LLM_MODEL__）→ 淨化 → commit __CARDS_DIR__
+  單檔萃取直鏈：抓原稿 → LLM 萃定稿卡（這台雲端設定的 AI）→ 淨化 → commit __CARDS_DIR__
   ＋ 維護 __INDEX_PATH__。由 rag_extract 派發，一檔一跑。（T-pack-v2）
 
 flow:
@@ -36,20 +36,24 @@ config:
     headers:
       Authorization: "token __GITEA_TOKEN__"
 
+  # inkstone/arcrun-rag#58（總管審查 c16621）：**不寫死任何一家 AI**。
+  # 這一步打**這台雲端自己的** `/portal/daemon/extract`——用哪個 AI 由這台雲端的管理員在 portal 設
+  # （inkstone/Arcrun#277：CF 雲預設 Workers AI；企業私有雲設 OpenAI 相容端點／Ollama），
+  # 小幫手與 workflow 都不碰、也不持有任何金鑰。與桌面小幫手走的是同一條路。
+  # `expect: text`＝這支要的是文字不是 JSON 物件（關掉端點的 JSON 契約閘）。
+  # 回應 body（JSON 字串）：{success, output}；失敗時 {error}。
   ask_llm:
     component: "__HTTP_REQ_URL__"
     method: POST
-    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent"
+    url: "__CYPHER_BASE__/portal/daemon/extract"
     headers:
       Content-Type: "application/json"
-      x-goog-api-key: "{{credential.gemini_api_key}}"
+      X-Arcrun-API-Key: "__NAMESPACE__"
     body_json:
-      contents:
-        - parts:
-            - text: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{fetch_raw.data.body}}"
-      generationConfig:
-        temperature: 0.2
-        maxOutputTokens: 8192
+      page_name: "{{input.page_name}}"
+      text: ""
+      expect: "text"
+      prompt: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{fetch_raw.data.body}}"
 
   clean_card:
     component: "__CODE_URL__"
@@ -76,17 +80,11 @@ config:
         }
         return out;
       }
+      // /portal/daemon/extract 的回應：{success, output}；失敗 {error}（body 是 JSON 字串）。
       const body = parse(input.llm_body);
       let text = '';
-      try {
-        const parts = body.candidates[0].content.parts || [];
-        // gemma-4-31b 是思考型模型：parts[0] 是 thought=true 的思考、真答案在最後一個非 thought part
-        for (let i = parts.length - 1; i >= 0; i--) {
-          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
-        }
-        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
-      } catch (e) { text = ''; }
-      // 淨化：取最後一個「行首 # 」開始（Gemma 草稿在前）
+      if (body && typeof body.output === 'string') text = body.output;
+      else if (body && body.error) return { success: false, error: 'AI 萃取失敗：' + String(body.error).slice(0, 300) };
       const lines = text.split('\n');
       let start = -1;
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -105,7 +103,7 @@ config:
       const page = String(input.page_name || '');
       // 首行強制為卡名（LLM 偶爾自作主張改標題）
       card = '# ' + page + '\n' + card.split('\n').slice(1).join('\n');
-      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_extract/__LLM_MODEL__）\n';
+      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_extract）\n';
       // gloss＝「## 一句話定義」下第一個非空行（INDEX 用）
       let gloss = '';
       const m = /##\s*一句話定義\s*\n+([^\n]+)/.exec(card);

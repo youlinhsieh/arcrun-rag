@@ -37,7 +37,7 @@ func TestT210ProgressWiring(t *testing.T) {
 	// Gemini 替身：pageName 是 "stuck" 或 "pending" 的一律萃取失敗（模擬「本地萃取失敗」
 	// 這一種無法同步的成因），其餘（"ok"）成功萃出一張最簡卡片。用 prompt 裡「# <pageName>」
 	// 那行分辨是哪個檔（wikiExtractPrompt 的契約：第一行必須是「# <pageName>」）。
-	restoreGemma := gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	restoreGemma := extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch {
 		case strings.Contains(string(body), "檔名：stuck）"), strings.Contains(string(body), "檔名：pending）"):
@@ -64,7 +64,7 @@ func TestT210ProgressWiring(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     manifestPath,
 		CypherURL:    cypher.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 		// ForceSync：測試用真實時間跑不完 1m→5m→…→6h 的退避階梯，force 讓每輪都真的嘗試，
 		// 只影響「要不要重試」，不影響 FailCount 怎麼記——跟正式情境「使用者按立刻同步」是

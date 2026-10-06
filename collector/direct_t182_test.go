@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,9 +53,12 @@ func TestT182ErasesLegacyExtractorAllLayers(t *testing.T) {
 		}
 	}
 
-	// 金鑰要留著——Gemini 只是變選配，不是廢除（leo：「客戶說他要用 Gemini」）
-	if cfg.GeminiAPIKey != "old-key" {
-		t.Errorf("① Gemini 金鑰不該被清掉：got %q", cfg.GeminiAPIKey)
+	// 🔴 inkstone/arcrun-rag#58（取代原本的「金鑰要留著」）：Gemini 路已拔除，
+	// 檔案裡的明碼金鑰必須一併消失——見下方 TestArcrunRag58ScrubsPlaintextGeminiKeys。
+	if raw, rerr := os.ReadFile(p); rerr != nil {
+		t.Fatal(rerr)
+	} else if strings.Contains(string(raw), "old-key") {
+		t.Errorf("① 明碼金鑰還留在 config.json 裡")
 	}
 
 	// 真的寫回檔案了嗎？（只改記憶體 ⇒ 托盤是另一個行程，還是會念 Gemini）
@@ -81,13 +85,14 @@ func TestT182ErasesLegacyExtractorAllLayers(t *testing.T) {
 	}
 }
 
-// t182②：主動選過 Gemini 的人不被動到（Gemini 是選配、不是廢除）。
-func TestT182KeepsExplicitGeminiChoice(t *testing.T) {
+// t182②（inkstone/arcrun-rag#58 改寫）：以前「主動選過 Gemini 的人不被動到」。
+// Gemini 路已拔除，主動選過的人也一律改走雲端 AI——否則他的萃取會落在一條不存在的路上。
+func TestT182ExplicitGeminiChoiceIsMigratedToo(t *testing.T) {
 	dir := t.TempDir()
 	p := writeDirectConfig(t, dir, map[string]any{
 		"manifest":           filepath.Join(dir, "m.json"),
 		"extractor":          "gemma",
-		"extractor_explicit": true, // ← 使用者在「AI 設定…」主動選過
+		"extractor_explicit": true, // ← 使用者曾在「AI 設定…」主動選過
 		"gemini_api_key":     "my-key",
 		"accounts": []map[string]any{
 			{"cypher_url": "https://a.example", "namespace": "nsA", "watch_folders": []string{"/tmp/a"}},
@@ -97,8 +102,64 @@ func TestT182KeepsExplicitGeminiChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDirectConfig: %v", err)
 	}
-	if cfg.Extractor != "gemma" {
-		t.Errorf("② 主動選過 Gemini 不該被抹掉：got %q", cfg.Extractor)
+	if cfg.Extractor != "workers-ai" || cfg.Accounts[0].Extractor != "workers-ai" {
+		t.Errorf("② 曾主動選過 Gemini 也要改走雲端 AI：top=%q acct=%q", cfg.Extractor, cfg.Accounts[0].Extractor)
+	}
+}
+
+// 🔴 inkstone/arcrun-rag#58 驗收：`~/.arcrun-rag/config.json` 全文搜不到任何明碼金鑰。
+// 票上實況＝頂層＋兩個帳號各一處（共 3 處）明碼 gemini_api_key；載入一次後檔案裡一處都不剩，
+// 且不傷到其他欄位（連線、資料夾、帳號數）。冪等：第二次載入檔案位元組不變。
+func TestArcrunRag58ScrubsPlaintextGeminiKeys(t *testing.T) {
+	dir := t.TempDir()
+	p := writeDirectConfig(t, dir, map[string]any{
+		"manifest":           filepath.Join(dir, "m.json"),
+		"gemini_api_key":     "AIzaSyTOPSECRET0000000000000000000000",
+		"llm_model":          "gemma-4-31b-it",
+		"extractor":          "workers-ai",
+		"extractor_explicit": true,
+		"accounts": []map[string]any{
+			{"cypher_url": "https://a.example", "namespace": "nsA", "api_key": "nsA-key",
+				"watch_folders": []string{"/tmp/a"}, "gemini_api_key": "AIzaSyACCT1SECRET00000000000000000000"},
+			{"cypher_url": "https://b.example", "namespace": "nsB", "api_key": "nsB-key",
+				"watch_folders": []string{"/tmp/b"}, "gemini_api_key": "AIzaSyACCT2SECRET00000000000000000000",
+				"llm_model": "x"},
+		},
+	})
+	cfg, err := LoadDirectConfig(p)
+	if err != nil {
+		t.Fatalf("LoadDirectConfig: %v", err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"AIza", "gemini_api_key", "llm_model", "SECRET"} {
+		if strings.Contains(string(raw), needle) {
+			t.Errorf("config.json 還搜得到 %q：\n%s", needle, raw)
+		}
+	}
+	// 其他設定不能被連帶弄丟
+	if len(cfg.Accounts) != 2 || cfg.Accounts[1].Namespace != "nsB" || cfg.Accounts[1].APIKey != "nsB-key" {
+		t.Errorf("帳號設定被弄壞：%+v", cfg.Accounts)
+	}
+	var onDisk struct {
+		Accounts []struct {
+			CypherURL string `json:"cypher_url"`
+			APIKey    string `json:"api_key"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil || len(onDisk.Accounts) != 2 ||
+		onDisk.Accounts[0].CypherURL != "https://a.example" || onDisk.Accounts[0].APIKey != "nsA-key" {
+		t.Errorf("回寫後帳號連線資料不對：%v %+v", err, onDisk)
+	}
+	// 冪等
+	if _, err := LoadDirectConfig(p); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile(p)
+	if string(again) != string(raw) {
+		t.Error("第二次載入又改了檔案（不冪等）")
 	}
 }
 

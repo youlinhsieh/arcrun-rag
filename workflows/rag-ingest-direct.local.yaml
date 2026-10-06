@@ -17,8 +17,8 @@
 #     -d '{"page_name":"報銷政策","content":"…檔案全文…","path":"報銷政策.md","library":"kb"}'
 #
 # 佔位參數（push-demo-workflow.sh sed 代入）：
-#   __NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__ / __LLM_MODEL__
-#   （Gemini key 走憑證庫：x-goog-api-key: {{credential.gemini_api_key}}，免 sed）
+#   __NAMESPACE__ / __CYPHER_BASE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
+#   （LLM 走這台雲端自己的 /portal/daemon/extract＝管理員在 portal 設的 AI，免金鑰、免模型佔位；inkstone/arcrun-rag#58）
 #
 # 與既有鏈的關係：blocks/triplets 的寫法（entry_type=block、page_name、metadata source/
 #   source_path/embed；triplet template）與 rag_ingest 逐欄一致 → rag_chat 一視同仁檢索得到。
@@ -33,7 +33,7 @@
 
 name: rag_ingest_direct
 description: >
-  daemon 直送萃取入庫（v1 無 R2 無 Gitea）：inline 檔案內容 → LLM（__LLM_MODEL__）萃定稿卡
+  daemon 直送萃取入庫（v1 無 R2 無 Gitea）：inline 檔案內容 → LLM（這台雲端設定的 AI）萃定稿卡
   → 機械切塊寫 KBDB blocks ＋解析「## 關聯」寫 triplets（source_uri=kb://path）。
   一檔一 POST，blocks/triplets 寫法與 rag_ingest 一致，rag_chat 直接檢索得到。（task 11）
 
@@ -46,35 +46,35 @@ flow:
 
 config:
   # 1) LLM 萃定稿卡（沿用 rag_extract_one ask_llm；原稿改吃 inline {{input.content}}）
+  # inkstone/arcrun-rag#58（總管審查 c16621）：**不寫死任何一家 AI**。
+  # 這一步打**這台雲端自己的** `/portal/daemon/extract`——用哪個 AI 由這台雲端的管理員在 portal 設
+  # （inkstone/Arcrun#277：CF 雲預設 Workers AI；企業私有雲設 OpenAI 相容端點／Ollama），
+  # 小幫手與 workflow 都不碰、也不持有任何金鑰。與桌面小幫手走的是同一條路。
+  # `expect: text`＝這支要的是文字不是 JSON 物件（關掉端點的 JSON 契約閘）。
+  # 回應 body（JSON 字串）：{success, output}；失敗時 {error}。
   ask_llm:
     component: "__HTTP_REQ_URL__"
     method: POST
-    url: "https://generativelanguage.googleapis.com/v1beta/models/__LLM_MODEL__:generateContent"
+    url: "__CYPHER_BASE__/portal/daemon/extract"
     headers:
       Content-Type: "application/json"
-      x-goog-api-key: "{{credential.gemini_api_key}}"
+      X-Arcrun-API-Key: "__NAMESPACE__"
     body_json:
-      contents:
-        - parts:
-            - text: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{input.content}}"
-      generationConfig:
-        temperature: 0.2
-        maxOutputTokens: 8192
+      page_name: "{{input.page_name}}"
+      text: ""
+      expect: "text"
+      prompt: "把以下原稿重寫成定稿知識卡（正體中文）。直接輸出卡片本身：第一行必須是「# {{input.page_name}}」，不要任何前言、思考過程、英文草稿或說明。格式：\n# {{input.page_name}}\n## 一句話定義\n（一行）\n## 要點\n- （3-12 條，具體、含數字條件）\n## 關鍵實體\n- **實體名** — 一句說明\n## 關聯\n- 實體A >> 謂詞 >> 實體B（3-8 行，用上面實體名）\n\n原稿：\n{{input.content}}"
 
   # 2) 淨化 LLM 輸出成純卡片文字（沿用 rag_extract_one clean_card；輸出 card 純文字給 parse_card 切塊）
   clean_card:
     component: "__CODE_URL__"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      // /portal/daemon/extract 的回應：{success, output}；失敗 {error}（body 是 JSON 字串）。
       const body = parse(input.llm_body);
       let text = '';
-      try {
-        const parts = body.candidates[0].content.parts || [];
-        for (let i = parts.length - 1; i >= 0; i--) {
-          if (parts[i] && parts[i].thought !== true && typeof parts[i].text === 'string') { text = parts[i].text; break; }
-        }
-        if (!text && parts.length) text = String(parts[parts.length - 1].text || '');
-      } catch (e) { text = ''; }
+      if (body && typeof body.output === 'string') text = body.output;
+      else if (body && body.error) return { success: false, error: 'AI 萃取失敗：' + String(body.error).slice(0, 300) };
       const lines = text.split('\n');
       let start = -1;
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -90,7 +90,7 @@ config:
       const page = String(input.page_name || '');
       if (!/^#\s/.test(card)) card = '# ' + page + '\n' + card;
       card = '# ' + page + '\n' + card.split('\n').slice(1).join('\n');
-      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_ingest_direct/__LLM_MODEL__）\n';
+      card = card.trim() + '\n\n---\n來源原稿：`' + String(input.src_path || '') + '`（AI 萃取定稿，rag_ingest_direct）\n';
       let gloss = '';
       const m = /##\s*一句話定義\s*\n+([^\n]+)/.exec(card);
       if (m) gloss = m[1].trim();

@@ -274,8 +274,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@e93ed56d55aaf1e8bdb5b8f2c56fa7d5d3cfc6a9';
-const BUNDLE_BUILT = '2026-09-29'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@ad5073d63b2a339bad6faf0ed79e907b1752a780';
+const BUNDLE_BUILT = '2026-09-30'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -438,6 +438,8 @@ import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from '.
 //     而那個值靠「部署的人記得改」⇒ 實測 prod（1.0.3）與 uncle6 staging（1.0.4）回同一串，
 //     兩個都對不上原始碼。指紋跟著程式碼走，就不再有第二處要記得。
 import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
+// inkstone/arcrun-rag#238（leo 裁決 B）：沒有常駐 CF token 的實例改密碼 → 重新授權一次換一張一次性授權碼
+import { parseGrantTargets, verifyAccountOwnsInstance, GRANT_CODE_RE, GRANT_TTL_SECONDS } from './grant.mjs';
 
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
@@ -4956,6 +4958,8 @@ export default {
           return handleInstallStatus(request, env);
         case 'POST /api/setup-account':
           return handleSetupAccount(request, env);
+        case 'POST /api/grant/redeem':
+          return handleGrantRedeem(request, env);
         case 'GET /admin/logs':
           return handleAdminLogs(request, env, url);
         default:
@@ -5271,6 +5275,8 @@ async function handleHome(request, env, url) {
 }
 
 async function handleAuthStart(request, env, url) {
+  // inkstone/arcrun-rag#238（leo 裁決 B）：portal 改密碼寫不進 → 導來這裡授權一次（不是安裝、不要辨識碼）
+  if (url.searchParams.get('grant') === '1') return handleGrantStart(request, env, url);
   const inviteCode = (url.searchParams.get('code') || '').trim().slice(0, 64);
   const inviteEmail = (url.searchParams.get('email') || '').trim().slice(0, 254).toLowerCase();
 
@@ -5380,8 +5386,12 @@ async function handleAuthCallback(request, env, url) {
   try {
     tokens = await exchangeCode(code, stored.verifier, `${url.origin}/auth/callback`);
   } catch (e) {
+    if (stored.grant) return grantReturn(stored.grant.ui, { error: 'unreachable' });
     return Response.redirect(`${url.origin}/?error=token`, 302);
   }
+
+  // 改密碼授權（#238）：不建安裝 session、不查辨識碼——驗擁有權後換成一次性授權碼就走
+  if (stored.grant) return handleGrantCallback(env, stored.grant, tokens);
 
   // t154：無碼進來的（inviteVerified=false）＝自稱更新者——OAuth 成功後查「這個帳號
   // 有沒有本安裝器的部署紀錄」（deployedKey 前綴）。有＝既有實例更新，視同已核可；
@@ -5774,6 +5784,96 @@ async function handleInstallStatus(request, env) {
 // --- 帳密精靈（t20④d-3）-----------------------------------------------------
 
 /** POST JSON helper：回 {status, ok, body}；連線失敗回 status:0（不丟例外）。 */
+// ---------------------------------------------------------------------------
+// 改密碼授權（inkstone/arcrun-rag#238，leo 2026-10-06 裁決 B）
+// 純函式在 ./grant.mjs；這裡只接 OAuth 與 KV。
+// ---------------------------------------------------------------------------
+
+/** 導回 portal：成功帶 ?grant=碼，失敗帶 ?grant_error=原因（ui 已在 /auth/start 驗過形狀）。 */
+function grantReturn(uiOrigin, { code, error }) {
+  const q = code ? `grant=${encodeURIComponent(code)}` : `grant_error=${encodeURIComponent(error || 'unreachable')}`;
+  return new Response(null, {
+    status: 302,
+    headers: { location: `${uiOrigin}/portal/?${q}`, 'cache-control': 'no-store' },
+  });
+}
+
+async function handleGrantStart(request, env, url) {
+  const t = parseGrantTargets(url.searchParams.get('api'), url.searchParams.get('ui'));
+  if (!t.ok) {
+    return html(
+      pageShell(
+        '授權連結不正確',
+        `<h2>授權連結不正確</h2><p class="lead">請回到你的 Arcrun 畫面，重新按一次「授權 Cloudflare」。</p>`,
+        '',
+        env
+      ),
+      400
+    );
+  }
+  const sid = randomB64(18);
+  const verifier = randomB64(48);
+  const challenge = await pkceChallenge(verifier);
+  const state = randomB64(24);
+  await env.INSTALLER_KV.put(
+    `state:${state}`,
+    JSON.stringify({ verifier, sid, grant: { api: t.api, ui: t.ui.origin }, createdAt: Date.now() }),
+    { expirationTtl: STATE_TTL }
+  );
+  const authUrl = new URL(OAUTH_AUTH_URL);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', OAUTH_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', `${url.origin}/auth/callback`);
+  authUrl.searchParams.set('scope', OAUTH_SCOPES);
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('code_challenge', challenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  return new Response(null, {
+    status: 302,
+    headers: { location: authUrl.toString(), 'set-cookie': sessionCookie(sid), 'cache-control': 'no-store' },
+  });
+}
+
+/** OAuth 回來之後：驗這個 Cloudflare 帳號確實擁有那台實例 → 發一次性授權碼 → 導回 portal。 */
+async function handleGrantCallback(env, grant, tokens) {
+  const uiOrigin = grant.ui;
+  let verdict;
+  try {
+    verdict = await verifyAccountOwnsInstance((path) => cfFetch(tokens.access_token, path), grant.api);
+  } catch (e) {
+    // 查不到 ≠ 不是你的：講「暫時連不上」，不講「帳號不對」
+    return grantReturn(uiOrigin, { error: 'unreachable' });
+  }
+  if (verdict !== 'ok') return grantReturn(uiOrigin, { error: 'mismatch' });
+  const code = randomB64(32);
+  await env.INSTALLER_KV.put(
+    `grant:${code}`,
+    JSON.stringify({ token: tokens.access_token, api_origin: grant.api.origin, createdAt: Date.now() }),
+    { expirationTtl: GRANT_TTL_SECONDS }
+  );
+  return grantReturn(uiOrigin, { code });
+}
+
+/**
+ * 兌換授權碼——**給 cypher 實例從伺服器端打**（不是給瀏覽器）。
+ * 一次性：先燒再比對（猜錯也會燒掉那張）；綁 api origin；5 分鐘內有效。回應不快取。
+ */
+async function handleGrantRedeem(request, env) {
+  const body = await request.json().catch(() => null);
+  const code = String((body && body.code) || '');
+  const apiOrigin = String((body && body.api_origin) || '');
+  const noStore = { 'cache-control': 'no-store' };
+  if (!GRANT_CODE_RE.test(code) || !apiOrigin) return json({ ok: false, error: 'grant_invalid' }, 404, noStore);
+  const key = `grant:${code}`;
+  const rec = await env.INSTALLER_KV.get(key, 'json');
+  if (!rec) return json({ ok: false, error: 'grant_invalid' }, 404, noStore);
+  await env.INSTALLER_KV.delete(key); // 一次性：不論後面比對過不過都燒掉
+  if (rec.api_origin !== apiOrigin || Date.now() - Number(rec.createdAt || 0) > GRANT_TTL_SECONDS * 1000) {
+    return json({ ok: false, error: 'grant_invalid' }, 404, noStore);
+  }
+  return json({ ok: true, token: rec.token }, 200, noStore);
+}
+
 async function postJson(url, payload, extraHeaders) {
   try {
     const res = await fetch(url, {

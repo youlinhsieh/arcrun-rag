@@ -206,6 +206,29 @@ type FolderTree struct {
 	// 之後，雲端要看得到新名字 ⇒ 內容雜湊必須跟著變，否則冪等閘會讓它永遠不再送。
 	Machine      string `json:"machine,omitempty"`
 	MachineLabel string `json:"machine_label,omitempty"`
+
+	// DaemonVersion＝**這台小幫手現在是哪一版**（`inkstone/arcrun-collector#1`，
+	// 母票 `inkstone/arcrun-rag#122` 更新中心）。欄名照雲端那邊（`daemon_version`），不另取。
+	//
+	// 🔴 與樹存同一筆（雲端那半的設計），不另開上行機制。
+	// 🔴 開發版（version=="dev"，沒經過打包注入）**不送**——送 "dev" 會讓更新中心
+	// 把一個假版號當真的顯示；不送，雲端照實顯示「看不到」。舊版小幫手本來就不帶，同樣路徑。
+	// 🔴 進 Hash()：升級後版號變了，內容雜湊跟著變，下一輪就會補送，更新中心不必等 24h 心跳。
+	DaemonVersion string `json:"daemon_version,omitempty"`
+}
+
+// daemonVersion 回傳要回報給雲端的小幫手版號；沒經過打包注入（"dev"／空）回 ""。
+func daemonVersion() string {
+	if version == "" || version == "dev" {
+		return ""
+	}
+	return version
+}
+
+// StampDaemonVersion 蓋上「這棵樹是哪一版小幫手算的」，回一份新的樹（不改原件）。
+func (t FolderTree) StampDaemonVersion(v string) FolderTree {
+	t.DaemonVersion = v
+	return t
 }
 
 // StampMachine 蓋上「這棵樹是哪一台機器算的」，回一份新的樹（不改原件）。
@@ -480,6 +503,10 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		// 本機快照與上雲酬載共用同一個 FolderTree，一個來源就不會漂。
 		"machine":       tree.Machine,
 		"machine_label": tree.MachineLabel,
+	}
+	// 小幫手版號（arcrun-collector#1）：有才帶；沒有就整個欄位不出現，雲端照實顯示「看不到」。
+	if tree.DaemonVersion != "" {
+		body["daemon_version"] = tree.DaemonVersion
 	}
 	status, _, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
 	res.HTTPStatus = status

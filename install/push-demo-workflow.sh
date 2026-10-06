@@ -3,13 +3,11 @@
 # 🔴 適用範圍：只適用舊版（無 bundle_version 的實例）。新版實例走安裝器鏈，見下方 NS 段註解。
 # 🔴 2026-08-08：當初的 rag-demo（uncle6）示範站**已退場**；本腳本禁止指向 uncle6
 #    （官方件帳號，不是測試場）——下面有機械閘會擋。判準見 repo CLAUDE.md「範例在哪、測試在哪」。
-# 用法：GEMINI_API_KEY=… bash install/push-demo-workflow.sh workflows/rag-chat.local.yaml
-#      （repo 根 .env 有 GEMINI_API_KEY 也認；graph-neighbors 等不含 key 的 yaml 不需要）
+# 用法：bash install/push-demo-workflow.sh workflows/rag-chat.local.yaml
+#      （inkstone/arcrun-rag#58：LLM 一律走 workers_ai_chat，不再需要任何 LLM 金鑰）
 #
 # 機制＝API 復刻 acr push（agent-memory §7）：sed 佔位值 → POST /cypher/search 編圖
 #   → 照 cli push.ts 邏輯把 config 合進節點 → POST /webhooks/named。
-# ⚠️ G10 同款妥協：__GEMINI_API_KEY__ 直接嵌進 workflow 定義（存 WEBHOOKS KV）；
-#   輪換 key 時要重跑本腳本。生產正解＝{{credential.*}}（等 CF_SECRETS_API_TOKEN 機制）。
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -41,8 +39,6 @@ case "$CYPHER|$KBDB|$HTTPREQ|$CODE" in
     echo "   測試請用 youlin 實例（見 CLAUDE.md「範例在哪、測試在哪」）。" >&2
     exit 1 ;;
 esac
-LLM_MODEL="${LLM_MODEL:-gemma-4-31b-it}"
-GEMINI_API_KEY="${GEMINI_API_KEY:-}"
 # ⚠ GITEA_* 在 ingest 路徑已 deprecated（SDD ingest-hash-trigger task 4：rag-ingest*
 #   已改 collector→R2 鏈，不再吃 Gitea）。保留只為 rag-extract*/其他仍讀 Gitea 的 workflow；
 #   全部 de-Gitea 後（Part B）連同本段刪除。
@@ -58,11 +54,8 @@ INDEX_PATH="${INDEX_PATH:-system-dev/wiki/00-INDEX.md}"
 LIBRARY="${LIBRARY:-kb}"             # 藏書地圖庫名（library-map M3；map/recompute 歸庫鍵）
 NAME_OVERRIDE="${NAME_OVERRIDE:-}"   # 測試部署用：覆蓋 workflow 名（如 rag_extract_t）
 # bash 內設的預設值要進 python heredoc 的 os.environ，必須 export
-export NS CYPHER KBDB HTTPREQ CODE LLM_MODEL GEMINI_API_KEY GITEA_BASE GITEA_TOKEN DOCS_PREFIX CARDS_DIR INDEX_PATH LIBRARY NAME_OVERRIDE CF_ACCOUNT_ID R2_BUCKET CF_R2_TOKEN
+export NS CYPHER KBDB HTTPREQ CODE GITEA_BASE GITEA_TOKEN DOCS_PREFIX CARDS_DIR INDEX_PATH LIBRARY NAME_OVERRIDE CF_ACCOUNT_ID R2_BUCKET CF_R2_TOKEN
 
-if grep -q "__GEMINI_API_KEY__" "$YAML" && [ -z "$GEMINI_API_KEY" ]; then
-  echo "❌ $YAML 需要 GEMINI_API_KEY（env 或 repo 根 .env）" >&2; exit 1
-fi
 if grep -q "__GITEA_TOKEN__" "$YAML" && [ -z "$GITEA_TOKEN" ]; then
   echo "❌ $YAML 需要 GITEA_TOKEN（能寫知識庫 repo contents 的 token）" >&2; exit 1
 fi
@@ -86,8 +79,6 @@ subs = {
     "__KBDB_BASE__": os.environ["KBDB"],
     "__HTTP_REQ_URL__": os.environ["HTTPREQ"],
     "__CODE_URL__": os.environ["CODE"],
-    "__LLM_MODEL__": os.environ["LLM_MODEL"],
-    "__GEMINI_API_KEY__": os.environ.get("GEMINI_API_KEY", ""),
     "__GITEA_BASE__": os.environ.get("GITEA_BASE", ""),
     "__GITEA_TOKEN__": os.environ.get("GITEA_TOKEN", ""),
     "__DOCS_PREFIX__": os.environ.get("DOCS_PREFIX", "docs/"),

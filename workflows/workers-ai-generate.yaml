@@ -1,0 +1,35 @@
+name: workers_ai_generate
+description: >
+  最小的「叫這台雲端的 AI 生成一段文字」範例 workflow。**不寫死任何一家 AI**：打這台雲端自己的
+  `/portal/daemon/extract`，用哪個 AI 由管理員在 portal 設（inkstone/Arcrun#277：CF 雲預設 Workers AI、
+  企業私有雲設 OpenAI 相容端點／Ollama）。inkstone/arcrun-rag#58 起取代舊的 gemini_generate
+  （那支打 generativelanguage.googleapis.com、要 `{{credential.gemini_api_key}}`）。
+  （檔名沿用 workers-ai-generate 只為不再改名；實際用哪個 AI 看雲端設定。）
+
+# 📌 從舊 gemini_generate 帶過來、仍然有效的坑：
+#   auth-recipe 類零件會把整個 ctx 攤平當 request body，外部 API 不認得的欄位會一起被送出去而 400。
+#   想精確控制 body 就用 http_request＋`body_json` 顯式白名單——本檔就是這樣寫的。
+#   feedback-report.yaml 引用的就是這一條。
+
+# ── 觸發（同步查詢 trigger）──
+#   POST https://{你的-cypher-domain}/webhooks/named/workers_ai_generate/query
+#        -H "X-Arcrun-API-Key: {namespace}" -d '{"prompt":"..."}'
+#   → 回 http_request 輸出：data.body 是 JSON 字串 {success, output}（文字在 output）。
+# 佔位參數：__NAMESPACE__ / __CYPHER_BASE__
+
+flow:
+  - "input >> ON_SUCCESS >> ask_llm"
+
+config:
+  ask_llm:
+    component: http_request
+    method: POST
+    url: "__CYPHER_BASE__/portal/daemon/extract"
+    headers:
+      Content-Type: "application/json"
+      X-Arcrun-API-Key: "__NAMESPACE__"
+    body_json:
+      page_name: "generate"
+      text: ""
+      expect: "text"
+      prompt: "{{input.prompt}}"

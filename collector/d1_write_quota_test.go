@@ -160,7 +160,7 @@ func TestDirect_D1WriteQuota_StatusFileSpeaksHuman(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{"parts": []map[string]any{{"text": cardFixture("報銷規則", "財務")}}},
@@ -173,7 +173,7 @@ func TestDirect_D1WriteQuota_StatusFileSpeaksHuman(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     manifest,
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, _, _ := RunDirectOnce(cfg, false)

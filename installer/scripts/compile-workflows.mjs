@@ -60,9 +60,12 @@ out = []
 for path in sys.argv[1:]:
     with open(path) as f:
         wf = yaml.safe_load(f)
-    raw = open(path).read()
     import re
-    tokens = sorted(set(re.findall(r'__[A-Z0-9_]+__', raw)))
+    # 只掃「真的會被推上去」的 flow＋config（inkstone/arcrun-rag#237）：
+    # 掃整份 YAML 原文會把註解裡提到的字樣、以及 throw 訊息裡的標記字串
+    # 也記成佔位符，而它們不會被推進使用者實例，記了只會讓首裝推導誤報。
+    live = json.dumps({"flow": wf.get("flow", []), "config": wf.get("config") or {}}, ensure_ascii=False)
+    tokens = sorted(set(re.findall(r'__[A-Z0-9_]+__', live)))
     out.append({
         "file": path.split('/')[-1],
         "name": wf.get("name"),

@@ -47,7 +47,7 @@
 #   kbdb updateEntry 白名單含 page_name，entry-crud.ts 實查）。不 retire、不重萃、不重傳、
 #   零 LLM。triplet subject 不動（重萃才會換——設計內，README 註明）。
 #
-# G11（leo 拍板：預設開）：每檔 ingest 完自動接 rag_wiki_digest（Gemini 精耕），
+# G11（leo 拍板：預設開）：每檔 ingest 完自動接 rag_wiki_digest（雲端設定的 AI 精耕），
 #   trigger_workflow 內建零件 in-process 觸發；開關＝installer 的 AUTO_DIGEST（false 時
 #   installer 剝「# AUTO_DIGEST FLOW」行與「# AUTO_DIGEST BEGIN..END」段再 push）。
 #
@@ -253,7 +253,7 @@ config:
         # M3：library slot 補寫（M1 optional slot；kbdb 對 template 尚無的 slot 靜默忽略）
         library: "__LIBRARY__"
 
-  # AUTO_DIGEST BEGIN（G11：ingest 完自動接 Gemini 精耕；AUTO_DIGEST=false 時 installer 剝掉本段）
+  # AUTO_DIGEST BEGIN（G11：ingest 完自動接雲端設定的 AI 精耕；AUTO_DIGEST=false 時 installer 剝掉本段）
   # trigger_workflow＝arcrun 內建 orchestration 零件（in-process call）。input 取自 file 迭代
   # 物件（trigger_workflow 對 code 節點輸出不展開——T-pack-v2 實撞，迭代物件才可靠）。
   trigger_digest:
@@ -262,7 +262,6 @@ config:
     api_key: "__NAMESPACE__"
     input:
       page_name: "{{file.page_name}}"
-      gemini_key: "__GEMINI_API_KEY__"
   # AUTO_DIGEST END
 
   # ── R5 renamed 分支（只更新路徑映射，不 retire、不重萃、不重傳）──────────────

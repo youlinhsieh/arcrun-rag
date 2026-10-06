@@ -186,7 +186,7 @@ config:
         }
       }
       if (todo.length === 0) {
-        throw new Error('__ALL_ALREADY_DESCRIBED__：本次 entity 皆已有 description 與屬於關係，不重複寫');
+        throw new Error('ALL_ALREADY_DESCRIBED：本次 entity 皆已有 description 與屬於關係，不重複寫');
       }
       var conceptDirLines = [];
       for (var c in conceptMembers) {

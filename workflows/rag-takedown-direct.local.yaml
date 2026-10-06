@@ -1,7 +1,7 @@
 # rag_takedown_direct — daemon 直送下架（v1「無 R2、無 Gitea」同步模式的刪檔配套）
 #
 # 為什麼要獨立一支（2026-07-20 live e2e 實撞定案）：
-#   既有 rag_ingest 的 removed 分支在 collect_changed 有 __CARDS_PREFIX__ 閘（isCard：路徑必須
+#   既有 rag_ingest 的 removed 分支在 collect_changed 有 cards 前綴閘（isCard：路徑必須
 #   在 cards 前綴下），direct 模式的檔在資料夾根（如「加班規定.md」）→ 被閘擋掉、零下架。
 #   → direct 模式自帶一支不含前綴閘的下架 workflow，按 page_name/path 精準 deprecate。
 #   邏輯＝rag_ingest removed 分支的 kbdb 操作原樣搬過來（list_dead_blocks→build_deprecations→

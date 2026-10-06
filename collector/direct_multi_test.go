@@ -118,6 +118,7 @@ func TestRunDirectOnceMultiRootDryRun(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootB, "b.md"), []byte("# B"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	defer probeReadyStub(t)()
 	cfg := &DirectConfig{
 		WatchFolders: []string{rootA, rootB},
 		Manifest:     filepath.Join(base, "manifest.json"),
@@ -568,7 +569,6 @@ func TestAccountDataStructureFunctions(t *testing.T) {
 		IngestWF:   "rag_ingest_direct",
 		RemovedWF:  "rag_takedown_direct",
 		CardIngestWF: "rag_ingest_card",
-		LLMModel:   "gemma-4-31b-it",
 	}
 	sub := parent.makeAccountSubConfig(parent.Accounts[0])
 	if sub.CypherURL != "https://a.example" {
@@ -633,85 +633,61 @@ func TestRunDirectOnceAccountResultsTagged(t *testing.T) {
 
 // ── t126：每帳號獨立萃取設定 ──────────────────────────────────────────────────
 
-// t126①：帳號層 Extractor/GeminiAPIKey/LLMModel 有值時優先覆蓋機器層。
+// t126①：帳號層 Extractor 有值時優先覆蓋機器層。
+// （inkstone/arcrun-rag#58：GeminiAPIKey／LLMModel 欄位已拔除，只剩 Extractor 這一格。）
 func TestMakeAccountSubConfigExtractorOverride(t *testing.T) {
 	parent := &DirectConfig{
-		Manifest:     "/tmp/m.json",
-		Extractor:    "claude", ExtractorExplicit: true,
-		GeminiAPIKey: "machine-key",
-		LLMModel:     "model-machine",
-		PollSec:      5,
-		MaxRemoved:   DefaultMaxRemovedRatio,
+		Manifest:   "/tmp/m.json",
+		Extractor:  "claude", ExtractorExplicit: true,
+		PollSec:    5,
+		MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	acc := AccountConfig{
 		CypherURL:    "https://a.example",
 		Namespace:    "ns",
 		WatchFolders: []string{"/tmp"},
-		Extractor:    "gemma", // 帳號層覆蓋（AccountConfig 無 ExtractorExplicit，那是機器層旗標）
-		GeminiAPIKey: "account-key", // 帳號層覆蓋
-		LLMModel:     "model-acc",   // 帳號層覆蓋
+		Extractor:    "workers-ai", // 帳號層覆蓋（AccountConfig 無 ExtractorExplicit，那是機器層旗標）
 	}
 	sub := parent.makeAccountSubConfig(acc)
-	if sub.Extractor != "gemma" {
+	if sub.Extractor != "workers-ai" {
 		t.Errorf("① 帳號層 Extractor 應優先，got %q", sub.Extractor)
-	}
-	if sub.GeminiAPIKey != "account-key" {
-		t.Errorf("① 帳號層 GeminiAPIKey 應優先，got %q", sub.GeminiAPIKey)
-	}
-	if sub.LLMModel != "model-acc" {
-		t.Errorf("① 帳號層 LLMModel 應優先，got %q", sub.LLMModel)
 	}
 }
 
 // t126②：帳號層空字串不算「有值」，應繼承機器層。
 func TestMakeAccountSubConfigExtractorFallback(t *testing.T) {
 	parent := &DirectConfig{
-		Manifest:     "/tmp/m.json",
-		Extractor:    "gemma", ExtractorExplicit: true,
-		GeminiAPIKey: "machine-key",
-		LLMModel:     "model-machine",
-		PollSec:      5,
-		MaxRemoved:   DefaultMaxRemovedRatio,
+		Manifest:   "/tmp/m.json",
+		Extractor:  "workers-ai", ExtractorExplicit: true,
+		PollSec:    5,
+		MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	acc := AccountConfig{
 		CypherURL:    "https://a.example",
 		Namespace:    "ns",
 		WatchFolders: []string{"/tmp"},
-		// Extractor/GeminiAPIKey/LLMModel 全空 → 繼承機器層
+		// Extractor 空 → 繼承機器層
 	}
 	sub := parent.makeAccountSubConfig(acc)
-	if sub.Extractor != "gemma" {
+	if sub.Extractor != "workers-ai" {
 		t.Errorf("② 帳號層空時應繼承機器層 Extractor，got %q", sub.Extractor)
-	}
-	if sub.GeminiAPIKey != "machine-key" {
-		t.Errorf("② 帳號層空時應繼承機器層 GeminiAPIKey，got %q", sub.GeminiAPIKey)
-	}
-	if sub.LLMModel != "model-machine" {
-		t.Errorf("② 帳號層空時應繼承機器層 LLMModel，got %q", sub.LLMModel)
 	}
 }
 
-// t126③ 遷移：機器層金鑰複製到沒有金鑰的帳號；已有金鑰的帳號不覆蓋。
+// t126③ 遷移：頂層 extractor 複製到沒有值的帳號；已有值的帳號不覆蓋。
+// （inkstone/arcrun-rag#58：金鑰／模型不再複製——欄位已拔除，見 TestArcrunRag58ScrubsPlaintextGeminiKeys。）
 func TestLoadDirectConfigMigratesCopyKeyToAccounts(t *testing.T) {
 	dir := t.TempDir()
 	p := writeDirectConfig(t, dir, map[string]any{
-		"manifest":       filepath.Join(dir, "m.json"),
-		"extractor":      "gemma",
-		"extractor_explicit": true, // t182：主動選過 ⇒ 不被抹成 workers-ai
-		"gemini_api_key": "top-level-key",
-		"llm_model":      "model-x",
+		"manifest":           filepath.Join(dir, "m.json"),
+		"extractor":          "workers-ai",
+		"extractor_explicit": true,
 		"accounts": []map[string]any{
 			{
-				"cypher_url":   "https://a.example",
-				"namespace":    "nsA",
+				"cypher_url":    "https://a.example",
+				"namespace":     "nsA",
 				"watch_folders": []string{"/tmp/a"},
-				// 沒有 gemini_api_key → 應複製頂層
-			},
-			{
-				"cypher_url":   "https://b.example",
-				"namespace":    "nsB",
-				"watch_folders": []string{"/tmp/b"},
-				"gemini_api_key": "b-own-key", // 已有自己的 key → 不覆蓋
+				// 沒有 extractor → 應複製頂層
 			},
 		},
 	})
@@ -719,55 +695,38 @@ func TestLoadDirectConfigMigratesCopyKeyToAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDirectConfig: %v", err)
 	}
-	// account A：無 key → 應複製頂層
-	if cfg.Accounts[0].GeminiAPIKey != "top-level-key" {
-		t.Errorf("③ account A 應複製頂層 key，got %q", cfg.Accounts[0].GeminiAPIKey)
-	}
-	// t182：加 extractor_explicit（見下方 writeDirectConfig）＝使用者主動選過 Gemini
-	// ⇒ 不觸發 workers-ai 抹除，t126 的「複製頂層 extractor」行為照舊可測。
-	if cfg.Accounts[0].Extractor != "gemma" {
+	if cfg.Accounts[0].Extractor != "workers-ai" {
 		t.Errorf("③ account A 應複製頂層 extractor，got %q", cfg.Accounts[0].Extractor)
-	}
-	if cfg.Accounts[0].LLMModel != "model-x" {
-		t.Errorf("③ account A 應複製頂層 llm_model，got %q", cfg.Accounts[0].LLMModel)
-	}
-	// account B：已有自己的 key → 不覆蓋
-	if cfg.Accounts[1].GeminiAPIKey != "b-own-key" {
-		t.Errorf("③ account B 已有 key 不應被頂層覆蓋，got %q", cfg.Accounts[1].GeminiAPIKey)
-	}
-	// 頂層保留（複製非搬移）
-	if cfg.GeminiAPIKey != "top-level-key" {
-		t.Errorf("③ 頂層 key 應保留（複製非搬移），got %q", cfg.GeminiAPIKey)
 	}
 }
 
-// t126④ 冪等：帳號已有 extractor/key 時再跑遷移不覆蓋。
+// t126④ 冪等：帳號已有 extractor 時再跑遷移不覆蓋。
 func TestLoadDirectConfigMigrationIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	p := writeDirectConfig(t, dir, map[string]any{
-		"manifest":       filepath.Join(dir, "m.json"),
-		"extractor":      "gemma",
-		"extractor_explicit": true, // t182：主動選過 ⇒ 不被抹成 workers-ai
-		"gemini_api_key": "top-key",
+		"manifest":           filepath.Join(dir, "m.json"),
+		"extractor":          "workers-ai",
+		"extractor_explicit": true,
 		"accounts": []map[string]any{
 			{
-				"cypher_url":   "https://a.example",
-				"namespace":    "nsA",
+				"cypher_url":    "https://a.example",
+				"namespace":     "nsA",
 				"watch_folders": []string{"/tmp/a"},
-				"extractor":      "claude",    // 帳號已有 → 不應被頂層 "gemma" 覆蓋
-				"gemini_api_key": "own-key",  // 帳號已有 → 不應被頂層 key 覆蓋
+				"extractor":     "workers-ai",
 			},
 		},
 	})
+	before, _ := os.ReadFile(p)
 	cfg, err := LoadDirectConfig(p)
 	if err != nil {
 		t.Fatalf("LoadDirectConfig: %v", err)
 	}
-	if cfg.Accounts[0].Extractor != "claude" {
-		t.Errorf("④ 帳號已有 extractor 不應被頂層覆蓋，got %q", cfg.Accounts[0].Extractor)
+	if cfg.Accounts[0].Extractor != "workers-ai" {
+		t.Errorf("④ got %q", cfg.Accounts[0].Extractor)
 	}
-	if cfg.Accounts[0].GeminiAPIKey != "own-key" {
-		t.Errorf("④ 帳號已有 key 不應被頂層覆蓋，got %q", cfg.Accounts[0].GeminiAPIKey)
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Error("④ 已是新制的 config 不該被改寫")
 	}
 }
 

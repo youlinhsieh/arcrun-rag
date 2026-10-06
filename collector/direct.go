@@ -38,7 +38,10 @@ import (
 
 // AccountConfig 單一帳號的連線設定（t104 多帳號同時看守）。
 // 每個帳號代表一個 Arcrun 知識庫實例；Extractor/Manifest 等機器層級設定住在 DirectConfig 頂層。
-// t126：Extractor/GeminiAPIKey/LLMModel 支援帳號層覆蓋——帳號有值時優先，空值繼承機器層。
+// t126：Extractor 支援帳號層覆蓋——帳號有值時優先，空值繼承機器層。
+// 🔴 inkstone/arcrun-rag#58：帳號層的 gemini_api_key／llm_model 欄位已拔除（萃取一律走
+// 自己雲端實例的 AI，不再有任何第三方 LLM 金鑰）；舊 config 裡殘留的明碼由
+// LoadDirectConfig 讀到時抹掉並回寫檔案。
 type AccountConfig struct {
 	InstanceName string            `json:"instance_name,omitempty"`
 	Email        string            `json:"email,omitempty"`
@@ -53,9 +56,7 @@ type AccountConfig struct {
 	// 一個寫入者＝不會有兩個行程互相蓋掉對方的設定。
 	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	// t126：每帳號獨立的萃取設定（空值繼承 DirectConfig 頂層）
-	Extractor    string `json:"extractor,omitempty"`
-	GeminiAPIKey string `json:"gemini_api_key,omitempty"`
-	LLMModel     string `json:"llm_model,omitempty"`
+	Extractor string `json:"extractor,omitempty"`
 }
 
 // DirectConfig 是 direct 模式的設定檔（JSON）。設定只走檔案/環境，不落 code。
@@ -79,15 +80,13 @@ type DirectConfig struct {
 	IngestWF  string            `json:"ingest_workflow"`  // 直送萃取 workflow 名（空＝rag_ingest_direct）
 	RemovedWF string            `json:"removed_workflow"` // 下架 workflow 名（空＝rag_takedown_direct）
 	// —— 四步定稿（daemon-beta t3/t4/t6）：本地萃卡模式 ——
-	Extractor string `json:"extractor,omitempty"` // "workers-ai"（預設，免金鑰）｜"gemma"｜"claude"（已停用）
-	// t181：使用者**主動在托盤選過**萃取引擎才為 true。false＝一律走 workers-ai。
-	// 判準刻意不是「有沒有金鑰」——leo 08-04：「不管你現在是否有填金鑰」都要先 default
-	// Workers AI，否則他得「花在解釋為什麼 Gemini 不管用上」。
-	// 有金鑰但沒主動選 ⇒ 金鑰留著不動，之後選 Gemini 立刻可用。
+	// 🔴 inkstone/arcrun-rag#58（leo 2026-10-01）：萃取 AI 一律在雲端
+	// （CF 雲＝Workers AI、企業私有雲＝Ollama，同一條路），小幫手只轉發。
+	// 唯一合法值＝"workers-ai"；舊值 gemma／claude 讀進來一律當 workers-ai 並回寫。
+	Extractor string `json:"extractor,omitempty"`
+	// ExtractorExplicit：舊版「使用者主動選過引擎」旗標。引擎不再可選，保留欄位只為讀得進舊 config。
 	ExtractorExplicit bool    `json:"extractor_explicit,omitempty"`
 	ClaudeBin         string  `json:"claude_bin,omitempty"`           // claude 執行檔（空＝PATH 找 claude）
-	GeminiAPIKey      string  `json:"gemini_api_key,omitempty"`       // gemma 路的用戶 key
-	LLMModel          string  `json:"llm_model,omitempty"`            // gemma 路模型（空＝gemma-4-31b-it）
 	CardIngestWF      string  `json:"card_ingest_workflow,omitempty"` // 收卡 workflow（空＝rag_ingest_card）
 	PollSec           int     `json:"poll_interval_sec"`              // 輪詢間隔秒（空/0＝5）
 	MaxRemoved        float64 `json:"max_removed_ratio"`              // 大量刪除防呆門檻（空/0＝0.4）
@@ -257,45 +256,32 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 		}}
 	}
 
-	// 🔴 t182 遷移（leo 2026-08-04 拍板，**這條要在 t126 複製之前跑**）：
-	//
-	//	「如果是我的 config 保持舊的，那新版裝上就要檢查，因為已經是 default worker AI，
-	//	 **就要抹除改成用 Workers AI**，如果保持 Gemini 它不會改掉，**那就是失敗的**」
-	//
-	// 舊版沒有 `extractor_explicit` 這個欄位 ⇒ 老 config 一律是「沒有主動選過」，
-	// 但裡頭留著 extractor="gemma"（頂層＋每個帳號各一份，t126 複製過去的）。
-	// 只在記憶體裡改預設不夠——**沒寫回檔案**，托盤下次讀 config 還是念 Gemini，
-	// 萃取也照舊走 Gemini（leo 08-04 實測：更新到 v0.15.5 後兩個帳號仍顯示 Gemini、
-	// 丟 PDF 進去產不出卡，因為根本沒走到 Workers AI 這條路）。
-	//
-	// ⇒ 沒 explicit 就把**每一層**的舊值抹掉改成 workers-ai，並回寫檔案（見下方 saveDirectConfig）。
-	// 金鑰不動：之後他想選 Gemini，貼過的金鑰還在（leo：Gemini 變選配，不是廢除）。
+	// 🔴 inkstone/arcrun-rag#58（leo 2026-10-01：「現在 WorkersAI 如何做，未來企業 Ollama 走
+	// 同一條路，員工不用想要怎麼設置，是公司的事」）：
+	// 萃取 AI 一律在雲端，小幫手不再持有任何第三方 LLM 金鑰。
+	// 舊 config 兩件事要抹掉並**回寫檔案**（只改記憶體不算——托盤是另一個行程，自己讀同一份檔，
+	// 而明碼金鑰的問題正是「它躺在檔案裡」）：
+	//	① 頂層與每個帳號的 gemini_api_key／llm_model（含 raw JSON 裡的未知欄位）
+	//	② extractor 殘留 gemma／claude／其他舊值 ⇒ workers-ai
 	// 冪等：抹完即與新版一致，重跑不再改動。
-	migrated := false
-	if !c.ExtractorExplicit {
-		if strings.TrimSpace(c.Extractor) != "" && c.Extractor != "workers-ai" {
-			c.Extractor = "workers-ai"
+	migrated := scrubLegacyLLMFields(data)
+	if normalizeExtractorValue(&c.Extractor) {
+		migrated = true
+	}
+	for i := range c.Accounts {
+		if normalizeExtractorValue(&c.Accounts[i].Extractor) {
 			migrated = true
 		}
-		for i := range c.Accounts {
-			if strings.TrimSpace(c.Accounts[i].Extractor) != "" && c.Accounts[i].Extractor != "workers-ai" {
-				c.Accounts[i].Extractor = "workers-ai"
-				migrated = true
-			}
-		}
+	}
+	if !c.ExtractorExplicit && strings.TrimSpace(c.Extractor) != "" && c.Extractor != "workers-ai" {
+		c.Extractor = "workers-ai"
+		migrated = true
 	}
 
-	// t126 遷移：把頂層金鑰複製到每個沒有金鑰的帳號（複製非搬移，頂層保留當預設；冪等）。
-	// 帳號已有自己的值（非空）→ 不覆蓋，讓帳號層設定永遠優先。
+	// t126 遷移：頂層 extractor 複製到每個沒有值的帳號（冪等；帳號已有值不覆蓋）。
 	for i := range c.Accounts {
 		if strings.TrimSpace(c.Accounts[i].Extractor) == "" && strings.TrimSpace(c.Extractor) != "" {
 			c.Accounts[i].Extractor = c.Extractor
-		}
-		if strings.TrimSpace(c.Accounts[i].GeminiAPIKey) == "" && strings.TrimSpace(c.GeminiAPIKey) != "" {
-			c.Accounts[i].GeminiAPIKey = c.GeminiAPIKey
-		}
-		if strings.TrimSpace(c.Accounts[i].LLMModel) == "" && strings.TrimSpace(c.LLMModel) != "" {
-			c.Accounts[i].LLMModel = c.LLMModel
 		}
 	}
 
@@ -321,12 +307,13 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 
 	// 🔴 t182：把抹除**寫回檔案**（leo：「新版裝上就要檢查……就要抹除改成用 Workers AI」）。
 	// 只改記憶體不算抹除——托盤是**另一個行程**、自己讀同一份 config.json，
-	// 不寫回去它就繼續念「Gemini」，畫面與實際行為又脫鉤（t178 那個病）。
+	// 不寫回去它就繼續念舊值，畫面與實際行為又脫鉤（t178 那個病）。
 	// 放在驗證通過之後：確定這份 config 是好的才回寫，不把半殘結構蓋掉使用者的檔。
 	// 寫失敗不擋啟動（唯讀目錄等）——記憶體裡已是 workers-ai，這輪行為仍正確。
 	if migrated {
 		if err := saveDirectConfig(path, &c); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ 舊設定已改用雲端 AI，但寫回 config 失敗（不影響本次執行）：%v\n", err)
+			fmt.Fprintf(os.Stderr, "⚠ 舊設定已改用雲端 AI，但寫回 config 失敗（不影響本次執行；"+
+				"檔案裡的舊金鑰還在，請手動刪掉 gemini_api_key）：%v\n", err)
 		}
 	}
 
@@ -353,15 +340,9 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 	if c.CardIngestWF == "" {
 		c.CardIngestWF = "rag_ingest_card"
 	}
-	if c.LLMModel == "" {
-		c.LLMModel = defaultLLMModel
-	}
-	// t182：`workers-ai` 是**現在的預設**，必須列入合法值。
-	// （原本漏了它 ⇒ 一旦 config 寫成 workers-ai，載入直接失敗、daemon 起不來。
-	//  `claude` 保留在合法清單只為**讀得進舊 config**——RunDirectOnce 會把它正規化成
-	//  gemma（t176），不是還支援 claude。）
-	if c.Extractor != "" && c.Extractor != "workers-ai" && c.Extractor != "claude" && c.Extractor != "gemma" {
-		return nil, fmt.Errorf("extractor 只能是 workers-ai / gemma（或留空走預設），got %q", c.Extractor)
+	// gemma／claude 已在上面正規化成 workers-ai；走到這裡還不是合法值＝手寫錯字，誠實報錯。
+	if c.Extractor != "" && c.Extractor != "workers-ai" {
+		return nil, fmt.Errorf("extractor 只能是 workers-ai（或留空走預設），got %q", c.Extractor)
 	}
 	if c.PollSec <= 0 {
 		c.PollSec = 5
@@ -666,7 +647,7 @@ func stampResults(r []DirectResult) {
 
 // makeAccountSubConfig 從帳號設定建出單帳號用的 DirectConfig，繼承機器層級欄位（t104）。
 // 用於 RunDirectOnce 逐帳號掃描，每帳號得到獨立的 CypherURL/Namespace/WatchFolders 等。
-// t126：帳號層 Extractor/GeminiAPIKey/LLMModel 有值時優先覆蓋機器層（空字串不算「有值」）。
+// t126：帳號層 Extractor 有值時優先覆蓋機器層（空字串不算「有值」）。
 func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 	sub := *c // 複製機器層級欄位
 	sub.Accounts = nil
@@ -690,12 +671,6 @@ func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 	// t126：帳號層有值時優先（空字串繼承機器層，已由 sub := *c 複製）
 	if strings.TrimSpace(acc.Extractor) != "" {
 		sub.Extractor = acc.Extractor
-	}
-	if strings.TrimSpace(acc.GeminiAPIKey) != "" {
-		sub.GeminiAPIKey = acc.GeminiAPIKey
-	}
-	if strings.TrimSpace(acc.LLMModel) != "" {
-		sub.LLMModel = acc.LLMModel
 	}
 	return &sub
 }
@@ -739,32 +714,15 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	// t92-②：預檢 extractor（機器層級），有 fallback 路徑時就地更新 cfg.ClaudeBin。
 	extractorOK := true
 	extractorError := ""
-	// t176（leo 08-03 拍板）：**地端先只支援 Gemini**（「地端先限制 Gemini API Key 配合客戶要求」）。
-	// 殘留的 extractor:"claude"（雲端舊版下發、或舊 config 殘留）一律當 gemma 處理。
-	// 這不是「自動偵測有無 claude」（那是 leo 07-27 已否決的 B 案，見 daemon-beta/tasks.md:641），
-	// 而是「claude 路整條先不支援」——之後要裝回來，把這段拿掉即可。
-	if cfg.Extractor == "claude" {
-		cfg.Extractor = "gemma"
+	// 🔴 inkstone/arcrun-rag#58：萃取一律走雲端（workers-ai 路）。舊 config 殘留的 gemma／claude
+	// （含帳號層）一律當 workers-ai——LoadDirectConfig 已回寫，這裡再正規化一次是因為
+	// 呼叫端也可能直接組 DirectConfig 傳進來（不經載入）。
+	normalizeExtractorValue(&cfg.Extractor)
+	for i := range cfg.Accounts {
+		normalizeExtractorValue(&cfg.Accounts[i].Extractor)
 	}
-	// 🔴 t181（leo 08-04 最優先）：**所有人一律預設 Workers AI（免金鑰）**。
-	// leo：「daemon 的 AI 改用 workers AI」——「這是我的用戶最大障礙，
-	// 造成首輪測試用戶的好評或惡評」。
-	//
-	// ⚠️ 包含**已經填過金鑰的老用戶**（leo 08-04 特別交代）：
-	//   「default 用 Workers AI，你要用 Gemini 要**特別去選取**，
-	//    不管你現在是否有填金鑰……不然我會有很多質疑，
-	//    **花在解釋為什麼 Gemini 不管用上**」
-	// ⇒ 判準是 `extractor_explicit`（使用者在托盤主動選過）而不是「有沒有金鑰」。
-	//   有金鑰但沒主動選 ⇒ 仍走 Workers AI，金鑰留著不動、之後選 Gemini 立刻可用。
-	//   Gemini 仍是選配（leo：「不需要推廣，特定人告訴他怎麼做就好」）。
 	if !cfg.ExtractorExplicit {
 		cfg.Extractor = "workers-ai"
-		// 🔴 t182（leo 08-04 實撞：更新到 v0.15.5 後托盤**兩個帳號都還是顯示 Gemini**）：
-		// 只清機器層不夠——`makeAccountSubConfig` 會把**帳號層**的 extractor 蓋回來
-		// （t126 的「帳號層優先」規則，direct.go:414）。leo 的 config 正是這樣：
-		// 頂層 extractor="gemma"、每個帳號也各自 "gemma"，全都沒有 explicit
-		// ⇒ 頂層被改成 workers-ai，跑起來仍逐帳號走 gemma，畫面也照舊念 Gemini。
-		// 沒有主動選過就是沒有主動選過，**每一層都要清**，否則預設等於沒改。
 		for i := range cfg.Accounts {
 			cfg.Accounts[i].Extractor = "workers-ai"
 		}
@@ -786,17 +744,6 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			extractorError = "還沒連上知識庫 ⇒ 按左邊「知識庫」下方的「新增知識庫帳號」，輸入網址與帳密"
 		}
 	}
-	if cfg.Extractor == "gemma" {
-		if strings.TrimSpace(cfg.GeminiAPIKey) == "" {
-			extractorOK = false
-			// t178（leo 08-04：封測者是台大資工碩士都卡住 ⇒「一般人就完蛋了」）：
-			// 舊訊息「請在設定裡輸入 Gemini API Key」**沒說設定在哪** ⇒ 用戶找不到入口。
-			// 錯誤訊息本身就要能當 onboarding：指名選單項、指名去哪申請。
-			extractorError = "還沒設定 Gemini API Key ⇒ 點托盤選單的「AI 設定…」貼上金鑰" +
-				"（免費申請：aistudio.google.com/apikey）"
-		}
-	}
-
 	// t104：解出有效帳號清單（向後相容：無 Accounts 但有頂層 CypherURL 時視為單帳號）
 	accounts := cfg.Accounts
 	if len(accounts) == 0 && cfg.CypherURL != "" {
@@ -865,6 +812,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 
 		// t103：per-account 雲端版本偵測
 		cloudVer, cloudOK := cloudVersionThrottled(accCfg.CypherURL, cfg.ForceSync) // #121：一分鐘問一次，見 cloudcheck.go
+		if cloudOK {
+			// #236：/health 通了 ⇒ 退避中的路有機會提早試一發（雲端修好不必等階梯走完；見 routebackoff.go）。
+			cloudRoutes.noteCloudHealthy(instanceHostOf(accCfg.CypherURL), cloudVer, directNow())
+		}
 		// 🔴 `inkstone/arcrun-rag#159`：**一次探測失敗 ≠ 這台知識庫連不上。**
 		//
 		// leo 2026-08-28 的畫面上，`youlin.hsieh.dev` 那行紅字寫「目前連不上這個
@@ -901,7 +852,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		// 還沒通，一旦通了就顯示可用**」。
 		// 每個帳號各掃各的——雲端實例是**逐帳號**各自更新的（leo 自己就有兩個帳號、
 		// 更新進度不同步），一個帳號通了不代表另一個也通。
-		// 只在走 workers-ai 這條路時掃；選了 Gemini 的人不需要知道這件事。
+		// 只在走 workers-ai 這條路時掃（現在是唯一的一條）。
 		if accCfg.Extractor == "workers-ai" {
 			state := accCfg.probeWorkersAI()
 			accSt.CloudAIReady = state.Ready
@@ -1270,21 +1221,55 @@ func shortError(msg string) string {
 }
 
 // CheckExtractor 預檢萃取器是否可用（不執行萃取、不打 API）。
-// 只檢「可執行檔存在且可執行」或「金鑰非空」。
-// extractor 空（舊制直送）一律回 (true, "")。
+// 🔴 inkstone/arcrun-rag#58：萃取一律走自己的雲端實例，不再有本機金鑰可檢；
+// 「連不連得上知識庫」由 RunDirectOnce 的 accountsConnected 判斷。恆回 (true, "")，
+// 保留函式只為不破壞呼叫端。
 func CheckExtractor(cfg *DirectConfig) (ok bool, errMsg string) {
-	switch cfg.Extractor {
-	case "claude":
-		// t176：claude 先不支援，等同 gemma（與 RunDirectOnce 的正規化保持一致，避免兩處漂移）。
-		fallthrough
-	case "gemma":
-		if strings.TrimSpace(cfg.GeminiAPIKey) == "" {
-			return false, "金鑰是空的——請在設定裡輸入 Gemini API Key"
-		}
-		return true, ""
-	default:
-		return true, ""
+	return true, ""
+}
+
+// normalizeExtractorValue 把舊版的 gemma／claude 改成 workers-ai（inkstone/arcrun-rag#58）。
+// 回傳是否有改動（給呼叫端決定要不要回寫檔案）。空字串與已是 workers-ai 的不動。
+func normalizeExtractorValue(v *string) bool {
+	switch strings.TrimSpace(*v) {
+	case "gemma", "claude":
+		*v = "workers-ai"
+		return true
 	}
+	return false
+}
+
+// legacyLLMKeys＝已拔除、讀到就要從檔案裡抹掉的欄位。
+var legacyLLMKeys = []string{"gemini_api_key", "llm_model"}
+
+// scrubLegacyLLMFields 回報 config 原文裡（頂層與 accounts[] 內）是否還留著
+// gemini_api_key／llm_model。這兩個欄位已不在 struct 上——重新 marshal 寫回即自然抹除；
+// 本函式只負責「讀原文判斷要不要回寫」。無法解析的 JSON 回 false（解析錯誤由呼叫端處理）。
+func scrubLegacyLLMFields(raw []byte) bool {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil {
+		return false
+	}
+	has := func(m map[string]json.RawMessage) bool {
+		for _, k := range legacyLLMKeys {
+			if _, ok := m[k]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	if has(top) {
+		return true
+	}
+	var accs []map[string]json.RawMessage
+	if json.Unmarshal(top["accounts"], &accs) == nil {
+		for _, a := range accs {
+			if has(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // saveDirectConfig 把 DirectConfig 回寫到 configPath（t92：找到 claude fallback 路徑後持久化）。
@@ -1744,7 +1729,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 卡片那條路（folderindex／inventory／sourcerepair）用的是同一個 cfg.machineIdentity()，
 	// 同一輪只解析一次，兩條路送上去的值必然相同。
 	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
-		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity())
+		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion())
 	if !dryRun {
 		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
 	}
@@ -1783,7 +1768,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			}
 		}
 		latestTree = BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, entries,
-			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity())
+			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion())
 		PublishFolderTreeNow(cfg.Manifest, root, latestTree, runNow)
 		cfg.guard.fileFinished(root, outcome, m.Progress())
 	}
@@ -1933,7 +1918,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					continue
 				}
 				// 萃取本身也是一條路（workers-ai 打的正是這台知識庫的 /portal/daemon/extract），
-				// 2026-09-13 真機上打最多的就是它——同一道閘。gemma 打 Google，不在這裡。
+				// 2026-09-13 真機上打最多的就是它——同一道閘。
 				if cfg.Extractor == "workers-ai" {
 					if note := cfg.routeNote(workersAIExtractURL(cfg.CypherURL)); note != "" {
 						res.Status = "skipped"
@@ -2014,7 +1999,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				case "workers-ai":
 					// t181（leo 08-04 最優先）：走自己雲端實例的 Workers AI ⇒ **免金鑰**。
 					// 用戶不必去 Google 申請、也不受 Google 帳號被 flag 影響。
-					// 🔴 t182：雲端還沒更新時**不在這裡默默退回 Gemini**。
+					// 🔴 t182：雲端還沒更新時**不在這裡默默退回別條路**。
 					// leo 08-04 指定的設計是「掃一次、把狀態講出來」：
 					//   「沒裝好就顯示 workers AI 還沒通，一旦通了就顯示可用」
 					// ⇒ 探測在 RunDirectOnce（ProbeWorkersAI），結果寫進 status.json，
@@ -2026,9 +2011,6 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 等不到回覆」⇒ 漏掉這一格的話，單輪上限 25 個檔會變成 25 次
 					// 各自的等待，同一輪照樣走不完。
 					//
-					// 🔴 gemma 那條**刻意不掛**：它打的是 Google，不是使用者的知識庫。
-					// 掛上去的話，Google 慢會被算成「你的知識庫沒有回應」——
-					// 誤導的訊息比沒有訊息更貴（會害人往錯的方向查）。
 					xgate := cfg.openGate(stepExtractDoc)
 					// #121：先前失敗過的檔再失敗，不算「路壞了」；#201：斷網那種不算前科
 					cards, xerr = extractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin,
@@ -2038,12 +2020,10 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						xgate.ok()
 					}
 					xerr = xgate.record(xerr) // 只有「等到超時」會被記帳，其餘錯誤原樣往下走
-				case "gemma":
-					cards, xerr = ExtractWithGemma(cfg.GeminiAPIKey, cfg.LLMModel, absRoot, ev.Path, cardOrigin)
 				default:
-					// t176：claude 路先不支援（RunDirectOnce 開頭已正規化）。
-					// 走到這裡代表 config 有沒見過的值——誠實報錯，不要靜默跳過（禁假綠）。
-					xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai／gemma）", cfg.Extractor)
+					// RunDirectOnce 開頭已把舊值正規化成 workers-ai；走到這裡代表 config 有沒見過的值
+					// ——誠實報錯，不要靜默跳過（禁假綠）。
+					xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai）", cfg.Extractor)
 				}
 				// arcrun-rag#213：續讀機制的「還沒讀完」不是失敗——是有進度的成功。
 				// 從 xerr 認出這個訊號，改走下面的上傳＋partial 收尾，

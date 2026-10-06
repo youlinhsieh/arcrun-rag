@@ -8,7 +8,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -107,4 +108,15 @@ test('安裝器換寫法、對應表整個讀不到 ⇒ 丟例外（不准猜）
   const f = join(dir, 'worker.js');
   writeFileSync(f, 'export default {};\n');
   assert.throws(() => loadInstallerPlaceholders(f), /讀不到/);
+});
+
+// inkstone/arcrun-rag#237：出貨的那份 workflows.json 對出貨安裝器的代換表，不得有任何「沒代換的佔位符」。
+// 病：YAML 註解裡的字樣與 throw 訊息裡的標記字串（__ALL_ALREADY_DESCRIBED__）被記成佔位符，
+// 首裝推導誤報「會原封不動推進使用者工作流」。這條釘的是真實出貨檔，不是假資料。
+test('出貨的 workflows.json 對出貨安裝器的代換表零警告（#237）', () => {
+  const root = fileURLToPath(new URL('../oauth-prototype/', import.meta.url));
+  const placeholders = loadInstallerPlaceholders(join(root, 'worker.js'));
+  const workflows = JSON.parse(readFileSync(join(root, 'workflows.json'), 'utf8'));
+  const { warnings } = deriveFromWorkflows(workflows, { placeholders });
+  assert.deepEqual(warnings, []);
 });

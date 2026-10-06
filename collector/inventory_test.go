@@ -154,13 +154,13 @@ func TestDirectInventory_先於萃取且冪等(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	defer srv.Close()
-	defer gemmaCardStub(t, cardFixture("規則", "kb"))()
+	defer extractCardStub(t, cardFixture("規則", "kb"))()
 
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Library: "kb", Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Library: "kb", Extractor: "workers-ai", ExtractorExplicit: true,
 		CardIngestWF: "rag_ingest_card", MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)
@@ -215,7 +215,7 @@ func TestDirectInventory_萃取壞掉照樣送達(t *testing.T) {
 	}))
 	defer srv.Close()
 	// Gemini 替身回 500＝萃取全滅
-	defer gemmaStub(t, func(w http.ResponseWriter, r *http.Request) {
+	defer extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"boom"}`))
 	})()
@@ -223,7 +223,7 @@ func TestDirectInventory_萃取壞掉照樣送達(t *testing.T) {
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(t.TempDir(), "m.json"),
 		CypherURL:    srv.URL, Namespace: "demo", APIKey: "demo",
-		Extractor: "gemma", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		Extractor: "workers-ai", ExtractorExplicit: true,
 		MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	results, exit, _ := RunDirectOnce(cfg, false)

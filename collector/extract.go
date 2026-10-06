@@ -99,7 +99,7 @@ func cardsRelDirFor(absRoot string) string {
 // 誰都不准自己拼 `pageName + ".md"`。目前三個呼叫端必須拿到同一個答案，
 // 少一個對齊就會留下孤兒檔或清不掉的卡：
 //
-//	① 落卡（extract_gemma.go／extract_workersai.go）
+//	① 落卡（extract_workersai.go；提示詞與解析契約在 extract_prompt.go）
 //	② 下架時清本地卡（direct.go 的 removed 分支）
 //	③ 萃取前後的快照比對（snapshotCards，claude 路用）
 //

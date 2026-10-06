@@ -168,13 +168,14 @@ func TestRunDirectOnceWritesStatus(t *testing.T) {
 	// 空資料夾 → 零事件 → 無 HTTP 呼叫
 	root := t.TempDir()
 	manifestDir := t.TempDir()
-	// t176：extractor 寫 "claude" 也會被正規化成 gemma（claude 路已不支援），
-	// 故預檢看的是「Gemini 金鑰有沒有填」——這裡填了，ExtractorOK 應為 true。
+	// extractor 寫 "claude" 會被正規化成 workers-ai（inkstone/arcrun-rag#58：本機金鑰引擎已拔除），
+	// 預檢看的是「連得上知識庫、雲端 AI 通了」——探測以替身回 200，ExtractorOK 應為 true。
+	defer probeReadyStub(t)()
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(manifestDir, "manifest.json"),
-		CypherURL:    "https://unused.example", Namespace: "demo",
-		Extractor: "claude", ExtractorExplicit: true, GeminiAPIKey: "k-test",
+		CypherURL:    "https://unused.example", Namespace: "demo", APIKey: "demo",
+		Extractor: "claude", ExtractorExplicit: true,
 		MaxRemoved: DefaultMaxRemovedRatio,
 	}
 	RunDirectOnce(cfg, false)
@@ -188,7 +189,7 @@ func TestRunDirectOnceWritesStatus(t *testing.T) {
 		t.Fatalf("LoadSyncStatus 失敗：%v", err)
 	}
 	if !st.ExtractorOK {
-		t.Errorf("可用 stub claude 時 ExtractorOK 應為 true，ExtractorError=%q", st.ExtractorError)
+		t.Errorf("雲端 AI 探測通過時 ExtractorOK 應為 true，ExtractorError=%q", st.ExtractorError)
 	}
 	if st.LastSync == "" {
 		t.Error("LastSync 應非空")
@@ -210,7 +211,7 @@ func TestRunDirectOnceWritesStatusExtractorFail(t *testing.T) {
 	cfg := &DirectConfig{
 		WatchFolders: []string{root},
 		Manifest:     filepath.Join(manifestDir, "manifest.json"),
-		CypherURL:    "https://unused.example", Namespace: "demo",
+		CypherURL:    "https://unused.example", Namespace: "demo", APIKey: "demo",
 		Extractor: "claude", ExtractorExplicit: true, ClaudeBin: "/no/such/claude",
 		MaxRemoved: DefaultMaxRemovedRatio,
 	}

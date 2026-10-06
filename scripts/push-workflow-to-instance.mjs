@@ -17,8 +17,6 @@ const subs = {
   '__KBDB_BASE__': `https://arcrun-kbdb.${sub}.workers.dev`,
   '__HTTP_REQ_URL__': `https://arcrun-http-request.${sub}.workers.dev`,
   '__CODE_URL__': `https://arcrun-code.${sub}.workers.dev`,
-  '__LLM_MODEL__': 'gemma-4-31b-it',
-  '__GEMINI_API_KEY__': '',
 };
 const apply = (o) => { let s = JSON.stringify(o); for (const [k,v] of Object.entries(subs)) s = s.split(k).join(String(v)); return JSON.parse(s); };
 const hdr = { 'content-type':'application/json', 'X-Arcrun-API-Key': ns, 'user-agent':'curl/8.5.0' };

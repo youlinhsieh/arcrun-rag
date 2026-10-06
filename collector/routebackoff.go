@@ -84,6 +84,7 @@ type routeState struct {
 	until     time.Time
 	lastFail  time.Time
 	lastCause string // 給人看的「最近一次是怎麼失敗的」，不含狀態碼與網址
+	lastProbe time.Time // 上一次因「雲端看起來好了」而提早放行一發的時間
 }
 
 // RouteFailure＝一次被算進斷路器的失敗（印進 collector.log 的那一行）。
@@ -111,8 +112,9 @@ func announceRouteFailure(at time.Time, f RouteFailure) {
 }
 
 type routeBreaker struct {
-	mu     sync.Mutex
-	routes map[string]*routeState
+	mu       sync.Mutex
+	routes   map[string]*routeState
+	versions map[string]string // 主機 → 上一次 /health 看到的 bundle_version
 }
 
 // cloudRoutes＝整個行程共用的一份（跨輪、跨帳號；key 自帶主機名，帳號之間不會互相牽連）。
@@ -301,11 +303,61 @@ func (b *routeBreaker) record(raw string, now time.Time, status int, transportEr
 	routeFailureLog(now, entry) // 鎖外呼叫：印 stdout 要拿另一把鎖，別疊在一起
 }
 
+// 🔴 `inkstone/arcrun-rag#236`：雲端修好之後，斷路器不能只靠階梯走完才放行。
+//
+// 病（2026-09-29 leo21c）：folder-tree 連吃 429 ⇒ 這條路被關到最長 30 分鐘；雲端 1.4.80 修好後，
+// 小幫手仍「連打都不打」，伺服器零請求，Portal 的「小幫手還沒連上」橫條一直掛著，
+// 直到人去 kill collector 子程序（清掉記憶體內的斷路器）才恢復。
+//
+// 解法不拆保護，只多一個「雲端看起來好了」的出口。訊號是每分鐘本來就在問的 /health
+// （cloudVersionThrottled，不另開請求）：
+//   - 雲端的 bundle_version 變了（有人部署了新版）⇒ 舊的失敗紀錄已經不能代表現在的雲端，
+//     這台主機底下所有退避中的路**立刻**放行一發試探；
+//   - 版本沒變但 /health 是通的，且這條路已經停了至少 routeProbeAfter ⇒ 每 routeProbeEvery
+//     最多提早放行一發。這一發成功＝整條路歸零；失敗＝照階梯往上停（fails 沒被清掉，
+//     下一格更久），所以「雲端其實沒好」的最壞代價是每 routeProbeEvery 多撞一發，
+//     不是回到每 5 秒一輪。
+//
+// 提早放行只是把 until 撥到「現在」，fails 保留——保護機制本體（階梯、連續失敗計數）一個字沒動。
+const (
+	routeProbeAfter = 2 * time.Minute // 這條路停了至少這麼久，才准因為 /health 通而提早試
+	routeProbeEvery = 5 * time.Minute // 同一條路兩次提早試探之間的最短間隔
+)
+
+// noteCloudHealthy＝這一輪 /health 拿到看得懂的回應時呼叫。host＝知識庫主機（instanceHostOf）。
+// 回傳被提早放行的路數（給測試看）。
+func (b *routeBreaker) noteCloudHealthy(host, version string, now time.Time) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.versions == nil {
+		b.versions = map[string]string{}
+	}
+	prev, seen := b.versions[host]
+	b.versions[host] = version
+	changed := seen && version != "" && prev != version
+	released := 0
+	for key, st := range b.routes {
+		if !strings.HasPrefix(key, host+"/") || !now.Before(st.until) {
+			continue // 別台知識庫的路、或本來就沒在退避
+		}
+		if !changed {
+			if now.Sub(st.lastFail) < routeProbeAfter || (!st.lastProbe.IsZero() && now.Sub(st.lastProbe) < routeProbeEvery) {
+				continue
+			}
+		}
+		st.until = now
+		st.lastProbe = now
+		released++
+	}
+	return released
+}
+
 // reset 清空全部狀態（測試用）。
 func (b *routeBreaker) reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.routes = map[string]*routeState{}
+	b.versions = map[string]string{}
 }
 
 func humanWait(d time.Duration) string {

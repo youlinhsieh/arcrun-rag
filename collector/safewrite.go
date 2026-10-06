@@ -1,6 +1,6 @@
 // safewrite.go — 落卡寫檔前的保護（arcrun-rag#60 第二條：不得無條件覆蓋既有檔案）。
 //
-// 修前：extract_workersai.go / extract_gemma.go 都是無條件 os.WriteFile——不看目標
+// 修前：extract_workersai.go（當時還有 extract_gemma.go，已於 arcrun-rag#58 拔除）都是無條件 os.WriteFile——不看目標
 // 存不存在、不備份、不詢問。這次沒出事只是檔名剛好沒撞上，不代表安全。
 package collector
 
