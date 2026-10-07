@@ -85,3 +85,4 @@
 | 2026-09-30 12:55:44 | stage | bundle 1.4.81；daemon 0.18.64；installer 1.0.35 | ✅ 放行 | — |
 | 2026-09-30 21:07:49 | stage | bundle 1.4.81；daemon 0.18.64；installer 1.0.35 | ✅ 放行 | — |
 | 2026-09-30 21:42:11 | prod | bundle 1.4.81；daemon 0.18.64；installer 1.0.35 | ✅ 放行 | — |
+| 2026-10-07 08:49:24 | stage | bundle 1.4.82；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |

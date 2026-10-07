@@ -140,3 +140,4 @@
 | 2026-09-30 21:05:26 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ⛔ 擋下 | 機械檢查：本機沒有遠端 main 的 tip 4b1bde2——這一推不是建立在遠端現況上（會蓋掉別人的 commit） |
 | 2026-09-30 21:09:03 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
 | 2026-09-30 21:21:13 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-10-07 08:47:03 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward d61f6cd→HEAD，6 個檔有變、沒有刪檔、.gitignore 沒變短 |
