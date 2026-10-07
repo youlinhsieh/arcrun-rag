@@ -24,7 +24,17 @@ import (
 
 // quotaDocPath＝那一頁的原始檔（docs-site 用 Starlight，網址由檔案路徑決定：
 // `src/content/docs/use/quota.md` → `/docs/use/quota/`）。
-const quotaDocPath = "../../../docs-site/src/content/docs/use/quota.md"
+//
+// 🔴 本 repo 單獨 clone 時，上層沒有 docs-site（那一頁住在 arcrun-rag）。所以：
+// 上層有就用上層那份（真相源）；沒有就用 testdata 裡的副本
+// （`testdata/docs-site/use/quota.md`，從 arcrun-rag 複製；那一頁的標題改了要同步更新它）。
+var quotaDocPath = func() string {
+	upstream := "../../../docs-site/src/content/docs/use/quota.md"
+	if _, err := os.Stat(upstream); err == nil {
+		return upstream
+	}
+	return "../../testdata/docs-site/use/quota.md"
+}()
 
 // slugify 照 github-slugger 的規則把標題轉成 Starlight 產的 id。
 //

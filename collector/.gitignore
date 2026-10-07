@@ -9,3 +9,7 @@ node_modules/
 #   ⚠️ 錨在本目錄（開頭的 `/`）：`collector` 這個字在這棵樹底下太常見，不錨會誤傷。
 #   出貨要的執行檔由三支打包腳本產在 `cmd/arcrun-app/build/bin/`，不是這一顆。
 /collector
+
+# WebView2 安裝器暫存檔：Wails 打包時自己會下載，不是源碼（inkstone/arcrun-rag#239，回寫 inkstone/arcrun-collector eca06ca 的做法）。
+# 算進版本指紋會讓「乾淨 clone 重算」與「這台機器」指紋對不上。
+/cmd/arcrun-app/build/windows/installer/tmp/

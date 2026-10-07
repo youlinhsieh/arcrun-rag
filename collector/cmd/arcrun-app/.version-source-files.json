@@ -1,9 +1,9 @@
 {
  "_algo": 5,
  "version": "0.18.65",
- "fingerprint": "9ef5307a8181a7a1",
+ "fingerprint": "df41aeac2c22a5ce",
  "files": {
-  ".gitignore": "c7a98c44ecc882a174720e43dabd4c04d7cf2503586426dcccaa213d5a27df38",
+  ".gitignore": "6da4cfd8c4f9759e2c934bd4aacf9c72890f87125ad5f6fb0a3e1ef4fe3aaf16",
   "CHANGELOG.md": "ca4381a3575897b00999c1f2635c22d120498f1fc19e530f434e9d33bcba2c8c",
   "DAEMON_LINE": "d5019abbdc8a5f2919e9e3510391891cd7fbdf0765bf16ec83caa779f370116d",
   "README.md": "9d92cac236b20a0b183eea3e7f5e39ad492f05192c4ea602eb11c3d09967327f",
@@ -46,7 +46,6 @@
   "cmd/arcrun-app/build/windows/icon.ico": "6a6b75f299e6797b3fecd8c8936efe79f60d94670bdb3dfaa582003d84b7c4cf",
   "cmd/arcrun-app/build/windows/info.json": "4de62dae9a86aa4c6048e304ba2a3f22bd2989d270561a92489c1456629661cf",
   "cmd/arcrun-app/build/windows/installer/project.nsi": "229dbe2bdc06596a5d4d2bfe96bd9a2b148085036618e855e83dab84c4102357",
-  "cmd/arcrun-app/build/windows/installer/tmp/MicrosoftEdgeWebview2Setup.exe": "7ebc4ce80143ef89cea86a61ea151502868db6caaa678b8b43660a66ace11c3a",
   "cmd/arcrun-app/build/windows/installer/wails_tools.nsh": "a58856e2ab7b6ca18174f435b93e3c17acdbdb225e3d12c8a914ede96be1433f",
   "cmd/arcrun-app/build/windows/wails.exe.manifest": "c63cb75ce48fb1354c95264f6fc43a7686a9b85a82a71efa9722ae4ce6561dc0",
   "cmd/arcrun-app/changelog-section.sh": "8b39dfdfbf8670fc850102e43b056b98dda52b2a7bd2a49f8d961c171c7abe23",
