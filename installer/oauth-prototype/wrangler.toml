@@ -281,6 +281,14 @@ BUNDLE_BUILT = "2026-09-30"
 # system-dev/wiki/ops-facts.md／ISEP docs/cloud-session-bootstrap.md）。
 # 第一版寫錯子網域，總管部署後 curl 實測 000 才抓到——這裡是修正後的值。
 LANDING_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
+# inkstone/arcrun-rag#38（2026-10-06，leo：「走同一條路，之前沒這個問題，現在測試這個問題，
+# 就需要有測試環境」）：忘記密碼的代寄單獨指向 uncle6 已 onboard arcrun.dev 的
+# arcrun-landing-staging——跟 9/25 以前的 stage 同一個郵差、同一個寄件網域、同一套代寄碼，
+# 信真的寄出去。只換「郵差」這一個座標：LANDING_BASE（辨識碼驗證）仍是 youlin 自己的，
+# stage 的辨識碼名單不外流；uncle6 那邊只收到「請代寄」，不拿到任何金鑰
+# （郵差只回呼 relay-verify 確認票，不存連結；見 landing/worker.js handleSendPasswordReset）。
+# prod／uncle6 staging 不設本變數 ⇒ 行為不變（worker.js mailRelayBase 退回 landingBase）。
+MAIL_RELAY_BASE = "https://arcrun-landing-staging.uncle6-me.workers.dev"
 SITE_BASE = "https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev"
 DOCS_BASE = "https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs"
 # arcrun-rag#218：這台安裝器自己的 workers.dev origin，部署 cypher 時注入成

@@ -195,6 +195,22 @@ export const WAIVERS = [
       + 'binding 一起消失，屆時刪掉這筆豁免；到期前若還沒拔，重新評估一個新到期日。',
   },
   {
+    檔案: 'installer/oauth-prototype/wrangler.toml',
+    鍵: 'vars.MAIL_RELAY_BASE',
+    到期: '2026-12-26',
+    理由:
+      'youlin-stage 的 landing 寄不了信（arcrun.dev 這顆 zone 只在 uncle6 帳號，見下面 landing '
+      + 'send_email 那筆），而 leo 2026-10-06 要求 stage 的忘記密碼「走同一條路」真的寄出信'
+      + '（inkstone/arcrun-rag#38 c17719）。所以只有 youlin-stage 把 cypher 的代寄座標'
+      + '（PORTAL_MAIL_RELAY_BASE）指向 uncle6 已 onboard 的 arcrun-landing-staging；'
+      + 'prod 不設＝退回 landingBase(env)，行為不變。同一份郵差程式、同一個寄件網域，'
+      + '不是另一條路。',
+    解除條件:
+      '與 landing 的 send_email／EMAIL_ENABLED 兩筆同一個解除條件：leo 裁定 arcrun.dev 委給 '
+      + 'youlin、或 youlin-stage 另掛測試寄件網域之後，youlin-stage 的 landing 自己能寄信，'
+      + '刪掉 wrangler.toml 的 MAIL_RELAY_BASE 與這筆豁免，三筆一起刪。',
+  },
+  {
     檔案: 'landing/wrangler.toml',
     鍵: 'send_email',
     到期: '2026-12-26',

@@ -22,7 +22,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker,
+  deployBundledWorker, landingBase,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -1265,6 +1265,23 @@ test('arcrun-rag#38/#69/#25 deployBundledWorker：env 沒給 LANDING_BASE 時，
     await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
     const vars = varsOf(captured());
     assert.equal(vars.PORTAL_MAIL_RELAY_BASE, 'https://arcrun-landing.uncle6-me.workers.dev');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('arcrun-rag#38 deployBundledWorker：env.MAIL_RELAY_BASE 有給時，cypher 的 PORTAL_MAIL_RELAY_BASE 指向它（youlin stage 走 uncle6 郵差），LANDING_BASE 不受影響', async () => {
+  const env = {
+    BUNDLE_BASE: BASE,
+    LANDING_BASE: 'https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev',
+    MAIL_RELAY_BASE: 'https://arcrun-landing-staging.uncle6-me.workers.dev/',
+  };
+  const { captured } = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    const vars = varsOf(captured());
+    assert.equal(vars.PORTAL_MAIL_RELAY_BASE, 'https://arcrun-landing-staging.uncle6-me.workers.dev');
+    assert.equal(landingBase(env), 'https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev');
   } finally {
     restoreFetch();
   }

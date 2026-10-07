@@ -231,6 +231,14 @@ function landingBase(env) {
   return (env && env.LANDING_BASE ? String(env.LANDING_BASE) : DEFAULT_LANDING_BASE).replace(/\/+$/, '');
 }
 
+// 忘記密碼代寄（郵差）的網址（arcrun-rag#38，2026-10-06）。預設＝landingBase(env)——
+// prod／uncle6 staging 的行為一個位元組不變。只有 env.MAIL_RELAY_BASE 有給時才改指別處：
+// youlin stage 的 landing 寄不了信（arcrun.dev zone 不在 youlin 帳號），leo 要 stage「走同一條路」，
+// 所以讓它的 cypher 把代寄請求交給 uncle6 已 onboard 的 arcrun-landing-staging（與 prod 同一個寄件網域、同一套代寄碼）。
+function mailRelayBase(env) {
+  return (env && env.MAIL_RELAY_BASE ? String(env.MAIL_RELAY_BASE).replace(/\/+$/, '') : landingBase(env));
+}
+
 // 🔴 人看的導覽網址（arcrun-rag#29 驗收帶出的坑，2026-08-09）：`LANDING_BASE` 是
 // **後端**打 landing API 用的（值是 workers.dev），跟畫面上「首頁／說明文件」導覽
 // 連結該顯示的**人看的網址**是兩件事——後者以前整段寫死 `rag.arcrun.dev`，
@@ -2774,7 +2782,7 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     // prod/staging 各自的 wrangler.toml vars 早就設好，見 installer/oauth-prototype/wrangler.toml）
     // ⇒ 不新增第二個要維護的座標。只在 cypher 這顆宣告（cypher-executor/src/types.ts 的
     // Bindings 只有這一顆有這個欄位；UI 沒有）。
-    ...(entry.name && entry.name.includes('cypher') ? { PORTAL_MAIL_RELAY_BASE: landingBase(env) } : {}),
+    ...(entry.name && entry.name.includes('cypher') ? { PORTAL_MAIL_RELAY_BASE: mailRelayBase(env) } : {}),
     // arcrun-rag#218（inkstone/Arcrun#98 c11358 後半）：cypher 讀 env.INSTALLER_ORIGIN
     // 決定 portal 版本檢查／「前往安裝精靈」連結該指去哪台安裝器（Arcrun 647f174 已接好
     // 讀值那半）。值＝這個環境（stage/prod/youlin-stage）自己的 installerOrigin(env)，
@@ -3026,7 +3034,7 @@ async function seedSkillsTo(cypherBase, ns) {
 
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
-  fetchBundleManifest, deployBundledWorker, bundleBase, landingBase,
+  fetchBundleManifest, deployBundledWorker, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
