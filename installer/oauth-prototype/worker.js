@@ -282,7 +282,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@516519e35362687180593a2a4b6b7cd884e136b1';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@497ed6305dce8bfecc5a794c3561d1c24ab2499c';
 const BUNDLE_BUILT = '2026-10-07'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -3078,6 +3078,33 @@ export {
 };
 
 /**
+ * 共用規則擋下的原因裡，有沒有「說是更新、帳號上卻一顆實例本體 worker 都沒有」（RES-NO-WORKERS）。
+ * 純函式，好測。共用規則只在「讀得到帳號現況」（!readFailed）時才會產出這一條，所以它是可信的觀察。
+ * 🔴 是「有」，不是「只有」：同一次擋下可能還帶著別的原因（1.0.42 用 every() 判斷，一旦帶了第二條就不降級，
+ *    而且錯誤訊息只剩第一輪的原因）。降級後的 init 會把所有原因重算一遍，**最後算出來的才是真的擋下原因**。
+ */
+export function staleRecordBlocker(blockers) {
+  return Array.isArray(blockers) && blockers.some((b) => String(b).includes('RES-NO-WORKERS'));
+}
+
+/**
+ * 解資源，遇到「紀錄過期」就改用 init 重解一次；回傳**最後一輪**的結果，並留下每一輪的擋下原因。
+ * @param {(mode:string)=>Promise<{blocked:boolean,blockers:string[]}>} resolve
+ * @returns {Promise<{res:object, mode:string, attempts:Array<{mode:string,blockers:string[]}>}>}
+ */
+export async function resolveWithStaleFallback(resolve, mode) {
+  const attempts = [];
+  let res = await resolve(mode);
+  attempts.push({ mode, blockers: res.blockers || [] });
+  if (res.blocked && mode === 'update' && staleRecordBlocker(res.blockers)) {
+    mode = 'init';
+    res = await resolve(mode);
+    attempts.push({ mode, blockers: res.blockers || [] });
+  }
+  return { res, mode, attempts };
+}
+
+/**
  * 執行整個安裝。每一步都會即時把進度寫回 KV。
  *
  * 🔴 資源判斷已不是「配合 ensure* 冪等建立」（那三支 PR #87 已整段刪掉，見上方
@@ -3304,29 +3331,50 @@ async function runInstall(env, sid, progress, force) {
         const list = await kvBinding.list({ prefix: `deployed:${accountId}:`, limit: 1 }).catch(() => null);
         if (list && list.keys && list.keys.length > 0) installedBefore = true;
       }
-      const mode = installedBefore ? 'update' : 'init';
+      let mode = installedBefore ? 'update' : 'init';
       progress.result.resourceMode = mode;
       await writeProgress(env, sid, progress); // 心跳：解析期間頁面不該看起來像卡死
 
-      // 先連 Vectorize 一起解。語意搜尋是**選配**（kbdb 沒有 VECTORIZE binding 就自動
-      // 降級成關鍵字搜尋），所以它擋不住整趟安裝——但「該不該建、該用哪一顆」仍然只由
-      // 共用規則決定，這裡沒有第二套判斷。
-      let r = await resolveResourcesByRule(token, accountId, manifestRequirements(manifest, baseName, true), mode);
+      // 🔴 inkstone/arcrun-rag#95／Arcrun#293（2026-10-07 youlin stage 實撞 RES-NO-WORKERS，
+      //    1.0.40／1.0.41 兩版「自己再查一次帳號現況」的降級都沒生效，原因看不到）：
+      //    我們的紀錄說「裝過」，共用規則卻在讀得到帳號的前提下確認「實例本體 worker 一顆都不在」
+      //    ⇒ 紀錄是過期的（帳號被清空、或使用者自己刪光）。這時**直接採信共用規則的觀察**，
+      //    改用 init 再解一次——不再另走一條自己的查詢路（兩條路對不上就是上兩版失敗的原因）。
+      //    只在「唯一的擋下理由就是 RES-NO-WORKERS」時才這樣做；其他擋下原因照舊停手。
+      //    留痕：progress.result.resourceModeNote（為什麼改、原擋下訊息），事後看得到。
+      const resolveOnce = async (withVectorize) => {
+        const out = await resolveWithStaleFallback(
+          (m) => resolveResourcesByRule(token, accountId, manifestRequirements(manifest, baseName, withVectorize), m), mode);
+        if (out.mode !== mode) {
+          mode = out.mode;
+          progress.result.resourceMode = mode;
+          await writeProgress(env, sid, progress);
+        }
+        // 每一輪的擋下原因都留著（事後看得到真正擋住的是哪一條，不只第一條）
+        progress.result.resourceAttempts = [...(progress.result.resourceAttempts || []), { withVectorize, attempts: out.attempts }];
+        if (out.attempts.length > 1) {
+          progress.result.resourceModeNote = '紀錄說裝過，但共用規則確認帳號上沒有任何一顆實例本體 worker——紀錄已過期，改走全新安裝。';
+        }
+        return out.res;
+      };
+      let r = await resolveOnce(true);
       if (r.blocked) {
         // 拿掉 Vectorize 再解一次。**成功＝剛才被擋下的原因就是 Vectorize**
         // （不必去讀 blocker 的字串猜它在講什麼）；還是擋＝真的有事，照原始理由停手。
-        const retry = await resolveResourcesByRule(token, accountId, manifestRequirements(manifest, baseName, false), mode);
+        const retry = await resolveOnce(false);
         if (!retry.blocked) {
           progress.result.vectorizeWarning = r.blockers.join('\n');
-          r = retry;
         }
+        // 🔴 無論成不成都以**最後一輪**為準：成功就用它；還是擋，就把「最後一輪」的原因交給使用者
+        //    （舊寫法永遠拿第一輪的原因，真正擋住 init 的那條被蓋掉，1.0.42 真機就是這樣看不出來）。
+        r = retry;
       }
       if (r.blocked) {
         // 🔴 停手時**一顆資源都沒被建**（共用規則的 plan／apply 兩段保證）。
         //    原因原文照轉給使用者——這條路會動他的資料綁定，不確定就不要替他決定。
         throw new InstallError('為了保護你既有的資料，這次更新已經停下來了', {
           hint: r.blockers.join('\n\n') + '\n\n（沒有建立或改動任何資源。）',
-          detail: 'resource-rule blocked: ' + r.blockers.join(' | '),
+          detail: 'resource-rule blocked: ' + r.blockers.join(' | ') + ' ｜attempts=' + JSON.stringify(progress.result.resourceAttempts || []).slice(0, 1500),
         });
       }
 

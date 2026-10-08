@@ -51,7 +51,11 @@ flow:
   # parse_card 自己觸發 FOREACH 的兩條邊維持原樣（單跳、與改動前逐字相同）；
   # pool_constants 用**具名節點參照**（`{{pool_constants.data.xxx_id}}`）而非
   # 通用鍵掃描，具名鍵不會被後面任何節點的展開覆蓋，經幾跳都拿得到。
-  - "pick_stale >> ON_SUCCESS >> post_const_source_uri"
+  # inkstone/arcrun-rag#241：pick_stale 判定「這張卡跟雲端那份一模一樣」(result:true) ⇒ 走
+  # skip_unchanged 收工，什麼都不寫；有變 (result:false) 才往下刪＋重寫。
+  # 一樣時 pick_stale 回的 dead_entry／dead_record 都是空清單，上面兩條 FOREACH 也是空轉。
+  - "pick_stale >> ON_TRUE >> skip_unchanged"
+  - "pick_stale >> ON_FALSE >> post_const_source_uri"
   - "post_const_source_uri >> ON_SUCCESS >> post_const_status"
   - "post_const_status >> ON_SUCCESS >> post_const_library"
   - "post_const_library >> ON_SUCCESS >> post_const_machine"
@@ -141,13 +145,33 @@ config:
       // 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。
       const constLibrary = String(input.library || 'kb');
       const constMachine = String(input.machine || '');
+      // inkstone/arcrun-rag#241：整張卡的內容指紋。所有會被寫進雲端 block 的東西（頁名、路徑、
+      // 庫、機器、機器稱呼、卡片全文）都算進去——其中任何一格變了，指紋就變，才會重寫。
+      // 純 JS 的 cyrb53 兩顆不同種子（共 106 位元）：只用來偵測「有沒有改過」，不是密碼學用途，
+      // 且不依賴沙箱有沒有 crypto。
+      function cyrb53(str, seed) {
+        let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+        for (let i = 0; i < str.length; i++) {
+          const ch = str.charCodeAt(i);
+          h1 = Math.imul(h1 ^ ch, 2654435761);
+          h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+      }
+      const hashSrc = JSON.stringify([pageName, path, constLibrary, constMachine,
+        String(input.machine_label || ''), String(input.card_content == null ? '' : input.card_content)]);
+      const cardHash = cyrb53(hashSrc, 0) + cyrb53(hashSrc, 7) + hashSrc.length.toString(16);
       return { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
-               const_library: constLibrary, const_machine: constMachine };
+               const_library: constLibrary, const_machine: constMachine, card_hash: cardHash };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
       library: "{{input.library}}"
       machine: "{{input.machine}}"
+      machine_label: "{{input.machine_label}}"
+      card_content: "{{input.card_content}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -202,6 +226,7 @@ config:
       triplets_body: "{{list_old_triplets.data.body}}"
       path: "{{input.path}}"
       machine: "{{input.machine}}"
+      card_hash: "{{prep.data.card_hash}}"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const path = String(input.path || '');
@@ -219,6 +244,7 @@ config:
       const ab = parse(input.blocks_body);
       const entries = (ab && ab.entries) || [];
       const dead_entry = [];
+      const hitMetas = [];
       for (const e of entries) {
         let meta = {};
         if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }
@@ -231,7 +257,7 @@ config:
           hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);
         } else { hit = true; }
         if (hit && machineBlocks(String(meta.machine || ''))) hit = false;
-        if (hit && e.id) dead_entry.push({ id: e.id });
+        if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }
       }
       // `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用
       // source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種
@@ -240,8 +266,42 @@ config:
       const at = parse(input.triplets_body);
       const ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];
       const dead_record = ids.map(function (id) { return { record_id: id }; });
-      return { dead_entry: dead_entry, dead_record: dead_record,
+      // inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：
+      //   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）
+      //   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複
+      //      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複
+      //   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels
+      // 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。
+      const newHash = String(input.card_hash || '');
+      let unchanged = false;
+      if (newHash !== '' && hitMetas.length > 0) {
+        const m0 = hitMetas[0];
+        const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);
+        const seen = {};
+        let allSame = true;
+        for (const m of hitMetas) {
+          if (String(m.card_hash || '') !== newHash) { allSame = false; break; }
+          seen[String(m.source || '')] = true;
+        }
+        unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length
+          && nRels === dead_record.length && dead_record.length > 0;
+      }
+      if (unchanged) {
+        // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。
+        return { result: true, unchanged: true, dead_entry: [], dead_record: [],
+                 removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };
+      }
+      return { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,
                removed_blocks: dead_entry.length, removed_triplets: dead_record.length };
+
+  # inkstone/arcrun-rag#241：卡跟雲端那份一模一樣 ⇒ 到這裡收工，不寫任何東西。
+  skip_unchanged:
+    component: "__CODE_URL__"
+    code: |
+      return { success: true, skipped: true, reason: 'unchanged: 內容與雲端那份相同，未寫入' };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
 
   delete_entry:
     component: "__HTTP_REQ_URL__"
@@ -313,8 +373,13 @@ config:
         }
       }
       rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });
+      // inkstone/arcrun-rag#241：每段 block 記下整張卡的指紋與「寫入當時共幾段、幾條三元組」，
+      // 下次收同一張卡時 pick_stale 靠這三格判斷「雲端那份是不是完整且一模一樣」。
+      const cardHash = String(input.card_hash || '');
+      for (const b of blocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(rels.length); }
       return { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };
     input:
+      card_hash: "{{prep.data.card_hash}}"
       card: "{{input.card_content}}"
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
@@ -341,7 +406,7 @@ config:
       # machine／machine_label（`inkstone/mira#6`）與 source／source_path／library 並排：
       # 這四格合起來就是「這則知識的原稿在哪」——哪台機器、哪個庫、哪個相對路徑、第幾段。
       # 空字串＝舊版 daemon 沒送 ⇒ portal 顯示「未知來源」，**不猜、不填假名**。
-      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"embed\":true}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\",\"embed\":true}"
 
   # ── 常數格共用（`inkstone/InkStoneCo#140` comment 10651，2026-09-21）────────────
   # 同一張卡的每一條三元組，source_uri/status/library/machine 四格內容永遠相同

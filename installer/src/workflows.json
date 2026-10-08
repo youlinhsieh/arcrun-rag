@@ -289,7 +289,8 @@
       "list_old_triplets >> ON_SUCCESS >> pick_stale",
       "pick_stale >> 對每個 dead_entry >> delete_entry",
       "pick_stale >> 對每個 dead_record >> delete_record",
-      "pick_stale >> ON_SUCCESS >> post_const_source_uri",
+      "pick_stale >> ON_TRUE >> skip_unchanged",
+      "pick_stale >> ON_FALSE >> post_const_source_uri",
       "post_const_source_uri >> ON_SUCCESS >> post_const_status",
       "post_const_status >> ON_SUCCESS >> post_const_library",
       "post_const_library >> ON_SUCCESS >> post_const_machine",
@@ -309,12 +310,14 @@
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "// 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把\n// 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，\n// 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。\n// code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。\nfunction isUnresolvedTemplate(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPageName = input.page_name;\nif (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {\n  throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');\n}\nconst pageName = String(rawPageName);\n// 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`\n// 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是\n// truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。\n// 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進\n// source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。\nconst rawPath = input.path;\nconst path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))\n  ? (pageName + '.md') : String(rawPath);\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         const_library: constLibrary, const_machine: constMachine };\n",
+        "code": "// 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把\n// 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，\n// 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。\n// code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。\nfunction isUnresolvedTemplate(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPageName = input.page_name;\nif (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {\n  throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');\n}\nconst pageName = String(rawPageName);\n// 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`\n// 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是\n// truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。\n// 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進\n// source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。\nconst rawPath = input.path;\nconst path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))\n  ? (pageName + '.md') : String(rawPath);\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\n// inkstone/arcrun-rag#241：整張卡的內容指紋。所有會被寫進雲端 block 的東西（頁名、路徑、\n// 庫、機器、機器稱呼、卡片全文）都算進去——其中任何一格變了，指紋就變，才會重寫。\n// 純 JS 的 cyrb53 兩顆不同種子（共 106 位元）：只用來偵測「有沒有改過」，不是密碼學用途，\n// 且不依賴沙箱有沒有 crypto。\nfunction cyrb53(str, seed) {\n  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;\n  for (let i = 0; i < str.length; i++) {\n    const ch = str.charCodeAt(i);\n    h1 = Math.imul(h1 ^ ch, 2654435761);\n    h2 = Math.imul(h2 ^ ch, 1597334677);\n  }\n  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);\n  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);\n  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);\n}\nconst hashSrc = JSON.stringify([pageName, path, constLibrary, constMachine,\n  String(input.machine_label || ''), String(input.card_content == null ? '' : input.card_content)]);\nconst cardHash = cyrb53(hashSrc, 0) + cyrb53(hashSrc, 7) + hashSrc.length.toString(16);\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         const_library: constLibrary, const_machine: constMachine, card_hash: cardHash };\n",
         "input": {
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
           "library": "{{input.library}}",
-          "machine": "{{input.machine}}"
+          "machine": "{{input.machine}}",
+          "machine_label": "{{input.machine_label}}",
+          "card_content": "{{input.card_content}}"
         },
         "limits": {
           "timeout_ms": 2000,
@@ -345,9 +348,18 @@
           "blocks_body": "{{list_old_blocks.data.body}}",
           "triplets_body": "{{list_old_triplets.data.body}}",
           "path": "{{input.path}}",
-          "machine": "{{input.machine}}"
+          "machine": "{{input.machine}}",
+          "card_hash": "{{prep.data.card_hash}}"
         },
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) dead_entry.push({ id: e.id });\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\nreturn { dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nconst hitMetas = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\n// inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：\n//   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）\n//   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複\n//      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複\n//   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels\n// 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。\nconst newHash = String(input.card_hash || '');\nlet unchanged = false;\nif (newHash !== '' && hitMetas.length > 0) {\n  const m0 = hitMetas[0];\n  const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);\n  const seen = {};\n  let allSame = true;\n  for (const m of hitMetas) {\n    if (String(m.card_hash || '') !== newHash) { allSame = false; break; }\n    seen[String(m.source || '')] = true;\n  }\n  unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length\n    && nRels === dead_record.length && dead_record.length > 0;\n}\nif (unchanged) {\n  // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。\n  return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n           removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };\n}\nreturn { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+      },
+      "skip_unchanged": {
+        "component": "__CODE_URL__",
+        "code": "return { success: true, skipped: true, reason: 'unchanged: 內容與雲端那份相同，未寫入' };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
       },
       "delete_entry": {
         "component": "__HTTP_REQ_URL__",
@@ -367,8 +379,9 @@
       },
       "parse_card": {
         "component": "__CODE_URL__",
-        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\n// 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致\n// （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine\n// 兩格在這個節點裡的既有做法）。\nfunction isUnresolvedTemplateLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPathLocal = input.path;\nconst srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))\n  ? (pageName + '.md') : String(rawPathLocal);\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
+        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\n// 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致\n// （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine\n// 兩格在這個節點裡的既有做法）。\nfunction isUnresolvedTemplateLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPathLocal = input.path;\nconst srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))\n  ? (pageName + '.md') : String(rawPathLocal);\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });\n// inkstone/arcrun-rag#241：每段 block 記下整張卡的指紋與「寫入當時共幾段、幾條三元組」，\n// 下次收同一張卡時 pick_stale 靠這三格判斷「雲端那份是不是完整且一模一樣」。\nconst cardHash = String(input.card_hash || '');\nfor (const b of blocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(rels.length); }\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
         "input": {
+          "card_hash": "{{prep.data.card_hash}}",
           "card": "{{input.card_content}}",
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
@@ -394,7 +407,7 @@
           "content": "{{block.content}}",
           "owner_id": "__NAMESPACE__",
           "page_name": "{{block.page_name}}",
-          "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"embed\":true}"
+          "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\",\"embed\":true}"
         }
       },
       "post_const_source_uri": {
@@ -640,6 +653,12 @@
           "label": "delete_record"
         },
         {
+          "id": "skip_unchanged",
+          "type": "Component",
+          "componentId": "skip_unchanged",
+          "label": "skip_unchanged"
+        },
+        {
           "id": "post_const_source_uri",
           "type": "Component",
           "componentId": "post_const_source_uri",
@@ -771,8 +790,13 @@
         },
         {
           "from": "pick_stale",
+          "to": "skip_unchanged",
+          "type": "ON_TRUE"
+        },
+        {
+          "from": "pick_stale",
           "to": "post_const_source_uri",
-          "type": "ON_SUCCESS"
+          "type": "ON_FALSE"
         },
         {
           "from": "post_const_source_uri",

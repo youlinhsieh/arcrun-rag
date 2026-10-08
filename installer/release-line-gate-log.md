@@ -89,3 +89,14 @@
 | 2026-10-07 11:47:57 | prod | bundle 1.4.82；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |
 | 2026-10-07 12:52:05 | stage | bundle 1.4.83；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |
 | 2026-10-07 15:04:38 | stage | bundle 1.4.84；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |
+| 2026-10-07 16:39:43 | prod | bundle 1.4.84；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |
+| 2026-10-07 16:59:18 | prod | bundle 1.4.84；daemon 0.18.65；installer 1.0.38 | ⛔ 擋下 | 每條版本線都已發佈（bundle→youlinhsieh/arcrun-rag、daemon→youlinhsieh/arcrun-port、installer→inkstone/arcrun-rag） |
+| 2026-10-07 17:04:39 | prod | bundle 1.4.84；daemon 0.18.65；installer 1.0.38 | ✅ 放行 | — |
+| 2026-10-07 22:09:44 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.39 | ✅ 放行 | — |
+| 2026-10-07 22:12:35 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.39 | ✅ 放行 | — |
+| 2026-10-07 22:26:40 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.40 | ✅ 放行 | — |
+| 2026-10-07 22:39:25 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.41 | ✅ 放行 | — |
+| 2026-10-07 23:01:16 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.42 | ✅ 放行 | — |
+| 2026-10-07 23:10:04 | stage | bundle 1.4.85；daemon 0.18.65；installer 1.0.43 | ✅ 放行 | — |
+| 2026-10-08 00:08:50 | stage | bundle 1.4.86；daemon 0.18.65；installer 1.0.43 | ✅ 放行 | — |
+| 2026-10-08 09:23:17 | stage | bundle 1.4.87；daemon 0.18.65；installer 1.0.43 | ✅ 放行 | — |

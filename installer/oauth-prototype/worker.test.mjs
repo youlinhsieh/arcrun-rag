@@ -5103,3 +5103,86 @@ test('#238 兌換：格式不對／缺欄位／不存在 ⇒ 404 grant_invalid�
   await env.INSTALLER_KV.put('grant:' + 'e'.repeat(40), JSON.stringify({ token: 't', api_origin: G_API, createdAt: Date.now() - 301_000 }));
   assert.equal((await post({ code: 'e'.repeat(40), api_origin: G_API })).status, 404);
 });
+
+// ===========================================================================
+// inkstone/Arcrun#293（2026-10-07 youlin stage）：紀錄說「裝過」、帳號被清空只剩 6 顆別的 worker
+// ⇒ 必須走 init、不准停在 RES-NO-WORKERS。1.0.40／1.0.41 兩版靠「安裝器自己再查一次」降級都沒生效，
+// 這組改成跑**整個 runInstall**（真 KV 紀錄＋假帳號只有那 6 顆），並要求改走 init 的原因留在 progress 裡。
+// ===========================================================================
+import { staleRecordBlocker, resolveWithStaleFallback } from './worker.js';
+
+test('#293 staleRecordBlocker：只有 RES-NO-WORKERS 一條才算；其他擋下原因不算', () => {
+  assert.equal(staleRecordBlocker(['在這個帳號上找不到任何一顆要更新的 worker（RES-NO-WORKERS）']), true);
+  // 「有」不是「只有」：帶著第二條原因也算（1.0.42 用 every() 在真機失敗）
+  assert.equal(staleRecordBlocker(['RES-NO-WORKERS', '另一個原因 RES-READ-FAILED/arcrun-kbdb']), true);
+  assert.equal(staleRecordBlocker(['只有別的原因 RES-READ-FAILED/arcrun-kbdb']), false);
+  assert.equal(staleRecordBlocker([]), false);
+  assert.equal(staleRecordBlocker(null), false);
+});
+
+test('#293 runInstall：deployed 紀錄說裝過＋帳號上只有 6 顆別的 worker（含殘留 fetch-relay）⇒ 走 init，不卡 RES-NO-WORKERS，且留痕', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-293-stale';
+  await seedInstallSession(env, sid, 'youlin@test.example');
+  // 我們的紀錄：這個帳號裝過（與 youlin 實況同一形狀）
+  await env.INSTALLER_KV.put('deployed:acct-1:acme', JSON.stringify({ workers: { 'arcrun-kbdb': 'sha' } }));
+  const youlin6 = {
+    'arcrun-docs-youlin-stage': [], 'arcrun-installer-youlin-stage': [], 'arcrun-landing-youlin-stage': [],
+    'arcrun-fetch-relay': [], 'gitea-mcp-oauth-youlin': [], 'kbdb-graph-plugin': [],
+  };
+  const state = { deployed: { ...youlin6 }, kvByTitle: {}, d1ByName: {}, vectorize: [], schedules: {} };
+  installStallFixFetch({ names: ['arcrun-cypher-executor', 'arcrun-kbdb', 'arcrun-fetch-relay'], state });
+  try {
+    await startInstallAndDrain(env, sid, {});
+  } finally {
+    restoreFetch();
+  }
+  const progress = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  const errText = JSON.stringify(progress.error || {});
+  assert.ok(!errText.includes('RES-NO-WORKERS'), `不該停在 RES-NO-WORKERS：${errText}`);
+  assert.equal(progress.result.resourceMode, 'init', '應改走全新安裝');
+  assert.match(String(progress.result.resourceModeNote || ''), /紀錄已過期/, '改走 init 的原因要留在 progress（事後看得到）');
+  assert.ok(progress.result.resourceBindings, '資源已解出（過了 cache 步）');
+  assert.equal(progress.steps.find((s) => s.id === 'cache').state, 'done');
+});
+
+test('#293 runInstall：紀錄說裝過、帳號上 cypher 還在 ⇒ 仍是 update（不誤降級）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-293-live';
+  await seedInstallSession(env, sid, 'live@test.example');
+  await env.INSTALLER_KV.put('deployed:acct-1:acme', JSON.stringify({ workers: {} }));
+  const state = {
+    deployed: { 'arcrun-cypher-executor': [{ type: 'kv_namespace', name: 'EXEC_CONTEXT', namespace_id: 'kv-x' }, { type: 'd1', name: 'DB', id: 'db-x' }] },
+    kvByTitle: { x: 'kv-x' }, d1ByName: { y: 'db-x' }, vectorize: [], schedules: {},
+  };
+  installStallFixFetch({ names: ['arcrun-cypher-executor', 'arcrun-kbdb'], state });
+  try {
+    await startInstallAndDrain(env, sid, {});
+  } finally {
+    restoreFetch();
+  }
+  const progress = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.equal(progress.result.resourceMode, 'update');
+  assert.equal(progress.result.resourceModeNote, undefined);
+});
+
+test('#293 resolveWithStaleFallback：update 擋下含 RES-NO-WORKERS＋別條 ⇒ 改 init 重解；回傳最後一輪，兩輪原因都留著', async () => {
+  const seen = [];
+  const out = await resolveWithStaleFallback(async (m) => {
+    seen.push(m);
+    return m === 'update'
+      ? { blocked: true, blockers: ['RES-NO-WORKERS', 'vectorize 別條原因'] }
+      : { blocked: true, blockers: ['init 真正的擋下原因'] };
+  }, 'update');
+  assert.deepEqual(seen, ['update', 'init']);
+  assert.equal(out.mode, 'init');
+  assert.deepEqual(out.res.blockers, ['init 真正的擋下原因']);
+  assert.equal(out.attempts.length, 2);
+  assert.deepEqual(out.attempts[0].blockers, ['RES-NO-WORKERS', 'vectorize 別條原因']);
+});
+
+test('#293 resolveWithStaleFallback：擋下原因不含 RES-NO-WORKERS ⇒ 不重解、維持 update', async () => {
+  const out = await resolveWithStaleFallback(async () => ({ blocked: true, blockers: ['RES-READ-FAILED/x'] }), 'update');
+  assert.equal(out.mode, 'update');
+  assert.equal(out.attempts.length, 1);
+});
