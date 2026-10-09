@@ -194,3 +194,5 @@
 | 2026-10-09 23:24:09 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
 | 2026-10-09 23:24:12 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 19 次） |
 | 2026-10-10 00:19:44 | git.uncle6.me/inkstone/arcrun-rag | feat/rag-240-home-launcher | ✅ 放行 | 目標不是 main／master |
+| 2026-10-10 00:33:19 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 0f781bc→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 00:38:45 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward 9206db7→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |

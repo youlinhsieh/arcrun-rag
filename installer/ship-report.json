@@ -11453,7 +11453,7 @@
      "id": "daemon-sync",
      "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
      "status": "skip",
-     "note": "bundle 已委任 0.18.77；內容是否真的到位由下一站 daemon-check 逐檔查證"
+     "note": "bundle 已委任 0.18.78；內容是否真的到位由下一站 daemon-check 逐檔查證"
     },
     {
      "id": "daemon-check",
@@ -11489,7 +11489,7 @@
      "id": "notes",
      "title": "產生更新畫面那一行（來源＝changelog）",
      "status": "skip",
-     "note": "已是最新：按「回報」真的會送到我們手上，不用設定任何東西"
+     "note": "已是最新：按「回報」之後會看到「✓ 已回報」"
     },
     {
      "id": "version",
@@ -11524,14 +11524,14 @@
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "釘子沒動（built 2026-10-09）；安裝器原始碼指紋 b71a21919c12（烙在 version.mjs，不寫這裡）"
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "線上已是 1.4.92／pin 8ebe003／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -11560,8 +11560,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.47 已存在：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/installer-1.0.47"
     },
     {
      "id": "release-check",
@@ -11572,7 +11572,7 @@
    ],
    "sourceCommit": "Arcrun@e39faf8bd916",
    "machine": "9f06f3113188",
-   "ts": 1791562790443
+   "ts": 1791564187863
   }
  }
 }
