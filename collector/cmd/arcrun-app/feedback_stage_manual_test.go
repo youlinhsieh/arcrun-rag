@@ -13,7 +13,7 @@ package main
 // ── 使用方式 ──
 //
 //	RUN_STAGE_FEEDBACK=1 STAGE_CYPHER_URL=https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev \
-//	  STAGE_NAMESPACE=yuga3bse \
+//	  STAGE_INBOX_NS=inbox-feedback \
 //	  go test -run TestSubmitFeedbackStageManual -v -timeout 60s .
 import (
 	"fmt"
@@ -27,10 +27,12 @@ func TestSubmitFeedbackStageManual(t *testing.T) {
 		t.Skip("一次性／可重跑的手動驗收，設 RUN_STAGE_FEEDBACK=1 才跑（見本檔頂端 usage 註解）")
 	}
 	cypherURL := os.Getenv("STAGE_CYPHER_URL")
-	namespace := os.Getenv("STAGE_NAMESPACE")
-	if cypherURL == "" || namespace == "" {
-		t.Fatal("需要 STAGE_CYPHER_URL 與 STAGE_NAMESPACE（見本檔頂端 usage 註解）")
+	inboxNS := os.Getenv("STAGE_INBOX_NS")
+	if cypherURL == "" || inboxNS == "" {
+		t.Fatal("需要 STAGE_CYPHER_URL 與 STAGE_INBOX_NS（見本檔頂端 usage 註解）")
 	}
+	// #235：回報不再經過用戶實例，直接送收件端；stage 驗證時把收件端指到 stage 上的 feedback_report。
+	t.Setenv("ARCRUN_FEEDBACK_INBOX", cypherURL+"/webhooks/named/"+inboxNS+"/feedback_report/trigger")
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -41,8 +43,6 @@ func TestSubmitFeedbackStageManual(t *testing.T) {
 		"【總管自動化驗收】inkstone/arcrun-rag#210 comment 15334 桌面「?」求救頁候選——"+
 			"這是打 stage youlin 的真實回報，走的是 SubmitFeedback 同一段程式碼，"+
 			"驗證能不能真的變成一張 Gitea 票。時間戳 %s，可忽略／關閉。", stamp)
-
-	writeCfgWithAccount(t, cypherURL, accountCfg{Namespace: namespace, InstanceName: "youlin-stage"})
 
 	a := &App{}
 	if err := a.SubmitFeedback(text, false); err != nil {

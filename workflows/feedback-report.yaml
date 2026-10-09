@@ -15,21 +15,49 @@
 #     （顯示名／email／實例），不能看起來像機器自己開的。
 #   · 外部輸入一律 user + s/triage 進場，不准直接標 s/todo——分診由既有機制做。
 #   · 標題＝學員原話（不 AI 改寫），只做「多空白壓成一個空格＋超長截斷」這種機械處理。
-#   · ①開票失敗＝送出失敗（學員要看到「沒送出去，請再試一次」）；
-#     ②Telegram 通知可以失敗，不影響①已經開成的事實。
+#   · 開票失敗＝送出失敗（學員要看到「沒送出去，請再試一次」）；開票成功＝送出成功，到此為止。
 #   · 金鑰只寫 {{credential.gitea_token}}（D36），值在執行前才由金鑰中心回填。
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔴 2026-09-21 改版：**這條工作流不再依賴任何私庫 recipe。** 推它只要一個動作。
+# 🔴 2026-09-29 改版（inkstone/arcrun-rag#235）：**這條工作流不再呼叫任何通知端點。**
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# 舊版用 `component: gitea_create_issue` / `component: notify_leo_relay` 引用兩份
-# 要先 `arcrun_recipe_push` 到私庫的 recipe ⇒ **上線是兩個動作，而推 recipe 那個
-# 動作在雲端 session 裡推不上去**（comment 10532／10540：MCP 的 `arcrun_recipe_push`
-# schema 沒有 `body_template` 欄位且 additionalProperties:false，走它等於重現
-# `df9b402d` 修掉的 100% 靜默失敗；走 HTTP 則被 harness 的 classifier 擋死）。
+# leo 2026-09-29 規格：「prod 的環境，用戶就是免設定發給我們訊息，直接塞進票即可，
+# 不需要通知到手機，如果有必要由總管通知手機」「不可能預設每個用戶會製作 telegram bot，
+# 只是在測試環境由你或雲端總管回報」。
 #
-# 改法＝兩個節點都換成引擎自帶的 `http_request` 零件，把 recipe 的 endpoint／
+# ⇒ 用戶按下送出 ＝ 開一張票，就結束。**通知手機是總管另外的事，不長在用戶實例上。**
+# 舊版有一個 `notify` 節點，POST 到 `leo21c`（leo 個人實例）的 `notify_leo` 具名工作流：
+#   · 那等於每個用戶的實例都裝著一條通往 leo 個人實例的線（違反「不要把開發者的東西
+#     塞進使用者的空間」），而且 leo21c 沒有 telegram_bot_token ⇒ 每次都回 notify_ok:false
+#     （arcrun-rag#229／#233 實撞），看起來像失敗。
+#   · 本版**整個移除 notify 節點**，連帶移除 prep 的 notify_url 預設（原本硬指 leo21c）
+#     與 finalize 的 notify_ok 欄位（回應裡不再出現會被誤讀成「失敗」的通知欄位）。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-10-09 再改版（inkstone/arcrun-rag#235 c18393）：**這條工作流只住在我們自己的收件端。**
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 實測：小幫手「回報」在 geek6688／youlin／leo21c 三台都 404——這條工作流從沒被裝進任何用戶實例
+# （installer 的 workflows.json 只編 5 條 RAG 工作流），而且就算裝進去，它要的
+# `{{credential.gitea_token}}` 是**我們的**金鑰，用戶不會有也不該有。
+# ⇒ 部署點＝我們的 youlin（stage，leo 2026-10-09 裁決 B）上專屬 namespace `inbox-feedback`，只放這一條工作流＋
+#   `gitea_token` 一把憑證；桌面小幫手直接 POST 到
+#   `<youlin cypher>/webhooks/named/inbox-feedback/feedback_report/trigger`（namespace 走 path＝
+#   Arcrun 的公開表單形態），用戶實例完全不參與。**不要把它加進 installer 的 workflows.json。**
+#   用戶端防濫用在小幫手（本機每小時上限）；本工作流只做輸入長度上限。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-21 結論：**這條工作流不依賴任何私庫 recipe。** 推它只要一個動作。
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 舊版用 `component: gitea_create_issue` 引用要先 `arcrun_recipe_push` 到私庫的 recipe
+# ⇒ **上線是兩個動作，而推 recipe 那個動作在雲端 session 裡推不上去**（comment 10532／
+# 10540：MCP 的 `arcrun_recipe_push` schema 沒有 `body_template` 欄位且
+# additionalProperties:false，走它等於重現 `df9b402d` 修掉的 100% 靜默失敗；
+# 走 HTTP 則被 harness 的 classifier 擋死）。
+#
+# 改法＝開票節點換成引擎自帶的 `http_request` 零件，把 recipe 的 endpoint／
 # method／headers／body 直接寫在節點上。**為什麼這樣是安全的，三條都實讀過引擎**：
 #
 #   ① `http_request` 不需要任何 recipe 就解析得動。
@@ -54,43 +82,26 @@
 #      main.go 的 `Input` struct 只認 url/method/headers/body/body_json，其餘欄位
 #      json.Unmarshal 直接丟掉（auth-recipe 零件則會把整個 ctx 攤平當 body ——
 #      那個坑記在 workers-ai-generate.yaml 檔頭）。節點自己寫的 `url` 也永遠贏過 ctx 裡
-#      同名的值（`mergedContext = {...ctx, ...resolvedData}`，resolvedData 在後）
-#      ——這很重要：`after_issue` 的輸出帶著一個叫 `url` 的欄位（票網址），
-#      若沒有這個順序，`notify` 會去打票網址而不是通知端點。
+#      同名的值（`mergedContext = {...ctx, ...resolvedData}`，resolvedData 在後）。
 #
 # ✅ 同時保留的舊結論（仍然成立，不要退回去）：
-#   · 三個 code 節點一律 `component: code`，不是 `__CODE_URL__` 佔位——後者只有
+#   · code 節點一律 `component: code`，不是 `__CODE_URL__` 佔位——後者只有
 #     安裝器那條路（installer/src/index.js:63 的 subsMap，對象是 *.local.yaml 編出的
 #     workflows.json）會代換；本檔是 canonical `.yaml`，佔位不會有人代換。
-#
-# 🔴 notify 那一步是**已知打不通**的（不是這次弄壞的）：
-#   `notify_leo_relay` 指向 leo21c（prod）的具名工作流，2026-09-20／09-21 兩次實打
-#   都是 HTTP 404（總管 comment 10320、工人 comment 10351）。修它要動 prod ⇒ 不做。
-#   **所以本版把「notify 失敗不影響票已開成」從註解變成圖的形狀**（見下方 flow 註解）：
-#   舊版寫兩條 ON_SUCCESS 從 after_issue 分叉，看起來像兩條平行支線，
-#   **但引擎不是這樣跑的**——`graph-executor.ts:484` 的出邊迴圈裡 `result` 是**共用變數**，
-#   第一條邊跑完就把 `result` 覆寫掉，第二條 ON_SUCCESS 的 `if (!isFailure(result))`
-#   讀到的是**第一條支線的結果**。⇒ notify 404 → finalize 整個被跳過 → 工作流回的是
-#   notify 的失敗 → portal 找不到 `number` → 學員看到「沒送出去，請再試一次」
-#   → **他會再送一次 ⇒ 每則回報開兩張票**。這是實讀引擎讀出來的，不是推測。
 
 name: feedback_report
 description: >
   學員／封測者在小幫手或 Portal 打字回報問題 → 在 inkstone/arcrun-rag 開一張票
   （label user + s/triage，標題＝原話不改寫，內文含回報原文＋回報者＋版本／實例／OS＋
-  選填的診斷檔摘要）→ 開票成功才算送出成功；額外用 Telegram 通知 leo 一句話＋
-  票連結（可失敗，不影響票已開成的事實）。不依賴任何私庫 recipe，推一次 workflow 即上線。
+  選填的診斷檔摘要）→ 開票成功才算送出成功。用戶端免設定、不需任何通知金鑰、
+  不呼叫任何外部通知端點；通知手機是總管另外的事，不長在用戶實例上（inkstone/arcrun-rag#235）。
+  不依賴任何私庫 recipe，推一次 workflow 即上線。
 
-# 🔴 notify → finalize 有兩條邊（成功走一條、失敗走另一條），**這是刻意的**：
-#    它讓 finalize 成為圖上唯一的終點，不管 notify 成敗都一定跑得到，
-#    於是工作流最後回的永遠是「票號」那一包。理由見檔頭最後一段。
 flow:
   - "input >> ON_SUCCESS >> prep"
   - "prep >> ON_SUCCESS >> create_issue"
   - "create_issue >> ON_SUCCESS >> after_issue"
-  - "after_issue >> ON_SUCCESS >> notify"
-  - "notify >> ON_SUCCESS >> finalize"
-  - "notify >> ON_FAIL >> finalize"
+  - "after_issue >> ON_SUCCESS >> finalize"
 
 config:
   # 1) 組標題／內文／labels。輸入驗證與內文組裝全部是純字串處理（決定性，無 IO）。
@@ -115,9 +126,12 @@ config:
 
       var text = String(raw(input.text) == null ? '' : raw(input.text)).trim();
       if (!text) return { success: false, error: 'feedback_report 缺 text（不能是空白回報）' };
-      var version = String(raw(input.version) || 'unknown');
-      var instance = String(raw(input.instance) || 'unknown');
-      var os = String(raw(input.os) || 'unknown');
+      // 🔴 這條工作流現在掛在公開網址上（收件端，inkstone/arcrun-rag#235）：輸入一律設上限，
+      //    任何欄位都不能無限長。
+      if (text.length > 4000) text = text.slice(0, 4000) + '…';
+      var version = clean(input.version, 100) || 'unknown';
+      var instance = clean(input.instance, 200) || 'unknown';
+      var os = clean(input.os, 50) || 'unknown';
       var repo = String(raw(input.repo) || 'inkstone/arcrun-rag').trim().replace(/^\/+|\/+$/g, '');
       if (!/^[^\/\s]+\/[^\/\s]+$/.test(repo)) repo = 'inkstone/arcrun-rag';
 
@@ -149,17 +163,10 @@ config:
         '\n\n---\n學員透過小幫手／Portal「打字回報」送出（inkstone/arcrun-rag#210），' +
         '機器帳號代開；回報者＝上面「回報者」與「實例／namespace」兩行。';
 
-      // notify 端點做成可覆寫的輸入：預設是 leo21c 那條既有的 notify_leo 具名工作流
-      // （現況 404，見檔頭）；要換一條活的通知路時只要 trigger 帶 notify_url，
-      // 不必改工作流、也不必動 prod。
-      var notifyUrl = clean(input.notify_url, 500) ||
-        'https://arcrun-cypher-executor.leo21c.workers.dev/webhooks/named/leo/notify_leo/trigger';
-
       return {
         success: true,
         repo: repo,
         api_url: 'https://git.uncle6.me/api/v1/repos/' + repo + '/issues',
-        notify_url: notifyUrl,
         title: title,
         body: body,
         reporter: reporter,
@@ -174,7 +181,6 @@ config:
       reporter: "{{input.reporter}}"
       diagnostics: "{{input.diagnostics}}"
       repo: "{{input.repo}}"
-      notify_url: "{{input.notify_url}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -194,7 +200,7 @@ config:
       body: "{{prep.data.body}}"
       labels: "{{prep.data.labels}}"
 
-  # 3) 解析 Gitea 回應，拿到票號／網址，順便組好 Telegram 文案。
+  # 3) 解析 Gitea 回應，拿到票號／網址。
   #    🔴 `http_request` 的成功輸出是 {success:true, data:{body:"<回應原文字串>"}}
   #       （main.go 最後那段）⇒ 這裡要讀 `create_issue.data.body`，不是 `create_issue.data`。
   #       非 2xx 時零件回 {success:false,...} ⇒ ON_SUCCESS 邊不走 ⇒ 整條停在這之前，
@@ -208,36 +214,20 @@ config:
         var msg = (issue && issue.message) ? String(issue.message) : '回應解析不出票號';
         return { success: false, error: '開票失敗：' + msg };
       }
-      var title = String(input.title || '');
       var url = String(issue.html_url || '');
       return {
         success: true,
         number: issue.number,
-        html_url: url,
-        notify_text: '[封測回報] ' + title + '\n' + url
+        html_url: url
       };
     input:
       issue_raw: "{{create_issue.data.body}}"
-      title: "{{prep.data.title}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
 
-  # 4) Telegram 通知（可失敗，見檔頭）。零金鑰，走 leo21c 個人實例既有的 notify_leo
-  #    具名工作流；只帶一句話＋票連結，內容都在票上（不造第二份會漂的真相）。
-  #    目標端點現況 404 ⇒ 這個節點**預期會紅**，而圖的形狀保證它紅了也走得到 finalize。
-  notify:
-    component: http_request
-    method: POST
-    url: "{{prep.data.notify_url}}"
-    headers:
-      Content-Type: "application/json"
-    body_json:
-      text: "{{after_issue.data.notify_text}}"
-
-  # 5) 收尾＝圖上唯一的終點。不管 notify 成敗都會跑到這裡（兩條邊），
-  #    所以工作流最後回給 portal／小幫手的永遠是「票號」那一包。
-  #    notify_ok 只是順手告訴呼叫端 Telegram 那步的狀況，不影響 success。
+  # 4) 收尾＝圖上唯一的終點。工作流最後回給 portal／小幫手的永遠是「票號」那一包。
+  #    不呼叫任何通知端點，回應裡也不再有 notify 相關欄位（inkstone/arcrun-rag#235）。
   finalize:
     component: code
     code: |
@@ -246,15 +236,13 @@ config:
         repo: input.repo,
         number: input.number,
         url: input.url,
-        reporter: input.reporter,
-        notify_ok: !!(input.notify_result && input.notify_result.success !== false)
+        reporter: input.reporter
       };
     input:
       repo: "{{prep.data.repo}}"
       number: "{{after_issue.data.number}}"
       url: "{{after_issue.data.html_url}}"
       reporter: "{{prep.data.reporter}}"
-      notify_result: "{{notify}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536

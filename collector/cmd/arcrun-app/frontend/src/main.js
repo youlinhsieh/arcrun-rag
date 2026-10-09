@@ -93,12 +93,6 @@ function chunkLines(text, per = 20, max = 3) {
 
 // Wails 把 Go 的錯誤包成 `Error: …`：去掉英文前綴，只留我們自己的短字（#240 c18387）
 function errText(ex) { return String((ex && ex.message) || ex || '').replace(/^Error:\s*/, ''); }
-// 雲端還不能收回報（代碼 cloud_old）時，回報鈕換成能動手的「更新」，開該帳號的 Portal
-function oldCloudButton(accIdx) {
-  const a = (state.accounts || [])[accIdx] || (state.accounts || [])[0];
-  return a ? `<button class="primary" data-portal="${esc(libPortalURL(a))}" title="雲端要先更新才能收回報">更新</button>` : '';
-}
-
 function more(line, detail) {
   if (!detail) return `<div class="d one">${esc(line)}</div>`;
   return `<details class="more"><summary>${esc(line)}</summary><div class="d">${detail}</div></details>`;
@@ -1151,8 +1145,7 @@ async function submitFeedback() {
     if (status) status.textContent = '';
     if (err) {
       const t = errText(ex);
-      if (t === 'cloud_old') { err.innerHTML = oldCloudButton(0); wire(err); }
-      else err.textContent = Array.from(t).slice(0, 60).join('');
+      err.textContent = Array.from(t).slice(0, 60).join('');
       err.style.display = 'block';
     }
   } finally {
@@ -1462,13 +1455,6 @@ function wire(root) {
         await tick();
       } catch (ex) {
         const t = errText(ex);
-        if (t === 'cloud_old') {
-          // 不出整句：按鈕直接變成能動手的「更新」
-          if (msg) msg.textContent = '';
-          b.outerHTML = oldCloudButton(Number(b.dataset.accidx));
-          wire(root);
-          return;
-        }
         b.disabled = false;
         // 真的失敗只留一行，原因點開才看
         if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 失敗</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;

@@ -36,6 +36,7 @@ func TestStalls_CardShownThenReportedOnceNoContent(t *testing.T) {
 	f := &feedbackFakeServer{respBody: `{"success":true,"data":{"success":true}}`}
 	srv := newFeedbackFakeServer(f)
 	defer srv.Close()
+	t.Setenv("ARCRUN_FEEDBACK_INBOX", srv.URL+"/webhooks/named/inbox-feedback/feedback_report/trigger")
 	setupStalledAccount(t, srv.URL, 5, "雲端沒有把這一份寫進你的知識庫，稍後會自動再試。")
 
 	cfg, _ := loadCfg()
@@ -57,7 +58,7 @@ func TestStalls_CardShownThenReportedOnceNoContent(t *testing.T) {
 	if strings.Contains(text, "error_codes") {
 		t.Errorf("不該帶資料夾路徑：\n%s", text)
 	}
-	if f.gotPath != "/webhooks/named/ns-test/feedback_report/trigger" {
+	if f.gotPath != "/webhooks/named/inbox-feedback/feedback_report/trigger" {
 		t.Errorf("應走既有回報通道，got %s", f.gotPath)
 	}
 
@@ -81,6 +82,7 @@ func TestStalls_SendFailureNotMarkedReported(t *testing.T) {
 	f := &feedbackFakeServer{respStatus: http.StatusInternalServerError}
 	srv := newFeedbackFakeServer(f)
 	defer srv.Close()
+	t.Setenv("ARCRUN_FEEDBACK_INBOX", srv.URL+"/webhooks/named/inbox-feedback/feedback_report/trigger")
 	setupStalledAccount(t, srv.URL, 4, "品質未過（不送）：H1: x")
 	cfg, _ := loadCfg()
 	s := uiStalls(cfg)

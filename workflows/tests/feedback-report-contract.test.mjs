@@ -15,18 +15,20 @@
 //      → 那個佔位只有**安裝器**那條路會代換（installer/src/index.js 的 subsMap，
 //        對象是 *.local.yaml 編出來的 workflows.json）。canonical 版沒人代換它，
 //        會原字串推上實例 → component-loader 走到「找不到零件」。
-//   ④ 🔴 **兩條 ON_SUCCESS 從同一個節點分叉，第二條會被第一條的結果決定走不走。**
-//      `graph-executor.ts:484` 的出邊迴圈裡 `result` 是共用變數，跑完第一條邊就被覆寫。
-//      舊版 `after_issue >> ON_SUCCESS >> notify` ＋ `after_issue >> ON_SUCCESS >> finalize`
-//      ⇒ notify 404（現況）就把 finalize 整個跳掉 ⇒ 票開成了、學員卻看到「沒送出去」
-//      ⇒ 他再送一次 ⇒ **每則回報兩張票**。第 5 段用引擎那段迴圈的謄寫版證明這件事。
+//   ④ 🔴 **用戶實例上的回報工作流不得呼叫任何通知端點（inkstone/arcrun-rag#235）。**
+//      leo 2026-09-29：「用戶就是免設定發給我們訊息，直接塞進票即可，不需要通知到手機，
+//      如果有必要由總管通知手機」。舊版有個 notify 節點 POST 到 leo21c（leo 個人實例）的
+//      notify_leo ⇒ 每個用戶實例都裝著一條通往開發者私人實例的線，且該端點 404、回應帶
+//      notify_ok:false 看起來像失敗。本版整個移除 notify 節點、prep 的 notify_url 預設、
+//      finalize 的 notify_ok 欄位。第 5 段驗「圖是 input→prep→create_issue→after_issue→finalize
+//      的一條線，finalize 唯一入邊來自 after_issue，config 裡沒有任何通知節點」。
 //
-// 🔴 本檔第 2 段與第 5 段是把引擎實作**謄寫**過來的（它們住在 inkstone/Arcrun，不在本 repo）：
-//    graph-executor.ts:695 `interpolateString`／:711 `interpolateValue`／:484-530 出邊迴圈／
+// 🔴 本檔第 2 段是把引擎實作**謄寫**過來的（它住在 inkstone/Arcrun，不在本 repo）：
+//    graph-executor.ts:695 `interpolateString`／:711 `interpolateValue`／
 //    component-loader.ts:270 `makeHttpRunner`／:402 recipe 裸 body 那條／
 //    registry/components/http_request/main.go:77 `json.Marshal(body_json)`。
 //    謄寫就有漂移風險——**引擎那幾段變了，要回來重看這個前提**，不要因為這裡還是綠的
-//    就當它還成立。第 1、3、4 段不依賴謄寫（直接讀檔／跑 YAML 裡真的那段 code）。
+//    就當它還成立。第 1、3、4、5 段不依賴謄寫（直接讀檔／跑 YAML 裡真的那段 code）。
 
 import fs from 'node:fs';
 import { codeOf } from './_yaml-code.mjs';
@@ -52,8 +54,8 @@ t('canonical .yaml 的生效行不得殘留 __CODE_URL__ 佔位',
 t('三個 code 節點都用零件名 component: code',
   (live.match(/^    component: code$/gm) || []).length === 3);
 
-t('兩個對外節點都用引擎自帶的 component: http_request',
-  (live.match(/^    component: http_request$/gm) || []).length === 2);
+t('唯一的對外節點用引擎自帶的 component: http_request（notify 已於 #235 移除）',
+  (live.match(/^    component: http_request$/gm) || []).length === 1);
 
 // ① 這條才是「推一次就上線」的守門員
 const recipeRefs = liveLines.filter(l => /^\s*component:\s*"?(gitea_create_issue|notify_leo_relay)"?\s*$/.test(l));
@@ -61,8 +63,8 @@ t('生效行不得引用任何私庫 recipe（引用了就變成兩個上線動�
   recipeRefs.length === 0, JSON.stringify(recipeRefs));
 
 // ② body_json 而不是 body
-t('兩個 http_request 節點都用 body_json:',
-  (live.match(/^    body_json:$/gm) || []).length === 2);
+t('唯一的 http_request 節點用 body_json:',
+  (live.match(/^    body_json:$/gm) || []).length === 1);
 t('沒有任何節點在第一層寫裸 body:（那是 recipe 的寫法，跳脫順序是反的）',
   (live.match(/^    body:/gm) || []).length === 0);
 
@@ -194,7 +196,7 @@ t('reporter 裡的控制字元被洗掉（不能讓它把票的內文排版撐�
   const unresolved = prep({
     text: '搜尋找不到', version: '1.4.72', instance: 'ns', os: 'darwin',
     reporter: '{{input.reporter}}', diagnostics: '{{input.diagnostics}}',
-    repo: '{{input.repo}}', notify_url: '{{input.notify_url}}',
+    repo: '{{input.repo}}',
   });
   t('沒帶 reporter（字面佔位）→ 誠實標「桌面小幫手（本機，未具名）」',
     unresolved.reporter === '桌面小幫手（本機，未具名）', unresolved.reporter);
@@ -202,8 +204,7 @@ t('reporter 裡的控制字元被洗掉（不能讓它把票的內文排版撐�
     unresolved.body.includes('## 診斷檔\n（沒有附上診斷檔）'),
     unresolved.body.split('## 診斷檔')[1].slice(0, 40));
   t('沒帶 repo（字面佔位）→ 回到 inkstone/arcrun-rag', unresolved.repo === 'inkstone/arcrun-rag');
-  t('沒帶 notify_url（字面佔位）→ 用預設端點，不是拿佔位當網址',
-    unresolved.notify_url.startsWith('https://'), unresolved.notify_url);
+  t('prep 不再回 notify_url（#235：用戶實例不呼叫通知端點）', unresolved.notify_url === undefined, String(unresolved.notify_url));
   t('整個 body 裡不得殘留任何 {{...}} 字面',
     !/\{\{[\w.]+\}\}/.test(unresolved.body),
     (unresolved.body.match(/\{\{[\w.]+\}\}/g) || []).join(','));
@@ -234,60 +235,45 @@ t('reporter 裡的控制字元被洗掉（不能讓它把票的內文排版撐�
     afterIssue({ issue_raw: JSON.parse(giteaRaw), title: 'x' }).number === 999);
   t('Gitea 回錯誤時誠實判失敗（不假綠）',
     afterIssue({ issue_raw: '{"message":"token does not have write access"}', title: 'x' }).success === false);
-  t('notify_text 只有一句話＋連結',
-    out.notify_text.split('\n').length === 2 && out.notify_text.includes('/issues/999'));
-
-  const notifyBody = blockOf(y, 'notify', 'body_json');
-  t('notify 只帶 text 一欄', Object.keys(notifyBody).length === 1 && 'text' in notifyBody);
-  t('notify：節點路徑送得出合法 JSON（notify_text 必定含換行）',
-    parses(viaNode(notifyBody, { after_issue: { data: out } })));
+  t('after_issue 不再回 notify_text（#235：不組任何通知文案）',
+    !('notify_text' in out), JSON.stringify(Object.keys(out)));
 }
 
-// ── 5) 出邊迴圈：notify 紅了也一定走得到 finalize（謄寫，見檔頭紅字）──────
-//    謄寫來源：graph-executor.ts:484-530。重點是 `result` 是迴圈外的共用變數。
-function isFailure(r) {
-  if (r === null || typeof r !== 'object') return false;
-  return r.success === false || 'error' in r;
-}
+// ── 5) 圖的形狀：一條線，finalize 是唯一終點，且不呼叫任何通知端點（#235）──────
+//    #235 移除 notify 節點後，圖回到單線：input→prep→create_issue→after_issue→finalize。
+//    這一段直接讀 YAML（flow 邊 + config 節點名），不依賴引擎謄寫。
 const flowEdges = (y.match(/^  - "(.+)"$/gm) || []).map(l => {
   const [from, type, to] = l.replace(/^  - "/, '').replace(/"$/, '').split('>>').map(s => s.trim());
   return { from, type, to };
 });
-t('flow 有 notify >> ON_FAIL >> finalize 這條退路（這是圖的形狀，不是註解）',
-  flowEdges.some(e => e.from === 'notify' && e.type === 'ON_FAIL' && e.to === 'finalize'));
-t('finalize 沒有別的入邊來源（它是圖上唯一的終點）',
-  flowEdges.filter(e => e.to === 'finalize').every(e => e.from === 'notify'));
+t('flow 是單線：after_issue >> ON_SUCCESS >> finalize（票開成就直接收尾）',
+  flowEdges.some(e => e.from === 'after_issue' && e.type === 'ON_SUCCESS' && e.to === 'finalize'));
+t('finalize 唯一的入邊來自 after_issue（它是圖上唯一的終點）',
+  flowEdges.filter(e => e.to === 'finalize').length === 1 &&
+  flowEdges.filter(e => e.to === 'finalize').every(e => e.from === 'after_issue'));
+t('flow 裡沒有任何 notify 節點的邊（#235：不呼叫通知端點）',
+  flowEdges.every(e => e.from !== 'notify' && e.to !== 'notify'));
 
-/** 只跑 ON_SUCCESS / ON_FAIL 兩種邊，回「最後 result 是誰的」。nodeOut: nodeId → 該節點的 output */
-function runFrom(nodeId, edges, nodeOut, seen = new Set()) {
-  if (seen.has(nodeId)) return nodeOut[nodeId];
-  seen.add(nodeId);
-  let result = nodeOut[nodeId];
-  for (const e of edges.filter(x => x.from === nodeId)) {
-    if (e.type === 'ON_SUCCESS' && !isFailure(result)) result = runFrom(e.to, edges, nodeOut, seen);
-    else if (e.type === 'ON_FAIL' && isFailure(result)) result = runFrom(e.to, edges, nodeOut, seen);
-  }
-  return result;
+// config 節點名：只有 prep / create_issue / after_issue / finalize，沒有 notify
+const configNodes = (live.match(/^  ([a-z_]+):$/gm) || []).map(l => l.trim().replace(/:$/, ''))
+  .filter(n => ['prep', 'create_issue', 'after_issue', 'finalize', 'notify'].includes(n));
+t('config 恰好是 prep/create_issue/after_issue/finalize 四個節點，沒有 notify',
+  configNodes.sort().join(',') === 'after_issue,create_issue,finalize,prep', configNodes.join(','));
+
+// 用戶實例上的回報工作流不得殘留任何通往開發者私人實例的線（#235 的地板）
+t('生效行不得殘留 notify_url／notify_ok／notify_leo（用戶實例不呼叫通知端點）',
+  !/notify_url|notify_ok|notify_leo/.test(live),
+  (live.match(/notify_url|notify_ok|notify_leo/g) || []).join(','));
+t('生效行不得殘留 leo21c 個人實例的網址',
+  !/leo21c\.workers\.dev/.test(live),
+  (live.match(/[a-z0-9.-]*leo21c[a-z0-9.-]*/g) || []).join(','));
+
+// 🔴 #235 收件端掛公開網址：任何欄位都不能無限長（prep 的輸入上限）
+{
+  const big = prep({ text: 'x'.repeat(100000), version: 'v'.repeat(5000), instance: 'i'.repeat(5000), os: 'o'.repeat(5000) });
+  t('公開收件端：text 超長會被截到 ≤4001 字（含省略號）', big.success && big.body.length < 4000 + 1500 && big.body.includes('x'.repeat(4000)) && !big.body.includes('x'.repeat(4002)));
+  t('公開收件端：version/instance/os 各被截到上限，不能撐爆票內文', !big.body.includes('v'.repeat(101)) && !big.body.includes('i'.repeat(201)) && !big.body.includes('o'.repeat(51)));
 }
-const nodeOut = {
-  after_issue: { success: true, data: { number: 999 } },
-  notify:      { success: false, status: 404, error: 'HTTP 404' },   // ← 現況：通道是死的
-  finalize:    { success: true, data: { number: 999, notify_ok: false } },
-};
-t('🔴 notify 404 時，本版仍然回得出票號（finalize 有跑到）',
-  getPath(runFrom('after_issue', flowEdges, nodeOut), 'data.number') === 999);
-
-const notifyOk = { ...nodeOut, notify: { success: true, data: { body: 'ok' } } };
-t('notify 成功時同樣回得出票號（不會重複跑 finalize）',
-  getPath(runFrom('after_issue', flowEdges, notifyOk), 'data.number') === 999);
-
-// 舊形狀（兩條 ON_SUCCESS 分叉）拿同一組輸入跑——證明它真的會掉票號
-const oldEdges = [
-  { from: 'after_issue', type: 'ON_SUCCESS', to: 'notify' },
-  { from: 'after_issue', type: 'ON_SUCCESS', to: 'finalize' },
-];
-t('對照組：舊的兩條 ON_SUCCESS 形狀在 notify 404 時回不出票號（這就是本版改圖的理由）',
-  getPath(runFrom('after_issue', oldEdges, nodeOut), 'data.number') === undefined);
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 process.exit(fail ? 1 : 0);
