@@ -11512,26 +11512,26 @@
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "skip",
-     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+     "status": "done",
+     "note": null
     },
     {
      "id": "push",
      "title": "推上 bundle repo",
-     "status": "skip",
-     "note": "已與遠端同步，沒有要推的"
+     "status": "done",
+     "note": null
     },
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
-     "status": "skip",
-     "note": "釘子沒動（built 2026-10-09）；安裝器原始碼指紋 b71a21919c12（烙在 version.mjs，不寫這裡）"
+     "status": "done",
+     "note": null
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "skip",
-     "note": "線上已是 1.4.92／pin 8ebe003／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署"
+     "status": "done",
+     "note": null
     },
     {
      "id": "docs",
@@ -11560,8 +11560,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "skip",
-     "note": "⏭ 內部版本物件｜安裝器 1.0.47 已存在：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/installer-1.0.47"
+     "status": "done",
+     "note": null
     },
     {
      "id": "release-check",
@@ -11572,7 +11572,7 @@
    ],
    "sourceCommit": "Arcrun@e39faf8bd916",
    "machine": "9f06f3113188",
-   "ts": 1791564187863
+   "ts": 1791567427742
   },
   "prod": {
    "results": [
