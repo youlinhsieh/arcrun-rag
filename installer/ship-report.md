@@ -1,5 +1,5 @@
-出貨報告　release 1.4.89　共 22 站（上次（1.4.88）22 站　無增減）
-來源（stage）＝Arcrun@e00fdd766501　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.90　共 22 站（上次（1.4.89）22 站　無增減）
+來源（stage）＝Arcrun@372d2a635edf　｜　來源（prod）＝（未出）
 機器（stage）＝9f06f3113188　｜　機器（prod）＝（未出）
 
 | 件次 | 項目 | stage | prod |
@@ -36,7 +36,7 @@
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜push：已與遠端同步，沒有要推的
    · stage｜pin：釘子沒動（built 2026-10-09）；安裝器原始碼指紋 b71a21919c12（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.89／pin 82c79f3／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜deploy：線上已是 1.4.90／pin aa1f141／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜release-record：⏭ 內部版本物件｜安裝器 1.0.47 已存在：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/installer-1.0.47
 
 件數：stage 22 站　｜　prod （未出）

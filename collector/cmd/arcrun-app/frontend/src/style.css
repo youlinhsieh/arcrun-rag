@@ -776,3 +776,27 @@ main { padding: 22px 32px 28px; }
 .alertcard summary::after { right: 40px !important; }
 .alertcard .x { right: 10px; }
 .alertcard .x { z-index: 2; }
+
+.ugauge .bill { font-size: .85em; color: var(--amber); margin-left: 6px; white-space: nowrap; }
+
+/* 資料夾進度：環形＋已送上/總數＋失敗小數字。只有「卡住」用警示色（100 毫秒：灰環＝進行中、滿環勾＝完成、鏽色＝要處理） */
+.folder .fprog { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.fring .bg { stroke: rgba(var(--ink-rgb), .16); stroke-width: 2.2; }
+.fring .arc { stroke: rgba(var(--ink-rgb), .55); stroke-width: 2.2; stroke-linecap: round; }
+.fring .ck { stroke: rgba(var(--ink-rgb), .8); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.folder .fprog .fnum { font-family: ui-monospace, Menlo, monospace; font-weight: 600; font-variant-numeric: tabular-nums; color: rgba(var(--ink-rgb), .75); }
+.folder .fprog.working { filter: none; opacity: 1; }
+.folder .fprog.working .arc { stroke: rgba(var(--ink-rgb), .4); }
+.folder .fprog.partial .arc { stroke: rgba(var(--ink-rgb), .8); }
+.folder .fprog.ok .arc { stroke: rgba(var(--ink-rgb), .8); }
+.folder .fprog .ffail { font-size: 11px; color: rgba(var(--amber-rgb), .75); font-weight: 600; }
+.folder .fprog.trouble .bg { stroke: rgba(var(--amber-rgb), .3); }
+.folder .fprog.trouble .arc { stroke: var(--amber); }
+.folder .fprog.trouble .fnum, .folder .fprog.trouble .ffail { color: var(--amber); }
+.folder .fprog.unknown { opacity: .5; }
+
+/* 兩個維度：環只管同步（不因出錯變色），出錯是旁邊獨立的 !N */
+.folder .fpair { display: inline-flex; align-items: center; gap: 10px; }
+.folder .fprog.trouble .bg, .folder .fprog.trouble .arc { stroke: inherit; }
+.folder .ferr { font-size: 12px; font-weight: 700; color: var(--amber); font-family: ui-monospace, Menlo, monospace; min-width: 28px; }
+.folder .fprog { min-width: 96px; justify-content: flex-end; }

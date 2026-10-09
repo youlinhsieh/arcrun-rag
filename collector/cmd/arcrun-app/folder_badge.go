@@ -36,6 +36,15 @@
 // **所以第二個條件要求 `Done == 0`：一份都沒成功、而且全都在失敗，才叫撞牆。**
 //
 // 🔴 剛加進來、還沒開始送的資料夾（Failing == 0）落在 working，不會誤報警告。
+// 資料夾有**兩個獨立的維度**，各自一個符號、同時顯示（#240 c18410，leo 2026-10-09）：
+//
+//	① 同步：進行中（已送上/可送的總數）或 已完成 ✓。出錯的檔案不擋其他檔案——
+//	   「已完成」＝除了出錯的以外都送完了。
+//	② 出錯：有幾份出錯（放棄重試的＋正在失敗重試的），沒有就不顯示。
+//
+// leo：「你的設計如果有錯誤就只秀錯誤，沒錯誤就顯示同步中，實際上這是兩件事⋯
+// 出錯檔案外，其他的也能同步。」以前把兩者合成一個狀態（partial／trouble），
+// 一出錯進度就消失；現在環只管同步，出錯只是旁邊的數字。
 package main
 
 import (
@@ -44,39 +53,34 @@ import (
 	collector "arcrun-rag/collector"
 )
 
-// 資料夾狀態的機器代碼。前端只認這三個字串，圖示與顏色由 CSS 決定
-// ——狀態名不進畫面，畫面上只有一個圖示（GUI 的目的是讓人少讀字）。
+// 同步維度的機器代碼。前端只認這幾個字串；出錯數字另外給（folderErrors），不進這個代碼。
 const (
-	folderSyncOK      = "ok"
-	folderSyncWorking = "working"
-	folderSyncTrouble = "trouble"
-	// folderSyncUnknown＝collector 還沒回報過這個資料夾（剛加進來、第一輪還沒跑完）。
-	// **不能落到 ok**——那會是「還沒查就打勾」，正是這張票的紅線。
+	folderSyncOK      = "ok"      // 可同步的檔每一份都送上去了（出錯的不算）
+	folderSyncWorking = "working" // 還有可同步的檔在送
+	// folderSyncUnknown＝還不知道，或沒有可同步的檔（空資料夾／全部都在出錯）。
+	// **不能落到 ok**——打勾要對應「東西真的在知識庫裡」。
 	folderSyncUnknown = "unknown"
 )
 
-// folderBadge 把一個資料夾的同步現況翻成「一個狀態代碼＋一句短提示」。
-//
-// known＝status.json 裡有沒有這個資料夾的紀錄。沒有就是 unknown，不猜。
-//
-// 提示句刻意短：它住在 tooltip 裡，而 leo 的紅線是「**不要把長句子搬進 tooltip
-// 裡繼續長**」。要看細節的人有診斷檔（疑難排解那張卡），不是靠這一行。
+// folderErrors＝這個資料夾裡出錯的份數：已放棄重試的（Stuck）加正在失敗重試的（Failing）。
+func folderErrors(p collector.SyncProgress) int { return p.Stuck + p.Failing }
+
+// folderBadge 回同步維度的代碼與一句短提示（tooltip）。出錯與否不影響它。
 func folderBadge(p collector.SyncProgress, known bool) (state, tip string) {
 	if !known {
 		return folderSyncUnknown, "還在確認這個資料夾"
 	}
+	e := folderErrors(p)
+	syncable := p.Total - e
 	switch {
-	case p.Total == 0:
-		// 資料夾是空的、或裡面沒有我讀得了的檔。**不是「同步好了」**，
-		// 所以不打勾——打勾要對應「東西真的在知識庫裡」。
-		return folderSyncUnknown, "還沒有可整理的檔案"
-	case p.Done == p.Total:
+	case syncable <= 0:
+		if p.Total == 0 {
+			return folderSyncUnknown, "還沒有可整理的檔案"
+		}
+		return folderSyncUnknown, "沒有可同步的檔案"
+	case p.Done >= syncable:
 		return folderSyncOK, fmt.Sprintf("已同步 · %d 份", p.Done)
-	case p.Stuck > 0:
-		return folderSyncTrouble, fmt.Sprintf("%d 份一直送不上去", p.Stuck)
-	case p.Done == 0 && p.Failing > 0:
-		return folderSyncTrouble, fmt.Sprintf("%d 份都還沒送成功", p.Failing)
 	default:
-		return folderSyncWorking, fmt.Sprintf("同步中 · 還有 %d 份", p.Total-p.Done)
+		return folderSyncWorking, fmt.Sprintf("同步中 · 還有 %d 份", syncable-p.Done)
 	}
 }

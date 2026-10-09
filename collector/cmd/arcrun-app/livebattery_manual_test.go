@@ -37,6 +37,10 @@ func TestLiveBatteryManual(t *testing.T) {
 	s := (&App{}).GetState()
 	for _, a := range s.Accounts {
 		b, _ := json.Marshal(a.Battery)
-		fmt.Printf("【%s】小幫手側欄：%s\n", a.Name, b)
+		fmt.Printf("【%s】小幫手側欄：%s 版本=%s stale=%v\n", a.Name, b, a.CloudVerMine, a.CloudVerStale)
+	}
+	if p := os.Getenv("ARCRUN_LIVE_STATE"); p != "" {
+		js, _ := json.MarshalIndent(s, "", " ")
+		_ = os.WriteFile(p, js, 0o644)
 	}
 }

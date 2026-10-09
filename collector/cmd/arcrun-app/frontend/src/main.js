@@ -91,6 +91,14 @@ function chunkLines(text, per = 20, max = 3) {
   return out.map((l) => `<div class="d one raw">${esc(l)}</div>`).join('');
 }
 
+// Wails 把 Go 的錯誤包成 `Error: …`：去掉英文前綴，只留我們自己的短字（#240 c18387）
+function errText(ex) { return String((ex && ex.message) || ex || '').replace(/^Error:\s*/, ''); }
+// 雲端還不能收回報（代碼 cloud_old）時，回報鈕換成能動手的「更新」，開該帳號的 Portal
+function oldCloudButton(accIdx) {
+  const a = (state.accounts || [])[accIdx] || (state.accounts || [])[0];
+  return a ? `<button class="primary" data-portal="${esc(libPortalURL(a))}" title="雲端要先更新才能收回報">更新</button>` : '';
+}
+
 function more(line, detail) {
   if (!detail) return `<div class="d one">${esc(line)}</div>`;
   return `<details class="more"><summary>${esc(line)}</summary><div class="d">${detail}</div></details>`;
@@ -342,7 +350,7 @@ function cardStalls(stalls, onlyAccount) {
       ${list.length > 1
         ? `<details class="more"><summary>⚠ 停住 ${total}</summary>${lines}</details>`
         : `<div class="nt" data-data="1" title="${esc(Array.from(list[0].label).slice(0, 25).join(''))}">⚠ 停住 ${total}</div>`}
-      <div class="acts"><button class="primary" data-stallall="${fps}">回報</button></div>
+      <div class="acts"><button class="primary" data-stallall="${fps}" data-accidx="${(state.accounts || []).findIndex((x) => x.name === list[0].account)}">回報</button></div>
       <div class="d stallmsg" style="margin-top:6px"></div>
     </div>`;
 }
@@ -546,6 +554,26 @@ const treeState = { data: {}, open: {}, nodes: {}, why: {} };
 //    「該不該打勾」住在 Go 那一側（cmd/arcrun-app/folder_badge.go，有測試守著）——
 //    前端自己判斷就會變成第二套判準，遲早跟後端說的不一樣。
 const SYNC_ICON = { ok: '✅', working: '🔄', trouble: '⚠️', unknown: '○' };
+
+// 資料夾兩個獨立的維度，各一個符號、同時顯示（#240 c18410，leo：「同步有同步中或已完成，
+// 有出錯是另一回事，出錯檔案外，其他的也能同步」）：
+//   ① 同步＝環形進度＋已送上/可同步總數；全送完（出錯的不算）＝滿環打勾
+//   ② 出錯＝旁邊獨立的 `!N`，沒有就不顯示
+// 四種組合：同步中＋0 錯／同步中＋有錯／已完成＋0 錯／已完成＋有錯。環不會因為有錯而變色。
+function folderProgressHtml(f) {
+  const total = f.total || 0, done = f.done || 0, errs = f.errors || 0;
+  const frac = total ? Math.min(1, done / total) : 0;
+  const C = 2 * Math.PI * 7;
+  const ring = `<svg class="fring" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+    <circle cx="9" cy="9" r="7" fill="none" class="bg"/>
+    <circle cx="9" cy="9" r="7" fill="none" class="arc" stroke-dasharray="${(C * frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 9 9)"/>
+    ${f.sync === 'ok' ? '<path d="m5.6 9.2 2.3 2.3 4.5-4.8" fill="none" class="ck"/>' : ''}</svg>`;
+  const fmt = (n) => Number(n).toLocaleString('en-US');
+  const nums = f.sync === 'ok' ? fmt(total) : (total ? `${fmt(done)}/${fmt(total)}` : '—');
+  const sync = `<span class="fstat fprog ${esc(f.sync || 'unknown')}" role="img" title="${esc(f.syncTip || '')}" aria-label="${esc(f.syncTip || '')}">${ring}<b class="fnum">${nums}</b></span>`;
+  const err = errs ? `<span class="ferr" role="img" title="${errs} 份出錯" aria-label="${errs} 份出錯">!${fmt(errs)}</span>` : '';
+  return `<span class="fpair">${sync}${err}</span>`;
+}
 
 // 資料夾路徑當不了 DOM id（含空白、斜線、中文）⇒ 折成一個穩定的短碼。
 function treeBoxId(path) {
@@ -845,7 +873,7 @@ function usageGauge(b) {
     }
     cells = `<span class="cells">${cells}</span><span class="ut">${esc(String(Math.round(b.percent)))}%</span>`;
   }
-  const inf = b.paid ? `<span class="inf" title="付費帳號：用完免費額度也不會停">∞</span>` : '';
+  const inf = b.paid ? `<span class="inf" title="付費帳號：用完免費額度也不會停">∞</span>${b.billing ? '<span class="bill" title="免費額度已用完，現在計費">計費中</span>' : ''}` : '';
   return `<span class="ugauge ${esc(b.level)}${b.paid ? ' paid' : ''}" title="${esc(b.line)}" aria-label="${esc(b.line)}">${UARROW}${cells}${inf}</span>`;
 }
 
@@ -896,10 +924,12 @@ function libStatusBar(a, s) {
     item('', SYM.queue, p.pending, '排隊中'),
   ].join('') : `<span class="sp" title="還沒有檔案進度">—</span>`;
   // `!` ＝下面卡片上能處理的件數（同一個數字）；`↻`＝自動重試中，灰色
+  // 近一小時送上雲端幾份：各帳號各自前進、量得出變快了沒（#240 c18413）
+  const rate = a.sentHour != null ? `<span class="sp" title="近一小時送上" aria-label="近一小時送上: ${a.sentHour}"><svg class="symic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg><b>${a.sentHour}</b>/h</span>` : '';
   const bang = need ? item('bad', '<span class="bang">!</span>', need, '停住的檔案') : '';
   const pause = needsOf(s, a).some((i) => i.kind === 'quota') ? `<span class="sp bad" title="額度用完" aria-label="額度用完">⏸</span>` : '';
   const retry = a.trouble ? `<span class="sp quiet" title="自動重試中" aria-label="自動重試中: ${a.trouble.count}">↻&thinsp;${a.trouble.count}</span>` : '';
-  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${cells}${bang}${pause}${retry}<span class="grow"></span>${st.syncing ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat"></i>${SYM_SYNC}</span>` : ''}</section>`;
+  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${cells}${rate}${bang}${pause}${retry}<span class="grow"></span>${st.syncing ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat"></i>${SYM_SYNC}</span>` : ''}</section>`;
 }
 
 function libTabsHtml(a, idx) {
@@ -953,9 +983,7 @@ function tabFolders(s, a, idx) {
         <button class="tw" data-tree="${esc(f.path)}" aria-expanded="${!!treeState.open[f.path]}"
           title="展開這個資料夾" aria-label="展開或收合這個資料夾的內容"><i></i></button>
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
-        <span class="fstat ${esc(f.sync || 'unknown')}" role="img"
-          title="${esc(f.syncTip || '')}" aria-label="${esc(f.syncTip || '')}"
-          >${SYNC_ICON[f.sync] || SYNC_ICON.unknown}</span>
+        ${folderProgressHtml(f)}
         <button class="ico" data-rm="${esc(f.path)}" data-acc="${f.accIdx}"
           title="移除這個資料夾" aria-label="移除這個資料夾並從知識庫收回">🗑</button>
       </div>
@@ -1121,7 +1149,12 @@ async function submitFeedback() {
     textEl.value = '';
   } catch (ex) {
     if (status) status.textContent = '';
-    if (err) { err.textContent = String(ex); err.style.display = 'block'; }
+    if (err) {
+      const t = errText(ex);
+      if (t === 'cloud_old') { err.innerHTML = oldCloudButton(0); wire(err); }
+      else err.textContent = Array.from(t).slice(0, 60).join('');
+      err.style.display = 'block';
+    }
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1428,8 +1461,17 @@ function wire(root) {
         for (const fp of fps) await go.ReportStall(fp);   // 回報＝已處理，卡片與紅點隨之消失
         await tick();
       } catch (ex) {
+        const t = errText(ex);
+        if (t === 'cloud_old') {
+          // 不出整句：按鈕直接變成能動手的「更新」
+          if (msg) msg.textContent = '';
+          b.outerHTML = oldCloudButton(Number(b.dataset.accidx));
+          wire(root);
+          return;
+        }
         b.disabled = false;
-        if (msg) msg.textContent = String(ex);
+        // 真的失敗只留一行，原因點開才看
+        if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 失敗</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;
       }
     };
   });

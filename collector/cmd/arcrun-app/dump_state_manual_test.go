@@ -55,8 +55,9 @@ func TestDumpStateManual(t *testing.T) {
 		LastActivityOK: 15, LastActivityAt: time.Now().Format(time.RFC3339),
 		Progress: collector.SyncProgress{Total: 10342, Done: 1383, Pending: 8800, Stuck: 159},
 		FolderProgress: map[string]collector.SyncProgress{
-			geekF[0]: fp(8200, 300, 7741, 159), geekF[1]: fp(600, 100, 500, 0), geekF[2]: fp(300, 40, 260, 0),
-			geekF[3]: fp(200, 20, 180, 0), geekF[4]: fp(131, 12, 119, 0),
+			// 兩個維度的四種組合（#240 c18410）：同步中＋有錯／同步中＋0 錯／已完成＋0 錯／已完成＋有錯，另加全部出錯
+			geekF[0]: fp(1034, 700, 330, 4), geekF[1]: fp(600, 100, 500, 0), geekF[2]: fp(300, 300, 0, 0),
+			geekF[3]: fp(200, 196, 0, 4), geekF[4]: fp(25, 0, 0, 25),
 			"/Users/demo/youlin/docs": fp(500, 500, 0, 0),
 			"/Users/demo/leo/notes":   fp(300, 300, 0, 0), "/Users/demo/leo/wiki": fp(111, 111, 0, 0),
 		},

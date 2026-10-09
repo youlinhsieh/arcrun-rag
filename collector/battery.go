@@ -39,6 +39,8 @@ type Battery struct {
 	Warn             bool     `json:"warn"`
 	Saver            bool     `json:"saver"`
 	Message          string   `json:"message,omitempty"`
+	// Billing＝這台雲端的免費額度已用完、現在在計費（不限用量的帳號超出免費後）。畫面顯示「計費中」（#240 c18387）。
+	Billing bool `json:"billing,omitempty"`
 	ResetAt          string   `json:"reset_at,omitempty"`
 	// Account＝這是哪一台雲端的電（instanceHostOf，與 AccountSyncStatus 同一把 key）。
 	Account string `json:"account,omitempty"`

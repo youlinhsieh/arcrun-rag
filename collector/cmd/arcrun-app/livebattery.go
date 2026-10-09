@@ -54,6 +54,9 @@ func refreshLiveBattery(acc accountCfg) {
 	if b := collector.BatteryNow(acc.CypherURL, acc.APIKey, host); b != nil {
 		setLiveBattery(host, b)
 	}
+	if v, ok := collector.CloudVersionNow(acc.CypherURL); ok && v != "" {
+		setLiveVersion(host, v)
+	}
 }
 
 // RefreshUsage 給前端在人為動作時呼叫：accIdx<0＝全部帳號，否則只問那一個。回傳後前端再取一次 GetState。
@@ -67,4 +70,27 @@ func (a *App) RefreshUsage(accIdx int) {
 			refreshLiveBattery(acc)
 		}
 	}
+}
+
+// 雲端版本（同樣只在人為動作時問、記在記憶體）
+type liveVer struct {
+	at time.Time
+	v  string
+}
+
+var liveVers = map[string]liveVer{}
+
+func setLiveVersion(host, v string) {
+	liveBatMu.Lock()
+	defer liveBatMu.Unlock()
+	liveVers[host] = liveVer{at: time.Now(), v: v}
+}
+
+func liveVersionFor(host string) (string, bool) {
+	liveBatMu.Lock()
+	defer liveBatMu.Unlock()
+	if x, ok := liveVers[host]; ok && time.Since(x.at) < liveBatFresh {
+		return x.v, true
+	}
+	return "", false
 }

@@ -126,3 +126,9 @@ func cloudVersionStale(version string, checkOK bool) bool {
 	// 舊格式 YYYY-MM-DD+sha：日期字串等長、可安全字串比較
 	return head < minCloudBuilt
 }
+
+// CloudVersionNow 立刻問一次雲端版本（略過一分鐘節流），給使用者人為動作用（#240 c18387）：
+// 雲端升級後，小幫手帳號頁的版本與「回報被擋」的判斷要跟著當下，不能停在上一輪的舊值。
+func CloudVersionNow(cypherURL string) (string, bool) {
+	return cloudVersionThrottled(cypherURL, true)
+}

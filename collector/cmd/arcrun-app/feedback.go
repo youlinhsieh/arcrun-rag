@@ -24,6 +24,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,9 @@ type feedbackPayload struct {
 	OS          string      `json:"os"`
 	Diagnostics interface{} `json:"diagnostics,omitempty"`
 }
+
+// errCloudOld＝這個知識庫的雲端還沒有回報通道（404），要先更新雲端。前端認這個代碼。
+var errCloudOld = errors.New("cloud_old")
 
 var feedbackHTTP = &http.Client{Timeout: 30 * time.Second}
 
@@ -103,7 +107,8 @@ func (a *App) SubmitFeedback(text string, attachDiagnostics bool) error {
 		return fmt.Errorf("這個知識庫帳號設定不完整，無法送出——請重新連線一次")
 	}
 	if allNotInstalled {
-		return fmt.Errorf("沒送出去：你的雲端知識庫版本還比較舊，還不能接收回報。請到 Portal 更新後再試一次（你寫的內容還在，不會消失）")
+		// 不出整句：回傳固定代碼，畫面把「回報」鈕換成能動手的「更新」（開該帳號 Portal）（#240 c18387）
+		return errCloudOld
 	}
 	return lastErr
 }
@@ -118,22 +123,22 @@ func postFeedback(acc accountCfg, payload feedbackPayload) (err error, notInstal
 	}
 	req, rerr := http.NewRequest(http.MethodPost, feedbackWorkflowURL(acc.CypherURL, acc.Namespace), bytes.NewReader(body))
 	if rerr != nil {
-		return fmt.Errorf("沒送出去，請再試一次（%v）", rerr), false
+		return fmt.Errorf("沒送出去：請求錯誤"), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Arcrun-API-Key", acc.Namespace)
 
 	resp, derr := feedbackHTTP.Do(req)
 	if derr != nil {
-		return fmt.Errorf("沒送出去，請再試一次（網路錯誤：%v）", derr), false
+		return fmt.Errorf("沒送出去：網路"), false
 	}
 	defer resp.Body.Close()
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("沒送出去：雲端版本較舊，還不能接收回報，請到 Portal 更新後再試一次"), true
+		return errCloudOld, true
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("沒送出去，請再試一次（伺服器暫時有問題，代碼 %d）", resp.StatusCode), false
+		return fmt.Errorf("沒送出去：HTTP %d", resp.StatusCode), false
 	}
 
 	var out struct {
@@ -152,7 +157,7 @@ func postFeedback(acc accountCfg, payload feedbackPayload) (err error, notInstal
 			if msg == "" {
 				msg = "工作流回報失敗"
 			}
-			return fmt.Errorf("沒送出去，請再試一次（%s）", msg), false
+			return fmt.Errorf("沒送出去：%s", msg), false
 		}
 	}
 	return nil, false

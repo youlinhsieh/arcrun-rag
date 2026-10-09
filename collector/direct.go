@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -695,6 +696,12 @@ func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 // 否則所有退避窗口都得真的等上幾分鐘才看得到效果。
 var directNow = time.Now
 
+// maxParallelAccounts＝同時跑幾個帳號（#240 c18413）。帳號各自一台雲端，互不拖累；上限只為保護這台電腦。
+const maxParallelAccounts = 4
+
+// accountRunHook 只給測試：每個帳號開跑時呼叫（證明帳號是同時前進的）。
+var accountRunHook func(host string)
+
 // RunDirectOnce 對每個帳號的每個監看根掃一輪並彙總結果（t104 多帳號同時看守）。
 // 單帳號行為與舊制完全相同（含 manifest 路徑）。回傳彙總結果與退出碼建議（任一根失敗＝1）。
 // 額外：
@@ -816,10 +823,57 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 	// 這是所有帳號共用的同一把尺，不是逐帳號各打一次。
 	latestRelease, latestOK := FetchLatestCloudRelease()
 
-	accountDetails := map[string]AccountSyncStatus{}
-	for _, acc := range accounts {
+	// 🔴 各帳號各自前進（inkstone/arcrun-rag#240 c18413，leo：geek 9000+ 檔、速度很重要）：
+	// 以前一次只服務一個帳號，leo21c 每張卡要等 30–60 秒，排在後面的 geek 整整 15 分鐘一張都送不出去。
+	// 每個帳號各跑一條 goroutine（帳號之間沒有共用的雲端，也各有各的 manifest）；
+	// 同一個帳號底下的資料夾仍然照順序（同一台雲端不要被自己打爆）。
+	// 每條只動自己的區域變數，跑完再按帳號原本的順序併回去——結果與舊制逐筆相同。
+	type accountRunOut struct {
+		results           []DirectResult
+		exit              int
+		lastPayload       *TriggerPayload
+		skippedSeen       map[string]SkippedFile
+		skippedOther      int
+		skippedOtherNames []string
+		folderPlans       map[string]FolderPlanStatus
+		folderTrees       map[string]FolderTree
+		knownRoots        []string
+		folderProgress    map[string]SyncProgress
+		totalProgress     SyncProgress
+		totalCards        CardCount
+		totalPendingCards CardCount
+		stuckReasons      []string
+		retiring          map[string]RetiringStatus
+		resync            map[string]ResyncStatus
+		extractorOK       bool
+		extractorError    string
+		accountDetails    map[string]AccountSyncStatus
+	}
+	runAccount := func(acc AccountConfig) *accountRunOut {
+		// 以下同名區域變數**遮蔽**外層的彙總變數：函式本體照舊寫，只是各帳號各用各的，最後才併回。
+		results := []DirectResult{}
+		exit := 0
+		var lastPayload *TriggerPayload
+		skippedSeen := map[string]SkippedFile{}
+		skippedOther := 0
+		var skippedOtherNames []string
+		folderPlans := map[string]FolderPlanStatus{}
+		folderTrees := map[string]FolderTree{}
+		var knownRoots []string
+		folderProgress := map[string]SyncProgress{}
+		var totalProgress SyncProgress
+		var totalCards, totalPendingCards CardCount
+		var stuckReasons []string
+		var retiring map[string]RetiringStatus
+		var resync map[string]ResyncStatus
+		extractorOK := true
+		extractorError := ""
+		accountDetails := map[string]AccountSyncStatus{}
+		if accountRunHook != nil {
+			accountRunHook(instanceHostOf(acc.CypherURL))
+		}
 		if acc.CypherURL == "" || acc.Namespace == "" {
-			continue // 跳過設定不完整的帳號
+			return nil // 跳過設定不完整的帳號
 		}
 		accCfg := cfg.makeAccountSubConfig(acc)
 		accHost := instanceHostOf(acc.CypherURL)
@@ -1045,6 +1099,78 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		}
 
 		accountDetails[accHost] = accSt
+		return &accountRunOut{results: results, exit: exit, lastPayload: lastPayload, skippedSeen: skippedSeen,
+			skippedOther: skippedOther, skippedOtherNames: skippedOtherNames, folderPlans: folderPlans,
+			folderTrees: folderTrees, knownRoots: knownRoots, folderProgress: folderProgress,
+			totalProgress: totalProgress, totalCards: totalCards, totalPendingCards: totalPendingCards,
+			stuckReasons: stuckReasons, retiring: retiring, resync: resync, extractorOK: extractorOK,
+			extractorError: extractorError, accountDetails: accountDetails}
+	}
+
+	outs := make([]*accountRunOut, len(accounts))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxParallelAccounts)
+	for i, acc := range accounts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, acc AccountConfig) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			outs[i] = runAccount(acc)
+		}(i, acc)
+	}
+	wg.Wait()
+
+	accountDetails := map[string]AccountSyncStatus{}
+	for _, o := range outs {
+		if o == nil {
+			continue
+		}
+		results = append(results, o.results...)
+		if o.exit != 0 {
+			exit = o.exit // 任一帳號任一根失敗＝整體 exit 1，但不停其他帳號
+		}
+		if o.lastPayload != nil {
+			lastPayload = o.lastPayload
+		}
+		for k, v := range o.skippedSeen {
+			skippedSeen[k] = v
+		}
+		skippedOther += o.skippedOther
+		skippedOtherNames = append(skippedOtherNames, o.skippedOtherNames...)
+		for k, v := range o.folderPlans {
+			folderPlans[k] = v
+		}
+		for k, v := range o.folderTrees {
+			folderTrees[k] = v
+		}
+		knownRoots = append(knownRoots, o.knownRoots...)
+		for k, v := range o.folderProgress {
+			folderProgress[k] = v
+		}
+		totalProgress = totalProgress.Add(o.totalProgress)
+		totalCards = totalCards.Add(o.totalCards)
+		totalPendingCards = totalPendingCards.Add(o.totalPendingCards)
+		stuckReasons = append(stuckReasons, o.stuckReasons...)
+		for k, v := range o.retiring {
+			if retiring == nil {
+				retiring = map[string]RetiringStatus{}
+			}
+			retiring[k] = v
+		}
+		for k, v := range o.resync {
+			if resync == nil {
+				resync = map[string]ResyncStatus{}
+			}
+			resync[k] = v
+		}
+		if !o.extractorOK {
+			extractorOK = false
+			extractorError = o.extractorError
+		}
+		for k, v := range o.accountDetails {
+			accountDetails[k] = v
+		}
 	}
 
 	// t91：每輪寫狀態檔（含 per-account 雲端版本與萃取計數）。

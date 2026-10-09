@@ -189,8 +189,8 @@ func TestSubmitFeedback_All404GivesHumanMessageNoDevCommand(t *testing.T) {
 	if strings.Contains(msg, "acr") || strings.Contains(msg, "404") || strings.Contains(msg, "not found") {
 		t.Errorf("錯誤訊息不該含開發者指令／原始回應：%q", msg)
 	}
-	if !strings.Contains(msg, "Portal") || !strings.Contains(msg, "更新") {
-		t.Errorf("want 提示去 Portal 更新, got %q", msg)
+	if msg != "cloud_old" {
+		t.Errorf("雲端太舊要回固定代碼 cloud_old（畫面換成「更新」鈕，#240 c18387），got %q", msg)
 	}
 }
 

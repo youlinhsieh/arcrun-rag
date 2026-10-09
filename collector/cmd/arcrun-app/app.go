@@ -310,6 +310,10 @@ type UIFolder struct {
 	// 而前端只負責把代碼換成一個圖示。
 	Sync    string `json:"sync"`
 	SyncTip string `json:"syncTip"`
+	// 進度數字（#240 c18405）：已送上／總數，失敗另列；畫面用環形進度，不只靠警示符號。
+	Done   int `json:"done"`
+	Total  int `json:"total"`  // 可同步的總數（不含出錯的）
+	Errors int `json:"errors"` // 出錯的份數，獨立於同步進度
 }
 type UIAccount struct {
 	Name    string     `json:"name"`
@@ -319,11 +323,11 @@ type UIAccount struct {
 	// 連結」）——一個使用者可能連著不只一個知識庫，之前只有小幫手自己的版本會提示更新，
 	// 每個知識庫各自的雲端版本完全沒有畫面。判準與 portal 版本卡同一套
 	// （collector.EvalCloudUpdate，不是 t103 的相容底線），這裡只翻成人話，不重新判斷。
-	CloudVerKnown  bool   `json:"cloudVerKnown"`            // false＝**從來沒查到過**這台的版本（不是「這一輪連不上」，見 direct.go #159）
+	CloudVerKnown bool `json:"cloudVerKnown"` // false＝**從來沒查到過**這台的版本（不是「這一輪連不上」，見 direct.go #159）
 	// arcrun-rag#159：這一輪 /health 通不通。與 CloudVerKnown 是兩件事——
 	// 版本是事實（查到過就一直知道），可達性是當下狀態（會抽風）。
 	// 前端拿它把版本號調淡並在 tooltip 說明，**不拿它把版本抹掉**。
-	CloudVerFresh bool `json:"cloudVerFresh"`
+	CloudVerFresh  bool   `json:"cloudVerFresh"`
 	CloudVerStale  bool   `json:"cloudVerStale"`            // true＝有新版可更新
 	CloudVerMine   string `json:"cloudVerMine,omitempty"`   // 這個知識庫目前的版本（可能連 Known=false 時也有值）
 	CloudVerLatest string `json:"cloudVerLatest,omitempty"` // 已知的最新版
@@ -341,6 +345,9 @@ type UIAccount struct {
 	// 帳號頁的「同步」分頁只講自己的數字，不拿全站總量冒充（inkstone/arcrun-rag#240 c18254）。
 	// nil＝collector 還沒回報過它的任何資料夾。
 	Progress *UIProgress `json:"progress,omitempty"`
+	// SentHour＝近一小時這個帳號送上雲端的份數（來自 manifest 的送出時間，#240 c18413）：
+	// 看得出各帳號各自在前進、也量得出「變快了沒」。nil＝還沒算過。
+	SentHour *int `json:"sentHour,omitempty"`
 }
 
 // UIBattery＝一個知識庫旁邊「今天剩多少用量」的表示。判準全在雲端（battery.state），這裡只轉成畫面用的字。
@@ -361,6 +368,8 @@ type UIBattery struct {
 	PctKnown bool `json:"pctKnown"`
 	// DismissKey＝這則用量警告的穩定鍵（原因，不含百分比）；前端「×」拿它呼叫 Dismiss。
 	DismissKey string `json:"dismissKey,omitempty"`
+	// Billing＝免費額度已用完、現在計費中；畫面在 ∞ 旁顯示「計費中」。
+	Billing bool `json:"billing,omitempty"`
 }
 
 const usageCells = 5
@@ -374,7 +383,7 @@ func accountBattery(b *collector.Battery) *UIBattery {
 	}
 	if b.State == collector.BatteryNuclear {
 		// 付費／放行：不剎、不警告、不換鏽色，畫面是 ∞。雲端若有交免費額度剩餘 %，格數與 % 照畫。
-		u := &UIBattery{Total: usageCells, Paid: true, Level: "ok", Line: "不限用量"}
+		u := &UIBattery{Total: usageCells, Paid: true, Level: "ok", Line: "不限用量", Billing: b.Billing}
 		if b.RemainingPercent != nil {
 			u.Percent, u.Cells = *b.RemainingPercent, usageCellsFor(*b.RemainingPercent)
 			u.PctKnown = true
@@ -498,15 +507,16 @@ func splitFailures(failures []collector.ExtractFail) (attributed, unattributed i
 	}
 	return
 }
+
 type UIState struct {
 	Version   string      `json:"version"`
 	StatusBig string      `json:"statusBig"`
 	StatusSub string      `json:"statusSub"`
 	Syncing   bool        `json:"syncing"`
 	Accounts  []UIAccount `json:"accounts"`
-	Engine    string      `json:"engine"` // 恆為 "workers-ai"（#58：引擎不再可選）
-	Steps     []Step      `json:"steps"`     // 首頁狀態時間軸（leo #6）
-	Skipped   *UISkipped  `json:"skipped"`   // 讀不了的檔（沒有就是 null，前端不畫）
+	Engine    string      `json:"engine"`  // 恆為 "workers-ai"（#58：引擎不再可選）
+	Steps     []Step      `json:"steps"`   // 首頁狀態時間軸（leo #6）
+	Skipped   *UISkipped  `json:"skipped"` // 讀不了的檔（沒有就是 null，前端不畫）
 	// EngineTrouble＝同步引擎有問題（沒在跑／一直啟動失敗）⇒ 前端才長出「回報問題」卡。
 	// 沒事時不顯示，避免把「哪裡看 log」變成常駐噪音。
 	EngineTrouble bool       `json:"engineTrouble"`
@@ -548,12 +558,12 @@ type UIState struct {
 // 後半句在這裡兌現。文字一律白話：講「你的哪個檔沒進去」「你要不要做什麼」，
 // 不講 allowedExt、副檔名白名單、extractor 這些系統內部詞。
 type UISkipped struct {
-	Title string   `json:"title"` // 「有 3 個檔案現在還讀不了」
-	Note  string   `json:"note"`  // 該不該做什麼——這裡的答案是「不用，之後會自動補上」
-	Files []string `json:"files"` // 「舊版報告.doc（舊版 Word）」
-	More  int      `json:"more"`  // 沒列出來的還有幾個
-	Other string   `json:"other"` // 非文件檔的一行說明（沒有就空字串）
-	DismissKey string `json:"dismissKey,omitempty"`
+	Title      string   `json:"title"` // 「有 3 個檔案現在還讀不了」
+	Note       string   `json:"note"`  // 該不該做什麼——這裡的答案是「不用，之後會自動補上」
+	Files      []string `json:"files"` // 「舊版報告.doc（舊版 Word）」
+	More       int      `json:"more"`  // 沒列出來的還有幾個
+	Other      string   `json:"other"` // 非文件檔的一行說明（沒有就空字串）
+	DismissKey string   `json:"dismissKey,omitempty"`
 }
 
 // UIProgress＝首頁「你的檔案」那張卡（t210，2026-08-08，取代 08-06 的逐檔白話翻譯）。
@@ -773,6 +783,8 @@ func (a *App) GetState() UIState {
 			// 查不到＝collector 還沒回報過這個資料夾 ⇒ folderBadge 回 unknown，不猜。
 			fp, known := sync.FolderProgress[f]
 			uf.Sync, uf.SyncTip = folderBadge(fp, known)
+			uf.Done, uf.Errors = fp.Done, folderErrors(fp)
+			uf.Total = fp.Total - uf.Errors
 			ui.Folders = append(ui.Folders, uf)
 		}
 		// 收回中的資料夾照樣列出來，只是標成「收回中」——不然按下移除之後它立刻消失，
@@ -799,7 +811,14 @@ func (a *App) GetState() UIState {
 		if lb := liveBatteryFor(ui.Host); lb != nil {
 			ui.Battery = accountBattery(lb)
 		}
+		// 雲端版本也跟當下（使用者動手時問過的）：升級後不必等下一輪同步（#240 c18387）
+		if v, ok := liveVersionFor(ui.Host); ok {
+			ui.CloudVerMine, ui.CloudVerFresh = v, true
+			upd := collector.EvalCloudUpdate(v, true, ui.CloudVerLatest, ui.CloudVerLatest != "")
+			ui.CloudVerKnown, ui.CloudVerStale = upd.Known, upd.NeedsUpdate
+		}
 		ui.Progress = accountProgress(sync, acc.WatchFolders)
+		ui.SentHour = sentLastHour(cfg, acc)
 		ui.Trouble = accountTrouble(sync.Failures, ui.Host)
 		ui.Status = accountStatus(sync, ui.Host, engineSyncing, time.Now())
 		st.Accounts = append(st.Accounts, ui)
@@ -828,7 +847,7 @@ func (a *App) GetState() UIState {
 	st.EngineTrouble = !collectorAlive()
 	st.LogFolder = appDir()
 	applyDismissals(&st) // c18340：已關閉／已回報的警示不再亮，重開 App 仍不亮
-	compactUI(&st) // 字數預算：回給前端的字串一律收進預算（textbudget.go）
+	compactUI(&st)       // 字數預算：回給前端的字串一律收進預算（textbudget.go）
 	return st
 }
 
