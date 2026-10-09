@@ -800,3 +800,6 @@ main { padding: 22px 32px 28px; }
 .folder .fprog.trouble .bg, .folder .fprog.trouble .arc { stroke: inherit; }
 .folder .ferr { font-size: 12px; font-weight: 700; color: var(--amber); font-family: ui-monospace, Menlo, monospace; min-width: 28px; }
 .folder .fprog { min-width: 96px; justify-content: flex-end; }
+.okflash { animation: okfade .4s ease-out 2.6s forwards; }
+@keyframes okfade { to { opacity: 0; } }
+.okflash .nt { color: rgba(var(--ink-rgb), .8); margin: 0; }

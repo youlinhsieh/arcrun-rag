@@ -330,9 +330,20 @@ function installURLFor(email) {
 // onlyAccount＝帳號分頁只顯示它自己的（c18000：每個分頁只講自己的事）；null＝首頁全列。
 // 同一個帳號的停工合成一張卡：標題＝件數加總（與狀態列的 `!` 同一個數字），
 // 展開看各原因各幾份；一顆「回報」送出全部、一顆 × 關閉（#240 c18341）。
+// 回報送出後，卡片會因為「已處理」從清單消失——但用戶要看得到「送出去了」：
+// 留一行 `✓ 已回報` 停 3 秒再淡出（#240 c18503）。key＝帳號名稱。
+const reportedFlash = {};
+function flashReported(account) {
+  reportedFlash[account] = Date.now() + 3000;
+  setTimeout(() => { delete reportedFlash[account]; renderPage(); }, 3100);
+}
+
 function cardStalls(stalls, onlyAccount) {
   const list = (stalls || []).filter((x) => !onlyAccount || x.account === onlyAccount);
-  if (!list.length) return '';
+  if (!list.length) {
+    return onlyAccount && reportedFlash[onlyAccount] > Date.now()
+      ? `<div class="card alertcard okflash" role="status"><div class="nt">✓ 已回報</div></div>` : '';
+  }
   const total = list.reduce((t, x) => t + x.count, 0);
   const lines = list.slice(0, 3).map((x) => `<div class="d one raw" title="${esc(Array.from(x.label).slice(0, 25).join(''))}">${esc(Array.from(x.label).slice(0, 12).join(''))} ${x.count}</div>`).join('');
   // 鍵可能含任何字元（逗號、引號）：一律用 JSON 陣列放在屬性裡，不用分隔字元拼接再切開
@@ -1448,16 +1459,19 @@ function wire(root) {
     b.onclick = async () => {
       const fps = JSON.parse(b.dataset.stallall || '[]');
       const msg = b.closest('.alertcard').querySelector('.stallmsg');
+      const account = ((state.accounts || [])[Number(b.dataset.accidx)] || {}).name || '';
       b.disabled = true;
       if (msg) msg.textContent = '…';
       try {
         for (const fp of fps) await go.ReportStall(fp);   // 回報＝已處理，卡片與紅點隨之消失
+        flashReported(account);                             // 但先留一行 ✓ 已回報 讓用戶看見
         await tick();
       } catch (ex) {
         const t = errText(ex);
         b.disabled = false;
-        // 真的失敗只留一行，原因點開才看
-        if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 失敗</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;
+        b.textContent = '重試';
+        // 真的失敗只留一行 `⚠ 沒送出`＋「重試」，原因點開才看
+        if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 沒送出</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;
       }
     };
   });
