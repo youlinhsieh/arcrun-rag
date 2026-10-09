@@ -1,5 +1,5 @@
-出貨報告　release 1.4.90　共 22 站（上次（1.4.89）22 站　無增減）
-來源（stage）＝Arcrun@372d2a635edf　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.91　共 22 站（上次（1.4.90）22 站　無增減）
+來源（stage）＝Arcrun@e9951dce2fa8　｜　來源（prod）＝（未出）
 機器（stage）＝9f06f3113188　｜　機器（prod）＝（未出）
 
 | 件次 | 項目 | stage | prod |
@@ -30,13 +30,13 @@
 真的做事的站：stage 14／22 站（與上次相同）　｜　prod （未出）
 
 ⬜ 跳過的站（8 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
-   · stage｜daemon-sync：bundle 已委任 0.18.75；內容是否真的到位由下一站 daemon-check 逐檔查證
-   · stage｜notes：已是最新：每一則停工提醒按 × 都關得掉
+   · stage｜daemon-sync：bundle 已委任 0.18.76；內容是否真的到位由下一站 daemon-check 逐檔查證
+   · stage｜notes：已是最新：多個知識庫同時各自前進，一個慢不再拖累其他・資料夾的「同步」和「出錯」分開顯示・小幫手上的雲端版本號跟著雲端當下・回報送不出去時不再出現一整句英文夾中文・免費額度用完、已改為計費的帳號會標「計費中」
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜push：已與遠端同步，沒有要推的
    · stage｜pin：釘子沒動（built 2026-10-09）；安裝器原始碼指紋 b71a21919c12（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.90／pin aa1f141／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜deploy：線上已是 1.4.91／pin 8c4866c／安裝器原始碼 b71a21919c12 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜release-record：⏭ 內部版本物件｜安裝器 1.0.47 已存在：https://git.uncle6.me/inkstone/arcrun-rag/releases/tag/installer-1.0.47
 
 件數：stage 22 站　｜　prod （未出）
