@@ -282,7 +282,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@ce011c72e815ebf58e8c0fd45dcd1242df164842';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@e6544ad5bcabed7e464f5cb51ba0d85f4f44257b';
 const BUNDLE_BUILT = '2026-10-09'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -316,7 +316,9 @@ function bundleBuiltOf(env) {
  */
 async function releaseOf(env) {
   const base = bundleBase(env);
-  const cacheKey = new Request(`https://internal.arcrun/release?base=${encodeURIComponent(base)}`);
+  // v2＝一次性 cache-buster：舊 key 底下可能卡著「退路字串」（曾被寫進快取一整天，
+  // 讓 verify 永遠收斂不了，1.4.92 出貨撞到）；Cache API 不會因重新部署而失效，換 key 才保證立刻 miss。
+  const cacheKey = new Request(`https://internal.arcrun/release?v=2&base=${encodeURIComponent(base)}`);
   // typeof 判斷放最前面：Node 離線測試環境沒有全域 `caches`（存取 `caches.default` 本身
   // 就會先丟 ReferenceError），要在進 try 之前就擋掉——同 manifestCountsOf 的既有寫法。
   // （#169：沒有這一行，`/api/latest` 這條路整條**離線測不動**，而那正是要驗版本線的地方。）
@@ -335,8 +337,10 @@ async function releaseOf(env) {
     }
   } catch { /* 網路失敗 → 退路 */ }
 
-  // 退路：manifest 還沒有 release 欄（舊 bundle）時，沿用舊格式，至少不是空白
-  if (!version) version = `${bundleBuiltOf(env)}+${bundleCommitOf(env)}`;
+  // 退路：manifest 還沒有 release 欄（舊 bundle）或剛推上 CDN 讀不到時，沿用舊格式，至少不是空白
+  // 🔴 退路值**絕不進快取**：只有真的從釘點 manifest 讀到的值才長快取（釘點 immutable）。
+  //   退路值被快取＝該 colo 顯示錯版號一整天（1.4.92 prod verify 實撞：release 回 2026-10-09+e6544ad）。
+  if (!version) return `${bundleBuiltOf(env)}+${bundleCommitOf(env)}`;
 
   try {
     if (cache) {
@@ -370,7 +374,7 @@ async function releaseOf(env) {
  */
 async function manifestCountsOf(env) {
   const base = bundleBase(env);
-  const cacheKey = new Request(`https://internal.arcrun/manifest-counts?base=${encodeURIComponent(base)}`);
+  const cacheKey = new Request(`https://internal.arcrun/manifest-counts?v=2&base=${encodeURIComponent(base)}`);
   // typeof 判斷放最前面：Node 離線測試環境沒有全域 `caches`（存取 `caches.default` 本身
   // 就會先丟 ReferenceError），要在進 try 之前就擋掉，不能只包 `.match()` 那一步。
   const cache = typeof caches !== 'undefined' ? caches.default : null;
@@ -401,7 +405,8 @@ async function manifestCountsOf(env) {
   } catch { /* 網路失敗 → 退路 */ }
 
   // 退路：manifest 抓不到時老實說「讀不到」，不要硬填一個可能早就錯的數字充版面
-  if (!counts) counts = { workerCount: null, kvCount: null, d1Count: null };
+  // 🔴 同 releaseOf：讀不到的退路值不進快取，否則一次讀失敗就把「讀不到」凍一整天。
+  if (!counts) return { workerCount: null, kvCount: null, d1Count: null };
 
   try {
     if (cache) {

@@ -5185,3 +5185,34 @@ test('#293 resolveWithStaleFallback：擋下原因不含 RES-NO-WORKERS ⇒ 不�
   assert.equal(out.mode, 'update');
   assert.equal(out.attempts.length, 1);
 });
+
+// ── releaseOf：退路值不得進快取（1.4.92 prod verify 實撞）──────────────────
+test('/api/latest：第一次讀釘點 manifest 失敗、第二次成功 → 第二次回 1.4.92（退路值不被快取）', async () => {
+  const store = new Map();
+  const fakeCaches = { default: {
+    match: async (req) => { const v = store.get(req.url); return v ? new Response(v) : undefined; },
+    put: async (req, res) => { store.set(req.url, await res.text()); },
+  } };
+  const prevCaches = globalThis.caches;
+  globalThis.caches = fakeCaches;
+  let manifestOk = false;
+  installFetch((url) => {
+    if (url.endsWith('/manifest.json')) {
+      return manifestOk ? { json: { release: '1.4.92' } } : { status: 404, text: 'not yet' };
+    }
+    return { status: 404, text: '' };
+  });
+  try {
+    const env = { INSTALLER_KV: {}, BUNDLE_BASE: 'https://cdn.example/gh/x@e6544ad5bcabed7e464f5cb51ba0d85f4f44257b' };
+    const get = async () => (await (await worker.fetch(new Request('https://install.test/api/latest'), env, { waitUntil() {} })).json()).release;
+    const first = await get();
+    assert.notEqual(first, '1.4.92'); // 讀失敗 → 退路字串
+    manifestOk = true;
+    assert.equal(await get(), '1.4.92'); // 退路值沒被快取 → 立刻收斂
+    manifestOk = false;
+    assert.equal(await get(), '1.4.92'); // 讀成功的值才進快取
+  } finally {
+    restoreFetch();
+    if (prevCaches === undefined) delete globalThis.caches; else globalThis.caches = prevCaches;
+  }
+});
