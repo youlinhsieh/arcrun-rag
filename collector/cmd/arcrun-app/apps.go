@@ -64,9 +64,12 @@ const (
 // UIApp＝九宮格上的一格。逐欄對應上游 `summarizeApp`，不多不少——
 // 多一欄就是在桌面端發明一個實例不認得的概念。
 type UIApp struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Icon    string `json:"icon"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Icon string `json:"icon"`
+	// Glyph＝實例替這個 App 挑好的字形代號（`summarizeApp.glyph`）。小幫手不自己對照、不自己畫：
+	// 字形本體在 UIAppList.Glyphs，由實例提供；兩者任一缺就退回通用圖示（見 glyphs.go）。
+	Glyph   string `json:"glyph"`
 	HasUI   bool   `json:"hasUi"`
 	Version string `json:"version"`
 }
@@ -84,6 +87,9 @@ type UIAppList struct {
 	Host    string  `json:"host"`
 	Apps    []UIApp `json:"apps"`
 	Error   string  `json:"error"`
+	// Glyphs＝實例提供的圖示字形（代號→SVG 內層標記，24×24 描邊式）。實例沒有這支端點就是 nil，
+	// 畫面退回通用圖示——「拿得到就用，拿不到退回通用圖示」（inkstone/arcrun-rag#240 c18275）。
+	Glyphs map[string]string `json:"glyphs,omitempty"`
 	// Source＝這份清單是用哪把鑰匙問到的（"session"／"apikey"）。給診斷用，
 	// 畫面不依它分支——兩條路的內容是同一份安裝態。
 	Source string `json:"source"`
@@ -260,6 +266,18 @@ func tryStoreSessionFromLogin(cfg *directConfig, idx int, email, password string
 //
 // 兩條路的順序與理由見檔頭。**沒有任何寫死的清單**——問不到就誠實說問不到。
 func (a *App) ListApps(accIdx int) UIAppList {
+	out := a.listAppsCore(accIdx)
+	if out.Error == "" {
+		if cfg, _ := loadCfg(); cfg != nil {
+			if acc, err := accountAt(cfg, accIdx); err == nil {
+				out.Glyphs = fetchGlyphs(acc)
+			}
+		}
+	}
+	return out
+}
+
+func (a *App) listAppsCore(accIdx int) UIAppList {
 	out := UIAppList{AccIdx: accIdx}
 	cfg, _ := loadCfg()
 	acc, err := accountAt(cfg, accIdx)
@@ -326,6 +344,7 @@ func parseAppList(raw []byte) []UIApp {
 			ID      string `json:"id"`
 			Name    string `json:"name"`
 			Icon    string `json:"icon"`
+			Glyph   string `json:"glyph"`
 			HasUI   bool   `json:"has_ui"`
 			Version string `json:"version"`
 		} `json:"apps"`
@@ -339,7 +358,7 @@ func parseAppList(raw []byte) []UIApp {
 		if strings.TrimSpace(name) == "" {
 			name = x.ID
 		}
-		apps = append(apps, UIApp{ID: x.ID, Name: name, Icon: x.Icon, HasUI: x.HasUI, Version: x.Version})
+		apps = append(apps, UIApp{ID: x.ID, Name: name, Icon: x.Icon, Glyph: x.Glyph, HasUI: x.HasUI, Version: x.Version})
 	}
 	return apps
 }

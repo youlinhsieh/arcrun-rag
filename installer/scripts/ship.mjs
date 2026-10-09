@@ -99,6 +99,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, sta
 import { join, resolve, dirname, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { assertMigrationsComplete, assertGenerationChecksInSync, resolveMigrationSourceRoot } from './migrations-source.mjs';
 import { syncManifest, verifyManifest, RELEASE_STATE_FILE } from './release.mjs';
 // #47：出貨落帳這一站——這次出的東西同一趟進版控，不靠人記得 commit。
 import { commitShipOutputs } from './worktree-commit.mjs';
@@ -1899,12 +1900,16 @@ const STEPS = [
 
   const jsPath = join(REPO_ROOT, T.installer.cwd, 'worker.js');
   // 🔴 先確認 migration 帶齊了才算指紋——少一支就當場中止（見 assertMigrationsComplete 檔頭）
-  const arcrunRoot = process.env.ARCRUN_REPO_ROOT
-    || [join(REPO_ROOT, '..', '..', 'matrix', 'arcrun'), join(REPO_ROOT, '..', 'Arcrun'), join(REPO_ROOT, '..', 'arcrun')]
-         .find((c) => existsSync(join(c, 'kbdb', 'migrations'))) || '';
+  // 🔴 閘讀的來源必須和 fetch-artifacts 取貨是同一份（ctx.arcrunRepo，已套 ARCRUN_SOURCE_WORKTREE）。
+  //    以前這裡讀 ARCRUN_REPO_ROOT／並列的 Arcrun main ⇒ 出 worktree 版時閘看的是 main，
+  //    漏帶 0014 照綠（inkstone/Arcrun#293 c18325）。
+  const { root: arcrunRoot, note: migNote } = resolveMigrationSourceRoot({
+    shipRoot: ctx.arcrunRepo,
+    fallbacks: [join(REPO_ROOT, '..', '..', 'matrix', 'arcrun'), join(REPO_ROOT, '..', 'Arcrun'), join(REPO_ROOT, '..', 'arcrun')],
+  });
   const migLines = arcrunRoot
-    ? assertMigrationsComplete(join(REPO_ROOT, T.installer.cwd), arcrunRoot)
-    : ['⚠️ 找不到 Arcrun repo，這一趟沒能複驗 migration 帶齊了沒（設 ARCRUN_REPO_ROOT 可複驗）'];
+    ? [...assertMigrationsComplete(join(REPO_ROOT, T.installer.cwd), arcrunRoot), ...assertGenerationChecksInSync(join(REPO_ROOT, T.installer.cwd), arcrunRoot), `（讀 ${arcrunRoot}）${migNote}`]
+    : ['⚠️ 找不到 Arcrun repo，這一趟沒能複驗 migration 帶齊了沒'];
   ctx.installerSrcHash = installerSourceHash(join(REPO_ROOT, T.installer.cwd));
 
   const tomlPath = join(REPO_ROOT, T.installer.cwd, T.installer.config);
@@ -2901,22 +2906,7 @@ function installerSourceHash(installerDir) {
  *            「更新沒有政策？根本亂搞」
  *   ⇒ 三層都補了（動態收檔／輸出位置對上／指紋含它），這一站是第四層：**出貨前機械複驗**。
  */
-function assertMigrationsComplete(installerCwd, arcrunRoot) {
-  const migDir = join(arcrunRoot, 'kbdb', 'migrations');
-  if (!existsSync(migDir)) return ['找不到 Arcrun kbdb/migrations（跳過複驗）'];
-  const onDisk = readdirSync(migDir).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
-  const shipped = JSON.parse(readFileSync(join(installerCwd, 'migrations.json'), 'utf8'));
-  const missing = onDisk.filter((f) => !(shipped.source || []).includes(f));
-  if (missing.length) {
-    throw new Error(
-      `安裝器帶出去的 migration 少了 ${missing.length} 支：${missing.join('、')}\n` +
-        `         → 跑一次 \`ARCRUN_REPO_ROOT=<Arcrun> node installer/scripts/compile-migrations.mjs\` 再出貨。\n` +
-        `         🔴 少一支＝用戶的資料層停在舊世代，而 worker 是新的——` +
-        `那正是 2026-08-25 讓 leo 登不進自己知識庫的病（inkstone/Arcrun#159）。`,
-    );
-  }
-  return [`安裝器帶了全部 ${onDisk.length} 支 migration（${onDisk[0]} … ${onDisk[onDisk.length - 1]}）`];
-}
+// （函式本體搬到 migrations-source.mjs，與「讀哪份 Arcrun」同處，才能單測；inkstone/Arcrun#293 c18325）
 
 // ── wrangler.toml 的分段變數寫入（只在指定的 section 內動，不誤傷別段）──────
 function setTomlVar(toml, section, key, value) {

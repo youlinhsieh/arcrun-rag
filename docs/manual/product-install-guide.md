@@ -16,7 +16,7 @@
 | ingest 進 D1（機械、零 LLM） | km_wiki_ingest_drain（cron 慢推＋webhook delta） | ✅ rag_ingest workflow（Gitea push webhook 秒級觸發，事件驅動不輪詢） |
 | 關鍵字查詢 | ✅ | ✅ |
 | 知識圖譜查詢 | ✅（graph plugin＋workflow） | ✅ graph_neighbors workflow（圖隨檔案自動長：每檔一條 part_of 邊） |
-| 語意查詢 | ✅（leo21c 有 Vectorize＋Workers AI） | ⚠️ 本機不可用（無 Vectorize），**誠實降級** keyword＋capability_hint，不 crash；雲端版部署即有 |
+| 實體排重（同義詞歸一） | ✅（雲端有 Vectorize＋Workers AI） | ⚠️ 本機略過，不影響查詢（讀取走圖譜與知識卡，與向量無關） |
 | LLM Wiki 精耕（AI 讀了長 wiki） | CC／Claude 萃取（leo 的 CC 環境） | ✅ **rag_wiki_digest（Gemini）＋自動接鏈**：檔案 ingest 完自動長 wiki 摘要頁（預設開、可關，見 §5）——用戶不需要 CC |
 | 刪檔＝下架 | leo 手動清 | ✅ **G9 已實作**：資料夾刪檔 → 庫內 entries＋triplet 標 deprecated（append-only 不物理刪；graph 查詢自動略過） |
 | 管理 GUI | Mira console（leo21c） | ✅ 同一個 Admin Console 本機起（登入/總庫搜尋/駕駛艙/工作流頁） |
@@ -66,9 +66,9 @@ curl "http://127.0.0.1:8788/q/demo/graph_neighbors?node=knowledge-base&depth=2&t
 # → {"neighbors":[{"node":"採購作業辦法2",…},{"node":"新人入職指南",…},{"node":"資訊安全守則",…}]}
 #   ——圖譜隨你丟的檔案自動長出來
 
-# 語意查詢（本機誠實降級示範）
-curl "…/entries/search?q=請假&owner_id=demo&mode=semantic"
-# → {"requested_mode":"semantic","mode":"keyword","capability_hint":"語義查詢需先開 vectorize…"}
+# 關鍵字查詢
+curl "…/entries/search?q=請假&owner_id=demo"
+# → {"mode":"keyword",…}
 ```
 
 docx 實測：丟 `採購作業辦法.docx` → 自動轉 md 入庫、原檔進 `assets/originals/`（LFS 宣告），
@@ -115,7 +115,7 @@ removed 分支把該頁的 block entries、精耕 wiki entry、triplet 全標 `s
 
 ## 6. 已知限制（誠實清單）
 
-1. **語意查詢本機不可用**（Workers AI/Vectorize 綁真帳號）——降級行為正確；地端正式版等上游 Ollama/sqlite-vec 接縫（G2/G3）。
+1. **實體排重本機不可用**（Workers AI/Vectorize 綁真帳號）——略過不影響查詢；地端正式版等上游 Ollama/sqlite-vec 接縫（G2/G3）。
 2. **多人帳號＋庫級權限 Portal 未有**（上游 Arcrun#24/#25）；現為單人 admin console。
 3. ~~刪檔→deprecated 未實作~~ **G9 已實作（2026-07-13）**，見 §5.5；殘餘缺口＝keyword search 不過濾 deprecated（上游 KBDB 能力）。
 4. **原檔 LFS**：.gitattributes 宣告自動寫入，但 clone 未 `git lfs install` 時大檔仍走一般 blob（installer 已補 `git lfs install --local`；首輪 demo 的 docx 是一般 blob）。

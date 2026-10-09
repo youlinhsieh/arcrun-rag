@@ -82,6 +82,10 @@ type AccountSyncStatus struct {
 	// 資料夾卡、總覽卡都不是檔（`inkstone/InkStoneCo#143`：1 資料夾＋3 檔 ⇒ 4 張卡）。
 	CardsSentDate  string `json:"cards_sent_date,omitempty"`
 	CardsSentCount int    `json:"cards_sent_count"`
+
+	// Battery＝這台雲端的電池狀態（`inkstone/arcrun-rag#240` c18058，見 battery.go）。
+	// nil＝問不到（舊版雲端／認證不通）⇒ 畫面不顯示，不編數字。逐帳號各記各的。
+	Battery *Battery `json:"battery,omitempty"`
 }
 
 // RetiringStatus＝某個「已移除、雲端撤除進行中」資料夾的現況（arcrun-rag#46）。
@@ -264,6 +268,10 @@ const MaxSkippedListed = 20
 type ExtractFail struct {
 	Path  string `json:"path"`
 	Error string `json:"error"`
+	// Account＝這一筆是哪個知識庫的（cypher_url host，與 account_details 同一把 key）。
+	// inkstone/arcrun-rag#240：只有一個知識庫出錯時，畫面要能把錯誤歸到它自己的分頁。
+	// 舊版 status.json 沒有這欄＝空字串＝歸不到任何一個帳號。
+	Account string `json:"account,omitempty"`
 }
 
 // StatusFilePath 回傳狀態檔路徑：與 manifest 同目錄的 status.json。

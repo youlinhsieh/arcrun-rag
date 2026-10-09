@@ -19,6 +19,9 @@ VERSION="${VERSION:-$(./daemon-version.py --stamp)}"
 #   理由與格式見 changelog-section.sh。
 ./changelog-section.sh "$VERSION" --check
 
+# 🔴 畫面字數預算（inkstone/arcrun-rag#240 c18306）：超出就不准打包。
+./check-text-budget.sh
+
 BUILD_TIME="$(date '+%Y%m%d-%H%M')"
 LDFLAGS_VER="-X main.version=${VERSION} -X main.buildTime=${BUILD_TIME} -X arcrun-rag/collector.version=${VERSION} -X arcrun-rag/collector.buildTime=${BUILD_TIME}"
 export PATH="$PATH:$(go env GOPATH)/bin"

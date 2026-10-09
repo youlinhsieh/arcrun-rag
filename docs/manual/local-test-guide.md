@@ -18,7 +18,7 @@
 
 ## 1. 這是什麼
 
-arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：三模式查詢（關鍵字／語意／知識圖譜）＋ MCP。引擎是 [Arcrun](https://github.com/youlinhsieh/Arcrun)（開源工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
+arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：關鍵字查詢＋知識圖譜讀取＋ MCP。引擎是 [Arcrun](https://github.com/youlinhsieh/Arcrun)（開源工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
 
 ### 本機測試能看到什麼／看不到什麼（誠實對照表）
 
@@ -27,7 +27,7 @@ arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來
 | KBDB 知識庫（存文件、萬用表、triplet 圖資料） | ✅ | 本機 SQLite（miniflare 模擬 D1），資料落在你指定的 state 目錄 |
 | 關鍵字查詢（keyword） | ✅ | D1 LIKE，全功能 |
 | 知識圖譜查詢（graph，BFS 找 N 跳鄰居） | ✅ | 全鏈走通：cypher-executor → http_request WASM 零件 → KBDB → code 零件（QuickJS 沙箱）BFS |
-| 語意查詢（semantic） | ❌（優雅降級） | 需要 Workers AI + Vectorize，兩者都必須連真 Cloudflare 帳號。查詢**不會 crash**，會自動降級成關鍵字並回 `capability_hint` 誠實告知 |
+| 實體排重（Vectorize） | ❌（本機略過） | 只用來把同義的實體／關係詞歸一，需要 Workers AI + Vectorize，必須連真 Cloudflare 帳號；本機略過，不影響讀取（讀取走圖譜與知識卡，與向量無關） |
 | 工作流引擎（cypher-executor）＋同步查詢 `/q` | ✅ | 含 workflow 註冊、觸發、trace |
 | WASM 零件（TinyGo / QuickJS） | ✅ | repo 自帶編譯好的 `.wasm`，miniflare 跑得動，實測通過 |
 | 邏輯零件（if/switch/filter…13 個） | ✅ | 各自 `wrangler dev` 起來後，cypher 的 service binding 會自動連上（dev registry） |
@@ -180,7 +180,7 @@ curl -X POST http://127.0.0.1:8790/ -H 'Content-Type: application/json' \
 cat > $WORK/sample.md <<'EOF'
 # 測試知識庫文件
 
-arcrun-rag 是企業 RAG 知識庫產品，三模式查詢：關鍵字、語意、知識圖譜。
+arcrun-rag 是企業 RAG 知識庫產品，查詢走關鍵字與知識圖譜，不是向量知識庫。
 
 ## 部署模式
 
@@ -251,7 +251,7 @@ node $WORK/ingest-md.mjs $WORK/sample.md
 ingest 完成：2 成功 / 0 失敗（sample，owner=spike）
 ```
 
-### 4.3 查詢模式一＋二：keyword ✅／semantic 降級 ✅
+### 4.3 查詢模式一：keyword ✅
 
 ```bash
 # keyword（q 要 URL encode；「知識庫」= %E7%9F%A5%E8%AD%98%E5%BA%AB）
@@ -260,19 +260,9 @@ curl "http://127.0.0.1:8787/entries/search?q=%E7%9F%A5%E8%AD%98%E5%BA%AB&owner_i
 
 預期：`{"success":true,"entries":[...命中的 block...],"count":N,"mode":"keyword"}`。
 
-```bash
-# semantic（預期：不 crash、誠實降級）
-curl "http://127.0.0.1:8787/entries/search?q=%E7%9F%A5%E8%AD%98%E5%BA%AB&owner_id=spike&mode=semantic"
-```
+> Arcrun RAG 不是向量知識庫：沒有「語意查詢」這一條讀取路徑。向量只用來把同義的實體／關係詞排重歸一，本機沒有 Vectorize 時略過，不影響查詢。
 
-預期回應含（這就是「本機語意查詢不可用」的正確行為）：
-
-```json
-{"success":true, "mode":"keyword", "requested_mode":"semantic",
- "capability_hint":"語義查詢需先開 vectorize（embed 模組）。..."}
-```
-
-### 4.4 查詢模式三：graph（全鏈工作流）
+### 4.4 查詢模式二：graph（全鏈工作流）
 
 先灌圖資料（triplet 萬用表，走 API）：
 
@@ -430,7 +420,7 @@ curl "http://127.0.0.1:8788/q/spike/graph_neighbors?node=Arcrun&depth=2&template
  "count":4}}
 ```
 
-走到這裡＝**三模式全部驗完**：keyword ✅、semantic 誠實降級 ✅、graph 全鏈（工作流引擎＋兩個 WASM 零件）✅。
+走到這裡＝**兩種讀取模式全部驗完**：keyword ✅、graph 全鏈（工作流引擎＋兩個 WASM 零件）✅。
 
 ### 4.5（選配）用 acr CLI 部署工作流
 
@@ -475,7 +465,7 @@ curl "http://127.0.0.1:8788/q/spike/spike_hello_local?text=arcrun"
    lockfile 釘的舊版 workerd（1.20250906.0）在本機 dev 會 crash-restart。
    → 正解：cypher-executor 用**全域** `wrangler dev`（4.98+ 實測正常）。其他三個目錄用 `npx wrangler dev` 沒問題。
 
-3. **semantic 查詢回 keyword 結果**——不是 bug，是本機的預期行為（無 Vectorize/AI binding，優雅降級，回應裡有 `capability_hint`）。
+3. **本機沒有實體排重**——預期行為（無 Vectorize/AI binding，略過排重，不影響 keyword／graph 查詢）。
 
 4. **cron 工作流不會自己跑**——miniflare 不自動 tick。cypher 用 `--test-scheduled` 起，然後手動觸發：
    ```bash

@@ -73,16 +73,15 @@ HITS=$(grep -rin --include="*.md" -- "$QUERY" "$WIKI_DIR" 2>/dev/null | head -12
 # 🔴 grep 零命中時**不能靜默退出**——那正是今天失敗的模式（2026-07-21）：
 #    grep 查不到 → 以為 wiki 沒記載 → 結論「這件事沒查過」。
 #    但 grep 只認字面，查不到往往只代表「沒猜中用詞」。
-#    → 零命中反而是**最該改用語意搜尋**的時刻，必須出聲。
+#    → 零命中反而是**最該改走圖譜**的時刻，必須出聲。
 if [ -z "$HITS" ]; then
   echo "════════════════════════════════════════════════"
   printf '🔍 grep 在 wiki 找不到「%s」——但這**不代表沒記載**\n' "$QUERY"
   echo "════════════════════════════════════════════════"
-  echo "grep 只認字面，查不到通常只是「沒猜中用詞」。**改用語意搜尋再確認一次**："
-  echo "   kbdb_search(q=\"<用一句話描述你要找什麼>\", mode=\"semantic\")"
+  echo "grep 只認字面，查不到通常只是「沒猜中用詞」。**改走知識圖譜再確認一次**："
   echo "   不知道該查哪個庫 → kbdb_get_map()｜要沿關係展開 → kbdb_graph_neighbors()"
   echo ""
-  echo "實例：查「CF 上的 git 託管」時 grep 全零命中，語意搜尋第一筆就命中"
+  echo "實例：查「CF 上的 git 託管」時 grep 全零命中，沿圖譜很快就命中"
   echo "（Cloudflare Artifacts >> 若提供 git 倉庫則可取代 >> Gitea，負責人 15 天前就記了）。"
   echo ""
   exit 0
@@ -103,10 +102,10 @@ echo "   • wiki 沒答案才值得翻原文——翻完若得到新結論，**
 echo ""
 echo "🔎 以上是 **grep（最弱的查法）** 的結果，只認字面，且搜尋詞是從你的指令**猜**出來的"
 echo "   （很可能太籠統而命中一堆無關的，同時漏掉真正的主題詞）。"
-echo "   **重要判斷一律補一次語意搜尋**——它不需要你猜對用詞："
-echo "      kbdb_search(q=\"<一句話描述你要找什麼>\", mode=\"semantic\")"
+echo "   **重要判斷一律補走一次知識圖譜**——它不需要你猜對用詞："
+echo "      kbdb_get_map() → kbdb_graph_neighbors()"
 echo "   實例：查「CF 的 git 託管」時 grep 猜到的詞是 cloudflare → 命中 12 處全無關、"
-echo "   真正的答案（Artifacts）一筆沒撈到；語意搜尋第一筆就命中。"
+echo "   真正的答案（Artifacts）一筆沒撈到；沿圖譜很快就命中。"
 echo ""
 
 exit 0

@@ -224,7 +224,6 @@ cat <<EOF
   4. API 直查：
      keyword : curl "$KBDB_BASE/entries/search?q=<關鍵字>&owner_id=$NS"
      graph   : curl "$CYPHER_BASE/q/$NS/graph_neighbors?node=knowledge-base&depth=2&template=triplet&namespace=$NS&kbdb_base=$KBDB_BASE"
-     semantic: 加 &mode=semantic（本機無 Vectorize → 誠實降級 keyword＋capability_hint）
   5. LLM 精耕（Workers AI）：
      自動接鏈（AUTO_DIGEST）目前＝$AUTO_DIGEST
        開＝每檔 ingest 完自動長出 wiki-<頁名> 精耕頁（每檔一次 AI 呼叫）。

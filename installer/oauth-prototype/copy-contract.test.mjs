@@ -93,3 +93,13 @@ if (!postMeta.includes('library')) {
 }
 if (wfFail) { console.error(`\n${wfFail} 項 workflows.json 結構違反——拒絕部署。`); process.exit(1); }
 console.log('✅ workflows.json 結構閘通過（rag_ingest_card library 欄位在 blocks 與 post_block 均存在）');
+
+// ── 畫面字數預算（inkstone/arcrun-rag#240 c18316）：與小幫手共用 schemas/text-budget.json ──
+// 用真的 installPage()／INSTALL_SCRIPT／installWarnings() 在瀏覽器畫出結果頁各種狀態，量看得到的字。
+// 沒裝 playwright 時它自己跳過（exit 0），有裝就是出貨閘。
+import { spawnSync } from 'node:child_process';
+{
+  const r = spawnSync(process.execPath, ['--experimental-sqlite', new URL('./check-text-budget.mjs', import.meta.url).pathname], { encoding: 'utf8' });
+  process.stdout.write(r.stdout || '');
+  if (r.status !== 0) { process.stderr.write(r.stderr || ''); console.error('❌ 安裝器畫面字數超出預算——拒絕部署。'); process.exit(1); }
+}

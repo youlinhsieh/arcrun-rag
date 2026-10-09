@@ -114,7 +114,13 @@ async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl,
     if (!Array.isArray(batch)) {
       throw new Error(`讀 ${owner}/${repo}#${issue} 的留言：回應不是陣列（第 ${page} 頁）`);
     }
-    out.push(...batch);
+    // Gitea 1.x 的 issue comments 端點不理 page 參數：每一頁都回「全部」留言
+    // （2026-10-09 實測 #202 有 51 則，page=1/2/3 都回同樣 51 則）⇒ 這頁的
+    // 留言若全都已經看過，就是讀完了；只加新的，避免重複計算與誤判肥大。
+    const seen = new Set(out.map((c) => c.id));
+    const fresh = batch.filter((c) => !seen.has(c.id));
+    out.push(...fresh);
+    if (fresh.length === 0) return out; // 沒有新留言 ⇒ 已讀完（含不分頁的伺服器）
     if (batch.length < pageSize) return out; // 這頁沒滿 ⇒ 已經是最後一頁
   }
   throw new Error(`讀 ${owner}/${repo}#${issue} 的留言超過 ${maxPages} 頁還沒讀完——票異常肥大，fail-closed 不放行。`);

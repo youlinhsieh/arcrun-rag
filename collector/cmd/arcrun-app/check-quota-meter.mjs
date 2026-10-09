@@ -98,7 +98,7 @@ const STATE = {
   geminiKey: '',
   logFolder: '/tmp',
   engineTrouble: false,
-  accounts: [{ name: '我的知識庫', host: 'youlin-hsieh-dev', email: 'a@b.c', folders: [], cloudVerFresh: true, cloudVerKnown: true, cloudVerMine: '1.4.73' }],
+  accounts: [{ name: '我的知識庫', host: METER.account, email: 'a@b.c', folders: [], cloudVerFresh: true, cloudVerKnown: true, cloudVerMine: '1.4.73' }],
   steps: [{ state: 'done', title: '看守資料夾', meta: '' }],
   skipped: null,
   progress: { total: 550, done: 138, pending: 412, cantSync: 0, groups: [] },
@@ -146,9 +146,10 @@ async function open(browser, state) {
     } } };
   }, state);
   await page.goto(`http://127.0.0.1:${PORT}/index.html`);
-  // 🔴 開起來的預設頁是「App 界面」，不是首頁——側邊欄要**真的點一下**才會換頁。
-  // 這正是「用瀏覽器實看」與「抓 HTML 找字串」的差別：靜態 HTML 裡連首頁的骨架都沒有。
-  await page.locator('[data-p="home"]').click();
+  // 🔴 #240 c18254：用量明細搬進帳號分頁的「用量」分頁（首頁只放跨帳號的東西），
+  // 側邊欄要**真的點一下**才會換頁——這正是「用瀏覽器實看」與「抓 HTML 找字串」的差別。
+  await page.locator('#nav .nav.acct[data-p="lib:0"]').click();
+  await page.locator('[data-libtab="usage"]').click();
   return page;
 }
 
@@ -163,7 +164,7 @@ try {
   const card = page.locator('[data-quota-meter="1"]');
   await card.waitFor({ timeout: 10_000 });
 
-  check(await card.isVisible(), '「今天的用量」那張卡常駐在首頁');
+  check(await card.isVisible(), '「今天的用量」那張卡在這個帳號的「用量」分頁（只有它是用量最吃緊的那一台才畫）');
 
   // 只數用量表那一區的行（`.mbatch` 裡的進度條也用同一個 .mrow 版面，不算在內）
   const rows = card.locator('.meter > .mrow');
@@ -186,7 +187,7 @@ try {
   check(Math.abs(wPct - 90) <= 2, '上傳的進度條長度跟著那個數字走', `量到 ${wPct}%，數字是 90%`);
 
   const batch = (await card.locator('.mbatch').innerText()).replace(/\s+/g, ' ').trim();
-  check(batch.includes('1/5') && batch.includes('5 天'), '「這批還要幾天」是 1/5 的形狀', `→ ${batch}`);
+  check(batch.includes('1/5'), '「這批還要幾天」是 1/5 的形狀', `→ ${batch}`);
   check(batch.includes('412'), '講得出還有幾張卡排隊中');
 
   shot = join(tmpdir(), 'arcrun-209-quota-meter.png');
@@ -194,8 +195,8 @@ try {
 
   // ── 兩顆按鈕真的按一次 ──────────────────────────────────────────────
   console.log('② 付費那條路點得下去（真的按，不是看 HTML）');
-  await card.getByText('怎麼升級付費').click();
-  await card.getByText('額度怎麼算').click();
+  await card.getByRole('button', { name: '升級' }).click();
+  await card.getByRole('button', { name: '額度怎麼算' }).click();
   const opened = await page.evaluate(() => window.__opened || []);
   check(opened.length === 2, '兩顆按鈕都按得動', `開了 ${opened.length} 個網址`);
   check(opened.some((u) => u.includes('/docs/use/quota/#')),
@@ -208,7 +209,7 @@ try {
   blown.quotaMeter = { ...METER, write_exhausted: true, write_used_rows: 100000, batch_day_no: 1 };
   blown.quota = {
     kind: 'd1_write',
-    headline: '你的雲端知識庫今天的免費寫入額度用完了',
+    headline: '⏸ 寫入額度用完 · 08:00 恢復',
     usage: 'Cloudflare 免費方案的資料庫寫入上限是每天 10 萬列，今天已經用到上限（這不是小幫手或你的檔案壞掉）',
     guarantee: '台北時間明天早上 8:00 恢復，恢復後小幫手會自動接著傳，你不用做任何事',
     exit_options: '升級 Cloudflare Workers 付費方案（每月 5 美元起）就沒有每日上限',
@@ -217,10 +218,12 @@ try {
   page = await open(browser, blown);
   await page.locator('[data-quota-meter="1"]').waitFor({ timeout: 10_000 });
 
+  await page.locator('[data-libtab="sync"]').click();
   const old = page.locator('[data-quota-kind="d1_write"]');
   check(await old.isVisible(), '#197 那張「額度用完了」的卡還在，沒有被新的用量表取代');
-  check((await old.innerText()).includes('8:00'), '它照樣講得出幾點恢復');
+  check((await old.innerText()).includes('08:00'), '它照樣講得出幾點恢復（標題一行）');
 
+  await page.locator('[data-libtab="usage"]').click();
   const meterRows = page.locator('[data-quota-meter="1"] .meter > .mrow');
   const upBad = await meterRows.nth(0).locator('.mn.bad').count();
   const readBad = await meterRows.nth(1).locator('.bad').count();
@@ -232,6 +235,7 @@ try {
   console.log('④ 舊版雲端沒回報每卡成本（算不出來的那一格）');
   const unknown = JSON.parse(JSON.stringify(STATE));
   unknown.quotaMeter = {
+    account: METER.account,
     write_known: false,
     write_note: '這台雲端還沒有回報「一張卡要花多少額度」，所以算不出用量——更新雲端之後就會有',
     read_limit_rows: 5000000, read_exhausted: false, read_note: '搜尋用的是另一份額度',
@@ -242,7 +246,7 @@ try {
   const c2 = page.locator('[data-quota-meter="1"]');
   await c2.waitFor({ timeout: 10_000 });
   const txt = (await c2.innerText()).replace(/\s+/g, ' ').trim();
-  check(txt.includes('算不出用量'), '畫面直說算不出來', `→ ${txt.slice(0, 60)}…`);
+  check(txt.includes('上傳 —'), '算不出來就顯示「—」，不放句子', `→ ${txt.slice(0, 60)}…`);
   check(!/\d+\/100000/.test(txt), '🔴 沒有編一個假的用量數字出來');
   check(!/\d+\/\d+\s*$/.test(txt.replace('5000000', '')), '也沒有編一個假的天數');
   await page.close();

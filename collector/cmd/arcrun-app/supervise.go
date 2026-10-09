@@ -189,7 +189,20 @@ func collectorFailure() (msg string, restarts int, looping bool) {
 		return "", 0, false
 	}
 	st := sup.Status()
-	return st.LastError, st.Restarts, st.Restarts >= crashLoopThreshold
+	return st.LastError, st.Restarts, crashLooping(st.State, st.Restarts)
+}
+
+// crashLooping 判「現在是不是一直啟動失敗」。
+//
+// 🔴 inkstone/arcrun-rag#240：Restarts 是**累計**次數，從不歸零。以前只看它，
+// 引擎被更新／重開結束過三次就永遠「一直啟動失敗」——即使現在正常看守中，
+// 首頁頂端仍是紅字，使用者以為整台壞了。⇒ 已經跑起來（看守中／同步中）
+// 就是好的；只有還在起不來（Starting／Error／Stopped）時才算。
+func crashLooping(state supervisor.State, restarts int) bool {
+	if state == supervisor.StateWatching || state == supervisor.StateSyncing {
+		return false
+	}
+	return restarts >= crashLoopThreshold
 }
 
 // crashLoopThreshold＝重起幾次算「一直失敗」。3 次以內可能只是換設定或暫時性錯誤。

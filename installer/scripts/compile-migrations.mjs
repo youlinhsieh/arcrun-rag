@@ -44,6 +44,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const outPath = join(here, '..', 'oauth-prototype', 'migrations.json');
 
 function findArcrunRoot() {
+  // 出貨設了 ARCRUN_SOURCE_WORKTREE 時，編譯與 ship.mjs 的 migration 閘必須讀同一份（Arcrun#293 c18325）
+  if (process.env.ARCRUN_SOURCE_WORKTREE) return process.env.ARCRUN_SOURCE_WORKTREE;
   if (process.env.ARCRUN_REPO_ROOT) return process.env.ARCRUN_REPO_ROOT;
   // 常見相對位置：arcrun-rag 與 Arcrun 並列
   for (const c of [join(here, '..', '..', '..', 'Arcrun'), join(here, '..', '..', '..', '..', 'Arcrun')]) {

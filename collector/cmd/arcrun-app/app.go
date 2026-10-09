@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,6 +98,8 @@ type syncStatus struct {
 	LastActivityAt     string `json:"last_activity_at,omitempty"`
 	LastActivityOK     int    `json:"last_activity_ok"`
 	LastActivityFailed int    `json:"last_activity_failed"`
+	// 失敗清單（路徑＋白話原因＋所屬知識庫）——#240 用它把錯誤歸到出錯的那個帳號。
+	Failures []collector.ExtractFail `json:"failures,omitempty"`
 	// G-6.2（2026-08-06）：collector 讀不了、因此整個跳過的檔案。
 	// 以前這些檔在 scan 的白名單閘就無聲蒸發，使用者只看到「什麼都沒發生」。
 	SkippedDocs       []skippedDoc `json:"skipped_docs,omitempty"`
@@ -325,6 +328,175 @@ type UIAccount struct {
 	CloudVerMine   string `json:"cloudVerMine,omitempty"`   // 這個知識庫目前的版本（可能連 Known=false 時也有值）
 	CloudVerLatest string `json:"cloudVerLatest,omitempty"` // 已知的最新版
 	Email          string `json:"email,omitempty"`          // 供「前往安裝頁更新」預填帳號（同 portal 版本卡的做法）
+	// Trouble＝**只屬於這個知識庫**的問題（inkstone/arcrun-rag#240）。nil＝沒有。
+	// 畫在它自己的分頁與側欄的小紅點上，不再混進全站頁首。
+	Trouble *UITrouble `json:"trouble,omitempty"`
+	// Status＝**這個知識庫自己的**動態（inkstone/arcrun-rag#240 c18000：頁面第一行是帳號名稱，
+	// 它的狀態在名稱底下）。別的知識庫的動態不會出現在這裡。
+	Status UIAccountStatus `json:"status"`
+	// Battery＝**這個知識庫自己那台雲端**的剩餘用量（inkstone/arcrun-rag#240 c18058／c18101，母票 Arcrun#293）。
+	// nil＝問不到雲端（舊版雲端）才不顯示；付費／放行＝永遠滿格。
+	Battery *UIBattery `json:"battery,omitempty"`
+	// Progress＝**這個知識庫自己**的檔案進度（把它看守的資料夾逐個加總）。
+	// 帳號頁的「同步」分頁只講自己的數字，不拿全站總量冒充（inkstone/arcrun-rag#240 c18254）。
+	// nil＝collector 還沒回報過它的任何資料夾。
+	Progress *UIProgress `json:"progress,omitempty"`
+}
+
+// UIBattery＝一個知識庫旁邊「今天剩多少用量」的表示。判準全在雲端（battery.state），這裡只轉成畫面用的字。
+//
+// leo 2026-10-08：這是「用量」不是「電量」——手機電量只是比喻，畫面上不能出現電量／電池字樣，
+// 也不能畫一顆電池；用自己的形式（幾格量表＋%）。付費（主人放行／關掉剎車）＝永遠滿格。
+type UIBattery struct {
+	Percent float64 `json:"percent"`           // 剩餘用量 %（0–100）；付費＝100
+	Cells   int     `json:"cells"`             // 量表亮幾格（共 CellsTotal 格）
+	Total   int     `json:"total"`             // 量表總格數
+	Paid    bool    `json:"paid"`              // 付費／放行：永遠滿格
+	Level   string  `json:"level"`             // ok／warn（≤20%）／crit（≤10%，省著用中）
+	Line    string  `json:"line"`              // 「剩餘用量 80%」
+	Warning string  `json:"warning,omitempty"` // 到 20%／10%／0 的那句話；沒到就空
+	Saver   bool    `json:"saver"`             // 小幫手正在省著用（放慢、延後補送）
+	// PctKnown＝雲端有沒有交來剩餘 %。付費帳號目前雲端不帶 %（remaining_percent=null），
+	// 此時畫面只畫 ∞、不畫格數與 %（inkstone/arcrun-rag#240 c18254：不替它編一個數字）。
+	PctKnown bool `json:"pctKnown"`
+	// DismissKey＝這則用量警告的穩定鍵（原因，不含百分比）；前端「×」拿它呼叫 Dismiss。
+	DismissKey string `json:"dismissKey,omitempty"`
+}
+
+const usageCells = 5
+
+// accountBattery 把雲端交來的狀態轉成畫面用的「剩餘用量」。
+// 付費（nuclear）＝永遠滿格；查不到（nil／沒有 %）＝不顯示，不替它編一個。
+// 警告文字一律在這裡寫（講「用量」、講會發生什麼、去哪處理），不轉述雲端原文。
+func accountBattery(b *collector.Battery) *UIBattery {
+	if b == nil {
+		return nil
+	}
+	if b.State == collector.BatteryNuclear {
+		// 付費／放行：不剎、不警告、不換鏽色，畫面是 ∞。雲端若有交免費額度剩餘 %，格數與 % 照畫。
+		u := &UIBattery{Total: usageCells, Paid: true, Level: "ok", Line: "不限用量"}
+		if b.RemainingPercent != nil {
+			u.Percent, u.Cells = *b.RemainingPercent, usageCellsFor(*b.RemainingPercent)
+			u.PctKnown = true
+			u.Line = fmt.Sprintf("不限用量・免費額度今日剩 %s%%", trimPercent(u.Percent))
+		}
+		return u
+	}
+	if b.RemainingPercent == nil {
+		return nil
+	}
+	pct := *b.RemainingPercent
+	u := &UIBattery{Percent: pct, Cells: usageCellsFor(pct), Total: usageCells, Level: "ok", Saver: b.SavesPower(), PctKnown: true}
+	u.Line = fmt.Sprintf("今日剩餘用量 %s%%", trimPercent(pct))
+	switch {
+	case pct <= 0:
+		u.Level = "crit"
+		u.Warning = "今天的用量已經用完：這個知識庫暫時不收新資料，明天用量重新計算後會自動接著送。想現在就繼續，請到「管理」頁放行，或升級付費方案。"
+	case b.SavesPower():
+		u.Level = "crit"
+		u.Warning = fmt.Sprintf("今日用量只剩 %s%%：小幫手已改成省著用——每次少送一些、放慢節奏、先不做補送，把用量留給日常操作。想不受限制，請到「管理」頁放行，或升級付費方案。", trimPercent(pct))
+	case b.Warn:
+		u.Level = "warn"
+		u.Warning = fmt.Sprintf("今日用量剩 %s%%：快用完時小幫手會自動放慢；用完後雲端會暫時不收新資料。想不受限制，請到「管理」頁放行，或升級付費方案。", trimPercent(pct))
+	}
+	return u
+}
+
+// usageCellsFor：一格＝20%，向上取整（設計稿 Meter.dc.html）。
+func usageCellsFor(pct float64) int {
+	cells := int(math.Ceil(pct / (100.0 / usageCells)))
+	if cells < 0 {
+		return 0
+	}
+	if cells > usageCells {
+		return usageCells
+	}
+	return cells
+}
+
+// accountProgress 把這個知識庫看守的資料夾逐個加總成它自己的檔案進度。
+// 一個資料夾都沒有 collector 回報 ⇒ nil（不編 0）。
+func accountProgress(sync syncStatus, folders []string) *UIProgress {
+	var sum collector.SyncProgress
+	seen := false
+	for _, f := range folders {
+		if fp, ok := sync.FolderProgress[f]; ok {
+			sum = sum.Add(fp)
+			seen = true
+		}
+	}
+	if !seen {
+		return nil
+	}
+	return &UIProgress{Total: sum.Total, Done: sum.Done, Pending: sum.Pending, CantSync: sum.Stuck + sum.Unreadable}
+}
+
+func trimPercent(p float64) string {
+	if p == float64(int(p)) {
+		return fmt.Sprintf("%d", int(p))
+	}
+	return fmt.Sprintf("%.1f", p)
+}
+
+// UIAccountStatus＝一個知識庫此刻的動態一句話。Syncing＝引擎正在處理它。
+type UIAccountStatus struct {
+	Syncing bool   `json:"syncing"`
+	Line    string `json:"line"`
+}
+
+// accountStatus 只回答「這個知識庫（host）現在在幹嘛」。
+// 引擎正在處理別的知識庫時，這裡只說「現在沒有在處理這個知識庫」，不轉述別人的動態。
+func accountStatus(s syncStatus, host string, engineSyncing bool, now time.Time) UIAccountStatus {
+	if engineSyncing && s.InRound != nil && s.InRound.Account == host {
+		// label 回空字串：頁面第一行已經是帳號名稱，不必在狀態句裡再括號一次。
+		return UIAccountStatus{Syncing: true, Line: "同步中… " + syncingSub(s.InRound, now, func(string) string { return "" })}
+	}
+	if engineSyncing && s.InRound != nil && s.InRound.Account != "" {
+		return UIAccountStatus{Line: "看守中 · 目前沒有在處理這個知識庫"}
+	}
+	// 引擎在跑但不知道是在處理誰（InRound 還沒寫）⇒ 不替任何知識庫宣稱「同步中」
+	// （c18001：三個帳號全顯示同步中就是這樣來的）。
+	return UIAccountStatus{Line: "看守中 · 資料夾有變動就會自動整理"}
+}
+
+// UITrouble＝一個知識庫現在送不上去的事：多少份、真正的原因（原樣取自 collector）。
+type UITrouble struct {
+	Count  int    `json:"count"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+}
+
+// accountTrouble 從 status.json 的失敗清單挑出屬於 host 這個知識庫的那幾筆。
+// 只認 collector 標上去的 Account，**不從錯誤文字猜**——歸不到的（舊版 status.json）
+// 留在全站那一句（見 describeStatus 的 unattributed）。
+func accountTrouble(failures []collector.ExtractFail, host string) *UITrouble {
+	n := 0
+	detail := ""
+	for _, f := range failures {
+		if f.Account == "" || f.Account != host {
+			continue
+		}
+		n++
+		if detail == "" {
+			detail = f.Error
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return &UITrouble{Count: n, Title: fmt.Sprintf("這個知識庫有 %d 份現在送不上去", n), Detail: detail}
+}
+
+// splitFailures 把失敗清單分成「歸得到帳號」與「歸不到」兩堆的件數。
+func splitFailures(failures []collector.ExtractFail) (attributed, unattributed int) {
+	for _, f := range failures {
+		if f.Account == "" {
+			unattributed++
+		} else {
+			attributed++
+		}
+	}
+	return
 }
 type UIState struct {
 	Version   string      `json:"version"`
@@ -361,6 +533,9 @@ type UIState struct {
 	// ——算式只住 collector/quotameter.go 一個接縫（同 ClassifyFailure 的慣例）。
 	// nil＝一個帳號都還沒設定好，前端不畫這張卡。
 	QuotaMeter *collector.QuotaMeter `json:"quotaMeter"`
+
+	// Stalls＝同一個原因讓多份檔案停工的卡片（inkstone/arcrun-rag#240 c18242，見 stalls.go）。
+	Stalls []UIStall `json:"stalls"`
 }
 
 // UISkipped＝首頁那張「這些檔案現在還處理不了」的卡。
@@ -378,6 +553,7 @@ type UISkipped struct {
 	Files []string `json:"files"` // 「舊版報告.doc（舊版 Word）」
 	More  int      `json:"more"`  // 沒列出來的還有幾個
 	Other string   `json:"other"` // 非文件檔的一行說明（沒有就空字串）
+	DismissKey string `json:"dismissKey,omitempty"`
 }
 
 // UIProgress＝首頁「你的檔案」那張卡（t210，2026-08-08，取代 08-06 的逐檔白話翻譯）。
@@ -583,6 +759,7 @@ func (a *App) GetState() UIState {
 		}
 	}
 
+	engineSyncing := collectorAlive() && collectorSyncing()
 	for i, acc := range cfg.Accounts {
 		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email}
 		for _, f := range acc.WatchFolders {
@@ -616,7 +793,15 @@ func (a *App) GetState() UIState {
 			ui.CloudVerStale = accSt.CloudUpdateStale
 			ui.CloudVerMine = accSt.CloudVersion
 			ui.CloudVerLatest = accSt.CloudLatest
+			ui.Battery = accountBattery(accSt.Battery) // #240 c18058：只取這個帳號自己的
 		}
+		// c18328：使用者剛動過手問到的雲端當下用量，優先於 status.json 上一輪留下的舊值
+		if lb := liveBatteryFor(ui.Host); lb != nil {
+			ui.Battery = accountBattery(lb)
+		}
+		ui.Progress = accountProgress(sync, acc.WatchFolders)
+		ui.Trouble = accountTrouble(sync.Failures, ui.Host)
+		ui.Status = accountStatus(sync, ui.Host, engineSyncing, time.Now())
 		st.Accounts = append(st.Accounts, ui)
 	}
 
@@ -636,11 +821,14 @@ func (a *App) GetState() UIState {
 		q.Account = accountLabel(st.Accounts, q.Account)
 		st.Quota = &q
 	}
+	st.Stalls = uiStalls(cfg)
 	st.QuotaMeter = sync.QuotaMeter // #209：常駐用量表（collector 已算好，這裡不重算）
 	// 引擎有問題才把「回報問題」卡叫出來（含記錄檔路徑）。
 	// 沒事時不顯示——否則「哪裡看 log」會變成常駐噪音，真出事時反而沒人看。
 	st.EngineTrouble = !collectorAlive()
 	st.LogFolder = appDir()
+	applyDismissals(&st) // c18340：已關閉／已回報的警示不再亮，重開 App 仍不亮
+	compactUI(&st) // 字數預算：回給前端的字串一律收進預算（textbudget.go）
 	return st
 }
 
@@ -711,6 +899,12 @@ func describeStatus(s syncStatus) (syncing bool, big, sub string) {
 	if s.ExtractorError != "" && !s.ExtractorOK {
 		return false, "需要你處理一下", "⚠ " + s.ExtractorError
 	}
+	big, sub = watchingSummary(s)
+	return false, big, sub
+}
+
+// watchingSummary＝「看守中」那一行與下面的小字（拆出來為了能單獨測，不經引擎狀態）。
+func watchingSummary(s syncStatus) (big, sub string) {
 	parts := []string{}
 	if t, err := time.Parse(time.RFC3339, s.LastSync); err == nil {
 		parts = append(parts, "上次檢查 "+t.Local().Format("15:04"))
@@ -725,14 +919,36 @@ func describeStatus(s syncStatus) (syncing bool, big, sub string) {
 		if s.LastActivityOK > 0 {
 			parts = append(parts, fmt.Sprintf("%s已整理 %d 份", when, s.LastActivityOK))
 		}
+		// 🔴 inkstone/arcrun-rag#240：失敗歸得到哪個知識庫，就**不**在全站頁首喊
+		//    「N 份失敗」——那會讓人以為每個知識庫都出錯（實況只有 geek6688）。
+		//    頁首只留「有 K 個知識庫要處理」＋指路；細節在各自的分頁。
+		//    歸不到帳號的（舊版 status.json）才維持原本那句。
 		if s.LastActivityFailed > 0 {
-			parts = append(parts, fmt.Sprintf("⚠ %d 份失敗", s.LastActivityFailed))
+			_, unattr := splitFailures(s.Failures)
+			if len(s.Failures) == 0 || unattr > 0 {
+				parts = append(parts, fmt.Sprintf("⚠ %d 份失敗", s.LastActivityFailed))
+			}
 		}
 	}
-	if len(parts) == 0 {
-		return false, "看守中 · 資料夾有變動就會自動整理", "還沒有同步紀錄"
+	if n := troubledAccountCount(s.Failures); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d 個知識庫要處理（到該知識庫的頁面看原因）", n))
 	}
-	return false, "看守中 · 資料夾有變動就會自動整理", strings.Join(parts, " · ")
+	big = "看守中 · 資料夾有變動就會自動整理"
+	if len(parts) == 0 {
+		return big, "還沒有同步紀錄"
+	}
+	return big, strings.Join(parts, " · ")
+}
+
+// troubledAccountCount＝失敗清單裡涉及幾個不同的知識庫（只算歸得到的）。
+func troubledAccountCount(failures []collector.ExtractFail) int {
+	seen := map[string]bool{}
+	for _, f := range failures {
+		if f.Account != "" {
+			seen[f.Account] = true
+		}
+	}
+	return len(seen)
 }
 
 func accountName(a accountCfg) string {

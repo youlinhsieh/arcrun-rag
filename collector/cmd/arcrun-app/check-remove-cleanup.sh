@@ -67,6 +67,10 @@ addEventListener('DOMContentLoaded', async () => {
   const nav = [...document.querySelectorAll('.nav')].find((b) => (b.dataset.p || '').startsWith('lib:'));
   if (nav) nav.click(); else location.hash = '';
   await sleep(300);
+  // #240 c18254：資料夾在帳號頁的「資料夾」分頁（使用者要多點這一下）
+  const ft = document.querySelector('[data-libtab="folders"]');
+  if (ft) ft.click();
+  await sleep(300);
 
   const rm = document.querySelector('[data-rm]');
   say('有移除按鈕', !!rm);

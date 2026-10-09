@@ -68,6 +68,8 @@ type QuotaNotice struct {
 	// （與 AccountSyncStatus 同一個 accHost），App 端可選擇性換成使用者看得懂的暱稱
 	// （accountName／accountLabel），前端只負責畫，不重新判斷。
 	Account string `json:"account,omitempty"`
+	// DismissKey＝這則通知的穩定鍵（種類＋帳號＋恢復日期），App 端「×」關閉用（#240 c18340）。
+	DismissKey string `json:"dismiss_key,omitempty"`
 }
 
 // Combined 把三句話接成一句完整訊息（給只有單一 error 欄位可用的地方，如 DirectResult.Error）。

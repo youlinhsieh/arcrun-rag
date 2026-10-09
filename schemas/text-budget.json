@@ -1,0 +1,12 @@
+{
+  "_doc": "畫面字數預算的唯一一份（小幫手、安裝器共用；規則本體見 InkStoneCo wiki「說明文字代表設計不良」字數預算節）。檢查腳本與 Go 常數都從這裡來或對照這裡，不准各寫一套。",
+  "count": "字數＝去掉空白與「·」之後的字元數（⏸ 額度用完 · 08:00 恢復 · 排隊 8717 算 18）",
+  "button": 4,
+  "label": 6,
+  "title": 20,
+  "detailLines": 3,
+  "detailLineChars": 20,
+  "hover": 25,
+  "hoverSentences": 1,
+  "forbidPunct": "。，；"
+}

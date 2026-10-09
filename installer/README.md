@@ -64,7 +64,7 @@ deploy-all.mjs（Builds 容器內；多由按鈕開通資源後轉交）：
 | `D1_DATABASE_ID` | 建議 | 按鈕開通的 arcrun-kbdb D1 id（注入 kbdb toml） |
 | `KV_<BINDING>` ×9 | 是 | 9 把 KV 的 namespace id（`KV_WEBHOOKS`、`KV_CREDENTIALS_KV` …，binding 名見 deploy.ts `REQUIRED_KV_NAMESPACES`） |
 | `ARCRUN_REPO_ROOT` | 選配 | Arcrun 部署物 repo 根；不設則自動偵測 |
-| `KBDB_EMBED` | 選配 | `true` → 開語義查詢（取消 kbdb vectorize/ai 註解） |
+| `KBDB_EMBED` | 選配 | `true` → 開實體排重（同義實體／關係詞歸一；取消 kbdb vectorize/ai 註解）。不是語意搜尋，AI 讀取與向量無關 |
 | `DRY_RUN` | 選配 | `true` → 只印部署清單不真部署（離線驗收） |
 
 安裝器 worker（`wrangler.jsonc` vars + Deploy 按鈕 secrets 欄）：

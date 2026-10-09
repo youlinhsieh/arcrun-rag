@@ -61,6 +61,11 @@ type ManifestEntry struct {
 	// 之後就是這張卡真的太大。只看錯誤原文分不出是哪一種——要知道**當時打的是哪一版雲端**，
 	// 才能做到「舊雲端造成的暫停，雲端更新後自己再試一次；新雲端上還撞牆就照舊暫停，不反覆燒額度」。
 	FailCloudVersion string `json:"fail_cloud_version,omitempty"`
+	// FailLintRev＝最後一次失敗時，本機品質閘的規則版本（0＝記下來之前的舊版）。
+	// 為什麼要記（inkstone/arcrun-rag#240 c18236）：品質閘的「疑似信用卡號」曾把頁碼誤判成卡號，
+	// error_codes 91 份正常的卡因此連續失敗 8 次、停止自動重試。規則修好後，
+	// 這些在舊規則下記的暫停要自己重排，不能靠使用者一份一份改檔。
+	FailLintRev int `json:"fail_lint_rev,omitempty"`
 
 	// ── 雲端對帳（`inkstone/arcrun-rag#140`，2026-08-26）──────────────────────
 	// 病：上面那個 IngestedHash 的章**永遠不會過期**。雲端 08-14 被重裝／清空之後，
@@ -251,6 +256,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	e.FailCount, e.LastFailAt, e.NextRetry = 0, 0, 0
 	e.LastError = ""
 	e.FailCloudVersion = ""
+	e.FailLintRev = 0
 	// #140：預設「這次有送卡上雲」；真的一張卡都沒送的那條路由呼叫端補打
 	// MarkNoCloudCard（見 direct.go 的 cards 為空分支）。預設值放這裡而不是
 	// 讓呼叫端每次都設，是因為漏設的方向要落在**安全的那一邊**：
@@ -293,6 +299,7 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 	e.FailCount++
 	e.LastFailAt = at
 	e.FailCloudVersion = m.CloudVersion // #196：記下這次撞的是哪一版雲端
+	e.FailLintRev = lintGateRevision    // #240：記下這次是哪一版品質閘判的
 	if strings.TrimSpace(reason) != "" {
 		e.LastError = reason // 存真因；退避訊息由呼叫端另外組，不覆蓋這裡
 	}
@@ -365,6 +372,15 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 		// #196：同理，「單次呼叫子請求太多」在雲端 1.4.64 之前是引擎的病（每個節點多打 3 發附帶呼叫）。
 		// 病歷是在舊雲端上記的、而現在的雲端已經修好 ⇒ 再試。
 		// 在已修好的雲端上又撞 ⇒ 這次 MarkFailed 會記下新版本號 ⇒ 不再自動重試（卡真的太大，重撞只是燒額度）。
+		// #240 c18241：暫時性的失敗（雲端 AI 內部錯誤、連線中途被重設）不是這個檔的病，
+		// 不該因為撞滿 8 次就永遠停掉；照 6 小時的退避窗口繼續試，等對面好了自然會過。
+		// 雲端資料庫每日額度用完同理：隔天重置就會過；額度還沒重置時，送出前會被額度剎車擋下，不會白打。
+		if (isTransientCloudText(e.LastError) || isD1QuotaText(e.LastError)) && now >= e.NextRetry {
+			return true
+		}
+		if cardNumberRuleFixedSince(e) {
+			return true // #240：舊規則誤判的暫停，規則修好後一次性重排（再失敗會記新規則版號，不會再自動重排）
+		}
 		return (isOldCloudText(e.LastError) || m.subrequestWallFixedSince(e)) && now >= e.NextRetry
 	}
 	return now >= e.NextRetry
@@ -390,6 +406,37 @@ func (m *Manifest) subrequestWallFixedSince(e *ManifestEntry) bool {
 	return isSubrequestLimitText(e.LastError) &&
 		cloudHasSubrequestFix(m.CloudVersion) &&
 		!cloudHasSubrequestFix(e.FailCloudVersion)
+}
+
+// lintGateRevision＝品質閘規則版本。2＝信用卡號改成「形狀＋發卡組織前綴＋Luhn 校驗」（修頁碼誤判）。
+// 改了會讓舊規則下的暫停失效的規則時才 +1，並在下面補一個 …FixedSince 判斷。
+const lintGateRevision = 2
+
+// cardNumberRuleFixedSince＝這筆暫停是舊規則的「疑似信用卡號」誤判造成的（規則版本 < 2）。
+func cardNumberRuleFixedSince(e *ManifestEntry) bool {
+	return e.FailLintRev < 2 &&
+		strings.Contains(e.LastError, "品質未過") &&
+		strings.Contains(e.LastError, "疑似信用卡號")
+}
+
+// isTransientCloudText＝病歷是「暫時性」的：雲端 AI 自己內部出錯／路由不到模型（Workers AI 4007、4002）、
+// 雲端閘道 502／503／504、連線中途被對方重設或讀到一半斷線。
+// 判準是「同一份檔、同樣內容，下一次大概就過了」。**不含**額度用完（429／daily_write_budget，等隔天）、
+// 品質閘、JSON 解析、卡片撞名——那些重試只是重撞。
+func isTransientCloudText(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	for _, mark := range []string{
+		"4007:", "4002:", "An internal server error occured", "could not route request",
+		"雲端萃取失敗（HTTP 502）", "雲端萃取失敗（HTTP 503）", "雲端萃取失敗（HTTP 504）",
+		"connection reset by peer", "unexpected EOF", "i/o timeout", "TLS handshake timeout", "broken pipe",
+	} {
+		if strings.Contains(msg, mark) {
+			return true
+		}
+	}
+	return false
 }
 
 // isOldCloudText＝病歷上寫的是「雲端還沒有這個功能」（舊版雲端），不是檔案本身的問題。

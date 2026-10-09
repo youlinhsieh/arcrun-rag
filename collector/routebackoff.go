@@ -187,6 +187,32 @@ func routeFailCause(status int, transportErr error) string {
 	}
 }
 
+// usageBrakeCause 認得雲端的「每日額度剎車」（body 帶 usage_brake），回人話原因；認不出回空字串。
+//
+// 🔴 inkstone/arcrun-rag#240（Arcrun#291 c17901）：geek6688 的剎車回的是 429／usage_brake，
+// 但斷路器只看狀態碼，畫面講成「雲端回報內部錯誤」——使用者看不出是額度、也不知道何時恢復。
+// 狀態碼之外還要看 body；上游的原文（HTTP 碼／JSON）一樣不上畫面。
+func usageBrakeCause(body string) string {
+	if !strings.Contains(body, "usage_brake") {
+		return ""
+	}
+	return "今天的寫入額度剎車已啟動，明天早上 08:00（台北時間）會自動恢復"
+}
+
+// refineCause 在 body 讀到之後，把最近一次失敗的原因換成更準的那句（目前只認額度剎車）。
+// record 發生在讀 body 之前，所以原因要事後補；沒有失敗紀錄或認不出時什麼都不做。
+func (b *routeBreaker) refineCause(raw, body string) {
+	cause := usageBrakeCause(body)
+	if cause == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if st := b.routes[routeKey(raw)]; st != nil && st.fails > 0 {
+		st.lastCause = cause
+	}
+}
+
 // routeKey＝主機＋路徑（不含查詢字串）。同一台知識庫的不同工作流是不同的路。
 func routeKey(raw string) string {
 	u, err := url.Parse(raw)

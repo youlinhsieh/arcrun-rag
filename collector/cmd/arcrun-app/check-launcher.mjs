@@ -144,17 +144,25 @@ async function open(scenario, theme = 'light') {
   return { ctx, page, errs };
 }
 
+// #240 c18254：App 不再是側欄的全站頁，而是各帳號分頁裡的「App」分頁。
+// 這個 helper 走使用者真的會走的那條路：點側欄的帳號 → 點「App」分頁。
+async function toApps(page) {
+  await page.click('#nav .nav.acct[data-p="lib:0"]');
+  await page.click('[data-libtab="apps"]');
+}
+
 console.log('━━━ App 啟動器畫面驗收 ━━━');
 
 // ① 打開就是九宮格，磁磚是真資料（不是寫死的）
 {
   const { ctx, page, errs } = await open('ok');
+  await toApps(page);
   await page.waitForSelector('.appgrid', { timeout: 5000 }).catch(() => {});
   const tiles = await page.$$eval('.appcell .nm', (n) => n.map((e) => e.textContent.trim()));
   check(errs.length === 0, `啟動器沒有 JS 例外${errs.length ? '（' + errs[0] + '）' : ''}`);
-  check(await page.$('.appgrid') !== null, '打開就看到九宮格');
+  check(await page.$('.appgrid') !== null, '進帳號的 App 分頁就看到九宮格');
   check(tiles.join('|') === '筆記|週報|加裝 App', `磁磚＝實例回的那兩個 App ＋ 加裝（實際：${tiles.join('|')}）`);
-  check((await page.$eval('.apphead .s', (e) => e.textContent)).includes('2 個 App 已安裝'), '頁首說得出裝了幾個');
+  check((await page.$eval('.appbar .s', (e) => e.textContent)).trim() === '2', '頁首只放數字：裝了幾個');
   const calls = await page.evaluate(() => window.__calls.filter((c) => c[0] === 'ListApps').length);
   check(calls === 1, `只問了實例一次，不是每秒輪詢（實際 ${calls} 次）`);
   await page.waitForTimeout(2500);
@@ -167,6 +175,7 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
 // ①b 深色模式也要對
 {
   const { ctx, page } = await open('ok', 'dark');
+  await toApps(page);
   await page.waitForSelector('.appgrid');
   await page.screenshot({ path: `${shots}/02-launcher-dark.png` });
   check(await page.getAttribute('html', 'data-theme') === 'dark', '深色模式渲染得出來');
@@ -176,6 +185,7 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
 // ② 點一個「有自帶畫面」的 App → 進 sandbox iframe，且橋真的通
 {
   const { ctx, page, errs } = await open('ok');
+  await toApps(page);
   await page.waitForSelector('.appgrid');
   await page.click('[data-appopen="note"]');
   await page.waitForSelector('#appFrame', { timeout: 5000 });
@@ -201,6 +211,7 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
 // ②b 沒有自帶畫面的 App → 工作流清單 ＋「現在執行」
 {
   const { ctx, page } = await open('ok');
+  await toApps(page);
   await page.waitForSelector('.appgrid');
   await page.click('[data-appopen="weekly"]');
   await page.waitForSelector('.wfitem', { timeout: 5000 });
@@ -215,18 +226,20 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
 // ③ 三種「不是正常」的狀態都要說人話，且分得出來
 {
   const { ctx, page } = await open('noapps');
+  await toApps(page);
   await page.waitForSelector('.appgrid');
   const txt = await page.textContent('#page');
-  check(txt.includes('這個知識庫還沒有 App'), '一個都沒裝 → 說「還沒有 App」並教怎麼裝');
+  check(!txt.includes('看不到') && (await page.$$('.appcell .apptile:not(.add)')).length === 0, '一個都沒裝 → 只有「＋」，沒有任何文字（也不是錯誤卡）');
   check(!txt.includes('連不上'), '一個都沒裝時不准講成連線失敗');
   await page.screenshot({ path: `${shots}/05-empty.png` });
   await ctx.close();
 }
 {
   const { ctx, page } = await open('listerror');
+  await toApps(page);
   await page.waitForTimeout(300);
   const txt = await page.textContent('#page');
-  check(txt.includes('暫時看不到') && txt.includes('連不上'), '問不到 → 說「問不到」並帶實例的原話');
+  check(txt.includes('看不到') && txt.includes('連不上'), '問不到 → 說「問不到」並帶實例的原話');
   check(!txt.includes('還沒有 App'), '問不到時不准講成「一個都沒裝」');
   await page.screenshot({ path: `${shots}/06-error.png` });
   await ctx.close();
@@ -235,12 +248,13 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
   const { ctx, page } = await open('noaccount');
   await page.waitForTimeout(300);
   const txt = await page.textContent('#page');
-  check(txt.includes('歡迎使用 Arcrun') || txt.includes('還沒有連上知識庫'), '沒連任何實例 → 說人話（連線精靈），不是空白');
+  check(txt.includes('Arcrun') || txt.includes('開始設定'), '沒連任何實例 → 說人話（連線精靈），不是空白');
   await page.screenshot({ path: `${shots}/07-noaccount.png` });
   await ctx.close();
 }
 {
   const { ctx, page } = await open('needlogin');
+  await toApps(page);
   await page.waitForSelector('.appgrid');
   await page.click('[data-appopen="note"]');
   await page.waitForSelector('#apPw', { timeout: 5000 });
@@ -249,29 +263,42 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
   await ctx.close();
 }
 
-// ④ 驗收條件 3：現有功能一項都沒少
+// ④ 驗收條件 3：現有功能一項都沒少，而且資訊架構照 Claude Design 稿（#240 c18254）
 {
   const { ctx, page, errs } = await open('ok');
-  await page.waitForSelector('.appgrid');
-  const navs = await page.$$eval('#side .nav .nm', (n) => n.map((e) => e.textContent.trim()));
-  for (const want of ['App 界面', '首頁', '我的知識庫', 'AI 設定', '版本與更新']) {
-    check(navs.includes(want), `側欄仍有「${want}」`);
-  }
-  const pages = [
-    ['home', '現在的狀態'],
-    ['lib:0', '開啟知識庫網頁'],
-    ['ai', '用哪個 AI 幫你整理文件'],
-    ['update', '版本與更新'],
-  ];
-  for (const [p, marker] of pages) {
-    await page.click(`#side .nav[data-p="${p}"]`);
+  await page.waitForSelector('#nav .nav.acct');
+  const navs = await page.$$eval('#nav .nav.acct .nm', (n) => n.map((e) => e.textContent.trim()));
+  check(navs.join('|') === '我的知識庫', `側欄最上面是各個帳號（實際：${navs.join('|')}）`);
+  check(await page.$('#navAdd') !== null, '側欄有連結帳號的「＋」');
+  check(await page.$('#navUpdate') !== null && await page.$('#helpBtn') !== null && await page.$('#themeBtn') !== null,
+    '版本與更新／淺色深色／「?」固定在側欄底');
+  check(await page.$('header') === null && await page.$('#statusBig') === null, '沒有全站頁首（同步狀態是各帳號自己的事）');
+  // 首頁只放跨帳號的東西
+  const home = await page.textContent('#page');
+  // #240 c18275：首頁＝常用 App 圖示＋一條細狀態列；沒有「需要你處理」清單、沒有說明段落
+  check(await page.$('.strip') !== null && await page.$('.mapps') !== null, '首頁有細狀態列與 App 圖示');
+  check(!home.includes('需要你處理') && !home.includes('圖示角上') && !home.includes('在各帳號的 App 分頁'), '首頁沒有「需要你處理」與說明段落');
+  check(!home.includes('現在的狀態') && await page.$('[data-synclib]') === null, '同步狀態與同步鈕不在首頁');
+  // 帳號頁：第一行是帳號名稱，分頁都在
+  await page.click('#nav .nav.acct[data-p="lib:0"]');
+  await page.waitForTimeout(200);
+  check(await page.$eval('#libHead h1', (e) => e.textContent) === '我的知識庫', '帳號頁第一行＝帳號名稱');
+  const tabs = await page.$$eval('.tabs .tab', (n) => n.map((e) => e.textContent.trim().replace(/\s+\d+$/, '')));
+  check(tabs.join('|') === '同步|資料夾|App|用量|設定', `帳號頁分頁齊全（實際：${tabs.join('|')}）`);
+  check(await page.$('[data-synclib]') !== null, '「立刻同步」在帳號頁');
+  for (const [tab, marker] of [['folders', '加資料夾'], ['usage', '.usagecard'], ['ai', '這個知識庫']]) {
+    await page.click(`[data-libtab="${tab}"]`);
     await page.waitForTimeout(200);
     const t = await page.textContent('#page');
-    check(t.includes(marker), `「${p}」頁還在（找得到「${marker}」）`);
+    check(marker.startsWith('.') ? (await page.$(marker)) !== null : t.includes(marker), `「${tab}」分頁還在（找得到「${marker}」）`);
   }
-  // 全站頁首的同步狀態與「立刻同步」在每一頁都看得到（首頁換走了它們也沒消失）
-  check((await page.textContent('#statusBig')).includes('看守中'), '同步狀態在全站頁首，換頁不會不見');
-  check(await page.$('#btnSync') !== null, '「立刻同步」按鈕還在');
+  for (const [sel, marker] of [['#navUpdate', '版本與更新'], ['#helpBtn', '診斷檔']]) {
+    await page.click(sel);
+    await page.waitForTimeout(200);
+    check((await page.textContent('#page')).includes(marker), `${sel} 還連得到「${marker}」`);
+  }
+  const all = await page.textContent('body');
+  check(!/電量|電池/.test(all), '畫面上沒有「電量」「電池」字樣');
   check(errs.length === 0, `逛完全部頁面沒有 JS 例外${errs.length ? '（' + errs[0] + '）' : ''}`);
   await page.screenshot({ path: `${shots}/09-existing-update.png` });
   await ctx.close();

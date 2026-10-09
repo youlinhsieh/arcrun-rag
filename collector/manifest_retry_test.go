@@ -104,3 +104,31 @@ func TestShouldRetry_OtherFilesUnaffected(t *testing.T) {
 		t.Fatal("同一輪的其他檔不該被壞檔連累——這是「拖住整個佇列」的正解")
 	}
 }
+
+// #240 c18236：舊品質閘把頁碼誤判成信用卡號，檔案被記滿 8 次停止重試。
+// 規則修好後，這種暫停要自己重排一次；真因換了別種的、或在新規則下又失敗的，不再自動重排。
+func TestShouldRetry_CardNumberFalsePositiveRequeuedOnce(t *testing.T) {
+	const msg = "品質未過（不送）：H5: 疑似機敏值：疑似信用卡號（依規約該段應改寫成描述，不得照抄）"
+	m := newRetryTestManifest("a.md")
+	// 模擬舊版 manifest：8 次失敗、沒有規則版號
+	e := m.Entries["a.md"]
+	e.FailCount, e.LastFailAt, e.NextRetry, e.LastError = MaxFailBeforeSkip, 1000, 1000+999999, msg
+	if !m.ShouldRetry("a.md", 1001, false) {
+		t.Fatal("舊規則誤判的信用卡號暫停，應自動重排（不等退避窗口、不靠使用者改檔）")
+	}
+	// 重排後在新規則下又失敗 → 記新版號 → 不再自動重排
+	m.MarkFailed("a.md", 1002, msg)
+	if m.ShouldRetry("a.md", 1003+999999, false) && e.FailCount >= MaxFailBeforeSkip {
+		t.Fatal("新規則下再失敗，不應再自動重排")
+	}
+	if e.FailLintRev != lintGateRevision {
+		t.Fatalf("MarkFailed 應記下品質閘規則版號，got %d", e.FailLintRev)
+	}
+	// 別種品質閘原因（H1）不受影響
+	m2 := newRetryTestManifest("b.md")
+	e2 := m2.Entries["b.md"]
+	e2.FailCount, e2.NextRetry, e2.LastError = MaxFailBeforeSkip, 1000+999999, "品質未過（不送）：H1: 缺段名：重點"
+	if m2.ShouldRetry("b.md", 1001, false) {
+		t.Fatal("非信用卡號誤判的暫停不該被重排")
+	}
+}

@@ -12,36 +12,33 @@
 </head>
 <body>
 <div id="app">
-  <!-- ── 左側邊欄（Google Drive 風格；leo：「左方側邊欄，在右方替換頁面」）── -->
+  <!-- ── 左側邊欄（inkstone/arcrun-rag#240 c18254，Claude Design 稿）──
+       最上面是各個 Cloudflare 帳號，下面是「連結另一個帳號」，最底固定是版本與更新、
+       淺色／深色、「?」。帳號清單自己捲，底部三樣永遠在視窗內。 -->
   <aside id="side">
-    <div class="brand">
+    <button class="brand" id="brandHome" title="回首頁" aria-label="Arcrun 首頁">
       <img class="wm-ink"   src="./src/assets/arcrun-lockup-h-ink-trimmed.png" alt="Arcrun"/>
       <img class="wm-paper" src="./src/assets/arcrun-lockup-h-paper-trimmed.png" alt="Arcrun"/>
-    </div>
+    </button>
 
-    <!-- 側邊欄由 JS 依帳號數動態產生（每個知識庫一頁，leo 08-04 指定） -->
+    <!-- 帳號清單由 JS 依帳號數動態產生 -->
     <nav id="nav"></nav>
 
     <div class="side-foot">
-      <!-- 固定位置的求救入口（inkstone/arcrun-rag#210）：leo 2026-09-20「側邊欄有個問號按鈕」——
-           放在 side-foot 而不是某個分頁裡，是因為這裡在任何頁面、任何捲動位置都看得到，
-           不必先搞懂「疑難排解在哪一頁」。三件事（打字回報／匯出診斷檔／文件與 FAQ）
-           都在按下去之後同一個地方，不分散。 -->
-      <button class="ico help-btn" id="helpBtn" title="需要協助？" aria-label="需要協助？打字回報、匯出診斷檔、或查看文件與常見問題">?</button>
-      <div class="ver" id="ver"></div>
+      <button class="navlink" id="navUpdate" title="檢查小幫手版本與更新">
+        <span>版本與更新</span><span class="ver" id="ver"></span>
+      </button>
+      <div class="foot-row">
+        <!-- 淺色／深色是不分帳號的共用功能，放這裡，不放在某個帳號頁。 -->
+        <button id="themeBtn" title="淺色／深色">◐</button>
+        <!-- 固定位置的求救入口（inkstone/arcrun-rag#210）：任何頁面都看得到。 -->
+        <button class="help-btn" id="helpBtn" title="需要協助？" aria-label="需要協助？打字回報、匯出診斷檔、或查看文件與常見問題">?</button>
+      </div>
     </div>
   </aside>
 
-  <!-- ── 右側內容區（換頁）── -->
+  <!-- ── 右側內容區（換頁）。沒有全站頁首：同步狀態是各帳號自己的事，在各帳號頁的名稱底下。── -->
   <section id="content">
-    <header>
-      <div class="status">
-        <div class="big" id="statusBig">啟動中…</div>
-        <div class="sub" id="statusSub"></div>
-      </div>
-      <button id="themeBtn" title="切換淺色／深色">◐</button>
-      <button class="primary" id="btnSync">立刻同步</button>
-    </header>
     <main id="page"></main>
   </section>
 </div>

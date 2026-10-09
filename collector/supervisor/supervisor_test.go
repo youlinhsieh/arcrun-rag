@@ -186,3 +186,12 @@ func TestSupervisorOnChangeFires(t *testing.T) {
 	defer s.Stop()
 	waitFor(t, 2*time.Second, func() bool { return atomic.LoadInt32(&calls) > 0 }, "onChange fired")
 }
+
+func TestIsInfoLineStartupBanner(t *testing.T) {
+	if !isInfoLine("collector direct daemon 啟動：監看 /a、/b → https://x（每 5s 掃一輪）") {
+		t.Fatal("啟動監看清單是資訊行，不是死因")
+	}
+	if isInfoLine("collector direct: config JSON 解析失敗") {
+		t.Fatal("真錯誤不能被吞")
+	}
+}

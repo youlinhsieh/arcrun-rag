@@ -266,6 +266,12 @@ func (s *Supervisor) loop(ctx context.Context) {
 		s.mu.Lock()
 		stderrLine := s.status.LastError
 		s.mu.Unlock()
+		// 🔴 inkstone/arcrun-rag#240：stderr 末行不一定是錯誤——引擎啟動時印的
+		//    「監看清單」也走 stderr，被外力結束（更新／重開）時它就是最後一行，
+		//    結果畫面的「原因」整段是資料夾清單。資訊行不是死因，退回行程的退出原因。
+		if isInfoLine(stderrLine) {
+			stderrLine = ""
+		}
 		if stderrLine != "" && stderrLine != msg {
 			msg = stderrLine + "（" + msg + "）"
 		}
@@ -281,6 +287,12 @@ func (s *Supervisor) loop(ctx context.Context) {
 		case <-time.After(s.backoff()):
 		}
 	}
+}
+
+// isInfoLine 認得「引擎自己印的資訊行」（不是錯誤）。
+// 目前只有啟動時的監看清單（direct.go：collector direct daemon 啟動：監看 …）。
+func isInfoLine(line string) bool {
+	return strings.HasPrefix(line, "collector direct daemon 啟動")
 }
 
 // runOnce 跑一次 collector direct 行程，串流其 stdout JSON 更新狀態，回傳退出原因。

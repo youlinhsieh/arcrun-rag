@@ -8,6 +8,7 @@
 //   ⑥ 首頁要顯示 status：看守／發現變化／萃取／上傳 ⇒ **狀態時間軸**
 import './arcrun-cis.css';   // 共用底層（色票/字體/紋理）——唯一真相源在 arcrun-cis/css/
 import './style.css';        // 本 App 的版面
+import { glyphSvg } from './appglyph.js';   // App 圖示：字形由實例提供（與 Portal 同一個來源）
 
 const go = window.go.main.App;
 const $ = (id) => document.getElementById(id);
@@ -20,28 +21,31 @@ const THEME_KEY = 'arcrun_app_theme';
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
-  const b = $('themeBtn'); if (b) b.textContent = t === 'dark' ? '☀' : '☾';
 }
 applyTheme((() => { try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch (e) { return 'light'; } })());
 $('themeBtn').onclick = () =>
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 
-// 求救入口（inkstone/arcrun-rag#210）：跟 themeBtn 一樣掛在側邊欄外殼、只綁一次——
+// 側邊欄外殼的幾個固定入口（回首頁／版本與更新／求救），只綁一次：
 // 不是 renderPage() 換出來的內容，不能放進 wire()（那裡每次換頁都會重跑）。
 // 🔴 走「換頁」不走 openSheet()：style.css :248 的既有規約明寫「覆蓋層只給
 // 『確認刪除』這類必須打斷的動作，設定頁一律走右側換頁」——這是一頁內容
 // （三張卡＋一個表單），不是一次性確認，混用會違反這條既有規約。
-$('helpBtn').onclick = () => { page = 'help'; renderNav(); renderPage(); };
+$('helpBtn').onclick = () => goPage('help');
+$('navUpdate').onclick = () => goPage('update');
+$('brandHome').onclick = () => goPage('home');
 
 let state = null;
-// page：'apps'（App 啟動器）| 'app:<accIdx>:<id>' | 'home' | 'ai' | 'update' | 'lib:<idx>'
+// page：'home'（跨帳號總覽）| 'lib:<idx>'（某個帳號）| 'app:<accIdx>:<id>' | 'update' | 'help'
 //
-// 🔴 arcrun-rag#137：預設落在 App 啟動器，不是首頁——leo 2026-08-24 的原話是
-//    「**打開桌面小幫手就看到**跟 Portal 同一套的 App 啟動器」。
-//    同步狀態沒有因此消失：它在**全站頁首**（statusBig/statusSub＋「立刻同步」），
-//    每一頁都看得到；首頁那些卡片仍在側欄的「首頁」裡，一鍵可達。
-//    還沒連任何知識庫時 render() 會把它改回 'home'（那裡才是連線精靈）。
-let page = 'apps';
+// inkstone/arcrun-rag#240 c18254（leo 2026-10-09 + Claude Design 稿）：
+// 原本的「首頁／App 界面／AI 設定」並列在側欄、同步狀態掛在全站頁首——
+// 那是「一個人一個帳號」的設計，而 Arcrun 的特色就是跨帳號，所以一直縫縫補補。
+// 現在：首頁只放跨帳號的東西；App、同步、資料夾、用量、AI 設定全部收進各帳號分頁。
+// 不再有全站頁首，也不再有 'apps'／'ai' 這兩個全站頁。
+let page = 'home';
+let libTab = {};          // accIdx -> 'sync'|'folders'|'apps'|'usage'|'ai'（每個帳號各記自己停在哪一分頁）
+let appBack = 'home';     // 從 App 詳情「返回」要回哪（首頁，或某個帳號的 App 分頁）
 let updateInfo = null;
 let obStep = 1;           // 首次啟動精靈目前在第幾步（issue #23，見 onboarding()）
 
@@ -50,7 +54,6 @@ let obStep = 1;           // 首次啟動精靈目前在第幾步（issue #23，
 // 🔴 這是**畫面暫存，不是本機清單**：只活在這個視窗的記憶體裡，關掉就沒了，
 //    永遠不寫檔。上游 inkstone/Arcrun#82 已定「安裝態只有一份真相源」＝實例上那一份，
 //    桌面端不准另存一份（本票紅線）。存在這裡只是為了不要每次換頁都重打一次網路。
-let appsAccIdx = 0;       // 啟動器現在在看哪一個知識庫
 let appsCache = {};       // accIdx -> ListApps() 的回傳（undefined＝還沒問，null＝正在問）
 let appDetail = null;     // 目前打開的那個 App 的詳情（GetApp() 的回傳）
 let appDetailKey = '';    // 'accIdx:id'，避免慢回應蓋掉已經換過去的另一個 App
@@ -62,117 +65,212 @@ function closeSheet() { $('overlay').classList.remove('on'); }
 $('overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeSheet(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
 
-// ── 側邊欄：每個知識庫一項（leo：「每個帳號有獨立的一個頁面」）──
+// ── 側邊欄：最上面是各個 Cloudflare 帳號（inkstone/arcrun-rag#240 c18254，Claude Design 稿）──
 //
-// t215（2026-08-08，leo：「在每個知識庫上顯示是否要更新」）：落後的庫名旁加一顆
-// 警示點，逛清單時不用點進每個庫就能一眼看出哪個落後（完整說明＋更新按鈕在
-// 首頁 cardKbVersions 與各庫頁 kbVersionLine）。
-//
-// 🔴 頂層 status.md 08-08 深夜記過一個**待 leo confirm、尚未定案**的提案：
-// 「單一更新入口（版本白癡化）」——把小幫手自我更新與雲端知識庫更新合併成一顆按鈕。
-// 那個提案沒有否定「每庫獨立列出落後狀態」這件事本身（它本來就要「點進去才看細節」），
-// 只是問「總覽要不要合併」。這裡先實作 leo 這次明確要的「每庫看得到＋連得到」，
-// 之後若那個提案 confirm，是在這層之上疊總覽 pill，不是重做這裡。
+// 每個帳號兩行：第一行＝字母圓標＋名稱；第二行＝剩餘用量符號（上傳箭頭＋五格＋%）。
+// 圓標右上角的小點只在「這個帳號有事要你看」時出現（錯誤／停工／額度／用量低），
+// 平常什麼都沒有——配色只有灰階加一個鏽色，鏽色只給需要你出手的事。
+// 帳號清單自己捲，底下的「版本與更新／淺色深色／?」固定在視窗內（CSS #side nav overflow）。
+function acctLetters(accs) {
+  const first = accs.map((a) => (Array.from(a.name || '?')[0] || '?').toUpperCase());
+  const cnt = {};
+  first.forEach((l) => { cnt[l] = (cnt[l] || 0) + 1; });
+  // 兩個帳號開頭同一個字 ⇒ 改用前兩個字，圓標才分得出誰是誰
+  return accs.map((a, i) => cnt[first[i]] > 1
+    ? Array.from(a.name || '?').slice(0, 2).join('').toUpperCase() : first[i]);
+}
+
+// 說明一律一行：講得完的放在那一行，要看更多才點開（inkstone/arcrun-rag#240 c18275）。
+// leo：「說明文字就表示設計不良⋯⋯字數不超過一行，畫面簡潔，可以點擊展開」。
+// line＝一行摘要（已跳脫前的純文字）；detail＝點開才看到的 HTML 片段。
+// 通知展開：最多 3 行、每行 20 字（預算見 textbudget.go）。超過的在 Go 側已用「…」收尾。
+function chunkLines(text, per = 20, max = 3) {
+  const r = Array.from(String(text || ''));
+  const out = [];
+  for (let i = 0; i < r.length && out.length < max; i += per) out.push(r.slice(i, i + per).join(''));
+  return out.map((l) => `<div class="d one raw">${esc(l)}</div>`).join('');
+}
+
+function more(line, detail) {
+  if (!detail) return `<div class="d one">${esc(line)}</div>`;
+  return `<details class="more"><summary>${esc(line)}</summary><div class="d">${detail}</div></details>`;
+}
+
+// 這個帳號「有事要你看」的清單：錯誤、停工、額度撞頂、用量偏低。只講它自己的，不混別人的。
+// 側欄的鏽色小點、首頁的「需要處理」、首頁的燈號數字都從這一份來，不各算各的。
+function needsOf(s, a) {
+  // 「有你可以處理的事」才算（#240 c18340）：每一項都帶用戶做得到的動作——
+  //   停工 → 回報／關閉；額度用完 → 升級／關閉；用量警告 → 升級／關閉。
+  // 自動重試中的失敗、略過的檔案不算（用戶做不了什麼）：只在狀態列留灰色符號。
+  // 一個符號一種單位（#240 c18359）：`!` 只數停住的檔案（＝停住卡標題的數字）；
+  // 額度用完用 `⏸`、用量快完靠量表變鏽色，各自不進 `!` 的加總（n 為 0）。
+  const out = [];
+  const st = (s.stalls || []).filter((x) => x.account === a.name);
+  if (st.length) out.push({ text: `⚠ 停住 ${st.reduce((t, x) => t + x.count, 0)}`, tab: 'sync', n: st.reduce((t, x) => t + x.count, 0), kind: 'stall' });
+  const q = s.quota;
+  if (q && (q.account === a.name || (!q.account && (s.accounts || []).length === 1))) {
+    out.push({ text: q.headline || '⏸ 額度用完', tab: 'sync', n: 0, kind: 'quota' });
+  }
+  const b = a.battery;
+  if (b && b.warning) out.push({ text: b.warning, tab: 'usage', n: 0, kind: 'usage' });
+  return out;
+}
+const needsN = (items) => items.reduce((t, x) => t + x.n, 0);
+
+let navLast = '';
 function renderNav() {
   const accs = (state && state.accounts) || [];
-  // arcrun-rag#137：「App」這一段在最上面，且**只有連了知識庫才出現**——
-  // 沒有實例就沒有 App，把一個必定空的入口擺在第一項只會讓人以為壞了。
-  // 目前打開的那個 App 以子項的形式掛在「App 界面」下面（同 Portal 的做法：
-  // 已安裝的 App 是側欄的一格），這樣使用者知道自己在哪、也回得去。
-  const appNav = !accs.length ? '' : `
-    <div class="sec">App</div>
-    <div class="nav" data-p="apps"><span class="ic">▦</span><span class="nm">App 界面</span></div>
-    ${page.startsWith('app:') && appDetail && !appDetail.error ? `
-      <div class="nav" data-p="${esc(page)}" style="padding-left:44px">
-        <span class="ic">${esc(appDetail.icon || '▢')}</span>
-        <span class="nm">${esc(appDetail.name || appDetail.id)}</span>
-      </div>` : ''}
-    <div class="sec">小幫手</div>`;
-  $('nav').innerHTML = `
-    ${appNav}
-    <div class="nav" data-p="home"><span class="ic">◫</span><span class="nm">首頁</span></div>
-    ${accs.length ? `<div class="sec">知識庫</div>` : ''}
-    ${accs.map((a, i) => `
-      <div class="nav" data-p="lib:${i}">
-        <span class="ic">▤</span><span class="nm">${esc(a.name)}</span>
-        ${a.cloudVerStale ? `<span class="dot warn" title="有新版可更新"></span>` : ''}
-        <span class="cnt">${(a.folders || []).length}</span>
-      </div>`).join('')}
-    <div class="sec">設定</div>
-    <div class="nav" data-p="ai"><span class="ic">✧</span><span class="nm">AI 設定</span></div>
-    <div class="nav" data-p="update"><span class="ic">↧</span><span class="nm">版本與更新</span></div>`;
-  $('nav').querySelectorAll('.nav').forEach((el) => {
-    el.classList.toggle('on', el.dataset.p === page);
-    el.onclick = () => {
-      const p = el.dataset.p;
-      if (p === page) return;
-      // 離開 App 頁時把 iframe 的橋拆掉（見 goToApp 同一段理由）。
-      if (page.startsWith('app:') && appFrameBridge) {
-        window.removeEventListener('message', appFrameBridge); appFrameBridge = null;
-      }
-      page = p;
-      renderNav(); renderPage();
-      if (p === 'apps') loadApps(appsAccIdx);
-    };
-  });
+  const L = acctLetters(accs);
+  const onAcc = page.startsWith('lib:') ? Number(page.slice(4))
+    : page.startsWith('app:') ? Number(page.split(':')[1]) : -1;
+  const html = `
+    ${accs.length ? `<div class="sec">帳號</div>` : ''}
+    ${accs.map((a, i) => {
+      const needs = needsOf(state, a);
+      const tip = needs.length ? `${needs.length} 則通知` : (a.cloudVerStale ? '有新版可更新' : '');
+      return `
+      <div class="nav acct${i === onAcc ? ' on' : ''}" data-p="lib:${i}" role="button" tabindex="0" ${tip ? `title="${esc(tip)}"` : ''}>
+        <span class="r1"><span class="av">${esc(L[i])}${needs.length ? '<b class="pip" aria-label="有事要看"></b>' : ''}</span>
+          <span class="nm">${esc(a.name)}</span>${!needs.length && a.cloudVerStale ? '<b class="upd" aria-label="有新版可更新"></b>' : ''}</span>
+        <span class="r2">${usageGauge(a.battery)}</span>
+      </div>`;
+    }).join('')}
+    <button class="addacct" id="navAdd" title="連結另一個帳號" aria-label="連結另一個帳號">＋</button>`;
+  if (html !== navLast) {
+    navLast = html;
+    $('nav').innerHTML = html;
+    $('nav').querySelectorAll('.nav[data-p]').forEach((el) => {
+      el.onclick = () => goPage(el.dataset.p);
+    });
+    const add = $('navAdd'); if (add) add.onclick = showConnect;
+  }
+  $('navUpdate').classList.toggle('on', page === 'update');
+  $('helpBtn').classList.toggle('on', page === 'help');
+  $('brandHome').classList.toggle('on', page === 'home');
 }
 
-// ── 首頁：狀態時間軸（leo：「看守、發現變化、萃取、上傳… 不同 status 在哪裡顯示？」）──
+// 換頁的唯一入口（側欄、首頁、各處連結都走這裡）。
+// 用量要跟雲端當下一致：只在人為動作（開啟、切到帳號頁、視窗回到前景）時問一次，問完再取一次狀態
+async function refreshUsage(idx) {
+  try { await go.RefreshUsage(idx); await tick(); } catch (e) { /* 問不到就維持原樣 */ }
+}
+window.addEventListener('focus', () => refreshUsage(-1));
+
+function goPage(p) {
+  if (p === page) { renderPage(); return; }
+  // 離開 App 頁時把 iframe 的橋拆掉（見 goToApp 同一段理由）。
+  if (page.startsWith('app:') && appFrameBridge) {
+    window.removeEventListener('message', appFrameBridge); appFrameBridge = null;
+  }
+  page = p;
+  renderNav(); renderPage();
+  if (p.startsWith('lib:')) { ensureTabData(Number(p.slice(4))); refreshUsage(Number(p.slice(4))); }
+}
+function ensureTabData(idx) {
+  if (libTabOf(idx) === 'apps') loadApps(idx);
+}
+function libTabOf(idx) { return libTab[idx] || 'sync'; }
+function setLibTab(idx, tab) {
+  libTab[idx] = tab;
+  renderPage();
+  ensureTabData(idx);
+}
+
+// ── 首頁：像手機的主畫面（inkstone/arcrun-rag#240 c18275，leo 2026-10-09 原話）──
+//   ① 一條細狀態列：帳號正常幾個、通知（鈴鐺＋每個帳號幾件）、同步中、整體進度
+//   ② 常用 App 圖示（使用者從各帳號挑「顯示在首頁」的）
+// 就這兩樣。沒有說明段落、沒有「需要你處理」清單：
+//   · 通知的內容只住在各帳號自己的分頁（同一個訊息不准在兩頁出現），首頁只給件數，按了跳過去
+//   · 同步、資料夾、App、用量、AI 與設定、停工回報，全部在各帳號分頁裡
 function pageHome(s) {
   if (!s.accounts || !s.accounts.length) return onboarding();
-  const st = s.steps || [];
-  return `
-    <div class="card">
-      <h3>現在的狀態</h3>
-      <div class="steps">
-        ${st.map((x) => `
-          <div class="step ${esc(x.state)}">
-            <span class="dot"></span>
-            <span class="t">${esc(x.title)}</span>
-            <span class="m">${esc(x.meta || '')}</span>
-          </div>`).join('')}
-      </div>
-    </div>
-    ${cardQuota(s.quota, s.progress, s.accounts)}
-    ${cardQuotaMeter(s.quotaMeter)}
-    ${cardTrouble(s)}
-    ${cardProgress(s.progress)}
-    ${cardSkipped(s.skipped)}
-    ${cardKbVersions(s)}
-    <div class="card">
-      <h3>總計</h3>
-      <div class="kv" style="margin-top:10px">
-        <div><div class="big-num">${s.accounts.length}</div><div class="k">個知識庫</div></div>
-        <div><div class="big-num">${s.accounts.reduce((n,a)=>n+(a.folders||[]).length,0)}</div><div class="k">個資料夾在看守</div></div>
-      </div>
-    </div>`;
+  return statusStrip(s) + sectionMyApps(s);
 }
 
-// t215（2026-08-08，leo：「在每個知識庫上顯示是否要更新，如果要，加開啓 install 頁的
-// 連結」）——一個使用者可能連著不只一個知識庫（leo 自己就是），各自雲端版本不同步時，
-// 以前完全看不出「哪一個」落後、也沒有地方按。這張卡讓使用者不必逐個庫點進去，
-// 首頁一眼看完全部知識庫的版本狀態。
-//
-// 判準**不在這裡重新發明**：後端 collector.EvalCloudUpdate 與 portal 設定頁那張版本卡
-// （console-ui/public/portal/index.html 的 loadVersion()）同一套比法——自己的
-// bundle_version 比 install.arcrun.dev/api/latest 的 release，兩邊都是 semver 才逐段
-// 整數比較，非 semver（老格式）一律視為落後。前端只負責把後端已經算好的
-// cloudVerKnown/cloudVerStale 翻成人話，不做任何版本比較。
-function cardKbVersions(s) {
+// 狀態列只放符號加數字，不放句子（#240 c18290，leo：「如果你裡面顯示了一句話就要檢討是否不需要這句話」）。
+// 符號的意思放在滑過去才出現的 title，版面上一個字都不佔。
+const SYM_SYNC = '<svg class="symic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/></svg>';
+let notifOpen = false;   // 「! ×N」有沒有展開（只是畫面偏好，不存檔）
+
+function statusStrip(s) {
   const accs = s.accounts || [];
-  if (!accs.length) return '';
+  const attn = accs.map((a, i) => ({ a, i, n: needsOf(s, a) })).filter((x) => x.n.length);
+  const total = attn.reduce((t, x) => t + needsN(x.n), 0);   // 只數停住的檔案
+  const quotaHit = attn.some((x) => x.n.some((i) => i.kind === 'quota'));
+  const syncing = accs.filter((a) => a.status && a.status.syncing);
+  const ok = accs.length - attn.length;
+  const p = s.progress || {};
+  const parts = [];
+  // 引擎本身的問題不屬於任何帳號：一個驚歎號，按了打開紀錄檔資料夾
+  if (s.engineTrouble) parts.push(`<button class="sp bad lnkpill" id="hLogs" title="同步引擎需要處理——按一下打開紀錄檔資料夾" aria-label="同步引擎需要處理">!</button>`);
+  if (ok > 0) parts.push(`<span class="sp" title="${ok} 個帳號正常" aria-label="${ok} 個帳號正常"><i></i>${ok}</span>`);
+  // 「! ×N」：N＝下面各帳號卡片上數字的加總（同一個數字，對得上）；按了展開是哪幾個帳號
+  if (quotaHit) parts.push(`<span class="sp bad" title="額度用完" aria-label="額度用完">⏸</span>`);
+  if (attn.length) parts.push(`<button class="sp bad lnkpill" id="notifToggle" aria-expanded="${notifOpen}" title="有你可以處理的事" aria-label="${total} 件可處理">${total ? `!&thinsp;×${total}` : '▾'}</button>`);
+  if (syncing.length) parts.push(`<span class="sp" title="${syncing.length} 個正在同步" aria-label="${syncing.length} 個正在同步">${SYM_SYNC}&thinsp;×${syncing.length}</span>`);
+  // 灰色：自動重試中／略過的檔案——用戶做不了什麼，只留符號，不亮紅
+  const retry = accs.reduce((t, a) => t + (a.trouble ? a.trouble.count : 0), 0);
+  if (retry) parts.push(`<span class="sp quiet" title="自動重試中" aria-label="自動重試中: ${retry}">↻&thinsp;${retry}</span>`);
+  if (s.skipped) parts.push(`<span class="sp quiet" title="${esc(s.skipped.title)}">⊘</span>`);
+  const chips = notifOpen && attn.length ? `
+    <div class="nlist">${attn.map((x) => `
+      <button class="nchip" data-golib="${x.i}" data-tab="${esc(x.n[0].tab)}" title="到這個帳號看">${esc(x.a.name)}<b>${needsN(x.n) || (x.n.some((i) => i.kind === 'quota') ? '⏸' : '⚠')}</b></button>`).join('')}</div>` : '';
   return `
-    <div class="card">
-      <h3>知識庫版本</h3>
-      <div class="kblist">
-        ${accs.map((a) => `
-          <div class="kbrow">
-            <span class="nm">${esc(a.name)}</span>
-            <span class="right">${kbVersionLine(a)}</span>
-          </div>`).join('')}
-      </div>
-    </div>`;
+    <section class="strip" aria-label="狀態列">
+      ${parts.join('')}
+      <span class="grow"></span>
+      ${p.total ? `<span class="num" title="已整理的檔案數／全部檔案數">${p.done} / ${p.total}</span>` : ''}
+    </section>${chips}`;
 }
+
+// 「我的 App」的釘選清單。純畫面偏好（要不要擺在首頁），存在這個視窗的 localStorage，
+// 不是安裝態——App 裝在哪、有哪些，真相源仍然只有實例那一份（#137 紅線）。
+const PIN_KEY = 'arcrun_app_pins';
+function loadPins() {
+  try {
+    const v = JSON.parse(localStorage.getItem(PIN_KEY) || '[]');
+    return Array.isArray(v) ? v.filter((p) => p && p.h && p.id) : [];
+  } catch (e) { return []; }
+}
+let pins = loadPins();
+function isPinned(host, id) { return pins.some((p) => p.h === host && p.id === id); }
+function togglePin(host, id) {
+  pins = isPinned(host, id) ? pins.filter((p) => !(p.h === host && p.id === id)) : pins.concat([{ h: host, id }]);
+  try { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); } catch (e) {}
+  renderPage();
+}
+
+function sectionMyApps(s) {
+  const accs = s.accounts || [];
+  const L = acctLetters(accs);
+  const tiles = [];
+  pins.forEach((p) => {
+    const idx = accs.findIndex((a) => a.host === p.h);
+    if (idx < 0) return;                       // 那個帳號已經不在了
+    const r = appsCache[idx];
+    const found = r && r.apps ? r.apps.find((x) => x.id === p.id) : null;
+    if (r && r.apps && !found) return;         // 已經在實例上被移除
+    const name = found ? found.name : p.id;
+    // 圖示＝實例提供的字形（與 Portal 同一個來源，見 appglyph.js）；拿不到就是通用圖示
+    tiles.push(`
+      <button class="mapp" data-appopen="${esc(p.id)}" data-appacc="${idx}" aria-label="${esc(name)}（${esc(accs[idx].name)}）" title="${esc(name)} · 寫入 ${esc(accs[idx].name)}">
+        <span class="tile">${glyphSvg(r, found)}<b class="corner">${esc(L[idx])}</b></span>
+        <span class="lb">${esc(name)}</span>
+      </button>`);
+  });
+  // 沒有任何說明文字：圖示角上的字母＝帳號，滑過去（title）才講是哪個帳號；
+  // 怎麼加 App，點「加一個」進去就看得到。
+  return `
+    <section class="myapps" aria-label="我的 App">
+      <div class="mapps">
+        ${tiles.join('')}
+        <button class="mapp add" id="mappAdd" aria-label="從某個帳號加一個 App" title="從某個帳號加一個 App 到首頁">
+          <span class="tile">＋</span>
+        </button>
+      </div>
+    </section>`;
+}
+
 
 // kbVersionLine：單一知識庫的版本，首頁卡與各庫頁共用同一份（不讓兩處各寫各的）。
 //
@@ -205,8 +303,7 @@ function kbVersionLine(a) {
       <button class="ico" data-updatekb="${esc(a.email || '')}"
         title="前往安裝頁更新這個知識庫" aria-label="前往安裝頁更新這個知識庫">⬆️</button>`;
   }
-  return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)}</span>
-    <span class="fstat ok" role="img" title="已是最新版" aria-label="已是最新版">✅</span>`;
+  return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)}</span>`;   // 最新版就沒有任何圖示
 }
 
 // installURLFor：與 portal 版本卡同一個做法——落後才需要按，按下去帶 email 讓安裝頁
@@ -224,17 +321,29 @@ function installURLFor(email) {
 // 沒有東西被略過時後端回 null ⇒ 這裡回空字串，畫面保持乾淨（沒事不佔版面）。
 // 引擎有問題時才長出來：一鍵打開紀錄檔資料夾。
 // leo 2026-08-06：「不能用一個 debug mode？」——log 一直都在寫，缺的是入口。
-function cardTrouble(s) {
-  if (!s.engineTrouble) return '';
+// 檔案因同一個原因停工 ⇒ 卡片＋「回報給 Arcrun」（inkstone/arcrun-rag#240 c18242）。
+// leo：「不然只會在用戶那裡默默死掉，讓我們的信賴下跌」。按一下就送，不必自己打字；
+// 送的內容全由後端現場重算（原因分類、份數、檔名樣本、錯誤原文、版本號），不含文件內容。
+// 回報過的原因標「已回報」，不再要求按、也不會重複開票。
+// onlyAccount＝帳號分頁只顯示它自己的（c18000：每個分頁只講自己的事）；null＝首頁全列。
+// 同一個帳號的停工合成一張卡：標題＝件數加總（與狀態列的 `!` 同一個數字），
+// 展開看各原因各幾份；一顆「回報」送出全部、一顆 × 關閉（#240 c18341）。
+function cardStalls(stalls, onlyAccount) {
+  const list = (stalls || []).filter((x) => !onlyAccount || x.account === onlyAccount);
+  if (!list.length) return '';
+  const total = list.reduce((t, x) => t + x.count, 0);
+  const lines = list.slice(0, 3).map((x) => `<div class="d one raw" title="${esc(Array.from(x.label).slice(0, 25).join(''))}">${esc(Array.from(x.label).slice(0, 12).join(''))} ${x.count}</div>`).join('');
+  // 鍵可能含任何字元（逗號、引號）：一律用 JSON 陣列放在屬性裡，不用分隔字元拼接再切開
+  const fps = esc(JSON.stringify(list.map((x) => x.fingerprint)));
+  const keys = esc(JSON.stringify(list.map((x) => x.dismissKey)));
   return `
-    <div class="card">
-      <h3>需要回報這個問題？</h3>
-      <div class="d">
-        詳細的錯誤紀錄已經自動存在你電腦裡，不必開啟任何設定。<br/>
-        把 <b>collector.log</b> 和 <b>app.log</b> 傳給我們就能查。
-      </div>
-      <div class="d" style="margin-top:6px;opacity:.7">${esc(s.logFolder || '')}</div>
-      <div class="acts"><button id="hLogs">打開紀錄檔資料夾</button></div>
+    <div class="card alertcard" role="alert" data-stall-card="1">
+      <button class="x" data-dismiss="${keys}" title="關閉" aria-label="關閉">×</button>
+      ${list.length > 1
+        ? `<details class="more"><summary>⚠ 停住 ${total}</summary>${lines}</details>`
+        : `<div class="nt" data-data="1" title="${esc(Array.from(list[0].label).slice(0, 25).join(''))}">⚠ 停住 ${total}</div>`}
+      <div class="acts"><button class="primary" data-stallall="${fps}">回報</button></div>
+      <div class="d stallmsg" style="margin-top:6px"></div>
     </div>`;
 }
 
@@ -257,47 +366,17 @@ function cardTrouble(s) {
 // （leo 2026-09-19 實測：測付費的 leo21c，卻被免費的 youlin 爆掉那則訊息誤導）。
 function cardQuota(q, p, accounts) {
   if (!q) return '';
-  const pending = p && p.pending > 0
-    ? `<div class="d" style="margin-top:6px">還有 <b>${p.pending}</b> 份排隊中——會自動接著跑，你不用重丟。</div>` : '';
-  const multi = accounts && accounts.length > 1;
-  const account = multi && q.account
-    ? `<div class="d" style="margin-top:2px;opacity:.75">爆掉的是這個知識庫：<b>${esc(q.account)}</b>（你看守的其他知識庫不受影響）</div>`
-    : '';
-  // arcrun-rag#197：雲端資料庫（D1）額度用完是另一種卡——沒有「成就」可講，
-  // 用戶要的是：哪一種額度、上限多少／用到哪、幾點恢復、要不要自己做事。文字全來自後端。
-  if (q.kind === 'd1_read' || q.kind === 'd1_write') {
-    return `
-    <div class="card" data-quota-kind="${esc(q.kind)}">
-      <h3>${esc(q.headline)}</h3>
-      ${account}
-      <div class="d" style="margin-top:6px">${esc(q.usage)}。</div>
-      <div class="d" style="margin-top:6px"><b>${esc(q.guarantee)}</b>。</div>
-      ${pending}
-      <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
-    </div>`;
-  }
-  // arcrun-rag#59：這一輪 0 份成功、額度就用完了。舊版走下面那張卡會印
-  // 「今天已經幫你整理了 0 份 🎉」——「0 份」配 🎉 自相矛盾，正是本票要修的病。
-  // 這種情況沒有「成就」可慶祝，改用後端給的 headline/usage（後端也不再編造是誰吃掉額度）。
-  if (q.kind === 'workersai_starved') {
-    return `
-    <div class="card" data-quota-kind="workersai_starved">
-      <h3>${esc(q.headline)}</h3>
-      <div class="d" style="margin-top:6px">${esc(q.usage)}。</div>
-      <div class="d" style="margin-top:6px"><b>${esc(q.guarantee)}</b>。</div>
-      ${pending}
-      <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
-      <div class="acts"><button class="ghost" data-openurl="https://rag.arcrun.dev/docs/">看看怎麼做</button></div>
-    </div>`;
-  }
+  // 額度用完一張卡一行：「⏸ 額度用完 · 08:00 恢復 · 排隊 N」＋「升級」＋「?」連文件（#240 c18306）。
+  // 標題（含種類與恢復時間）由 Go 側 compactUI 組好；這裡只接上排隊數。
+  // 多帳號時哪一台爆了，不另寫一行——這張卡本來就只出現在爆的那個帳號自己的分頁。
+  void accounts;
+  const queue = p && p.pending > 0 ? ` · 排隊 ${p.pending}` : '';
   return `
-    <div class="card">
-      <h3>${esc(q.achievement)} 🎉</h3>
-      ${account}
-      <div class="d" style="margin-top:6px">今天的免費 AI 額度用完了，先休息一下。<b>${esc(q.guarantee)}</b>。</div>
-      ${pending}
-      <div class="d" style="margin-top:6px">急著要的話：${esc(q.exit_options)}。</div>
-      <div class="acts"><button class="ghost" data-openurl="https://rag.arcrun.dev/docs/">看看怎麼做</button></div>
+    <div class="card quotacard alertcard" data-quota-kind="${esc(q.kind || '')}" role="alert">
+      <button class="x" data-dismiss="${esc(JSON.stringify([q.dismiss_key || '']))}" title="關閉" aria-label="關閉">×</button>
+      <div class="qrow"><span class="qt">${esc(q.headline || '')}${queue}</span>
+        <button class="primary" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">升級</button>
+        <button class="qmark" data-openurl="https://rag.arcrun.dev/docs/use/quota/" title="額度怎麼算" aria-label="額度怎麼算">?</button></div>
     </div>`;
 }
 
@@ -333,7 +412,7 @@ function cardQuotaMeter(m) {
       `今天送了 ${m.write_cards_today} 張卡，每張約 ${m.write_rows_per_card} 列`));
   } else {
     rows.push(`<div class="mrow"><span class="ml">上傳</span>
-      <span class="mn dim">—</span></div>`);
+      <span class="mn dim" title="${esc(m.write_note || '')}">—</span></div>`);
   }
 
   // ── 搜尋（讀取）：只講得出上限與現況，見上面紅線③ ───────────────────
@@ -349,17 +428,15 @@ function cardQuotaMeter(m) {
   if (m.batch_known) {
     batch = `<div class="mbatch">
       <div class="mrow">
-        <span class="ml">這批還要 ${m.batch_total_days} 天</span>
+        <span class="ml" title="這批還要 ${m.batch_total_days} 天，一天送得了約 ${m.batch_cards_per_day} 張">天</span>
         <span class="mn">${m.batch_day_no}/${m.batch_total_days}</span>
         <span class="mbar"><i style="width:${pct(m.batch_day_no, m.batch_total_days)}%"></i></span>
       </div>
-      <div class="d">還有 <b>${m.batch_pending_cards}</b> 張卡排隊中（一天送得了約 ${m.batch_cards_per_day} 張）——會自動接著跑，你不用重丟。</div>
+      <div class="mrow"><span class="ml" title="排隊中的卡">⏳</span><span class="mn">${m.batch_pending_cards}</span></div>
     </div>`;
-  } else if (m.batch_note) {
-    batch = `<div class="mbatch"><div class="d">${esc(m.batch_note)}</div></div>`;
   }
-
-  const why = m.write_known ? '' : `<div class="d" style="margin-top:6px">${esc(m.write_note || '')}</div>`;
+  // 沒資料就顯示「—」，原因放在滑過去才出現的 title，版面不放句子（#240 c18299）
+  const why = '';
   return `
     <div class="card" data-quota-meter="1">
       <h3>今天的用量</h3>
@@ -367,8 +444,8 @@ function cardQuotaMeter(m) {
       ${why}
       ${batch}
       <div class="acts">
-        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">怎麼升級付費</button>
-        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/">額度怎麼算</button>
+        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">升級</button>
+        <button class="qmark" data-openurl="https://rag.arcrun.dev/docs/use/quota/" title="額度怎麼算" aria-label="額度怎麼算">?</button>
       </div>
     </div>`;
 }
@@ -427,26 +504,10 @@ function cardProgress(p) {
         <ul class="breaklist">
           ${(p.groups || []).map((g) => `<li><span>${esc(g.category)}</span><span>${g.count} 份</span></li>`).join('')}
         </ul>
-        <div class="d" style="margin-top:8px">這些會自動重試，你不用重丟；細節與怎麼處理，看說明文件。</div>
-        <div class="acts"><button class="ghost" data-openurl="https://rag.arcrun.dev/docs/">開啟使用說明</button></div>
       </details>` : ''}
     </div>`;
 }
 
-function cardSkipped(k) {
-  if (!k) return '';
-  return `
-    <div class="card">
-      <h3>${esc(k.title)}</h3>
-      <div class="d" style="margin-top:6px">${esc(k.note)}</div>
-      ${(k.files || []).length ? `
-        <ul class="skiplist">
-          ${k.files.map((f) => `<li>${esc(f)}</li>`).join('')}
-          ${k.more ? `<li class="more">…等 ${k.more} 個</li>` : ''}
-        </ul>` : ''}
-      ${k.other ? `<div class="d" style="margin-top:8px">${esc(k.other)}</div>` : ''}
-    </div>`;
-}
 
 // ── 各庫頁：動作全部作用在這個庫（不會加錯帳號）──
 // ══════════════════════════════════════════════════════════════════════════
@@ -565,12 +626,12 @@ function renderFolderTree(path) {
   //    （指定了空資料夾，它就該在畫面上存在），前者是「再等一下」。
   //    兩者講同一句話，等於拿我們自己編的答案回答使用者。
   if (tree === null) {
-    box.innerHTML = `<div class="ftmsg">還沒掃到這個資料夾，第一次同步跑完就會出現。</div>`;
+    box.innerHTML = `<div class="ftmsg" title="還沒掃到，第一次同步跑完就會出現">—</div>`;
     return;
   }
   const nodes = tree.nodes || [];
   if (!nodes.length) {
-    box.innerHTML = `<div class="ftmsg">這個資料夾目前是空的。</div>`;
+    box.innerHTML = `<div class="ftmsg" title="這個資料夾目前是空的">∅</div>`;
     return;
   }
   const r = rollupTree(nodes);
@@ -607,11 +668,11 @@ function renderFolderTree(path) {
     //    🔴 也**不塞進 tooltip**（同一條紅線：「不要把長句子搬進 tooltip 裡繼續長」），
     //    tooltip 只有「點一下看原因」這種操作提示。
     let why = n.skipped
-      ? (n.skip_reason || '（小幫手沒說明理由）')
+      ? (n.skip_reason || '—')
       : gapWhy(s);
     // #136 驗收 7：使用者已經手動把這個資料夾收進來了 ⇒ 這一列的「為什麼」講的是他的選擇，
     // 而不是系統的預設判斷（那句已經被他覆寫掉了）。
-    if (n.included) why = '你選了要收這個資料夾的檔案（可以收回）';
+    if (n.included) why = '已手動收進來';
     // 收檔策略那句話（原本掛在樹的上方，leo 圈掉了）改掛在**根那一列**——
     // 它講的就是這個監看根，點根的數字就看得到，資訊沒有消失。
     if (n.parent === '-' && tree.reason) why = why ? `${tree.reason}（${why}）` : tree.reason;
@@ -634,7 +695,7 @@ function renderFolderTree(path) {
       const canInclude = n.skipped && n.total_files > 0 && !n.included;
       let act = '';
       if (n.included) {
-        act = `<button class="ftinc" data-tiroot="${esc(path)}" data-tinode="${esc(n.path)}" data-tiact="exclude">取消收進來</button>`;
+        act = `<button class="ftinc" data-tiroot="${esc(path)}" data-tinode="${esc(n.path)}" data-tiact="exclude">取消</button>`;
       } else if (canInclude) {
         act = `<button class="ftinc" data-tiroot="${esc(path)}" data-tinode="${esc(n.path)}" data-tiact="include">收進來</button>`;
       }
@@ -661,7 +722,7 @@ function renderFolderTree(path) {
   //    宣稱「這是全部」——那是說謊，不是廢話。
   let foot = '';
   if (tree.truncated) {
-    foot = `<div class="ftmsg">只顯示前 ${nodes.length} 個資料夾（實際有 ${tree.total_nodes} 個）。</div>`;
+    foot = `<div class="ftmsg" title="只顯示前 ${nodes.length} 個資料夾，實際有 ${tree.total_nodes} 個">${nodes.length} / ${tree.total_nodes}</div>`;
   }
   box.innerHTML = `<div class="ftbody">${html}</div>${foot}`;
   wireTree();
@@ -762,26 +823,130 @@ async function reloadFolderTree(root) {
   renderFolderTree(root);
 }
 
-function pageLib(s, idx) {
-  const a = s.accounts[idx];
-  if (!a) return `<div class="empty"><div class="t">找不到這個知識庫</div></div>`;
-  const portal = 'https://' + a.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/';
+// 剩餘用量符號（Claude Design 稿 Meter.dc.html，leo 2026-10-09 認可）：
+// 上傳箭頭＋五格＋百分比。箭頭說明量的是「還能送多少上去」；五格橫排等高——
+// 不是電池（沒有外框凸頭）、也不是訊號（不是階梯）。一格＝20%，向上取整。
+// 平常深灰；只有免費帳號剩 20% 以下才換鏽色。付費多一個 ∞（不會停）：
+//   · 雲端有交免費額度剩餘 % ⇒ 格數＋% 照畫，再加 ∞
+//   · 雲端沒交 % ⇒ 只畫 ∞，不編數字
+// 問不到雲端（舊版雲端）⇒ 五個空格＋「—」，滑過去講原因，不是整個消失。
+// 判準全在雲端與 Go 側（accountBattery），這裡只畫。
+const UARROW = '<svg class="uarrow" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M6 8V2M3.5 4.5L6 2l2.5 2.5"/><path d="M1.5 8.5v2h9v-2"/></svg>';
+function usageGauge(b) {
+  if (!b) {
+    const tip = '查不到這個知識庫的剩餘用量（它的雲端版本較舊，更新後就會出現）';
+    return `<span class="ugauge unk" title="${esc(tip)}" aria-label="${esc(tip)}">${UARROW}<span class="cells"><i></i><i></i><i></i><i></i><i></i></span><span class="ut">—</span></span>`;
+  }
+  let cells = '';
+  if (b.pctKnown) {
+    for (let i = 0; i < b.total; i++) {
+      const on = i < b.cells;
+      cells += `<i class="${on ? 'on' : (i === 0 && b.level !== 'ok' ? 'zero' : '')}"></i>`;
+    }
+    cells = `<span class="cells">${cells}</span><span class="ut">${esc(String(Math.round(b.percent)))}%</span>`;
+  }
+  const inf = b.paid ? `<span class="inf" title="付費帳號：用完免費額度也不會停">∞</span>` : '';
+  return `<span class="ugauge ${esc(b.level)}${b.paid ? ' paid' : ''}" title="${esc(b.line)}" aria-label="${esc(b.line)}">${UARROW}${cells}${inf}</span>`;
+}
+
+// ── 帳號分頁（inkstone/arcrun-rag#240 c18254）──
+// 第一行＝帳號名稱；這個帳號自己的狀態、動態、用量、錯誤都在名稱底下；別人的不出現。
+// 分頁：同步／資料夾／App／用量／AI 與設定。
+const LIB_TABS = [['sync', '同步'], ['folders', '資料夾'], ['apps', 'App'], ['usage', '用量'], ['ai', '設定']];
+
+function libPortalURL(a) {
+  return 'https://' + a.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/';
+}
+
+function libHeadHtml(a) {
+  const b = a.battery;
+  // 網址不放（與「開啟知識庫網頁」重複）；同步中的句子也不放——狀態列用符號（#240 c18299）
   return `
-    <div class="libhead">
+    <header class="acchead">
       <div class="g">
-        <div class="nm">${esc(a.name)}</div>
-        <div class="host">${esc(a.host)}</div>
+        <h1 class="nm">${esc(a.name)}</h1>
       </div>
-      <button data-portal="${esc(portal)}">開啟知識庫網頁</button>
-      <button class="primary" data-addto="${idx}">加入資料夾</button>
+      <div class="accmeter" title="${esc(b ? b.line : '')}">${usageGauge(b)}</div>
+      <button class="primary" data-synclib="1">同步</button>
+    </header>
+    ${libStatusBar(a, state)}`;
+}
+
+// 這個帳號的狀態列：符號加數字（檔案／已送上／排隊中／停住了），同步中時符號會呼吸。
+// 通知（錯誤、停工、用量）在它下面，不在它上面。
+const SYM = {
+  files: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M13 3v5h5"/></svg>',
+  done: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m8 12.2 2.8 2.8L16 9.8"/></svg>',
+  queue: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+};
+function libStatusBar(a, s) {
+  const p = a.progress;
+  const st = a.status || {};
+  const item = (cls, sym, n, tip) => `<span class="sp ${cls}" title="${esc(tip)}" aria-label="${esc(tip)}: ${n}">${sym}<b>${n}</b></span>`;
+  const need = needsN(needsOf(s, a));
+  // 版本併進狀態列：最新就只有一個淡色版本號，沒有任何圖示；有新版才亮圖示加「查看」
+  const ver = a.cloudVerMine
+    ? (a.cloudVerStale
+      ? `<span class="sp"><span class="kbv" title="有新版 ${esc(a.cloudVerLatest || '')}">${esc(a.cloudVerMine)}</span><button class="ico" data-updatekb="${esc(a.email || '')}" title="前往安裝頁更新" aria-label="前往安裝頁更新">⬆ 查看</button></span>`
+      : `<span class="sp"><span class="kbv${a.cloudVerFresh ? '' : ' dim'}" title="雲端版本">${esc(a.cloudVerMine)}</span></span>`)
+    : '';
+  const cells = p ? [
+    item('', SYM.files, p.total, '這個帳號的檔案'),
+    item('', SYM.done, p.done, '已送上'),
+    item('', SYM.queue, p.pending, '排隊中'),
+  ].join('') : `<span class="sp" title="還沒有檔案進度">—</span>`;
+  // `!` ＝下面卡片上能處理的件數（同一個數字）；`↻`＝自動重試中，灰色
+  const bang = need ? item('bad', '<span class="bang">!</span>', need, '停住的檔案') : '';
+  const pause = needsOf(s, a).some((i) => i.kind === 'quota') ? `<span class="sp bad" title="額度用完" aria-label="額度用完">⏸</span>` : '';
+  const retry = a.trouble ? `<span class="sp quiet" title="自動重試中" aria-label="自動重試中: ${a.trouble.count}">↻&thinsp;${a.trouble.count}</span>` : '';
+  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${cells}${bang}${pause}${retry}<span class="grow"></span>${st.syncing ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat"></i>${SYM_SYNC}</span>` : ''}</section>`;
+}
+
+function libTabsHtml(a, idx) {
+  const cur = libTabOf(idx);
+  return `
+    <div class="tabs" role="tablist" aria-label="這個帳號">
+      ${LIB_TABS.map(([k, label]) => `
+        <button role="tab" class="tab${k === cur ? ' on' : ''}" aria-selected="${k === cur}" data-libtab="${k}">${label}${k === 'folders' ? ` <span class="cnt">${(a.folders || []).length}</span>` : ''}</button>`).join('')}
+      <span class="grow"></span>
+      <button class="lnk" data-portal="${esc(libPortalURL(a))}">網頁 ↗</button>
+    </div>`;
+}
+
+function libBodyHtml(s, a, idx) {
+  switch (libTabOf(idx)) {
+    case 'folders': return tabFolders(s, a, idx);
+    case 'apps': return tabApps(a, idx);
+    case 'usage': return tabUsage(s, a);
+    case 'ai': return tabAI(a);
+    default: return tabSync(s, a);
+  }
+}
+
+function tabSync(s, a) {
+  const q = s.quota && (s.quota.account === a.name || (!s.quota.account && (s.accounts || []).length === 1))
+    ? cardQuota(s.quota, a.progress, s.accounts) : '';
+  // 「送不上去」的分類統計沒有帳號維度，只有一個帳號時才拿來用，免得把別人的數字掛在這頁
+  const groups = (s.accounts || []).length === 1 ? cardProgress(s.progress) : '';
+  return `
+    ${cardStalls(s.stalls, a.name)}
+    ${q}
+    ${groups}`;
+}
+
+function libTroubleHtml() { return ''; }   // 自動重試中的失敗用戶做不了什麼：不亮、不出卡，只在狀態列留灰色 ↻
+
+function tabFolders(s, a, idx) {
+  return `
+    <div class="folderbar">
+      <button class="primary" data-addto="${idx}">加資料夾</button>
     </div>
-    <div class="kbver">${kbVersionLine(a)}</div>
     ${(a.folders || []).map((f) => f.retiring ? `
       <div class="folder">
         <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
         <span class="tag retiring">${f.retireError
-          ? '收回時出錯，會自動再試'
-          : `正在從雲端收回…${f.retireRemaining ? `還有 ${f.retireRemaining} 份` : ''}`}</span>
+          ? '⚠ 收回'
+          : `收回中${f.retireRemaining ? ` ${f.retireRemaining}` : '…'}`}</span>
       </div>
       ${f.retireError ? `<div class="d folder-note">${esc(f.retireError)}</div>` : ''}` : `
       <div class="folder${treeState.open[f.path] ? ' open' : ''}">
@@ -795,38 +960,90 @@ function pageLib(s, idx) {
           title="移除這個資料夾" aria-label="移除這個資料夾並從知識庫收回">🗑</button>
       </div>
       <div class="ftbox" id="${treeBoxId(f.path)}"${treeState.open[f.path] ? '' : ' style="display:none"'}></div>`).join('')
-      || `<div class="empty"><div class="t">這個知識庫還沒有資料夾</div>
-           <div class="d">按右上的「加入資料夾」，選一個要自動整理的資料夾。</div></div>`}`;
+      || `<div class="empty"><div class="t" title="這個知識庫還沒有資料夾">∅</div>
+           </div>`}`;
 }
 
-function pageAI(s) {
-  // inkstone/arcrun-rag#58：整理文件的 AI 一律在你的知識庫（雲端）裡跑，這台電腦只轉發文字，
-  // 不再有「選引擎」「貼金鑰」——所以這一頁只剩說明，沒有任何輸入欄位。
+// App 分頁：這個帳號裝了哪些 App；每個 App 可以挑「顯示在首頁」（首頁圖示角上會標這個帳號的字母）。
+function tabApps(a, idx) {
+  const r = appsCache[idx];
+  if (r === undefined || r === null) {
+    return `<div class="card"><div class="d">…</div></div>`;
+  }
+  if (r.error) {
+    // 🔴 「問不到」與「一個都沒裝」是兩件事，畫面上必須分得出來
+    //    （使用者該做的事完全相反：一個是修連線，一個是去裝 App）。
+    return `<div class="card">
+        ${more('看不到這個知識庫的 App', esc(r.error))}
+        <div class="acts"><button id="apRetry">重試</button></div>
+      </div>`;
+  }
+  const apps = r.apps || [];
+  return `
+    <div class="appbar"><span class="s" title="已安裝的 App">${apps.length}</span>
+      <button id="apRefresh">重整</button></div>
+    <div class="appgrid">
+      ${apps.map((x) => `
+        <div class="appcell">
+          <div class="apptile" data-appopen="${esc(x.id)}" data-appacc="${idx}" title="${esc(x.name)}${x.version ? ' · v' + esc(x.version) : ''}">${glyphSvg(r, x)}</div>
+          <div class="nm" title="${esc(x.name)}">${esc(x.name)}</div>
+          <button class="pinbtn${isPinned(a.host, x.id) ? ' on' : ''}" data-pin="${esc(x.id)}" data-pinhost="${esc(a.host)}"
+            aria-pressed="${isPinned(a.host, x.id)}">${isPinned(a.host, x.id) ? '已釘' : '釘選'}</button>
+        </div>`).join('')}
+      <div class="appcell">
+        <div class="apptile add" id="apAdd" title="到知識庫網頁加裝 App">＋</div>
+        <div class="nm dim">加裝 App</div>
+      </div>
+    </div>
+    `;
+}
+
+function tabUsage(s, a) {
+  const b = a.battery;
+  const head = `<div class="card usagecard"><div class="bigmeter">${usageGauge(b)}</div></div>`;
+  // 用量明細（上傳列數、這批還要幾天）只算得出「最吃緊的那一個」帳號，不是這個帳號才畫
+  const m = s.quotaMeter && s.quotaMeter.account === a.host ? cardQuotaMeter(s.quotaMeter) : '';
+  return `${libBatteryWarnHtml(a)}${head}${m}`;
+}
+
+function tabAI(a) {
   return `
     <div class="card">
-      <h3>AI 怎麼幫你整理文件？</h3>
-      <div class="d">整理文件的 AI 在<b>你的知識庫那一端</b>執行，這台電腦只負責把文字送過去、
-        把整理好的卡片收回來。<br/>
-        <b>你不需要申請、也不需要貼上任何金鑰。</b>要換成別的 AI（例如公司自己的模型），
-        由管理知識庫的人在知識庫那一端設定，這裡不用動。</div>
+      <h3>這個知識庫</h3>
+      <div class="kv" style="margin-top:10px;flex-wrap:wrap">
+        ${a.email ? `<div><div class="k">帳號</div><div class="mono">${esc(a.email)}</div></div>` : ''}
+        <div><div class="k">雲端版本</div><div class="kbver">${kbVersionLine(a)}</div></div>
+      </div>
     </div>`;
 }
 
+function libBatteryWarnHtml(a) {
+  const b = a.battery;
+  if (!b || !b.warning) return '';
+  // Go 側已把警告收成一行標題（「⚠ 用量 18%」「⏸ 用量用完」）；動作＝升級，或 × 關閉（#240 c18340）
+  return `<div class="card battery-warn alertcard ${esc(b.level)}" role="alert">
+    <button class="x" data-dismiss="${esc(JSON.stringify([b.dismissKey || '']))}" title="關閉" aria-label="關閉">×</button>
+    <div class="qrow"><span class="qt">${esc(b.warning)}</span>
+      <button class="primary" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">升級</button></div></div>`;
+}
+
+
+
 function pageUpdate(s) {
   const u = updateInfo;
-  const latest = u ? (u.latest || '查詢中…') : '按「檢查更新」查詢';
+  const latest = u ? (u.latest || '查詢中…') : '—';
   let action = `<button class="primary" id="uCheck">檢查更新</button>`;
   let note = '';
   if (u && u.staged) {
-    action = `<button class="primary" id="uApply">重新啟動以完成更新</button>`;
-    note = `<div class="d">新版 ${esc(u.latest)} 已下載完成，重新啟動就會套用。</div>`;
+    action = `<button class="primary" id="uApply">重啟更新</button>`;
+    note = '';
   } else if (u && u.available) {
-    action = `<button class="primary" id="uDownload">下載並安裝 ${esc(u.latest)}</button>`;
+    action = `<button class="primary" id="uDownload">更新</button>`;
     note = u.notes ? `<div class="d">${esc(u.notes)}</div>` : '';
   } else if (u && u.err) {
     note = `<div class="err">${esc(u.err)}</div>`;
   } else if (u) {
-    note = `<div class="d">你已經是最新版本。</div>`;
+    note = `<div class="d" title="你已經是最新版本">✓</div>`;
   }
   return `
     <div class="card">
@@ -847,11 +1064,7 @@ function pageUpdate(s) {
 // ⇒ 求救**只有一個入口**：左下角「？」（pageHelp，見下）。這裡不再重複放一份
 // 「疑難排解」卡片——票上明講「不准有兩個同名的東西」，此處只留指路。
 function cardDiagnostics() {
-  return `
-    <div class="card">
-      <h3>需要幫忙？</h3>
-      <div class="d">打字回報問題、匯出診斷檔、或查看文件與常見問題，都在左下角「?」裡，任何一頁都找得到。</div>
-    </div>`;
+  return '';   // 求救入口永遠在左下角「?」，這裡不放指路句（#240 c18301）
 }
 
 // 求救頁（inkstone/arcrun-rag#210）：leo 2026-09-20「這裏連說明都沒有，但有 3 件事：
@@ -863,17 +1076,11 @@ function cardDiagnostics() {
 function pageHelp(s) {
   return `
     <div class="card">
-      <h3>需要協助？</h3>
-      <div class="d">遇到問題時，這裡是唯一入口——不用另外找信箱或開 GitHub。</div>
-    </div>
-
-    <div class="card">
-      <h3>1・打字回報問題</h3>
-      <div class="d">寫下你遇到的狀況，按送出就會直接送到我們手上。</div>
-      <textarea id="fbText" rows="5" placeholder="請描述你遇到的狀況…" style="width:100%;box-sizing:border-box"></textarea>
+      <h3>回報</h3>
+      <textarea id="fbText" rows="5" placeholder="…" style="width:100%;box-sizing:border-box"></textarea>
       <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
         <input type="checkbox" id="fbAttach" checked/>
-        <span>附上診斷檔（只有統計數字，不含你的任何文件內容）</span>
+        <span title="只有統計數字，不含你的任何文件內容">附上診斷檔</span>
       </label>
       <div class="err" id="fbErr" style="display:none;margin-top:8px"></div>
       <div class="d" id="fbStatus" style="margin-top:8px"></div>
@@ -881,16 +1088,14 @@ function pageHelp(s) {
     </div>
 
     <div class="card">
-      <h3>2・匯出診斷檔</h3>
-      <div class="d">只想自己先存一份、之後再附上也可以。</div>
-      <div class="acts"><button id="uDiag">匯出診斷檔</button></div>
+      <h3>診斷檔</h3>
+      <div class="acts"><button id="uDiag">匯出</button></div>
       <div class="d" id="uDiagStatus" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
-      <h3>3・文件與常見問題</h3>
-      <div class="d">安裝、更新、把知識庫接到你的 AI，完整說明都在這裡。</div>
-      <div class="acts"><button id="uDocs">開啟使用說明</button></div>
+      <h3>文件</h3>
+      <div class="acts"><button id="uDocs">文件</button></div>
     </div>`;
 }
 
@@ -904,7 +1109,7 @@ async function submitFeedback() {
   const text = (textEl.value || '').trim();
   if (err) { err.style.display = 'none'; err.textContent = ''; }
   if (!text) {
-    if (err) { err.textContent = '請先寫下你遇到的狀況再送出。'; err.style.display = 'block'; }
+    if (err) { err.textContent = '請先填寫'; err.style.display = 'block'; }
     return;
   }
   const attach = !!($('fbAttach') && $('fbAttach').checked);
@@ -912,7 +1117,7 @@ async function submitFeedback() {
   if (status) status.textContent = '送出中…';
   try {
     await go.SubmitFeedback(text, attach);
-    if (status) status.textContent = '已送出，謝謝你的回報！';
+    if (status) status.textContent = '已送出 ✓';
     textEl.value = '';
   } catch (ex) {
     if (status) status.textContent = '';
@@ -947,35 +1152,24 @@ function onboarding() {
     return `
       <div class="empty ob">
         ${obDots}
-        <div class="obcap">第 2 步・共 2 步・連上你的知識庫</div>
-        <div class="t">你已經有知識庫了嗎？</div>
-        <div class="d">知識庫是存放你「知識卡」的地方——就像信箱之於信件，之後打開它的網址就能搜尋、AI 也能直接查。</div>
         <div class="obchoice">
           <div class="obcard">
             <div class="obh">已經有了</div>
-            <div class="d">手上有網址、帳號、密碼（邀請你的人會給你）。</div>
-            <button class="primary" id="obConnect">連上知識庫</button>
+            <button class="primary" id="obConnect">連線</button>
           </div>
           <div class="obcard">
             <div class="obh">還沒有</div>
-            <div class="d">免費申請一個，幾分鐘完成。<br/>填完會拿到網址、帳號、密碼——<b>回到這裡</b>，按左邊「連上知識庫」貼上去就完成。</div>
-            <button id="obInstall">免費申請一個</button>
+            <button id="obInstall">免費申請</button>
           </div>
         </div>
-        <button class="ghost" id="obBack" style="margin-top:16px">‹ 上一步</button>
+        <button class="ghost" id="obBack" style="margin-top:16px">‹ 返回</button>
       </div>`;
   }
 
   return `
     <div class="empty ob">
       ${obDots}
-      <div class="obcap">第 1 步・共 2 步・認識 Arcrun</div>
-      <div class="t">歡迎使用 Arcrun</div>
-      <div class="d obintro">
-        <p>① 你指定一個資料夾，Arcrun 會在背景幫你看著它。</p>
-        <p>② 資料夾裡新增或修改的檔案，會被自動整理成一張張「知識卡」。</p>
-        <p>③ 之後不管在哪台電腦、哪個裝置，打開你的知識庫網站，或讓你的 AI 助理直接問，都找得到。</p>
-      </div>
+      <div class="t">Arcrun</div>
       <button class="primary" id="obNext">開始設定</button>
     </div>`;
 }
@@ -998,7 +1192,7 @@ function onboarding() {
 async function loadApps(accIdx, force) {
   if (!force && appsCache[accIdx] !== undefined) return;
   appsCache[accIdx] = null;                      // null＝問中（畫面顯示「查詢中」）
-  if (page === 'apps') renderPage();
+  if (page === 'home' || page.startsWith('lib:')) renderPage();
   let res;
   try {
     res = await go.ListApps(accIdx);
@@ -1006,75 +1200,9 @@ async function loadApps(accIdx, force) {
     res = { accIdx, apps: [], error: String(ex) };
   }
   appsCache[accIdx] = res;
-  if (page === 'apps') renderPage();
+  if (page === 'home' || page.startsWith('lib:')) renderPage();
 }
 
-function pageApps(s) {
-  const accs = s.accounts || [];
-  if (!accs.length) {
-    // 「沒連任何實例時要說人話」（驗收條件 1）——不是空白，也不是壞掉的樣子。
-    return `<div class="empty">
-      <div class="t">還沒有連上知識庫</div>
-      <div class="d">App 住在你的知識庫上，連上之後這裡就會列出它裝了哪些 App。</div>
-      <button class="primary" id="apConnect">連上知識庫</button>
-    </div>`;
-  }
-  if (appsAccIdx >= accs.length) appsAccIdx = 0;
-  const acc = accs[appsAccIdx];
-  const r = appsCache[appsAccIdx];
-
-  // 知識庫切換器：只有一個庫時不畫（一顆永遠只能按自己的按鈕是純噪音）。
-  const switcher = accs.length > 1 ? `
-    <div class="appswitch">
-      ${accs.map((a, i) => `<span class="chip ${i === appsAccIdx ? 'on' : ''}" data-appacc="${i}">${esc(a.name)}</span>`).join('')}
-    </div>` : '';
-
-  let sub = '查詢中…';
-  let body = `<div class="card"><div class="d">正在問「${esc(acc.name)}」裝了哪些 App…</div></div>`;
-
-  if (r) {
-    if (r.error) {
-      // 🔴 「問不到」與「一個都沒裝」是兩件事，畫面上必須分得出來
-      //    （使用者該做的事完全相反：一個是修連線，一個是去裝 App）。
-      sub = '這次沒問到';
-      body = `<div class="card">
-        <h3>暫時看不到這個知識庫的 App</h3>
-        <div class="d">${esc(r.error)}</div>
-        <div class="acts"><button id="apRetry">再試一次</button></div>
-      </div>`;
-    } else {
-      const apps = r.apps || [];
-      sub = `${apps.length} 個 App 已安裝`;
-      body = `<div class="appgrid">
-        ${apps.map((a) => `
-          <div class="appcell">
-            <div class="apptile" data-appopen="${esc(a.id)}" title="${esc(a.name)}${a.version ? ' · v' + esc(a.version) : ''}">${esc(a.icon || '▢')}</div>
-            <div class="nm" title="${esc(a.name)}">${esc(a.name)}</div>
-          </div>`).join('')}
-        <div class="appcell">
-          <div class="apptile add" id="apAdd" title="怎麼加裝 App">＋</div>
-          <div class="nm dim">加裝 App</div>
-        </div>
-      </div>
-      ${apps.length ? '' : `<div class="card" style="margin-top:26px">
-        <h3>這個知識庫還沒有 App</h3>
-        <div class="d">App 是裝在知識庫上的：跟你的 AI 說一句「幫我裝一個 X」，
-        或用 <b>acr</b> 推一份 App 宣告上去。裝好之後回到這裡按「重新整理」就會出現。</div>
-      </div>`}`;
-    }
-  }
-
-  return `
-    <div class="apphead">
-      <div class="g">
-        <div class="t">App 界面</div>
-        <div class="s">${esc(acc.name)} · ${esc(sub)}</div>
-      </div>
-      <button id="apRefresh">重新整理</button>
-    </div>
-    ${switcher}
-    ${body}`;
-}
 
 // ── 單一 App 的頁 ─────────────────────────────────────────────────────────
 
@@ -1099,11 +1227,11 @@ function pageApp(accIdx, id) {
   const d = appDetail;
   const head = (ico, nm, ver) => `
     <div class="head">
-      <span class="ico">${esc(ico || '▢')}</span>
+      <span class="ico">${glyphSvg(appsCache[accIdx], ((appsCache[accIdx] || {}).apps || []).find((x) => x.id === id))}</span>
       <span class="nm">${esc(nm || id)}</span>
       ${ver ? `<span class="vr">v${esc(ver)}</span>` : ''}
       <span class="sp"></span>
-      <button data-appback="1">‹ 回 App 界面</button>
+      <button data-appback="1">‹ 返回</button>
     </div>`;
 
   if (!d) return `<div class="appview">${head('', id, '')}<div class="card"><div class="d">載入中…</div></div></div>`;
@@ -1112,9 +1240,7 @@ function pageApp(accIdx, id) {
     // session 過期／這台機器還沒換過 session。不是錯誤，是「還差一步」。
     return `<div class="appview">${head(d.icon, d.name, d.version)}
       <div class="card">
-        <h3>請先登入這個知識庫</h3>
-        <div class="d">要打開 App 的畫面、或執行它的動作，需要你在這個知識庫的帳號登入一次
-        （之後這台電腦會記住一段時間，同步不受影響）。</div>
+        <h3 title="要打開 App 的畫面或執行它的動作，需要在這個知識庫登入一次；之後這台電腦會記住一段時間，同步不受影響">登入</h3>
         <div class="field"><div class="lb">帳號</div>
           <input type="text" id="apEmail" value="${esc(d.email || '')}" disabled/></div>
         <div class="field"><div class="lb">密碼</div><input type="password" id="apPw"/></div>
@@ -1126,9 +1252,8 @@ function pageApp(accIdx, id) {
   if (d.error) {
     return `<div class="appview">${head(d.icon, d.name, d.version)}
       <div class="card">
-        <h3>打不開這個 App</h3>
-        <div class="d">${esc(d.error)}</div>
-        <div class="acts"><button id="apReload">再試一次</button></div>
+        ${more('打不開這個 App', esc(d.error))}
+        <div class="acts"><button id="apReload">重試</button></div>
       </div></div>`;
   }
 
@@ -1143,17 +1268,16 @@ function pageApp(accIdx, id) {
   const wfs = d.workflows || [];
   if (!wfs.length) {
     return `<div class="appview">${head(d.icon, d.name, d.version)}
-      <div class="card"><h3>這個 App 沒有可以按的東西</h3>
-      <div class="d">它既沒有自己的畫面，也沒有登記任何工作流。</div></div></div>`;
+      <div class="empty"><div class="t" title="這個 App 沒有自己的畫面，也沒有登記任何工作流">∅</div></div></div>`;
   }
   return `<div class="appview">${head(d.icon, d.name, d.version)}
     ${wfs.map((w) => `
       <div class="wfitem" data-wf="${esc(w.name)}">
         <div class="top">
-          <span class="nm">${esc(w.name)}</span>
-          <button data-apprun="${esc(w.name)}">現在執行</button>
+          <span class="nm" title="${esc(w.description || '')}">${esc(w.name)}</span>
+          <button data-apprun="${esc(w.name)}">執行</button>
         </div>
-        ${w.description ? `<div class="d">${esc(w.description)}</div>` : ''}
+        
         <div class="out"></div>
       </div>`).join('')}`;
 }
@@ -1225,29 +1349,60 @@ function mountAppUI(accIdx, d) {
   };
 }
 
+// 畫面更新一律先比對：HTML 沒變就完全不碰 DOM（每秒 tick 會呼叫，不能讓正在輸入、
+// 展開著的資料夾樹、iframe 因為重畫而跳掉）。
+function paint(el, html, key) {
+  if (!el) return false;
+  if (el._last === html && (key === undefined || el.dataset.view === key)) return false;
+  el._last = html;
+  if (key !== undefined) el.dataset.view = key;
+  el.innerHTML = html;
+  wire(el);
+  return true;
+}
+
 function renderPage() {
   if (!state) return;
+  const root = $('page');
+  if (page.startsWith('lib:')) return renderLibPage(root, Number(page.slice(4)));
+  // 離開帳號分頁後，下次回來要重建三個區塊
   let html;
-  if (page === 'apps') html = pageApps(state);
-  else if (page.startsWith('app:')) {
+  if (page.startsWith('app:')) {
     const p = page.split(':');
     html = pageApp(Number(p[1]), p.slice(2).join(':'));
   }
-  else if (page.startsWith('lib:')) html = pageLib(state, Number(page.slice(4)));
-  else if (page === 'ai') html = pageAI(state);
   else if (page === 'update') html = pageUpdate(state);
   else if (page === 'help') html = pageHelp(state);
   else html = pageHome(state);
-  // 每個庫頁底下都給「新增知識庫帳號」入口
-  if (page === 'home' && state.accounts && state.accounts.length) {
-    html += `<div class="acts"><button id="hAcct">新增知識庫帳號</button></div>`;
+  const wasLib = !!$('libBody');
+  if (paint(root, html, page)) {
+    // App 自帶畫面：DOM 換好之後才掛 iframe（srcdoc 要等元素真的在文件裡）
+    if (page.startsWith('app:') && appDetail && appDetail.hasUi && appDetail.uiHtml) {
+      mountAppUI(Number(page.split(':')[1]), appDetail);
+    }
   }
-  $('page').innerHTML = html;
-  wire();
+  void wasLib;
 }
 
-function wire() {
-  const on = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
+// 帳號分頁拆成三個區塊各自更新：名稱＋動態＋用量（每秒會變）、分頁列、分頁內容。
+// 這樣每秒跳動的「同步中…」不會連累下面正在看的資料夾樹。
+function renderLibPage(root, idx) {
+  const a = (state.accounts || [])[idx];
+  if (!a) { paint(root, `<div class="empty"><div class="t">—</div></div>`, 'lib:none'); return; }
+  const key = 'lib:' + idx;
+  if (root.dataset.view !== key || !$('libBody')) {
+    root.innerHTML = '<div id="libHead"></div><div id="libTabs"></div><div id="libBody"></div>';
+    root.dataset.view = key; root._last = null;
+  }
+  paint($('libHead'), libHeadHtml(a));
+  paint($('libTabs'), libTabsHtml(a, idx));
+  paint($('libBody'), libBodyHtml(state, a, idx));
+}
+
+function wire(root) {
+  root = root || $('page');
+  const on = (id, fn) => { const e = root.querySelector('#' + id); if (e) e.onclick = fn; };
+  const all = (sel) => root.querySelectorAll(sel);
   // uDocs／uDiag／fbSend：求救頁（pageHelp，inkstone/arcrun-rag#210）專用，
   // 求救只有一個入口，不再散落在別的頁面。
   on('uDocs', () => go.OpenURL('https://rag.arcrun.dev/docs/'));
@@ -1255,80 +1410,95 @@ function wire() {
   on('fbSend', submitFeedback);
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
-  on('hAcct', showConnect); on('obConnect', showConnect);
+  on('obConnect', showConnect);
   on('obInstall', () => go.OpenURL('https://install.arcrun.dev/'));
   on('obNext', () => { obStep = 2; renderPage(); });
   on('obBack', () => { obStep = 1; renderPage(); });
   on('uCheck', checkUpdate); on('uDownload', downloadUpdate); on('uApply', applyUpdate);
-  document.querySelectorAll('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
-  document.querySelectorAll('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
-  document.querySelectorAll('[data-updatekb]').forEach((b) => {
+  all('[data-synclib]').forEach((b) => { b.onclick = async () => { await go.SyncNow(); tick(); }; });
+  all('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
+  all('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
+  all('[data-stallall]').forEach((b) => {
+    b.onclick = async () => {
+      const fps = JSON.parse(b.dataset.stallall || '[]');
+      const msg = b.closest('.alertcard').querySelector('.stallmsg');
+      b.disabled = true;
+      if (msg) msg.textContent = '…';
+      try {
+        for (const fp of fps) await go.ReportStall(fp);   // 回報＝已處理，卡片與紅點隨之消失
+        await tick();
+      } catch (ex) {
+        b.disabled = false;
+        if (msg) msg.textContent = String(ex);
+      }
+    };
+  });
+  // × 關閉：記住鍵（重開 App 仍不亮），同一原因不再出現；份數變多不算新狀況
+  all('[data-dismiss]').forEach((b) => {
+    b.onclick = async () => {
+      let ks = [];
+      try { ks = JSON.parse(b.dataset.dismiss || '[]'); } catch (e) { ks = [b.dataset.dismiss]; }
+      if (!Array.isArray(ks)) ks = [ks];
+      for (const k of ks.filter(Boolean)) { try { await go.Dismiss(k); } catch (e) { /* 關不掉就保留 */ } }
+      await tick();
+    };
+  });
+  all('[data-updatekb]').forEach((b) => {
     b.onclick = () => go.OpenURL(installURLFor(b.dataset.updatekb));
   });
-  document.querySelectorAll('[data-addto]').forEach((b) => { b.onclick = () => addFolder(Number(b.dataset.addto)); });
-  document.querySelectorAll('[data-rm]').forEach((b) => {
+  all('[data-addto]').forEach((b) => { b.onclick = () => addFolder(Number(b.dataset.addto)); });
+  all('[data-rm]').forEach((b) => {
     b.onclick = () => confirmRemove(Number(b.dataset.acc), b.dataset.rm);
   });
   // #44：資料夾結構。換頁／重畫之後把本來就展開著的那幾棵補回去——
   // 不補的話使用者每次切回這一頁都得重按一次（狀態在 treeState，畫面卻是空的）。
-  document.querySelectorAll('[data-tree]').forEach((b) => {
+  all('[data-tree]').forEach((b) => {
     b.onclick = () => toggleFolderTree(b.dataset.tree);
     if (treeState.open[b.dataset.tree]) renderFolderTree(b.dataset.tree);
   });
 
+  // ── 帳號分頁／首頁（inkstone/arcrun-rag#240 c18254）──
+  all('[data-libtab]').forEach((b) => {
+    b.onclick = () => setLibTab(Number(page.slice(4)), b.dataset.libtab);
+  });
+  all('[data-golib]').forEach((b) => {
+    b.onclick = () => { libTab[Number(b.dataset.golib)] = b.dataset.tab || 'sync'; goPage('lib:' + b.dataset.golib); };
+  });
+  all('[data-pin]').forEach((b) => { b.onclick = () => togglePin(b.dataset.pinhost, b.dataset.pin); });
+  on('mappAdd', pickAccountForApp);
+  on('notifToggle', () => { notifOpen = !notifOpen; renderPage(); });
+
   // ── App 啟動器（arcrun-rag#137）──
   on('apConnect', showConnect);
-  on('apRefresh', () => loadApps(appsAccIdx, true));
-  on('apRetry', () => loadApps(appsAccIdx, true));
-  on('apAdd', showHowToInstallApp);
+  on('apRefresh', () => loadApps(Number(page.slice(4)), true));
+  on('apRetry', () => loadApps(Number(page.slice(4)), true));
+  // 加裝 App 在知識庫網頁的 App 市集做，這裡不放說明，直接帶過去
+  on('apAdd', () => { const a = (state.accounts || [])[Number(page.slice(4))]; if (a) go.OpenURL(libPortalURL(a)); });
   on('apReload', () => { const p = page.split(':'); loadAppDetail(Number(p[1]), p.slice(2).join(':')); });
   on('apLogin', appLogin);
-  document.querySelectorAll('[data-appacc]').forEach((b) => {
-    b.onclick = () => { appsAccIdx = Number(b.dataset.appacc); renderPage(); loadApps(appsAccIdx); };
+  all('[data-appopen]').forEach((b) => {
+    b.onclick = () => goToApp(Number(b.dataset.appacc), b.dataset.appopen);
   });
-  document.querySelectorAll('[data-appopen]').forEach((b) => {
-    b.onclick = () => goToApp(appsAccIdx, b.dataset.appopen);
+  all('[data-appback]').forEach((b) => {
+    b.onclick = () => {
+      appDetail = null; appDetailKey = '';
+      if (appFrameBridge) { window.removeEventListener('message', appFrameBridge); appFrameBridge = null; }
+      page = appBack; renderNav(); renderPage();
+      if (page.startsWith('lib:')) ensureTabData(Number(page.slice(4)));
+    };
   });
-  document.querySelectorAll('[data-appback]').forEach((b) => {
-    b.onclick = () => { page = 'apps'; appDetail = null; appDetailKey = ''; renderNav(); renderPage(); };
-  });
-  document.querySelectorAll('[data-apprun]').forEach((b) => { b.onclick = () => runAppAction(b); });
+  all('[data-apprun]').forEach((b) => { b.onclick = () => runAppAction(b); });
 
-  // App 自帶畫面：DOM 換好之後才掛 iframe（srcdoc 要等元素真的在文件裡）
-  if (page.startsWith('app:') && appDetail && appDetail.hasUi && appDetail.uiHtml) {
-    mountAppUI(Number(page.split(':')[1]), appDetail);
-  }
 }
 
 // goToApp 換到某個 App 的頁。換頁前先把上一個 App 的 postMessage 監聽器拆掉——
 // 不拆的話每開一次 App 就多留一個死監聽器（而且它還綁著舊的 accIdx/appId）。
 function goToApp(accIdx, id) {
   if (appFrameBridge) { window.removeEventListener('message', appFrameBridge); appFrameBridge = null; }
+  appBack = page.startsWith('lib:') ? page : 'home';
   page = 'app:' + accIdx + ':' + id;
   renderNav();
   loadAppDetail(accIdx, id);
-}
-
-// 「加裝 App」：桌面端**不假裝自己能安裝**——安裝是實例上的動作
-// （跟 AI 說一句話，或 acr 推一份宣告）。這裡只把「東西從哪來」講清楚，
-// 順便給一個開知識庫網頁的出口。
-function showHowToInstallApp() {
-  const acc = (state.accounts || [])[appsAccIdx];
-  const portal = acc ? 'https://' + acc.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/' : '';
-  openSheet(`
-    <h2>怎麼加裝 App？</h2>
-    <p>App 是裝在<b>知識庫</b>上的，不是裝在這台電腦上——所以你在任何一台電腦、
-    或在知識庫網頁上，看到的都是同一批 App。</p>
-    <p>兩種裝法：跟你的 AI 說「幫我裝一個 ⋯⋯」，或用 <b>acr</b> 把一份 App 宣告推上去。
-    裝好之後回到這裡按「重新整理」就會出現。</p>
-    <div class="acts">
-      <button id="c1">知道了</button>
-      ${portal ? `<button class="primary" id="c2">開啟知識庫網頁</button>` : ''}
-    </div>`,
-    () => {
-      $('c1').onclick = closeSheet;
-      if ($('c2')) $('c2').onclick = () => { go.OpenURL(portal); closeSheet(); };
-    });
 }
 
 async function appLogin() {
@@ -1368,22 +1538,35 @@ async function runAppAction(btn) {
 
 function render(s) {
   const first = !state;
-  const navChanged = state && JSON.stringify((state.accounts||[]).map(a=>[a.name,(a.folders||[]).length]))
-                          !== JSON.stringify((s.accounts||[]).map(a=>[a.name,(a.folders||[]).length]));
-  // arcrun-rag#137：還沒連上任何知識庫時，第一眼要落在連線精靈（首頁），
-  // 不是一個註定空的 App 啟動器。連上之後（accounts 從 0 變成 1）也不要硬把
-  // 使用者拉走——他當下正在看剛連好的東西。
-  if (first && page === 'apps' && !(s.accounts || []).length) page = 'home';
   state = s;
   $('ver').textContent = s.version || '';
-  $('statusBig').textContent = s.statusBig;
-  $('statusBig').classList.toggle('syncing', !!s.syncing);
-  $('statusSub').textContent = s.statusSub;
-  if (first || navChanged) { renderNav(); renderPage(); }
-  else if (page === 'home') renderPage();   // 首頁的狀態時間軸要跟著跳
-  // 🔴 這是**唯一**一次自動去問實例：第一次拿到 state（＝知道有哪些知識庫）之後。
-  //    之後只有使用者按重新整理／切知識庫才會再問一次——**不掛在每秒的 tick 上**。
-  if (first && page === 'apps' && (s.accounts || []).length) loadApps(appsAccIdx);
+  renderNav();
+  renderPage();
+  // 🔴 這是**唯一**一次自動去問實例：第一次拿到 state（＝知道有哪些知識庫）之後，
+  //    只問「有東西釘在首頁」的那幾個帳號（要拿到 App 的名字與圖示）。
+  //    之後只有使用者按重新整理／切到 App 分頁才會再問一次——**不掛在每秒的 tick 上**。
+  if (first) {
+    refreshUsage(-1);   // 開啟時問一次雲端當下的用量（不是輪詢，見 livebattery.go）
+    (s.accounts || []).forEach((a, i) => { if (pins.some((p) => p.h === a.host)) loadApps(i); });
+    if (page.startsWith('lib:')) ensureTabData(Number(page.slice(4)));
+  }
+}
+
+// 首頁「我的 App」的「＋ 加一個」：挑一個帳號，帶去它的 App 分頁。
+function pickAccountForApp() {
+  const accs = (state && state.accounts) || [];
+  if (accs.length === 1) { libTab[0] = 'apps'; goPage('lib:0'); ensureTabData(0); return; }
+  const L = acctLetters(accs);
+  openSheet(`
+    <h2>選帳號</h2>
+    ${accs.map((a, i) => `<button class="pickacc" data-pickacc="${i}"><span class="av">${esc(L[i])}</span>${esc(a.name)}</button>`).join('')}
+    <div class="acts"><button id="c1">取消</button></div>`,
+    () => {
+      $('c1').onclick = closeSheet;
+      document.querySelectorAll('[data-pickacc]').forEach((b) => {
+        b.onclick = () => { const i = Number(b.dataset.pickacc); closeSheet(); libTab[i] = 'apps'; goPage('lib:' + i); ensureTabData(i); };
+      });
+    });
 }
 
 async function tick() { try { render(await go.GetState()); } catch (e) {} refreshOpenTrees(); }
@@ -1421,7 +1604,6 @@ async function refreshOpenTrees() {
 }
 
 // ── 動作 ──
-$('btnSync').onclick = async () => { await go.SyncNow(); tick(); };
 
 async function addFolder(accIdx) {
   const p = await go.PickFolder();
@@ -1446,18 +1628,14 @@ async function addFolder(accIdx) {
 //      「使用者要能在動手前看到將要刪掉哪些東西」，按下去就無聲刪光不算做完。
 function confirmRemove(accIdx, path) {
   openSheet(`
-    <h2>移除這個資料夾？</h2>
-    <p>「${esc(path)}」要怎麼處理？<b>你自己的檔案不會被動到</b>——下面兩個選擇差在雲端，最後那個勾選框差在你的硬碟。</p>
+    <h2>移除</h2>
+    <p class="path">${esc(path)}</p>
     <label class="radio"><input type="radio" name="rmMode" value="takedown" checked/>
-      <span><b>連同雲端的知識一起收回</b><br/>
-      <span class="d">這個資料夾整理出來的知識會從知識庫刪除，之後搜尋找不到、AI 也不會再拿它回答。<b>刪掉就要不回來</b>。</span></span></label>
+      <span><b>連同雲端收回</b></span></label>
     <label class="radio"><input type="radio" name="rmMode" value="unwatch"/>
-      <span><b>只停止同步，雲端的知識保留</b><br/>
-      <span class="d">以後這個資料夾有變動不會再上傳，但之前整理好的知識留在知識庫裡，搜尋和 AI 照樣找得到。</span></span></label>
+      <span><b>只停同步</b></span></label>
     <label class="radio"><input type="checkbox" id="rmClean"/>
-      <span><b>順便把 Arcrun RAG 放在這個資料夾裡的檔案清掉</b><br/>
-      <span class="d">我們會在每一層資料夾放一個隱藏的整理稿目錄（<code>.wiki</code>／<code>.arcrun-rag</code>），
-      散在各層、你自己很難刪乾淨。勾起來會先列出<b>確切要刪哪些</b>給你看過再動手；認不出是我們建的一律留著。</span></span></label>
+      <span><b title="清掉 Arcrun 放在這個資料夾裡的檔案">清理殘檔</b></span></label>
     <div id="rmPlan" class="d" style="display:none;margin:8px 0 4px"></div>
     <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">確定</button></div>`,
     () => {
@@ -1465,11 +1643,11 @@ function confirmRemove(accIdx, path) {
       const box = $('rmClean'), out = $('rmPlan');
       box.onchange = async () => {
         if (!box.checked) { out.style.display = 'none'; out.innerHTML = ''; return; }
-        out.style.display = ''; out.textContent = '正在看這個資料夾裡有哪些是我們建的…';
+        out.style.display = ''; out.textContent = '…';
         try {
           out.innerHTML = renderCleanupPlan(await go.PlanFolderCleanup(accIdx, path));
         } catch (e) {
-          out.textContent = '看不到清單（' + e + '）——沒把握就先別勾這一項。';
+          out.textContent = '看不到清單：' + e;
         }
       };
       $('c2').onclick = async () => {
@@ -1486,15 +1664,15 @@ function confirmRemove(accIdx, path) {
 //    「這個資料夾乾淨了」，那就得讓他看得到還有什麼沒清、為什麼沒清。
 function renderCleanupPlan(plan) {
   const rm = (plan && plan.remove) || [], keep = (plan && plan.keep) || [];
-  if (!rm.length && !keep.length) return '這個資料夾裡沒有找到任何 Arcrun RAG 建立的檔案，不需要清理。';
+  if (!rm.length && !keep.length) return '∅';
   let h = '';
   if (rm.length) {
-    h += `<b>會刪掉這 ${rm.length} 項（共 ${plan.files} 個檔）：</b><ul style="margin:4px 0 0 16px">`;
+    h += `<b>刪 ${rm.length} 項（${plan.files} 個檔）</b><ul style="margin:4px 0 0 16px">`;
     for (const it of rm) h += `<li>${esc(it.rel)}${it.is_dir ? '／' : ''}（${it.files} 個檔）</li>`;
     h += '</ul>';
   }
   if (keep.length) {
-    h += `<b style="display:block;margin-top:8px">這 ${keep.length} 項我不會動：</b><ul style="margin:4px 0 0 16px">`;
+    h += `<b style="display:block;margin-top:8px">留 ${keep.length} 項</b><ul style="margin:4px 0 0 16px">`;
     for (const k of keep) h += `<li>${esc(k.rel)} — ${esc(k.reason)}</li>`;
     h += '</ul>';
   }
@@ -1503,11 +1681,10 @@ function renderCleanupPlan(plan) {
 
 function showConnect() {
   openSheet(`
-    <h2>連上你的知識庫</h2>
-    <p>貼上你的知識庫網址，再輸入你在網站上設定的帳號密碼。</p>
+    <h2>連線</h2>
     <div class="field"><div class="lb">知識庫網址</div>
       <input type="text" id="u" placeholder="https://arcrun-cypher-executor.xxxx.workers.dev"/></div>
-    <div class="field"><div class="lb">帳號（Email）</div>
+    <div class="field"><div class="lb">Email</div>
       <input type="text" id="e" placeholder="you@example.com"/></div>
     <div class="field"><div class="lb">密碼</div><input type="password" id="p"/></div>
     <div class="err" id="err" style="display:none"></div>
@@ -1544,7 +1721,7 @@ async function exportDiagnostics() {
   if (el) el.textContent = '匯出中…';
   try {
     const path = await go.ExportDiagnostics();
-    if (el) el.textContent = path ? `已存到：${path}` : '已取消。';
+    if (el) el.textContent = path ? `已存到：${path}` : '已取消';
   } catch (ex) {
     if (el) el.textContent = '匯出失敗：' + String(ex);
   }

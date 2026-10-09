@@ -669,7 +669,7 @@ test('#215 detectMigrationGeneration + migrationStatementsFrom：真 migrations.
     const runSql = async (sql) => db.exec(sql); // kbdb-sql-ok：離線測試對 :memory: SQLite 套 migration，非牆外碰真 KBDB
     await applyMigrations(runSql, pending);
     const { actualGeneration: after } = await detectMigrationGeneration(sqliteReadSql(db));
-    assert.equal(after, 13, '補完之後應該到最新一代');
+    assert.equal(after, MIGRATIONS.source.length, '補完之後應該到最新一代');
     db.close();
   }
 
@@ -679,7 +679,7 @@ test('#215 detectMigrationGeneration + migrationStatementsFrom：真 migrations.
     const db = new DatabaseSync(':memory:');
     db.exec(MIGRATION_SQL); // kbdb-sql-ok：模擬「已經裝到最新」
     const { actualGeneration } = await detectMigrationGeneration(sqliteReadSql(db));
-    assert.equal(actualGeneration, 13, `已是最新的實例應該探到第 13 代，實際 ${actualGeneration}`);
+    assert.equal(actualGeneration, MIGRATIONS.source.length, `已是最新的實例應該探到第 ${MIGRATIONS.source.length} 代，實際 ${actualGeneration}`);
     const pending = migrationStatementsFrom(actualGeneration, MIGRATIONS.statements, MIGRATIONS.generationStarts);
     assert.equal(pending.length, 0, '🔴 已是最新再更新一次，必須是 0 句——不准再送任何一句（含早就被自己刪掉的舊索引）');
     db.close();
@@ -1808,9 +1808,8 @@ test('t79 完成頁腳本：只給網址（網址卡＋複製鈕＋這次安裝�
   for (const needle of [
     "id=\"inst-url\"",          // 專屬網址本體
     "id=\"copy-btn\"",          // 複製鈕
-    '這是你的專屬網址',          // 網址卡文案
-    '裝在你的 Cloudflare 帳號：', // #45：裝到哪個帳號要看得見
-    '技術細節（給工程師看的）',   // 收合區
+    '☁ ',                       // #45：裝到哪個帳號要看得見（#240：符號加名字，不放句子）
+    '<summary>細節</summary>',   // 收合區
   ]) {
     assert.ok(src.includes(needle), `完成頁腳本應含「${needle}」`);
   }
@@ -2292,7 +2291,7 @@ test('t28b 門面順修：install.js 含 STEP_LABELS 保底表與 fmtDetail 佔�
   const src = await res.text();
   // ① 卡在這一步：不再只靠 server 的 stepLabel，client 有一份保底映射（含 deploy）
   assert.ok(src.includes('STEP_LABELS'), '應有 client 端 STEP_LABELS 保底表');
-  assert.ok(src.includes("deploy: '部署你的專屬服務'"), 'STEP_LABELS 應含 deploy 的白話標籤');
+  assert.ok(src.includes("deploy: '服務'"), 'STEP_LABELS 應含 deploy 的標籤（#240：標籤 ≤6 字）');
   assert.ok(src.includes('STEP_LABELS[e.step]'), 'renderError 的 stepLabel 應有 STEP_LABELS 保底 fallback');
   // ② 技術細節摺疊框不再可能整塊視覺空白——fmtDetail 對空值給明確佔位文字
   assert.ok(src.includes('function fmtDetail'), '應有 fmtDetail 佔位/防呆函式');
@@ -3466,7 +3465,7 @@ test('inkstone/Arcrun#190 靜默降級：被吞掉卻影響用戶拿到什麼的
     // 用戶語言：不准把 CF 的原文當成給用戶看的話（原文放 detail）
     assert.ok(!/vectorize|index|HTTP/i.test(item.title), `標題要是人話：「${item.title}」`);
   }
-  assert.match(w[0].title, /語意搜尋/, '「語意搜尋永遠零命中」是用戶真的少拿到的東西，要講出來');
+  assert.match(w[0].title, /同義詞歸一/, '「同義詞歸一沒裝起來」是用戶真的少拿到的東西，要講出來');
   assert.match(w[0].detail, /quota/, '技術原文留在 detail 給回報用');
 });
 
@@ -3635,21 +3634,21 @@ test('inkstone/Arcrun#190 前端實跑：有東西沒裝起來時，完成頁必
   });
   // 🔴 這是 leo 2026-08-31 判準的機械化：「用戶拿到『安裝成功』卻其實少了東西，
   //    這件事不准只寫在變數裡」⇒ 它必須出現在標題／內文，不是躲在摺疊的技術細節裡。
-  assert.match(els.subtitle.textContent, /沒有裝起來/,
-    `副標必須講出少了東西，實際「${els.subtitle.textContent}」`);
-  assert.match(els.result.innerHTML, /語意搜尋/, '缺什麼要寫在畫面上');
+  assert.match(els.subtitle.textContent, /⚠ 2/,
+    `副標必須講出少了東西（#240：符號加數字），實際「${els.subtitle.textContent}」`);
+  assert.match(els.result.innerHTML, /同義詞歸一/, '缺什麼要寫在畫面上');
   assert.match(els.result.innerHTML, /沒有對外開通/, '被空 catch 吞掉的那條也要畫出來');
   assert.match(els.result.innerHTML, /var\(--warn\)/, '要用警示樣式，不能混在正常內容裡');
   // 網址仍是主角（t79：完成頁只給網址），警告排在它後面
-  assert.ok(els.result.innerHTML.indexOf('url-box') < els.result.innerHTML.indexOf('沒有裝起來'),
+  assert.ok(els.result.innerHTML.indexOf('url-box') < els.result.innerHTML.indexOf('⚠'),
     '網址要排在警告前面（t79：完成頁的主角是網址）');
 });
 
 test('inkstone/Arcrun#190 前端實跑：全部正常時不要嚇用戶（沒有警告就不畫警告）', async () => {
   const { els, renderDone } = await loadInstallScript();
   renderDone({ result: { url: 'https://x.acme.workers.dev/portal/' }, warnings: installWarnings({}) });
-  assert.equal(els.subtitle.textContent, '你的知識庫已經準備好了。');
-  assert.ok(!/沒有裝起來/.test(els.result.innerHTML), '沒事就不要出現警示卡');
+  assert.equal(els.subtitle.textContent, '✓');
+  assert.ok(!/⚠/.test(els.result.innerHTML), '沒事就不要出現警示卡');
 });
 
 test('inkstone/Arcrun#190 前端實跑：開子網域**之前**，進度頁就要把名字畫給用戶看', async () => {
@@ -3664,8 +3663,8 @@ test('inkstone/Arcrun#190 前端實跑：開子網域**之前**，進度頁就�
   await poll();
   assert.match(els.error.innerHTML, /arcrun-k3m9p2qd\.workers\.dev/,
     '🔴 名字要在畫面上（紅線：開之前讓用戶知道）');
-  assert.match(els.error.innerHTML, /永久/, '改不回來這件事要講');
-  assert.match(els.error.innerHTML, /專屬網址/, '要有標題讓人知道這張卡在講什麼');
+  assert.match(els.error.innerHTML, /不可改/, '改不回來這件事要講（標題一行）');
+  assert.match(els.error.innerHTML, /網址/, '要有標題讓人知道這張卡在講什麼');
   // 而且不准出現「你自己去弄」
   assert.ok(!/後台|dash\.cloudflare\.com/.test(els.error.innerHTML),
     '這張卡是告知，不是待辦清單');
@@ -3804,7 +3803,7 @@ test('#191 前端實跑：清查挖出來的四條警告，也要真的畫到完
   // 🔴 這四條在本票清查前是**寫了就沒人看**的變數（全檔各只有一個寫入點、零個讀取點）。
   //    這個 test 是它們「真的被畫出來」的證據，不是「函式回了東西」而已。
   // ⚠️ 2026-09-02 起「金鑰保管處」那一條不對用戶顯示（#196 comment 6144）⇒ 剩三條。
-  assert.match(els.subtitle.textContent, /3 件事沒有裝起來/,
+  assert.match(els.subtitle.textContent, /⚠ 3/,
     `副標要數對，實際「${els.subtitle.textContent}」`);
   for (const [what, re] of [
     ['知識圖譜種子', /關係圖|圖譜/],
@@ -3850,9 +3849,9 @@ test('#196/6144 用戶面：只有「金鑰沒進保管處」時，完成頁一�
 
   renderDone({ result, warnings: userFacingWarnings(all), internalNotes: internalOnlyWarnings(all) });
 
-  assert.equal(els.subtitle.textContent, '你的知識庫已經準備好了。',
+  assert.equal(els.subtitle.textContent, '✓',
     `副標不准因為這一條而改口，實際「${els.subtitle.textContent}」`);
-  assert.ok(!/沒有裝起來/.test(els.result.innerHTML), '不准出現「有 N 件事沒有裝起來」');
+  assert.ok(!/⚠/.test(els.result.innerHTML), '不准出現警示計數');
   assert.ok(!/var\(--warn\)/.test(els.result.innerHTML), '不准有警示卡的樣式');
   // leo 眼睛看到的那一句，一個字都不准留在畫面上
   assert.ok(!/不如原本設計的安全/.test(els.result.innerHTML),
@@ -3928,7 +3927,7 @@ test('#196/6144 有出路的警告照常顯示：真的少了服務時，畫面�
   };
   const all = installWarnings(result);
   renderDone({ result, warnings: userFacingWarnings(all), internalNotes: internalOnlyWarnings(all) });
-  assert.match(els.subtitle.textContent, /有 1 件事沒有裝起來/,
+  assert.match(els.subtitle.textContent, /⚠ 1/,
     `數字只能數用戶面那一袋，實際「${els.subtitle.textContent}」`);
   assert.match(els.result.innerHTML, /沒有對外開通/, '有出路的警告要照常顯示');
   assert.ok(!/不如原本設計的安全/.test(els.result.innerHTML), '不給用戶看的那一條不准搭順風車');

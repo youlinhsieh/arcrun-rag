@@ -10,6 +10,7 @@ package collector
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -132,11 +133,69 @@ func parseWikiExtractJSON(text string) (*DocExtract, error) {
 	if start < 0 || end <= start {
 		return nil, fmt.Errorf("模型輸出裡找不到 JSON 物件：%.120s", text)
 	}
+	raw := []byte(text[start : end+1])
 	var ex DocExtract
-	if err := json.Unmarshal([]byte(text[start:end+1]), &ex); err != nil {
-		return nil, fmt.Errorf("萃取 JSON 解析失敗：%w（%.120s）", err, text[start:end+1])
+	err := json.Unmarshal(raw, &ex)
+	if err == nil {
+		return &ex, nil
 	}
-	return &ex, nil
+	// 模型偶爾在「該是字串清單」的欄位塞 bool／數字／null，或把清單寫成單一字串
+	// （inkstone/arcrun-rag#240 c18241：126-011E 的 points 夾了 bool，整份被擋 8 次）。
+	// 這是格式的小毛病不是內容壞了：把這幾個欄位正規化後再解一次，仍失敗才報錯。
+	if fixed, ok := normalizeStringListFields(raw); ok {
+		var ex2 DocExtract
+		if err2 := json.Unmarshal(fixed, &ex2); err2 == nil {
+			return &ex2, nil
+		}
+	}
+	return nil, fmt.Errorf("萃取 JSON 解析失敗：%w（%.120s）", err, text[start:end+1])
+}
+
+// normalizeStringListFields 把文件層與各概念的 tags／points 正規化成純字串清單：
+// 字串保留、數字轉字串、bool／null／物件丟掉、單一字串包成一項。
+func normalizeStringListFields(raw []byte) ([]byte, bool) {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil, false
+	}
+	fix := func(o map[string]any) {
+		for _, k := range []string{"tags", "points"} {
+			v, present := o[k]
+			if !present {
+				continue
+			}
+			var out []string
+			switch t := v.(type) {
+			case string:
+				if strings.TrimSpace(t) != "" {
+					out = []string{t}
+				}
+			case []any:
+				for _, e := range t {
+					switch x := e.(type) {
+					case string:
+						out = append(out, x)
+					case float64:
+						out = append(out, strconv.FormatFloat(x, 'f', -1, 64))
+					}
+				}
+			}
+			if out == nil {
+				out = []string{}
+			}
+			o[k] = out
+		}
+	}
+	fix(m)
+	if cs, ok := m["concepts"].([]any); ok {
+		for _, c := range cs {
+			if co, ok := c.(map[string]any); ok {
+				fix(co)
+			}
+		}
+	}
+	b, err := json.Marshal(m)
+	return b, err == nil
 }
 
 // cleanLegacyCard 淨化思考型模型輸出：取最後一個「# <pageName>」起的內容（前面全是草稿）。

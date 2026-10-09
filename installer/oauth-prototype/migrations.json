@@ -12,18 +12,14 @@
     "0010_entries_fts_trigram.sql",
     "0011_records_list_index.sql",
     "0012_entries_write_amplification.sql",
-    "0013_embed_pending_index.sql"
+    "0013_embed_pending_index.sql",
+    "0014_card_write_trim.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
     "CREATE TABLE IF NOT EXISTS templates (\n  id TEXT PRIMARY KEY,\n  name TEXT UNIQUE NOT NULL,\n  description TEXT,\n  slots_json TEXT NOT NULL,        \n  created_by TEXT,                 \n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
     "CREATE TABLE IF NOT EXISTS entry_values (\n  id TEXT PRIMARY KEY,\n  record_id TEXT NOT NULL,\n  template_id TEXT NOT NULL REFERENCES templates(id),\n  slot_name TEXT NOT NULL,\n  entry_id TEXT NOT NULL REFERENCES entries(id),\n  created_at INTEGER DEFAULT (unixepoch()),\n  UNIQUE(record_id, slot_name)\n)",
     "CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_owner ON entries(owner_id)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(parent_id)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_page ON entries(page_name)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_task ON entries(task_status)",
-    "CREATE INDEX IF NOT EXISTS idx_entries_hash ON entries(content_hash)",
     "CREATE INDEX IF NOT EXISTS idx_ev_record ON entry_values(record_id)",
     "CREATE INDEX IF NOT EXISTS idx_ev_template ON entry_values(template_id)",
     "CREATE INDEX IF NOT EXISTS idx_ev_template_slot ON entry_values(template_id, slot_name)",
@@ -41,7 +37,6 @@
     "ALTER TABLE entries ADD COLUMN rel_id TEXT",
     "ALTER TABLE entries ADD COLUMN dst_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_entries_rel_src ON entries(src_id) WHERE src_id IS NOT NULL",
-    "CREATE INDEX IF NOT EXISTS idx_entries_rel_dst ON entries(dst_id, rel_id) WHERE dst_id IS NOT NULL",
     "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_root', 'root', 'system', NULL)",
     "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_belongs', 'belongs', 'system', NULL)",
     "INSERT OR IGNORE INTO entries (id, content, entry_type, owner_id) VALUES ('sys_field_of', 'field_of', 'system', NULL)",
@@ -75,21 +70,29 @@
     "DROP INDEX IF EXISTS idx_entries_hash",
     "CREATE INDEX IF NOT EXISTS idx_entries_hash_present ON entries(content_hash) WHERE content_hash IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_entries_pending_embed ON entries(owner_id, created_at)\n  WHERE is_embedded = 0 AND content IS NOT NULL AND content <> '' AND json_extract(metadata_json, '$.embed') = 1",
-    "CREATE INDEX IF NOT EXISTS idx_entries_embedded_current ON entries(owner_id, created_at)\n  WHERE is_embedded = 1"
+    "CREATE INDEX IF NOT EXISTS idx_entries_embedded_current ON entries(owner_id, created_at)\n  WHERE is_embedded = 1",
+    "DROP INDEX IF EXISTS idx_entries_rel_dst",
+    "DROP TRIGGER IF EXISTS entries_fts_ai",
+    "DROP TRIGGER IF EXISTS entries_fts_ad",
+    "DROP TRIGGER IF EXISTS entries_fts_au",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_ai_v2 AFTER INSERT ON entries\n  WHEN new.content IS NOT NULL AND instr(new.id, '~v~') = 0\nBEGIN\n  INSERT INTO entries_fts(rowid, content) VALUES (new.rowid, new.content);\nEND",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_ad_v2 AFTER DELETE ON entries\n  WHEN old.content IS NOT NULL AND instr(old.id, '~v~') = 0\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);\nEND",
+    "CREATE TRIGGER IF NOT EXISTS entries_fts_au_v2 AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content AND instr(new.id, '~v~') = 0\nBEGIN\n  INSERT INTO entries_fts(entries_fts, rowid, content) SELECT 'delete', old.rowid, old.content WHERE old.content IS NOT NULL;\n  INSERT INTO entries_fts(rowid, content) SELECT new.rowid, new.content WHERE new.content IS NOT NULL;\nEND"
   ],
   "generationStarts": [
     0,
+    9,
+    11,
+    12,
+    13,
     14,
-    16,
     17,
-    18,
-    19,
-    22,
-    41,
-    42,
+    35,
+    36,
+    39,
+    44,
     45,
-    50,
-    51,
-    59
+    53,
+    55
   ]
 }

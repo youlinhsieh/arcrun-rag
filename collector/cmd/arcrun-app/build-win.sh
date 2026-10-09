@@ -36,6 +36,9 @@ echo "🏷  版本：${VERSION}（build ${BUILD_TIME}）"
 #   理由與格式見 changelog-section.sh。
 ./changelog-section.sh "$VERSION" --check
 
+# 🔴 畫面字數預算（inkstone/arcrun-rag#240 c18306）：超出就不准打包。
+./check-text-budget.sh
+
 command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 || {
   echo "❌ 缺 mingw-w64（Wails Windows 版需要 CGo 交叉編譯器）"
   echo "   裝一次就好：brew install mingw-w64"

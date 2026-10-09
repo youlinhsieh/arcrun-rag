@@ -74,16 +74,29 @@ func failureReason(body string) (string, bool) {
 	}
 	// ① 外層自己就說失敗
 	if env.Success != nil && !*env.Success {
-		return env.Error, true
+		return env.withQuotaDetail(trimmed), true
 	}
 	// ② 外層說成功，但工作流的輸出說失敗——本檔存在的理由就是這一格
 	if len(env.Data) > 0 {
 		var inner triggerInner
 		if err := json.Unmarshal(env.Data, &inner); err == nil && inner.Success != nil && !*inner.Success {
+			if d1QuotaKind(inner.Error) == "" && d1QuotaKind(trimmed) != "" {
+				return trimmed, true
+			}
 			return inner.Error, true
 		}
 	}
 	return "", false
+}
+
+// withQuotaDetail：外層 error 常只剩「HTTP 429」這種空殼，真正的原因（資料庫每日寫入額度用完）
+// 埋在 data 深處的原文裡。只看外層就會落到「稍後會自動再試」——而額度用完在隔天重置之前，
+// 再試幾次都一樣（inkstone/arcrun-rag#240 c18241：error_codes 21 份「雲端沒寫進」全是這一種）。
+func (e triggerEnvelope) withQuotaDetail(whole string) string {
+	if d1QuotaKind(e.Error) == "" && d1QuotaKind(whole) != "" {
+		return whole
+	}
+	return e.Error
 }
 
 // triggerFailure＝一則觸發失敗的**兩張臉**：使用者讀的那句（`Error()`）

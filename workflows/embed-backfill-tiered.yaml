@@ -52,7 +52,7 @@
 
 name: embed_backfill_tiered
 description: >
-  語意向量分層補算（Arcrun#85 D70）：照 leo 的優先序「①今天寫的立刻／②本週先跑／
+  實體排重用向量的分層補算（Arcrun#85 D70；向量不在讀取路徑上）：照 leo 的優先序「①今天寫的立刻／②本週先跑／
   ④半年前只吃剩下的」分層呼叫 KBDB 補嵌端點，每次被觸發時看當日額度、誠實停損。
   無 cron、無輪詢（D20）；額度基數由人宣告，查不到不猜。
   ③「有查詢紀錄的庫優先」本實例做不到（沒有查詢紀錄機制），report 會明說。
@@ -133,7 +133,7 @@ config:
 
       planned = planned.concat(bgTiers);
 
-      if (!enabled) notes.push('KBDB 回報 embed 模組未開（沒有 Vectorize + AI binding）⇒ 這次一層都不跑。要開：叫 CC「幫我開語義查詢」。');
+      if (!enabled) notes.push('KBDB 回報 embed 模組未開（沒有 Vectorize + AI binding）⇒ 這次一層都不跑。要開：叫 CC「幫我開實體排重」。');
       if (dryRun) notes.push('dry_run=true ⇒ 只規劃不補算（planned 就是「真的跑會做什麼」）。');
       if (bgBudget <= 0) notes.push('沒有宣告 ai_daily_quota（每日額度基數）⇒ 背景層 ②④ 這次不排。Cloudflare 查得到「今天用了多少」卻查不到「還剩多少」，基數只有人知道——查不到就不猜。');
       if (bgBudget > 0 && l4 < 1) notes.push('④ 這次沒有配額——背景預算被 ② 用完了。這是設計如此（④ 只吃剩下的），不是漏排。');

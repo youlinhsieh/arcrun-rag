@@ -452,16 +452,21 @@ func gramSet(s string, n int) map[string]bool { return runeGrams(s, n) }
 type secretPattern struct {
 	label string
 	re    *regexp.Regexp
+	// match 非 nil 時取代 re：regexp 只能看形狀，信用卡號要再驗 Luhn／發卡組織前綴（見 looksLikeCardNumber）。
+	match func(line string) bool
 }
 
 var secretPatterns = []secretPattern{
-	{"密碼/密鑰賦值", regexp.MustCompile(`(?i)(pass(word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(ate)?[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]<>"']{6,}`)},
-	{"私鑰 PEM 區塊", regexp.MustCompile(`-----BEGIN[[:space:]].*PRIVATE KEY-----`)},
-	{"服務金鑰特徵", regexp.MustCompile(`(AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{20,}|sk_(live|test)_[0-9A-Za-z]{16,})`)},
-	{"JWT token", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
-	{"連線字串內嵌帳密", regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^[:space:]:/@]+:[^[:space:]:/@]+@`)},
-	{"台灣身分證字號", regexp.MustCompile(`(^|[^A-Za-z0-9])[A-Z][12][0-9]{8}([^0-9]|$)`)},
-	{"疑似信用卡號", regexp.MustCompile(`(^|[^0-9])[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{0,4}([^0-9]|$)`)},
+	{label: "密碼/密鑰賦值", re: regexp.MustCompile(`(?i)(pass(word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(ate)?[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]<>"']{6,}`)},
+	{label: "私鑰 PEM 區塊", re: regexp.MustCompile(`-----BEGIN[[:space:]].*PRIVATE KEY-----`)},
+	{label: "服務金鑰特徵", re: regexp.MustCompile(`(AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{20,}|sk_(live|test)_[0-9A-Za-z]{16,})`)},
+	{label: "JWT token", re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
+	{label: "連線字串內嵌帳密", re: regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^[:space:]:/@]+:[^[:space:]:/@]+@`)},
+	{label: "台灣身分證字號", re: regexp.MustCompile(`(^|[^A-Za-z0-9])[A-Z][12][0-9]{8}([^0-9]|$)`)},
+	// 信用卡號：形狀（13–19 位數字，可夾空白或連字號）＋ Luhn 校驗碼 ＋ 發卡組織前綴，三項都過才算。
+	// 只比形狀會把頁碼、檔名裡的長數字（例 `1424194141044_N183C46.html`）當卡號誤殺
+	// （inkstone/arcrun-rag#240 c18236：error_codes 91 份正常錯誤碼卡被擋）。
+	{label: "疑似信用卡號", match: hasCardNumber},
 }
 
 // scanSecrets 逐行掃機敏特徵（與 shell hook 的 line-oriented grep 同語意），回傳命中標籤（去重保序）。
@@ -476,7 +481,13 @@ func scanSecrets(card string) []string {
 			if seen[p.label] {
 				continue
 			}
-			if p.re.MatchString(line) {
+			hit := false
+			if p.match != nil {
+				hit = p.match(line)
+			} else {
+				hit = p.re.MatchString(line)
+			}
+			if hit {
 				hits = append(hits, p.label)
 				seen[p.label] = true
 			}
@@ -518,4 +529,83 @@ func trimForMsg(s string) string {
 		return string([]rune(s)[:40]) + "…"
 	}
 	return s
+}
+
+// ── 信用卡號判斷 ──
+// 候選＝連續 13–19 位數字（中間可有單一空白或連字號分組）。
+// 前後若緊鄰英數字或底線，代表它是檔名／代碼的一段（`1424194141044_N183C46.html`），不是卡號。
+var cardCandidateRe = regexp.MustCompile(`[0-9](?:[ -]?[0-9]){12,18}`)
+
+func hasCardNumber(line string) bool {
+	for _, loc := range cardCandidateRe.FindAllStringIndex(line, -1) {
+		if loc[0] > 0 && isIdentByte(line[loc[0]-1]) {
+			continue
+		}
+		if loc[1] < len(line) && isIdentByte(line[loc[1]]) {
+			continue
+		}
+		if looksLikeCardNumber(line[loc[0]:loc[1]]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// looksLikeCardNumber：去掉分組符號後，長度、發卡組織前綴、Luhn 校驗全部符合。
+func looksLikeCardNumber(s string) bool {
+	var d []int
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			d = append(d, int(r-'0'))
+		}
+	}
+	if len(d) < 13 || len(d) > 19 || !cardPrefixOK(d) {
+		return false
+	}
+	sum := 0
+	for i := 0; i < len(d); i++ {
+		v := d[len(d)-1-i]
+		if i%2 == 1 {
+			v *= 2
+			if v > 9 {
+				v -= 9
+			}
+		}
+		sum += v
+	}
+	return sum%10 == 0
+}
+
+// cardPrefixOK：Visa 4（13/16/19 位）、Mastercard 51–55／2221–2720（16）、Amex 34／37（15）、
+// Discover 6011／65／644–649（16–19）、JCB 3528–3589（16–19）、銀聯 62（16–19）、Diners 300–305／36／38（14–16）。
+func cardPrefixOK(d []int) bool {
+	n := len(d)
+	num := func(k int) int {
+		v := 0
+		for i := 0; i < k && i < n; i++ {
+			v = v*10 + d[i]
+		}
+		return v
+	}
+	switch {
+	case d[0] == 4:
+		return n == 13 || n == 16 || n == 19
+	case num(2) >= 51 && num(2) <= 55, num(4) >= 2221 && num(4) <= 2720:
+		return n == 16
+	case num(2) == 34, num(2) == 37:
+		return n == 15
+	case num(4) == 6011, num(2) == 65, num(3) >= 644 && num(3) <= 649:
+		return n >= 16 && n <= 19
+	case num(4) >= 3528 && num(4) <= 3589:
+		return n >= 16 && n <= 19
+	case num(2) == 62:
+		return n >= 16 && n <= 19
+	case num(3) >= 300 && num(3) <= 305, num(2) == 36, num(2) == 38:
+		return n >= 14 && n <= 16
+	}
+	return false
 }

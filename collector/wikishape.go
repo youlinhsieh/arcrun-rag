@@ -627,41 +627,45 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin Sourc
 	// 「別份文件」已佔用的名字（manifest 記載的文件卡與概念卡）不准撞——
 	// 同名概念真正該做的是 merge，但那是 place_card（第⑤環）的題目；
 	// 本環先以「＋（文件卡名）」消歧，保證不覆蓋、不斷連結。
+	// 🔴 鍵一律轉小寫（inkstone/arcrun-rag#240 c18241）：macOS／Windows 的檔案系統不分大小寫，
+	// 「Error message」與「Error Message」會寫成同一個檔。只比原字串會放行撞名，
+	// 落地時才被「卡片位置被佔用」擋下，而且每次重試都撞同一面牆。
 	taken := map[string]bool{"00-INDEX": true}
+	fold := strings.ToLower
 	old := m.find(nodeKey, base)
 	for i := range m.Docs {
 		if m.Docs[i].Node != nodeKey || m.Docs[i].Path == base {
 			continue
 		}
-		taken[m.Docs[i].Card] = true
+		taken[fold(m.Docs[i].Card)] = true
 		for _, cn := range m.Docs[i].Concepts {
-			taken[cn] = true
+			taken[fold(cn)] = true
 		}
 	}
 
 	docCard := docCardNameFor(srcText, relPath)
-	if taken[docCard] { // 洞 1 的 fallback：H1 撞到別份文件的卡 → 用「檔名」退避
+	if taken[fold(docCard)] { // 洞 1 的 fallback：H1 撞到別份文件的卡 → 用「檔名」退避
 		docCard = sanitizeCardName(pageNameOf(relPath))
 	}
-	for n := 2; taken[docCard]; n++ {
+	for n := 2; taken[fold(docCard)]; n++ {
 		docCard = sanitizeCardName(pageNameOf(relPath) + "（" + itoa(n) + "）")
 	}
-	taken[docCard] = true
+	taken[fold(docCard)] = true
 
 	// 概念名：消毒、去重、避開文件卡名與別份文件的卡（規範第二之一部）。
 	var conceptNames []string
-	nameSeen := map[string]bool{docCard: true, "00-INDEX": true}
+	nameSeen := map[string]bool{fold(docCard): true, "00-INDEX": true}
 	var concepts []WikiConcept
 	for _, c := range ex.Concepts {
 		name := sanitizeCardName(c.Name)
-		if taken[name] || nameSeen[name] {
+		if taken[fold(name)] || nameSeen[fold(name)] {
 			name = sanitizeCardName(c.Name + "（" + docCard + "）")
 		}
-		if nameSeen[name] || taken[name] {
+		if nameSeen[fold(name)] || taken[fold(name)] {
 			continue // 消歧後仍撞＝同文件內重複概念，丟棄後到者
 		}
-		nameSeen[name] = true
-		taken[name] = true
+		nameSeen[fold(name)] = true
+		taken[fold(name)] = true
 		conceptNames = append(conceptNames, name)
 		concepts = append(concepts, c)
 	}
@@ -763,7 +767,7 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin Sourc
 	writeCard := func(cardName, content string) (string, error) {
 		r := rel(cardName)
 		destAbs := filepath.Join(absRoot, filepath.FromSlash(r))
-		if _, err := os.Stat(destAbs); err == nil && !owned[r] {
+		if _, err := os.Stat(destAbs); err == nil && !owned[r] && !isOrphanOfThisDoc(destAbs, origin, cardName) {
 			return "", fmt.Errorf("卡片位置被佔用（不覆蓋既有檔案）：%s", r)
 		}
 		return r, writeWikiFile(absRoot, destAbs, []byte(content))
@@ -972,4 +976,16 @@ func writeNodeIndex(absRoot, node string, m *wikiManifest) error {
 
 	dest := filepath.Join(wikiDirFor(absRoot, node), "00-INDEX.md")
 	return writeWikiFile(absRoot, dest, []byte(b.String()))
+}
+
+// isOrphanOfThisDoc：檔案雖然沒記在 manifest，但內容的「### 出處」三元組寫的正是這份文件、這個卡名
+// ⇒ 是上一輪同一份文件寫到一半（後面的卡失敗、manifest 沒存）留下的殘卡，是我們自己的，可以覆寫。
+// 不然下一輪重試會被自己的殘卡擋下，永遠過不去（inkstone/arcrun-rag#240 c18241：160-0122_002）。
+// 別人的檔（使用者原有的、別份文件的卡）不會有這一行，照舊不覆蓋。
+func isOrphanOfThisDoc(destAbs string, o SourceOrigin, cardName string) bool {
+	b, err := os.ReadFile(destAbs)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "- `"+o.Ref()+"`"+triSep+"提及"+triSep+cardName+"\n")
 }

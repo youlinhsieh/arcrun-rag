@@ -100,6 +100,11 @@ type DirectConfig struct {
 	// 不寫進 config.json（`json:"-"`）：它是單次執行旗標，不是使用者設定。
 	ForceSync bool `json:"-"`
 
+	// SaverMode＝這個帳號的雲端電量進了省電（剩 10% 以下，雲端 battery.saver）——
+	// 單輪少送、放慢節奏、延後補送（inkstone/arcrun-rag#240 c18058，見 battery.go）。
+	// 單次執行旗標，每輪由 RunDirectOnce 依雲端電量重設；使用者按「立刻同步」時不省電。
+	SaverMode bool `json:"-"`
+
 	// CloudVersion＝這一輪這個帳號的雲端版本（/health 的 bundle_version，查不到時沿用上一輪）。
 	// 單次執行資訊，不寫進 config.json。給逐檔退避判斷「舊雲端造成的暫停該不該再試」（#196）。
 	CloudVersion string `json:"-"`
@@ -314,6 +319,15 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 		if err := saveDirectConfig(path, &c); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 舊設定已改用雲端 AI，但寫回 config 失敗（不影響本次執行；"+
 				"檔案裡的舊金鑰還在，請手動刪掉 gemini_api_key）：%v\n", err)
+		}
+	}
+
+	// 🔴 inkstone/arcrun-rag#240（c18055）：某帳號的 api_key 若是「另一個帳號的 namespace」，
+	// 就是串號（舊托盤 addOrUpdateAccount 換實例時只改 namespace、不改 api_key）。
+	// 判準保守：只動「等於別的帳號 namespace」的，不碰自訂 key；修好要回寫檔案。
+	if healAccountKeyCrossover(c.Accounts) {
+		if err := saveDirectConfig(path, &c); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ 偵測到帳號 api_key 串號並已在記憶體修正，但寫回 config 失敗：%v\n", err)
 		}
 	}
 
@@ -558,6 +572,7 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 	// ⇒ 讀取撞頂 `/health` 探得到（它自己就是讀），**寫入撞頂只會從這一發回來**，
 	// 而它回的是 200 ⇒ 舊位置等於「寫入側永遠認不出來」。
 	// 放在狀態碼分支之前，兩種形狀都收得到。
+	cloudRoutes.refineCause(url, string(full)) // #240：額度剎車講成人話，不是「內部錯誤」
 	if k := d1QuotaKind(string(full)); k != "" {
 		noteD1Quota(c.CypherURL, k, directNow())
 	}
@@ -847,6 +862,10 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			CloudUpdateStale: cloudUpd.NeedsUpdate,
 			CloudLatest:      cloudUpd.Latest,
 		}
+		// 電池模型（#240 c18058）：這一台雲端自己的電量；雲端交來什麼就是什麼，不重算。
+		// 使用者按「立刻同步」＝他要的就是現在，不省電（同 ForceSync 對退避的態度）。
+		accSt.Battery = batteryFor(accCfg.CypherURL, accCfg.APIKey, accHost, cfg.ForceSync)
+		accCfg.SaverMode = accSt.Battery.SavesPower() && !cfg.ForceSync
 
 		// 🔴 t182（leo 08-04）：「會去**掃一次**看雲端是否裝好，**沒裝好就顯示 workers AI
 		// 還沒通，一旦通了就顯示可用**」。
@@ -1126,8 +1145,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 				case "failed":
 					st.ExtractFailed++
 					st.Failures = append(st.Failures, ExtractFail{
-						Path:  r.Path,
-						Error: shortError(r.Error),
+						Path:    r.Path,
+						Error:   shortError(r.Error),
+						Account: r.Account,
 					})
 				case "skipped":
 					// 🔴 leo 2026-08-06：退避期間這個檔**不會**再產生 "failed"，
@@ -1138,8 +1158,9 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 					// 用「會自動恢復」當識別字——同樣要讓使用者看得到原因，不是只看到「幾份」。
 					if explainsWhySkipped(r.Error) {
 						st.Failures = append(st.Failures, ExtractFail{
-							Path:  r.Path,
-							Error: shortError(r.Error),
+							Path:    r.Path,
+							Error:   shortError(r.Error),
+							Account: r.Account,
 						})
 					}
 				}
@@ -1343,7 +1364,7 @@ func drainPendingTakedowns(
 			break
 		}
 		pageName := m.PendingTakedowns[oldPath]
-		pace()
+		paceFor(cfg)
 		res := DirectResult{Type: resultType, Path: oldPath}
 		mach := cfg.machineIdentity()
 		status, _, perr := cfg.postJSON(step, cfg.triggerURL(cfg.RemovedWF), map[string]any{
@@ -1625,7 +1646,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// ⇒ 補送走的是**既有的**萃取路，既有的單輪上限／失敗退避／額度冷卻全部照舊生效。
 	// 放在 Scan() 之後就得再等一輪才會動，且要另外發明一條送件路。見 cloud_audit.go。
 	auditErr := ""
-	if ar := auditCloudLedger(cfg, absRoot, m, dryRun, runNow); ar != nil {
+	// 省電時延後補送：對帳會把「雲端找不到」的章拔掉、引出一批補送，正是額度吃緊時最不該開的門。
+	if ar := auditCloudLedgerUnlessSaving(cfg, absRoot, m, dryRun, runNow); ar != nil {
 		auditErr = ar.Err
 		if ar.Voided > 0 {
 			results = append(results, DirectResult{
@@ -1649,7 +1671,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 舊卡的出處寫的是 `../<檔名>`（daemon 自己的目錄結構），AI 照著答、使用者走不到。
 	// 修產生端只治得了新卡，票上寫死「不能只修新的」⇒ 這裡把本機既有的卡重畫那一塊
 	// 並原樣重推（零 LLM，workflow 進門先刪同名舊 blocks ⇒ 取代不疊加）。見 sourcerepair.go。
-	if sr := repairCardSourceBlocks(cfg, absRoot, m, dryRun, false, runNow); sr != nil {
+	if sr := repairSourceBlocksUnlessSaving(cfg, absRoot, m, dryRun, runNow); sr != nil {
 		if sr.Repushed > 0 {
 			results = append(results, DirectResult{
 				Type: "resync", Path: absRoot, Status: "noticed",
@@ -1859,6 +1881,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 避免巨量積壓（實據 KB 資料夾 ~1900 筆退避中）把單輪結果與 status.json 灌爆。
 	orderedEvents := sortEventsNewestFirst(absRoot, payload.Events)
 	perRunCap := cfg.effectiveMaxEventsPerRun()
+	if cfg.SaverMode && perRunCap > saverMaxEventsPerRun {
+		perRunCap = saverMaxEventsPerRun // 省電：單輪少送，剩下的排到下一輪（#240 c18058）
+	}
 	readyEvents, waitingEvents := partitionRetryEligible(m, orderedEvents, now, cfg.ForceSync, qs.inCooldown(runNow))
 
 	deferredCount := 0
@@ -1981,7 +2006,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				results = append(results, res)
 				continue
 			}
-			pace() // 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下
+			paceFor(cfg) // 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下
 			if cfg.Extractor != "" {
 				// 四步定稿：本地萃卡 → 每張卡 POST rag_ingest_card（原文不出機）
 				// 🔴 `inkstone/Arcrun#167`：卡片的「### 出處」要寫得出「哪台機器 ／
@@ -2242,7 +2267,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				results = append(results, res)
 				continue
 			}
-			pace() // 2026-08-07：下架一樣是觸發雲端 workflow，同樣節流
+			paceFor(cfg) // 2026-08-07：下架一樣是觸發雲端 workflow，同樣節流
 			// arcrun-rag#213：走過續讀機制的大檔，概念卡各自有自己的 page_name
 			// 上雲（見上面 ingest 分支的 multiCard）——下架也要逐一補上，不然
 			// hub 沒了、概念卡卻永遠留在雲端（孤兒）。**要在 RemoveWikiDoc 清掉
@@ -2314,7 +2339,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 					// 逐一下架續讀機制產出的概念卡（上面湊出來的 page_name 清單）。
 					// 最佳努力：任何一張失敗都只記 warning，不擋 hub 已經成功的下架。
 					for _, pn := range extraTakedownPageNames {
-						pace()
+						paceFor(cfg)
 						_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
 							"page_name":     pn,
 							"path":          ev.Path,
@@ -2526,4 +2551,27 @@ func consumeSyncNowSignal(path string) bool {
 	}
 	_ = os.Remove(path)
 	return true
+}
+
+// healAccountKeyCrossover 把「api_key 等於另一個帳號 namespace」的帳號改回自己的 namespace，
+// 回報有沒有改過（inkstone/arcrun-rag#240）。每改一個都在 stderr 留一行，說清楚誰被改。
+func healAccountKeyCrossover(accs []AccountConfig) bool {
+	changed := false
+	for i := range accs {
+		k := strings.TrimSpace(accs[i].APIKey)
+		own := strings.TrimSpace(accs[i].Namespace)
+		if k == "" || own == "" || k == own {
+			continue
+		}
+		for j := range accs {
+			if j != i && strings.TrimSpace(accs[j].Namespace) == k {
+				fmt.Fprintf(os.Stderr, "⚠ 帳號 %q 的 api_key 是另一個帳號（%q）的 namespace——串號，已改回自己的 namespace\n",
+					accs[i].InstanceName, accs[j].InstanceName)
+				accs[i].APIKey = own
+				changed = true
+				break
+			}
+		}
+	}
+	return changed
 }

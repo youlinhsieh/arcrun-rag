@@ -47,6 +47,9 @@ const (
 // 只認 Cloudflare 錯誤原文裡的固定片段——「D1_ERROR」單獨出現不算（別的 D1 錯誤也帶它）。
 func d1QuotaKind(text string) string {
 	t := strings.ToLower(text)
+	if strings.Contains(t, "daily_write_budget_reserved_for_indexing") {
+		return QuotaKindD1Write // KBDB 把一部分每日寫入額度留給索引維護，一般寫入提早封頂
+	}
 	if !strings.Contains(t, "free tier") && !strings.Contains(t, "daily") {
 		return ""
 	}

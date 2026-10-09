@@ -4,7 +4,7 @@
 > 不想碰終端機的話，主線是一鍵安裝器（[rag.arcrun.dev](https://rag.arcrun.dev) 領辨識碼 →
 > [install.arcrun.dev](https://install.arcrun.dev) 安裝），結果與本手冊相同：同一套 workflow、同一個 Portal。
 >
-> 兩條路裝出來的東西一樣，資料都完全屬於你、同事打網址就能用、語意查詢啟用。
+> 兩條路裝出來的東西一樣，資料都完全屬於你、同事打網址就能用。
 > v2 誠實標注哪些步驟仍粗糙，封測期我們陪裝。
 >
 > **建議由你的 AI（Claude Code 等）照本手冊執行**，你只做「申請帳號、複製 token」兩件人類的事。
@@ -49,12 +49,13 @@ node ~/Arcrun/cli/dist/index.js init --self-hosted
 seed API/auth recipes 與 portal templates。**冪等**——失敗重跑即可。
 （demo 排練實績：24/24 worker 全綠、seed 複跑冪等。）
 
-## 3. 語意查詢（Vectorize）——`acr init` 已自動完成
+## 3. 實體排重（Vectorize）——`acr init` 已自動完成
 
-`acr init --self-hosted` 過程中會問「要不要開語義查詢」（**預設開**，回 `n` 才關）。開著的話它
+Arcrun RAG 不是向量知識庫：讀取走知識圖譜與知識卡，與向量無關；Vectorize 只用來把同義的實體／關係詞排重歸一。
+`acr init --self-hosted` 過程中會問「要不要開實體排重」（**預設開**，回 `n` 才關）。開著的話它
 會在部署 kbdb 前自動呼叫 CF API 建立 Vectorize index（`arcrun-kbdb-embed-m3`，**bge-m3 模型／
 dimensions=1024／cosine**）及 4 個 metadata index（owner_id / entry_type / source / library），
-並開啟 kbdb 的 vectorize/ai 綁定。**裝完語意搜尋直接可用，無需額外步驟。**
+並開啟 kbdb 的 vectorize/ai 綁定。**裝完實體排重直接可用，無需額外步驟。**
 （一鍵安裝器走 `installer/scripts/deploy-all.mjs`，建的是同一顆 index、同一組參數。）
 
 > 🔴 2026-08-03 換過一代：舊 index 名 `arcrun-kbdb-embed`（bge-base-en-v1.5／768 維）
@@ -88,7 +89,7 @@ node install/ensure-templates.mjs https://arcrun-kbdb.<你的subdomain>.workers.
 |---|---|
 | `rag_ingest_card` | 收同步器送上來的定稿知識卡 → 寫 KBDB blocks ＋三元組 |
 | `rag_takedown_direct` | 資料夾刪檔時把對應內容標 `deprecated` 下架 |
-| `rag_chat` | 問答：keyword＋semantic＋graph 三路檢索 → Workers AI 組出帶出處的答案（免金鑰） |
+| `rag_chat` | 問答：沿知識圖譜與知識卡取材 → Workers AI 組出帶出處的答案（免金鑰） |
 | `graph_neighbors` | 知識圖譜 1..N 跳鄰居查詢 |
 
 ```bash

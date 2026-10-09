@@ -282,8 +282,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@497ed6305dce8bfecc5a794c3561d1c24ab2499c';
-const BUNDLE_BUILT = '2026-10-07'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@af923520dce2e42af5e326e78490e64af5a399db';
+const BUNDLE_BUILT = '2026-10-08'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -451,17 +451,17 @@ import { parseGrantTargets, verifyAccountOwnsInstance, GRANT_CODE_RE, GRANT_TTL_
 
 // 安裝步驟定義（順序即執行順序）
 const STEPS = [
-  { id: 'account',   label: '確認你的 Cloudflare 帳號' },
+  { id: 'account',   label: '帳號' },
   // 🔴 inkstone/arcrun-rag#217 comment 11318（總管看畫面抓到）：這一步原本叫「建立快取空間」
   // （KV），但它做的其實是整批解析帳號資源（D1／Vectorize，KV 那部分因 Arcrun#98 已經沒有
   // 任何 worker 宣告 requires.kv，這裡永遠是 0）。id 沿用 'cache' 不改（`setStep('cache', …)`
   // 呼叫點多，改 id 風險大於收益），只把使用者看得到的字改成不撒謊的說法。
-  { id: 'cache',     label: '準備你的雲端資源' },
-  { id: 'database',  label: '建立知識庫資料庫' },
-  { id: 'schema',    label: '建立資料表結構' },
-  { id: 'deploy',    label: '部署你的專屬服務' },
-  { id: 'workflows', label: '安裝 AI 工作流' },
-  { id: 'verify',    label: '自我檢查' },
+  { id: 'cache',     label: '雲端資源' },
+  { id: 'database',  label: '資料庫' },
+  { id: 'schema',    label: '資料表' },
+  { id: 'deploy',    label: '服務' },
+  { id: 'workflows', label: '工作流' },
+  { id: 'verify',    label: '檢查' },
 ];
 
 const COMPAT_DATE = '2026-01-01';
@@ -1334,7 +1334,7 @@ const GENERATION_CHECKS = [
   { n: 7, checks: [
       { kind: 'entries_column', name: 'src_id' }, { kind: 'entries_column', name: 'rel_id' },
       { kind: 'entries_column', name: 'dst_id' },
-      { kind: 'index', name: 'idx_entries_rel_src' }, { kind: 'index', name: 'idx_entries_rel_dst' },
+      { kind: 'index', name: 'idx_entries_rel_src' }, // rel_dst 在第 14 代被拆掉，不能再要求它（同 Arcrun schema-generation.ts）
       { kind: 'entry', id: 'sys_root' }, { kind: 'entry', id: 'sys_belongs' }, { kind: 'entry', id: 'sys_field_of' },
       { kind: 'no_table', name: 'entry_values' },
     ] },
@@ -1355,6 +1355,13 @@ const GENERATION_CHECKS = [
       { kind: 'index', name: 'idx_entries_pending_embed' },
       { kind: 'index', name: 'idx_entries_embedded_current' },
     ] },
+  // 0014 的指紋：_v2 觸發器（同名重建事後看不出來）＋重複的關係索引已拆。鏡射 Arcrun schema-generation.ts n:14
+  { n: 14, checks: [
+      { kind: 'trigger', name: 'entries_fts_ai_v2' },
+      { kind: 'trigger', name: 'entries_fts_ad_v2' },
+      { kind: 'trigger', name: 'entries_fts_au_v2' },
+      { kind: 'no_index', name: 'idx_entries_rel_dst' },
+    ] },
 ];
 
 function sqlQuote(s) { return `'${String(s).replace(/'/g, "''")}'`; }
@@ -1366,6 +1373,8 @@ function generationCheckSatisfied(c, f) {
     case 'no_table': return !f.tables.has(c.name);
     case 'entries_column': return f.tables.has('entries') && f.entriesColumns.has(c.name);
     case 'index': return f.indexes.has(c.name);
+    case 'no_index': return !f.indexes.has(c.name);
+    case 'trigger': return f.triggers.has(c.name);
     case 'template': return f.templates.has(c.name);
     case 'entry': return f.entries.has(c.id);
     default: return false;
@@ -1379,9 +1388,10 @@ function generationCheckSatisfied(c, f) {
  * 全部只讀 schema／系統保留 id，零使用者資料（同 kbdb probeDataLayer() 的不洩漏承諾）。
  */
 async function detectMigrationGeneration(runReadSql) {
-  let tables, indexes, entriesColumns, templates, entries;
+  let tables, indexes, triggers, entriesColumns, templates, entries;
   try {
-    const schemaRows = await runReadSql("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','index')");
+    const schemaRows = await runReadSql("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','index','trigger')");
+    triggers = new Set(schemaRows.filter((r) => r.type === 'trigger').map((r) => r.name));
     tables = new Set(schemaRows.filter((r) => r.type === 'table').map((r) => r.name));
     indexes = new Set(schemaRows.filter((r) => r.type === 'index').map((r) => r.name));
     entriesColumns = new Set();
@@ -1420,7 +1430,7 @@ async function detectMigrationGeneration(runReadSql) {
   } catch (e) {
     return { actualGeneration: 0, probeFailed: true, probeError: e instanceof Error ? e.message : String(e) };
   }
-  const facts = { tables, indexes, entriesColumns, templates, entries };
+  const facts = { tables, indexes, triggers, entriesColumns, templates, entries };
   let actual = 0;
   for (const g of GENERATION_CHECKS) {
     if (g.unprobeable) { actual = g.n; continue; }
@@ -3034,6 +3044,7 @@ async function seedSkillsTo(cypherBase, ns) {
 
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
+  installPage, INSTALL_SCRIPT,
   fetchBundleManifest, deployBundledWorker, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
@@ -3125,7 +3136,7 @@ async function runInstall(env, sid, progress, force) {
     progress.finishedAt = Date.now();
     progress.error = {
       step: 'account',
-      stepLabel: '確認你的辨識碼',
+      stepLabel: '辨識碼',
       message: '找不到你的辨識碼資訊',
       hint: '請回到首頁，用你登記的 Email 和辨識碼重新開始。',
       detail: 'session has no inviteEmail — invite gate may have been bypassed',
@@ -4365,7 +4376,7 @@ async function homePage(notice, env, release) {
   const counts = await manifestCountsOf(env);
   const fmtCount = (n) => (n == null ? '讀不到（manifest 暫時抓不到）' : `×${n}`);
   const noticeHtml = notice
-    ? `<div class="card" style="border-color:var(--err)"><h3 style="color:var(--err)">${escapeHtml(notice.title)}</h3><p style="margin:0;color:var(--muted)">${escapeHtml(notice.body)}</p></div>`
+    ? `<div class="card" style="border-color:var(--err)"><h3 style="color:var(--err)" title="${escapeHtml(notice.body)}">${escapeHtml(notice.title)}</h3></div>`
     : '';
 
   return pageShell(
@@ -4456,12 +4467,12 @@ function installPage(env) {
   return pageShell(
     '正在安裝…',
     `
-<h2 id="title">正在為你安裝</h2>
-<p class="lead" id="subtitle">請不要關閉這個頁面，好了會直接顯示你的網址。</p>
+<h2 id="title">安裝中</h2>
+<p class="lead" id="subtitle"></p>
 
 <div class="card">
   <ul class="plain" id="steps">
-    <li>正在準備…</li>
+    <li>…</li>
   </ul>
 </div>
 
@@ -4536,13 +4547,13 @@ function esc(s){
 // error.stepLabel，這裡只在極端情況（例如帶了 error.step 卻沒帶 stepLabel）接住，
 // 不讓「部署你的專屬服務」這類使用者看得懂的字掉成「未知步驟」。
 const STEP_LABELS = {
-  account: '確認你的 Cloudflare 帳號',
-  cache: '準備你的雲端資源',
-  database: '建立知識庫資料庫',
-  schema: '建立資料表結構',
-  deploy: '部署你的專屬服務',
-  workflows: '安裝 AI 工作流',
-  verify: '自我檢查',
+  account: '帳號',
+  cache: '雲端資源',
+  database: '資料庫',
+  schema: '資料表',
+  deploy: '服務',
+  workflows: '工作流',
+  verify: '檢查',
 };
 
 // t28b 門面順修②：技術細節摺疊框過去直接吃 e.detail || ''——detail 若是空字串/undefined
@@ -4554,10 +4565,20 @@ function fmtDetail(d){
   try { return JSON.stringify(d, null, 2); } catch (e) { return String(d); }
 }
 
+// 字數預算（schemas/text-budget.json）：常駐文字不放句子，補充只進 hover，最多 25 字
+function clip(t, n){ t = String(t == null ? '' : t).replace(/\\s+/g, ' '); var a = Array.from(t); return a.length <= n ? t : a.slice(0, n - 1).join('') + '…'; }
+// 通知：一行標題，細節收進展開（每行 ≤20 字、最多 3 行）
+function lines3(t){ var a = Array.from(String(t == null ? '' : t).replace(/\\s+/g, ' ')); var o = []; for (var i = 0; i < a.length && o.length < 3; i += 20) o.push(a.slice(i, i + 20).join('')); return o.join('\\n'); }
+function noteCard(color, h, text, data){
+  // data＝這張卡的主角資料（例如專屬網址的名字），整段放 code，不被 20 字換行切斷
+  return '<div class="err-card" style="border-color:' + color + '"><h3 style="color:' + color + '">' + esc(h) + '</h3>'
+    + (data ? '<p style="margin:0 0 8px"><code>' + esc(data) + '</code></p>' : '')
+    + (text ? '<details><summary>詳情</summary><pre>' + esc(lines3(text)) + '</pre></details>' : '') + '</div>';
+}
+
 function renderSteps(steps){
   stepsEl.innerHTML = steps.map(function(s){
-    var note = s.note ? '<span class="note">' + esc(s.note) + '</span>' : '';
-    return '<li data-state="' + esc(s.state) + '">' + esc(s.label) + note + '</li>';
+    return '<li data-state="' + esc(s.state) + '" title="' + esc(clip(s.note || '', 25)) + '">' + esc(s.label) + '</li>';
   }).join('');
 }
 
@@ -4566,32 +4587,30 @@ function renderDone(p){
   titleEl.textContent = '安裝完成';
   // inkstone/Arcrun#190：**有東西沒裝起來的時候，這句話不准照樣講「準備好了」**。
   // leo 2026-08-31 的判準：用戶拿到「安裝成功」卻其實少了東西，不准只寫在變數裡。
-  subEl.textContent = warns.length
-    ? '你的知識庫可以用了，但有 ' + warns.length + ' 件事沒有裝起來（下面有說明）。'
-    : '你的知識庫已經準備好了。';
+  subEl.textContent = warns.length ? '⚠ ' + warns.length : '✓';
   var r = p.result || {};
   var html = '';
 
   if (r.url) {
     html += '<div class="url-box">'
-      + '<p class="cap">這是你的專屬網址，請把它收藏起來</p>'
+      + '<p class="cap">網址</p>'
       + '<a href="' + esc(r.url) + '" target="_blank" rel="noopener" id="inst-url">' + esc(r.url) + '</a>'
-      + '<div><button class="copy" id="copy-btn">複製網址</button></div>'
+      + '<div><button class="copy" id="copy-btn">複製</button></div>'
       + '</div>';
     // #45（2026-08-09）：**裝到哪個帳號要看得見**。以前只藏在下面「技術細節」的 JSON 裡，
     // 等於選錯了也看不出來——而多帳號的人挑錯就是整套裝到別台。
     // 這不違 t79「完成頁只給網址」：t79 拔掉的是「之後還要做的事」那類卡（該去 portal），
     // 這一行講的是**這次安裝本身的結果**，跟版本號同一性質、同一個位置。
     var extras = [];
-    if (r.accountName) extras.push('裝在你的 Cloudflare 帳號：' + esc(r.accountName));
+    if (r.accountName) extras.push('☁ ' + esc(r.accountName));
     var bv = r.health && r.health.bundle_version;
-    if (bv) extras.push('版本：' + esc(bv));
+    if (bv) extras.push('v' + esc(bv));
     if (extras.length) {
       html += '<p style="text-align:center;color:var(--muted);font-size:13px;margin:-10px 0 20px">'
         + extras.join('<br>') + '</p>';
     }
   } else if (r.urlNote) {
-    html += '<div class="card"><h3>關於你的網址</h3><p style="margin:0;color:var(--muted)">' + esc(r.urlNote) + '</p></div>';
+    html += '<div class="card"><h3 title="' + esc(clip(r.urlNote, 25)) + '">網址 —</h3></div>';
   }
 
   // inkstone/Arcrun#190：靜默降級可見化。放在網址下面——網址仍是這一頁的主角（t79），
@@ -4599,12 +4618,11 @@ function renderDone(p){
   // 不是「之後還要做的事」（那類該去 portal）。話術在後端 installWarnings()，這裡只畫。
   if (warns.length) {
     html += '<div class="card" style="border-color:var(--warn)">'
-      + '<h3 style="color:var(--warn)">有 ' + warns.length + ' 件事沒有裝起來</h3>'
+      + '<h3 style="color:var(--warn)">⚠ ' + warns.length + '</h3>'
       + warns.map(function(w){
-          return '<p style="margin:0 0 4px"><b>' + esc(w.title) + '</b></p>'
-            + '<p style="margin:0 0 14px;color:var(--muted)">' + esc(w.body) + '</p>';
+          return '<p style="margin:0 0 8px" title="' + esc(clip(w.body, 25)) + '"><b>' + esc(w.title) + '</b></p>';
         }).join('')
-      + '<details><summary>技術細節（回報問題時請附上這段）</summary><pre>'
+      + '<details class="tech"><summary>細節</summary><pre>'
       + esc(warns.map(function(w){ return w.title + '\\n' + (w.detail || ''); }).join('\\n\\n'))
       + '</pre></details></div>';
   }
@@ -4647,7 +4665,8 @@ function renderDone(p){
     });
   }
 
-  html += '<details><summary>技術細節（給工程師看的）</summary><pre>'
+  if (r.urlNote) detail['網址說明'] = r.urlNote;
+  html += '<details class="tech"><summary>細節</summary><pre>'
     + esc(JSON.stringify(detail, null, 2)) + '</pre></details>';
 
   resultEl.innerHTML = html;
@@ -4658,9 +4677,9 @@ function renderDone(p){
       var u = document.getElementById('inst-url').textContent;
       navigator.clipboard.writeText(u).then(function(){
         btn.textContent = '已複製';
-        setTimeout(function(){ btn.textContent = '複製網址'; }, 1800);
+        setTimeout(function(){ btn.textContent = '複製'; }, 1800);
       }).catch(function(){
-        btn.textContent = '請手動選取複製';
+        btn.textContent = '手動複製';
       });
     });
   }
@@ -4693,20 +4712,19 @@ function showAccountModal(r){
   overlay.id = 'acct-modal-overlay';
   overlay.innerHTML =
     '<div class="card" role="dialog" aria-modal="true" aria-labelledby="acct-modal-title">'
-    + '<h3 id="acct-modal-title" style="font-size:20px">🎉 安裝完成，還有最後一步</h3>'
-    + '<p style="margin:0 0 18px;color:var(--muted)">設定你的管理員帳密，設定好會直接帶你進去。</p>'
+    + '<h3 id="acct-modal-title" style="font-size:20px">管理員</h3>'
     + '<label for="acct-email">Email</label>'
     + '<input id="acct-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false" required>'
     + '<div style="height:12px"></div>'
-    + '<label for="acct-pw">密碼（至少 8 碼）</label>'
-    + '<input id="acct-pw" type="password" autocomplete="new-password" required>'
+    + '<label for="acct-pw">密碼</label>'
+    + '<input id="acct-pw" type="password" placeholder="至少 8 碼" autocomplete="new-password" required>'
     + '<div style="height:12px"></div>'
-    + '<label for="acct-pw2">再輸入一次密碼</label>'
+    + '<label for="acct-pw2">確認密碼</label>'
     + '<input id="acct-pw2" type="password" autocomplete="new-password" required>'
     + '<div style="height:16px"></div>'
-    + '<button class="btn" id="acct-submit">建立帳號並登入</button>'
+    + '<button class="btn" id="acct-submit">建立登入</button>'
     + '<p id="acct-status" style="margin:12px 0 0;color:var(--muted);font-size:14px"></p>'
-    + '<button type="button" class="modal-skip" id="acct-skip">這是更新，我已經有帳號 → 前往 Portal</button>'
+    + '<button type="button" class="modal-skip" id="acct-skip" title="這是更新，已有帳號，直接前往 Portal">略過 →</button>'
     + '</div>';
   document.body.appendChild(overlay);
 
@@ -4722,8 +4740,8 @@ function showAccountModal(r){
     var pw = document.getElementById('acct-pw').value;
     var pw2 = document.getElementById('acct-pw2').value;
     var st = document.getElementById('acct-status');
-    if (!email || pw.length < 8) { st.textContent = '請填 Email，密碼至少 8 碼'; return; }
-    if (pw !== pw2) { st.textContent = '兩次密碼不一樣'; return; }
+    if (!email || pw.length < 8) { st.textContent = '⚠ Email 與密碼（8 碼）'; return; }
+    if (pw !== pw2) { st.textContent = '⚠ 密碼不一致'; return; }
     acctBtn.disabled = true;
     st.textContent = '建立中…';
     fetch('/api/setup-account', {
@@ -4734,7 +4752,7 @@ function showAccountModal(r){
       return res.json().catch(function(){ return {}; }).then(function(d){ return { ok: res.ok, status: res.status, d: d }; });
     }).then(function(x){
       if (x.ok && x.d && x.d.ok) {
-        st.textContent = '帳號建好了，正在帶你進去…';
+        st.textContent = '✓ 進入中…';
         goToPortal();
         return;
       }
@@ -4742,44 +4760,44 @@ function showAccountModal(r){
       if (x.d && x.d.password_applied === false) {
         // 這台機器之前就設過帳密了（多半是走「更新」的人誤觸這個彈窗）——
         // 不要一直勸他重試，直接給「前往 portal 用原本帳密登入」的路。
-        st.textContent = (x.d && x.d.error) || '這台機器已經設定過管理員了。';
-        if (skipBtn) skipBtn.textContent = '前往 Portal 用原本的帳密登入';
+        st.textContent = '⚠ 已設定過';
+        if (skipBtn) { skipBtn.textContent = '登入 →'; skipBtn.title = '前往 Portal，用原本的帳密登入'; }
       } else {
-        st.textContent = (x.d && x.d.error) || '建立失敗（HTTP ' + x.status + '），請再試一次';
+        st.textContent = '⚠ 失敗 HTTP ' + x.status; st.title = clip((x.d && x.d.error) || '', 25);
       }
     }).catch(function(){
       acctBtn.disabled = false;
-      st.textContent = '網路好像有問題，請再試一次';
+      st.textContent = '⚠ 網路';
     });
   });
 }
 
 function renderError(p){
-  titleEl.textContent = '安裝沒有完成';
-  subEl.textContent = '別擔心，沒有造成任何損害。下面是發生的狀況。';
+  titleEl.textContent = '未完成';
+  subEl.textContent = '';
   var e = p.error || {};
+  // 一行標題＋展開（≤3 行）；完整原因與出路在「細節」，不常駐
   errorEl.innerHTML =
     '<div class="err-card">'
-    + '<h3>卡在這一步：' + esc(e.stepLabel || STEP_LABELS[e.step] || '未知步驟') + '</h3>'
-    + '<p style="margin:0 0 12px">' + esc(e.message || '發生了預期外的錯誤') + '</p>'
-    + '<p style="margin:0;color:var(--muted)"><b>可以怎麼辦：</b>' + esc(e.hint || '請再試一次。') + '</p>'
+    + '<h3>✕ ' + esc(e.stepLabel || STEP_LABELS[e.step] || '未知') + '</h3>'
+    + '<details><summary>原因</summary><pre>' + esc(lines3(e.message || '發生了預期外的錯誤')) + '</pre></details>'
     + '<div style="height:18px"></div>'
     // #45：錯誤自帶出路時（例如「還沒選帳號」），那顆按鈕排第一——
     // 它才是真正的解法，「重新安裝」在這種錯上只會再撞同一面牆。
     + (e.action && e.action.href
-        ? '<a class="btn" href="' + esc(e.action.href) + '">' + esc(e.action.label || '繼續') + '</a>'
+        ? '<a class="btn" href="' + esc(e.action.href) + '" title="' + esc(clip(e.action.label || '', 25)) + '">' + esc(clip(e.action.label || '繼續', 4)) + '</a>'
           + '<div style="height:10px"></div>'
         : '')
     + '<button class="btn' + (e.action ? ' secondary' : '') + '" id="retry-btn">重新安裝</button>'
     + '<div style="height:10px"></div>'
-    + '<a class="btn secondary" href="/">回到首頁重新連結帳號</a>'
-    + '<details><summary>技術細節（回報問題時請附上這段）</summary><pre>' + esc(fmtDetail(e.detail)) + '</pre></details>'
+    + '<a class="btn secondary" href="/" title="回到首頁重新連結帳號">首頁</a>'
+    + '<details class="tech"><summary>細節</summary><pre>' + esc((e.hint ? e.hint + '\\n\\n' : '') + fmtDetail(e.detail)) + '</pre></details>'
     + '</div>';
 
   var rb = document.getElementById('retry-btn');
   if (rb) rb.addEventListener('click', function(){
     rb.disabled = true;
-    rb.textContent = '重新開始中…';
+    rb.textContent = '…';
     start(true);
   });
 }
@@ -4811,9 +4829,9 @@ async function poll(){
     const res = await fetch('/api/install/status', { cache: 'no-store' });
     if (res.status === 401) {
       stopped = true;
-      titleEl.textContent = '需要重新連結帳號';
-      subEl.textContent = '你的授權已經過期或找不到了。';
-      errorEl.innerHTML = '<div class="err-card"><h3>請重新開始</h3><p style="margin:0 0 16px;color:var(--muted)">回到首頁重新連結一次 Cloudflare 帳號就可以了。</p><a class="btn" href="/">回到首頁</a></div>';
+      titleEl.textContent = '請重新連結';
+      subEl.textContent = '';
+      errorEl.innerHTML = '<div class="err-card"><h3>授權過期</h3><a class="btn" href="/">首頁</a></div>';
       return;
     }
     const p = await res.json();
@@ -4823,24 +4841,19 @@ async function poll(){
     // 所以這張卡是**事前**出現的，不是事後補報。名字為什麼長那樣也一起講。
     if (p.subdomainNotice && !subdomainNoticed) {
       subdomainNoticed = true;
-      errorEl.innerHTML = '<div class="err-card" style="border-color:var(--warn)">'
-        + '<h3 style="color:var(--warn)">關於你的專屬網址</h3>'
-        + '<p style="margin:0;color:var(--muted);white-space:pre-line">' + esc(p.subdomainNotice) + '</p></div>'
-        + errorEl.innerHTML;
+      var sdm = String(p.subdomainNotice).match(/[a-z0-9-]+\\.workers\\.dev/);
+      errorEl.innerHTML = noteCard('var(--warn)', '網址 · 不可改', p.subdomainNotice, sdm ? sdm[0] : '') + errorEl.innerHTML;
     }
     if (p.channelWarning && !channelWarned) {
       channelWarned = true;
-      errorEl.innerHTML = '<div class="err-card" style="border-color:var(--warn)">'
-        + '<h3 style="color:var(--warn)">換版本提醒</h3>'
-        + '<p style="margin:0;color:var(--muted)">' + esc(p.channelWarning) + '</p></div>'
-        + errorEl.innerHTML;
+      errorEl.innerHTML = noteCard('var(--warn)', '換版本', p.channelWarning) + errorEl.innerHTML;
     }
     if (p.steps) renderSteps(p.steps);
     if (p.state === 'done'){ stopped = true; renderDone(p); return; }
     if (p.state === 'error'){ stopped = true; renderError(p); return; }
     if (p.state === 'paused_continue'){
       // 分批安裝中——這是正常的（避免用完你帳號這一輪的限額），馬上自動接著裝
-      subEl.textContent = '還在裝，請不要關閉這個頁面。';
+      subEl.textContent = '⏳';
       lastProgressAt = Date.now();
       continueInstall();
     } else if (p.state === 'running') {
@@ -4851,7 +4864,7 @@ async function poll(){
       if (sig !== lastSig) { lastSig = sig; lastProgressAt = Date.now(); }
       else if (Date.now() - lastProgressAt > 25000) {
         // 25 秒沒有任何步驟變化 ⇒ 上一輪多半被 waitUntil 砍掉了，主動再踢一次
-        subEl.textContent = '還在裝，請不要關閉這個頁面。';
+        subEl.textContent = '⏳';
         lastProgressAt = Date.now();
         continueInstall();
       }
@@ -4863,7 +4876,7 @@ async function poll(){
       // 舊行為＝stopped:true 永久凍結＋「網路好像斷了，請重新整理」誤導文案
       // （網路沒斷、也不用重新整理——接力只是需要頁面活著）。
       // 新行為＝**不停止**，講真話＋降頻（5s）續試；連線恢復（failures 歸零）就自動接關。
-      subEl.textContent = '連線暫時中斷（可能是電腦休眠或網路不穩）。安裝需要這個頁面保持開啟；連線恢復後會自動從上次進度續跑，已裝好的不會重裝。';
+      subEl.textContent = '⚠ 連線中斷'; subEl.title = '網路不穩或電腦休眠；恢復後自動續跑';
       setTimeout(poll, 5000);
       return;
     }
@@ -4876,8 +4889,8 @@ async function start(retry){
   failures = 0;
   errorEl.innerHTML = '';
   resultEl.innerHTML = '';
-  titleEl.textContent = '正在為你安裝';
-  subEl.textContent = '請不要關閉這個頁面，好了會直接顯示你的網址。';
+  titleEl.textContent = '安裝中';
+  subEl.textContent = '';
   try {
     // t138：後端改成 streaming（安裝在「請求生命週期」內跑完，牆鐘無限）。
     // 這裡**不能 await**——要讓連線一直開著（那就是保命繩），同時往下走去啟動輪詢顯示進度。
@@ -5292,39 +5305,39 @@ async function handleHome(request, env, url) {
   const err = url.searchParams.get('error');
   if (err === 'state') {
     notice = {
-      title: '這個連結已經失效了',
-      body: '可能是等太久，或是從舊的分頁點進來的。請重新按一次下面的按鈕。',
+      title: '連結失效',
+      body: '重新按一次按鈕',
     };
   } else if (err === 'denied') {
     notice = {
-      title: '你在 Cloudflare 頁面上取消了授權',
-      body: '沒有授權我們就沒辦法幫你安裝。如果剛才是不小心按到，可以再試一次。',
+      title: '已取消授權',
+      body: '重新按一次按鈕',
     };
   } else if (err === 'token') {
     notice = {
-      title: '連結帳號時發生問題',
-      body: '授權連結只能使用一次。請重新按一次下面的按鈕，從頭走一遍。',
+      title: '連結失敗',
+      body: '重新按一次按鈕',
     };
   } else if (err === 'code') {
     notice = {
-      title: '辨識碼或 Email 對不上',
-      body: '請確認填的是官網登記那封信裡的 Email 和 8 碼辨識碼（大小寫沒關係）。還沒有辨識碼的話，要先到官網登記索取。',
+      title: '辨識碼不符',
+      body: '核對 Email 與辨識碼',
     };
   } else if (err === 'code_rate') {
     notice = {
-      title: '嘗試太頻繁了',
-      body: '請稍等一下再試一次。',
+      title: '太頻繁',
+      body: '稍後再試',
     };
   } else if (err === 'code_unreachable') {
     notice = {
-      title: '暫時連不上驗證服務',
-      body: '這通常是暫時的。請稍等一下再按一次；若持續發生請回報我們。',
+      title: '驗證服務斷線',
+      body: '稍後再試，持續請回報',
     };
   } else if (err === 'need_code') {
     // t154：無碼進 OAuth 但帳號沒有部署紀錄＝第一次安裝，要辨識碼
     notice = {
-      title: '第一次安裝需要辨識碼',
-      body: '這個 Cloudflare 帳號還沒裝過。請填上辨識碼再試一次；還沒有的話到 rag.arcrun.dev 申請。',
+      title: '需要辨識碼',
+      body: '填辨識碼，或到官網申請',
     };
   }
   return html(await homePage(notice, env, await releaseOf(env)));
@@ -5651,25 +5664,23 @@ function installWarnings(result) {
   if (Array.isArray(r.skippedAccelerators) && r.skippedAccelerators.length) {
     out.push({
       title: '有 ' + r.skippedAccelerators.length + ' 個加速索引還沒建',
-      body: '你的知識庫可以正常使用，只是為了不一次燒光今天的免費額度，部分搜尋／列表的'
-        + '加速索引先跳過了——查詢還是會出結果，只是可能比較慢。之後更新時會再嘗試補上。',
+      body: '仍可使用，查詢可能較慢',
       detail: r.skippedAccelerators.map((s) => `${s.name || '(未知索引)'}（估計成本 ${s.estimatedCost} 列）`).join('\n'),
       audience: 'user',
     });
   }
   if (r.vectorizeWarning) {
     out.push({
-      title: '語意搜尋沒有裝起來',
-      body: '你的知識庫可以用，但只能做關鍵字比對——換個說法、或用意思相近的問法會找不到東西。'
-        + '其餘功能都正常。',
+      title: '同義詞歸一未裝',
+      body: '同名實體暫不合併',
       detail: r.vectorizeWarning,
       audience: 'user',
     });
   }
   if (r.vectorizeMetadataWarning) {
     out.push({
-      title: '語意搜尋的篩選欄位沒有建齊',
-      body: '搜尋本身可以用，但依來源、日期這類條件篩選時可能篩不出東西。',
+      title: '同義詞歸一欄位不齊',
+      body: '依來源、日期篩選可能漏',
       detail: r.vectorizeMetadataWarning,
       audience: 'user',
     });
@@ -5677,8 +5688,7 @@ function installWarnings(result) {
   if (Array.isArray(r.routeWarnings) && r.routeWarnings.length) {
     out.push({
       title: '有 ' + r.routeWarnings.length + ' 個服務沒有對外開通',
-      body: '這些服務已經部署好了，但沒有對外的網址。它們之間需要互相呼叫，'
-        + '所以有些功能可能會失敗。',
+      body: '部分功能可能失敗',
       detail: r.routeWarnings.join('\n'),
       audience: 'user',
     });
@@ -5686,7 +5696,7 @@ function installWarnings(result) {
   if (r.healthWarning) {
     out.push({
       title: '裝完的自我檢查沒有全部通過',
-      body: '安裝步驟都做完了，但最後那次自我檢查沒有回報成功。你的網址可能還要等一下才會通。',
+      body: '網址可能還要等一下',
       detail: String(r.healthWarning),
       audience: 'user',
     });
@@ -5709,9 +5719,7 @@ function installWarnings(result) {
     // 走到這裡＝真的核實過底稿不在（或探測不到），不是逾時誤報。
     out.push({
       title: '知識圖譜的基本設定沒有種進去',
-      body: '你的知識庫可以收東西，但「概念之間怎麼連起來」這份底稿沒有建立，'
-        + '關係圖可能一直是空白的。可以再跑一次安裝來補種；若補種後仍出現這一條，'
-        + '請把下面的技術細節回報給我們。',
+      body: '關係圖可能是空白的',
       detail: 'seed: ' + String(r.seedError || r.seedTemplates)
         + (r.seedMs != null ? ` (seedMs=${r.seedMs})` : '')
         + (r.seedTripletProbeError ? ` triplet-probe: ${r.seedTripletProbeError}` : ''),
@@ -5727,9 +5735,7 @@ function installWarnings(result) {
     // 而後果是他會看得到的——他排的工作流不動。藏起來就是再製造一次靜默失敗。
     out.push({
       title: '定時執行的排程沒有設定成功',
-      body: '你的知識庫和工作流都可以手動使用，但「每隔一段時間自動跑一次」這件事還沒開起來'
-        + '——你建立的定期工作流不會自己啟動。可以按「重新安裝」再試一次；'
-        + '若補了還是出現這一條，請把下面的技術細節回報給我們。',
+      body: '定期工作流不會啟動',
       detail: String(r.cronSyncError),
       audience: 'user',
     });
@@ -5738,7 +5744,7 @@ function installWarnings(result) {
     // 內部金鑰沒同步到各 worker ⇒ kbdb fail-closed 一律 401 ⇒ AI 工具整組不能用。
     out.push({
       title: '服務之間的內部金鑰沒有同步完成',
-      body: '各個服務之間互相認證用的金鑰沒有寫齊，AI 助理的工具可能會回「沒有權限」。',
+      body: 'AI 工具可能回沒有權限',
       detail: String(r.secretSyncError),
       audience: 'user',
     });
@@ -5760,7 +5766,7 @@ function installWarnings(result) {
     //    真正的修法在票上（端點上線＋零件包重打），這裡只是不拿它嚇人。
     out.push({
       title: '金鑰沒有存進金鑰保管處',
-      body: '功能還是可以用，但金鑰是用比較舊的方式帶著跑的，不如原本設計的安全。',
+      body: '功能可用，安全性較舊',
       detail: String(r.credentialSeedError),
       audience: 'internal',
     });
@@ -5769,8 +5775,7 @@ function installWarnings(result) {
     // skills 沒種入 ⇒ 實例的 AI 拿不到 playbook。
     out.push({
       title: 'AI 的操作手冊沒有裝進去',
-      body: '知識庫本身正常，但實例裡的 AI 少了一份「怎麼幫你做事」的說明書，'
-        + '它可能不知道有哪些進階功能可以用。',
+      body: 'AI 可能不知道進階功能',
       detail: String(r.skillsSeedError),
       audience: 'user',
     });

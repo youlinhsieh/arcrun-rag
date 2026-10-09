@@ -16,9 +16,9 @@ html, body { overflow: hidden; height: 100%; }
 #app { display: flex; height: 100vh; }
 
 #side {
-  width: 216px; flex: none;   /* 同 portal #sidenav */
-  display: flex; flex-direction: column;
-  padding: 22px 0 14px;
+  width: 232px; flex: none;   /* Claude Design 稿 232px（inkstone/arcrun-rag#240 c18254） */
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 20px 0 12px;
   border-right: 2px solid rgba(var(--amber-rgb), .35);   /* portal #sidenav 同款 */
 }
 /* 🔴 lockup（CIS，leo 三次點名）——**用裁淨版**，且**不要底板**：
@@ -32,7 +32,8 @@ html, body { overflow: hidden; height: 100%; }
    空白來自**版面**：側欄 216px 扣 padding 剩 152px，而 logo 高 24px 時只有 134px。
    ⇒ 讓 lockup **填滿可用寬度**（高度由 5.602 的比例自動決定，約 27px），
      並照 CIS「clear space = one chevron height」在下方留呼吸空間。 */
-#side .brand { display: flex; color: var(--ink); padding: 0 32px 22px; }
+#side .brand { display: flex; color: var(--ink); padding: 0 36px 16px; flex: none; background: none; border: none; border-radius: 0; cursor: pointer; }
+#side .brand:hover { background: none; }
 #side .brand img { width: 100%; height: auto; display: block; }
 #side .brand .wm-paper { display: none; }
 :root[data-theme="dark"] #side .brand .wm-ink { display: none; }
@@ -42,7 +43,8 @@ html, body { overflow: hidden; height: 100%; }
    （leo：「參考現在 Portal 的格式⋯⋯這個比現在膠囊反紅精緻，
      重點是**跟 portal 的形象符合**」）
    ＝ 不是膠囊實心，而是：amber 字色 ＋ 8% amber 底 ＋ 右側 2px amber 邊。 */
-#side nav { display: flex; flex-direction: column; gap: 4px; }
+/* 帳號清單自己捲；底下的版本／淺色深色／? 固定在視窗內（min-height:0 才捲得動） */
+#side nav { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 0 6px; }
 #side .nav {
   display: flex; align-items: center; gap: 10px;
   padding: 13px 24px; font-size: 15px; letter-spacing: .08em;
@@ -61,34 +63,10 @@ html, body { overflow: hidden; height: 100%; }
 #side .nav .cnt { margin-left: auto; font-size: 11.5px; opacity: .7; font-family: ui-monospace, Menlo, monospace; }
 #side .nav .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-#side .side-foot { margin-top: auto; padding: 12px 22px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-#side .ver { font-size: 12px; color: rgba(var(--ink-rgb), .35); font-family: ui-monospace, Menlo, monospace; }
 
-/* 固定位置求救入口（inkstone/arcrun-rag#210）：任何頁面、任何捲動位置都看得到。 */
-#side .help-btn {
-  width: 24px; height: 24px; border-radius: 50%; flex: none;
-  border: 1px solid rgba(var(--ink-rgb), .3); background: transparent;
-  color: rgba(var(--ink-rgb), .55); font-size: 13px; font-weight: 600; line-height: 1;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-}
-#side .help-btn:hover { border-color: var(--amber); color: var(--amber); }
 
 #content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
-header {
-  padding: 22px 28px 16px;
-  display: flex; align-items: flex-start; gap: 18px;
-  border-bottom: 1px solid rgba(var(--ink-rgb), .1);
-}
-.status { flex: 1; min-width: 0; }
-.status .big { font-size: 18px; font-weight: 600; letter-spacing: .02em; }
-.status .sub { margin-top: 5px; font-size: 13.5px; color: rgba(var(--ink-rgb), .5); }
-/* 同步中會呼吸——「看得出來在動」（issue #17） */
-.status .big.syncing::after {
-  content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 9px;
-  border-radius: 50%; background: var(--amber); vertical-align: middle;
-  animation: pulse 1.1s ease-in-out infinite;
-}
 @keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
 
 main { flex: 1; overflow-y: auto; padding: 20px 28px 28px; }
@@ -115,9 +93,6 @@ button.ghost {
 }
 button.ghost:hover { color: var(--err); background: transparent; }
 
-/* 主題切換（portal 有，daemon 也要有——leo：「它有淺色佈景？」
-   ⇒ 是，portal **預設淺色**，深色由使用者切換並存 localStorage。 */
-#themeBtn { padding: 7px 11px; font-size: 13px; }
 
 .card {
   background: var(--well); border-radius: 12px;
@@ -213,12 +188,6 @@ button.ghost:hover { color: var(--err); background: transparent; }
 .obdot.on { background: var(--amber); color: var(--knob); }
 .obdot.done { background: var(--ok); color: var(--knob); }
 .obline { width: 40px; height: 2px; background: rgba(var(--ink-rgb), .12); }
-.obcap {
-  font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
-  color: rgba(var(--ink-rgb), .4); margin-bottom: 14px;
-}
-.obintro { text-align: left; max-width: 420px; margin: 0 auto 24px; }
-.obintro p { margin: 0 0 10px; }
 .obchoice {
   display: flex; gap: 14px; margin-top: 22px; text-align: left;
   flex-wrap: wrap; justify-content: center;
@@ -261,6 +230,11 @@ input[type=text], input[type=password] {
 .sheet h2 { margin: 0 0 6px; font-size: 16.5px; }
 .sheet p { margin: 0 0 4px; font-size: 14px; color: rgba(var(--ink-rgb), .55); line-height: 1.7; }
 .sheet .acts { justify-content: flex-end; }
+/* #240：內容再長，視窗也不超出畫面——內容自己捲，按鈕列釘在底部永遠按得到
+   （移除資料夾勾「清理」會列出一長串路徑，曾把「確定」擠出畫面）。 */
+.sheet { max-height: calc(100vh - 48px); overflow-y: auto; box-sizing: border-box; }
+.sheet .acts { position: sticky; bottom: -22px; margin: 18px -24px -22px; padding: 14px 24px 22px;
+  background: var(--paper-a); border-radius: 0 0 14px 14px; }
 
 /* ── 每個知識庫一個獨立分頁（leo 08-04）──
    「同步資料夾那個頁面如果有 2 個庫，每個庫有 30 個同步資料夾，**放得下嗎**？
@@ -277,19 +251,6 @@ input[type=text], input[type=password] {
 }
 #side .nav .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 每個庫的頁首：庫名＋網址＋「開啟知識庫網頁」（leo：不該放首頁，要在各庫上方） */
-.libhead {
-  display: flex; align-items: center; gap: 14px;
-  padding-bottom: 14px; margin-bottom: 14px;
-  border-bottom: 1px solid rgba(var(--ink-rgb), .1);
-}
-.libhead .g { flex: 1; min-width: 0; }
-.libhead .nm { font-size: 16px; font-weight: 600; }
-.libhead .host {
-  font-size: 12px; color: rgba(var(--ink-rgb), .4);
-  font-family: ui-monospace, Menlo, monospace;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* 狀態時間軸（leo：「如果看守、發現變化、萃取、上傳… 不同 status 在哪裡顯示？」） */
 .steps { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
@@ -588,3 +549,230 @@ input[type=text], input[type=password] {
   border-top: 1px solid rgba(var(--ink-rgb), .10);
 }
 .mbatch .d { margin-top: 6px; }
+
+/* #240：知識庫分頁的專屬錯誤橫幅 */
+.trouble-banner { border-left: 3px solid var(--err); margin-bottom: 14px; }
+.battery-warn { margin-bottom: 14px; border-left: 3px solid var(--amber); }
+.battery-warn.crit { border-left-color: var(--err); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   資訊架構重做（inkstone/arcrun-rag#240 c18254；Claude Design 稿，leo 2026-10-09「可以了」）
+   首頁＝跨帳號（細狀態列／我的 App／需要處理）；各帳號分頁＝名稱在最上，底下才是它自己的事。
+   配色低調：只用灰階（ink 的不同透明度）加一個鏽色（--amber）；
+   鏽色只給「需要你出手」的事——有事的帳號、停工、免費帳號剩 20% 以下。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+main { padding: 22px 32px 28px; }
+
+/* ── 側欄：帳號列 ── */
+#side .sec { padding: 6px 24px 4px; font-size: 11px; letter-spacing: .12em; }
+#side .nav.acct {
+  display: flex; flex-direction: column; align-items: stretch; gap: 5px;
+  margin: 0 10px; padding: 9px 12px; border-radius: 8px; border-right: none;
+  letter-spacing: 0; font-size: 14px; color: var(--ink);
+}
+#side .nav.acct:hover { background: var(--well); }
+#side .nav.acct.on { color: var(--ink); background: var(--well2); font-weight: 600; box-shadow: inset -2px 0 0 var(--amber); }
+#side .nav.acct .r1 { display: flex; align-items: center; gap: 9px; min-width: 0; }
+#side .nav.acct .r2 { padding-left: 27px; }
+.av {
+  position: relative; flex: none; min-width: 18px; height: 18px; padding: 0 3px; box-sizing: border-box;
+  border-radius: 9px; background: rgba(var(--ink-rgb), .78); color: var(--paper-a);
+  font-size: 10px; font-weight: 700; letter-spacing: 0; line-height: 18px; text-align: center;
+}
+.av .pip {
+  position: absolute; right: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--amber); border: 1.5px solid var(--paper-a); box-sizing: border-box;
+}
+#side .nav .upd { flex: none; width: 6px; height: 6px; border-radius: 50%; background: rgba(var(--ink-rgb), .35); }
+
+/* ── 側欄：底部三樣固定（版本與更新／淺色深色／?）── */
+#side .side-foot { flex: none; margin: 0 10px; padding-top: 8px; border-top: 1px solid rgba(var(--ink-rgb), .12); display: flex; flex-direction: column; gap: 4px; }
+#side .navlink {
+  display: flex; justify-content: space-between; align-items: center; width: 100%; box-sizing: border-box;
+  padding: 7px 10px; border: none; border-radius: 8px; background: none;
+  font-size: 13px; color: rgba(var(--ink-rgb), .7); text-align: left;
+}
+#side .navlink:hover, #side .navlink.on { background: var(--well); color: var(--ink); }
+#side .navlink .ver { font-size: 11px; color: rgba(var(--ink-rgb), .45); font-family: ui-monospace, Menlo, monospace; }
+#side .foot-row { display: flex; gap: 6px; padding: 0 2px; }
+#side #themeBtn { flex: 1 1 auto; padding: 0 8px; height: 34px; font-size: 13px; border-radius: 8px; }
+#side .help-btn {
+  flex: none; width: 44px; height: 34px; padding: 0; border-radius: 8px;
+  font-size: 15px; font-weight: 600; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+#side .help-btn:hover, #side .help-btn.on { border-color: var(--amber); color: var(--amber); }
+#side .brand.on img { opacity: 1; }
+
+/* ── 剩餘用量符號：上傳箭頭＋五格＋%（不是電池、不是訊號）── */
+.ugauge { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; color: rgba(var(--ink-rgb), .6); }
+.ugauge .uarrow { flex: none; }
+.ugauge .cells { display: inline-flex; gap: 2px; }
+.ugauge .cells i { display: inline-block; width: 7px; height: 9px; border-radius: 1.5px; background: rgba(var(--ink-rgb), .16); box-sizing: border-box; }
+.ugauge .cells i.on { background: rgba(var(--ink-rgb), .72); }
+.ugauge .cells i.zero { background: none; border: 1px solid var(--amber); }
+.ugauge .ut { font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
+.ugauge .inf { font-size: 13px; line-height: 1; color: rgba(var(--ink-rgb), .75); }
+.ugauge.warn, .ugauge.crit { color: var(--amber); }
+.ugauge.warn .cells i.on, .ugauge.crit .cells i.on { background: var(--amber); }
+.ugauge.warn .ut, .ugauge.crit .ut { color: var(--amber); }
+/* 付費：永遠不換鏽色（不剎車） */
+.ugauge.paid { color: rgba(var(--ink-rgb), .6); }
+/* 查不到：五個空格＋「—」，是「還不知道」不是「沒有」 */
+.ugauge.unk .cells i { background: none; border: 1px solid rgba(var(--ink-rgb), .3); }
+.ugauge.unk .ut { color: rgba(var(--ink-rgb), .4); }
+
+/* ── 帳號分頁 ── */
+.acchead { display: flex; align-items: flex-start; gap: 16px; margin: 0 0 14px; padding: 0; border: none; }
+.acchead .g { flex: 1; min-width: 0; }
+.acchead .nm { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0; line-height: 1.25; }
+.acchead .host { margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 11.5px; color: rgba(var(--ink-rgb), .5); font-family: ui-monospace, Menlo, monospace; min-width: 0; }
+.acchead .host .kbver { margin: 0; font-size: 12px; }
+.libstatus { margin: 6px 0 0; font-size: 13.5px; color: rgba(var(--ink-rgb), .6); }
+.libstatus .syncing::after {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 9px;
+  border-radius: 50%; background: var(--amber); vertical-align: middle;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+.accmeter { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; padding-top: 4px; flex: none; }
+.accmeter .ugauge { font-size: 14px; gap: 8px; }
+.accmeter .ugauge .uarrow { width: 16px; height: 16px; }
+.accmeter .ugauge .cells { gap: 3px; }
+.accmeter .ugauge .cells i { width: 12px; height: 14px; border-radius: 2px; }
+.accmeter .ugauge .ut { font-size: 14px; }
+.accmeter .ugauge .inf { font-size: 17px; }
+.accmeter .sub { font-size: 12px; color: rgba(var(--ink-rgb), .55); }
+.acchead > button.primary { flex: none; height: 40px; padding: 0 18px; }
+
+.tabs { display: flex; align-items: stretch; gap: 4px; border-bottom: 1px solid rgba(var(--ink-rgb), .12); margin-bottom: 16px; }
+.tabs .tab {
+  height: 40px; padding: 0 14px; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; font-size: 14px; color: rgba(var(--ink-rgb), .6);
+}
+.tabs .tab:hover { background: none; color: var(--ink); }
+.tabs .tab.on { border-bottom-color: var(--ink); color: var(--ink); font-weight: 700; }
+.tabs .tab .cnt { font-size: 11.5px; opacity: .6; font-family: ui-monospace, Menlo, monospace; }
+.tabs .grow, .strip .grow { flex: 1; }
+.lnk { border: none; background: none; padding: 4px 6px; font-size: 13px; color: rgba(var(--ink-rgb), .65); text-decoration: underline; text-underline-offset: 3px; }
+.lnk:hover { background: none; color: var(--ink); }
+.tabs .lnk { align-self: center; }
+
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.tilebox { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 10px; background: var(--well); }
+.tilebox .k { font-size: 12px; color: rgba(var(--ink-rgb), .55); }
+.tilebox .v { font-family: ui-monospace, Menlo, monospace; font-size: 22px; font-variant-numeric: tabular-nums; }
+.tilebox.bad .v { color: var(--amber); }
+.folderbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.appbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.appbar .s { font-size: 13.5px; color: rgba(var(--ink-rgb), .55); }
+.pinbtn { padding: 3px 9px; font-size: 12px; border-radius: 8px; border-color: rgba(var(--ink-rgb), .2); color: rgba(var(--ink-rgb), .6); }
+.pinbtn.on { color: var(--ink); background: var(--well2); }
+.mono { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break: break-all; }
+.bigmeter { margin: 12px 0 8px; }
+.bigmeter .ugauge { font-size: 16px; gap: 9px; }
+.bigmeter .ugauge .uarrow { width: 18px; height: 18px; }
+.bigmeter .ugauge .cells { gap: 4px; }
+.bigmeter .ugauge .cells i { width: 18px; height: 20px; border-radius: 3px; }
+.bigmeter .ugauge .ut { font-size: 17px; }
+.bigmeter .ugauge .inf { font-size: 22px; }
+
+/* ── 首頁：細狀態列／我的 App／需要處理 ── */
+.strip { display: flex; align-items: center; gap: 22px; min-height: 44px; padding: 0 16px; margin-bottom: 22px; border-radius: 10px; background: var(--well); font-size: 13px; color: rgba(var(--ink-rgb), .75); flex-wrap: wrap; }
+.strip .sp { display: inline-flex; align-items: center; gap: 8px; }
+.strip .sp i { width: 6px; height: 6px; border-radius: 50%; background: rgba(var(--ink-rgb), .45); }
+.strip .sp i.beat { animation: pulse 1.1s ease-in-out infinite; }
+.strip .sp.bad { color: var(--amber); }
+.strip .sp.bad i { background: var(--amber); }
+.strip .sp.quiet { color: rgba(var(--ink-rgb), .55); }
+.strip .lnkpill { border: none; background: none; padding: 0; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: none; }
+.strip .lnkpill:hover { background: none; opacity: .75; }
+/* 通知：鈴鐺＋每個帳號一顆小標籤（名字＋件數）；沒事就只剩一個灰鈴鐺 */
+.nchip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 4px 0 10px; border: none; border-radius: 12px; background: var(--well2); color: var(--ink); font-size: 12px; cursor: pointer; }
+.nchip:hover { background: rgba(var(--amber-rgb), .16); color: var(--ink); }
+.nchip b { min-width: 18px; height: 18px; line-height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: var(--amber); color: var(--paper-a); font-size: 11px; text-align: center; }
+.strip .num { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: rgba(var(--ink-rgb), .6); }
+.hint { font-size: 12px; color: rgba(var(--ink-rgb), .5); line-height: 1.7; }
+.myapps { margin-bottom: 26px; }
+.mapps { display: flex; flex-wrap: wrap; gap: 26px 28px; padding: 4px 4px 12px; }
+.mapp { width: 84px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0; border: none; background: none; color: var(--ink); }
+.mapp:hover { background: none; color: var(--ink); }
+.mapp .tile {
+  position: relative; width: 64px; height: 64px; border-radius: 16px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; font-size: 28px; line-height: 1;
+  background: var(--well2); transition: transform .12s;
+}
+.mapp:hover .tile { transform: translateY(-2px); }
+.mapp .corner {
+  position: absolute; right: -5px; bottom: -5px; min-width: 22px; height: 22px; padding: 0 3px; box-sizing: border-box;
+  border-radius: 11px; background: rgba(var(--ink-rgb), .78); color: var(--paper-a); border: 2px solid var(--paper-a);
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+.mapp .lb { font-size: 13px; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapp.add { color: rgba(var(--ink-rgb), .55); }
+.mapp.add .tile { background: none; border: 1px dashed rgba(var(--ink-rgb), .3); font-size: 24px; }
+.pickacc { display: flex; align-items: center; gap: 10px; width: 100%; margin: 6px 0; text-align: left; }
+.pickacc .av { display: inline-block; }
+
+/* 視窗窄／矮時，底部三樣也不能被擠出去 */
+@media (max-height: 600px) {
+  #side { padding-top: 12px; }
+  #side .brand { padding-bottom: 8px; }
+  #side .nav.acct { padding: 6px 12px; }
+}
+
+/* 配色低調：主要動作用墨色，不用鏽色（鏽色只給「需要你出手」）；同步中的呼吸點用灰 */
+.acchead > button.primary { background: rgba(var(--ink-rgb), .85); color: var(--paper-a); }
+.libstatus .syncing::after, .step.now .dot { background: rgba(var(--ink-rgb), .5); }
+
+/* App 圖示（與 Portal 同一組描邊字形，見 src/appglyph.js） */
+.glyph { display: block; width: 28px; height: 28px; stroke-width: 1.8; color: var(--ink); }
+.mapp .tile .glyph { width: 30px; height: 30px; }
+.apptile .glyph { width: 40px; height: 40px; }
+.appview .head .ico .glyph { width: 24px; height: 24px; }
+
+/* 說明一律一行，點開才展開（inkstone/arcrun-rag#240 c18275） */
+.d.one, .more > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.more > summary { cursor: pointer; list-style: none; font-size: 13.5px; color: rgba(var(--ink-rgb), .7); padding-right: 18px; position: relative; }
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::after { content: "›"; position: absolute; right: 2px; top: 0; transition: transform .12s; }
+.more[open] > summary { white-space: normal; }
+.more[open] > summary::after { transform: rotate(90deg); }
+.more > .d { margin-top: 6px; }
+
+/* 側欄：連結另一個帳號＝帳號字母圓標下方一顆同尺寸的黑圓「＋」，提示只在滑過去才出現（title） */
+#side .addacct {
+  display: block; margin: 6px 0 0 22px; width: 18px; min-width: 18px; height: 18px; padding: 0; box-sizing: border-box;
+  border: none; border-radius: 9px; background: rgba(var(--ink-rgb), .78); color: var(--paper-a);
+  font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; cursor: pointer;
+}
+#side .addacct:hover { background: var(--ink); color: var(--paper-a); }
+.nlist { display: flex; flex-wrap: wrap; gap: 8px; margin: -10px 0 18px; }
+
+/* 帳號頁的狀態列：符號加數字，放在名稱下、分頁上；通知在它下面 */
+.strip.acc { margin-bottom: 14px; gap: 26px; }
+.strip.acc .sp { gap: 7px; font-size: 14px; color: var(--ink); }
+.strip.acc .sp b { font-family: ui-monospace, Menlo, monospace; font-weight: 600; font-variant-numeric: tabular-nums; }
+.strip.acc .sp svg { color: rgba(var(--ink-rgb), .55); }
+.strip.acc .sp.bad, .strip.acc .sp.bad b { color: var(--amber); }
+.strip.acc .bang { font-weight: 800; width: 15px; text-align: center; }
+
+/* 額度卡：一行標題＋「升級」＋「?」；「?」平時看不見，滑過卡片才出現（n8n 的做法） */
+.quotacard .qrow { display: flex; align-items: center; gap: 12px; }
+.quotacard .qt { flex: 1; font-weight: 600; }
+.qmark { width: 22px; height: 22px; min-width: 22px; padding: 0; border-radius: 11px; font-size: 12px; opacity: 0; transition: opacity .12s; }
+.card:hover .qmark, .qmark:focus { opacity: 1; }
+
+.nt { font-weight: 700; margin-bottom: 8px; }
+
+/* 警示卡：右上角 × 可關閉；同一原因關掉後不再亮 */
+.alertcard { position: relative; }
+.alertcard .x { position: absolute; right: 8px; top: 6px; width: 24px; height: 24px; min-width: 24px; padding: 0; border: none; background: none; font-size: 18px; line-height: 22px; color: rgba(var(--ink-rgb), .5); }
+.alertcard .x:hover { background: var(--well2); color: var(--ink); }
+.strip.acc .sp.quiet { color: rgba(var(--ink-rgb), .5); }
+.alertcard summary { font-weight: 700; color: var(--ink); padding-right: 40px; }
+.alertcard .nt, .alertcard .qt { padding-right: 32px; }
+.alertcard summary { padding-right: 76px; }
+.alertcard summary::after { right: 40px !important; }
+.alertcard .x { right: 10px; }
+.alertcard .x { z-index: 2; }
