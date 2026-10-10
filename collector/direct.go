@@ -2732,7 +2732,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	rp.Cards = CardCount{Files: rp.Progress.Total, Folders: folderCardsTotal, Roots: 1}
 	rp.PendingCards = CardCount{Files: rp.Progress.Pending, Folders: folderCardsTotal - folderCardsSent}
 	for _, e := range m.Entries {
-		if e != nil && e.FailCount >= MaxFailBeforeSkip {
+		if e != nil && e.FailCount >= MaxFailBeforeSkip && !isLegacyTooBigText(e.LastError) && !isNoTextText(e.LastError) {
 			// LastError 原文交給呼叫端彙總後過 ClassifyFailure——分類判斷只住那一個接縫，
 			// 這裡不判斷任何識別字，即使 LastError 是空字串也照樣送（ClassifyFailure("") 落「其他」，
 			// 不會漏算份數）。

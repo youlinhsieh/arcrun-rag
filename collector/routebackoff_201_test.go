@@ -158,8 +158,8 @@ func TestManifest201_LegacyNetworkPauseRetriesByItself(t *testing.T) {
 	if m.HasOwnFailure("journals/2026_04_28.md") {
 		t.Fatal("斷網不算這個檔的前科")
 	}
-	if p := m.Progress(); p.Pending != 1 || p.Stuck != 1 {
-		t.Fatalf("斷網那份算排隊中、讀不出字那份算卡住：%+v", p)
+	if p := m.Progress(); p.Pending != 1 || p.Stuck != 0 || p.NoText != 1 || p.Total != 1 {
+		t.Fatalf("斷網那份算排隊中、讀不出字那份歸不支援（不進分母、不算卡住，c18750）：%+v", p)
 	}
 	m.MarkNetworkUnavailable("journals/2026_04_28.md", now, "dial tcp: lookup x: no such host")
 	e := m.Entries["journals/2026_04_28.md"]

@@ -374,6 +374,11 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 	if isLocalNetworkText(e.LastError) {
 		return now >= e.NextRetry
 	}
+	// #246 c18745：舊版「檔太大、沒收」的病歷——現行程式會分次讀＋書籤續讀，立刻重排一次
+	// （重撞會記成新的 LastError，不會無限重排）。
+	if isLegacyTooBigText(e.LastError) {
+		return true
+	}
 	if e.FailCount == 0 {
 		return true
 	}
@@ -456,6 +461,19 @@ func isTransientCloudText(msg string) bool {
 // isCardCollisionText＝舊版「卡片位置被佔用」的病歷（現在由消歧處理，不再是錯誤）。
 func isCardCollisionText(msg string) bool {
 	return strings.Contains(msg, "卡片位置被佔用")
+}
+
+// isLegacyTooBigText＝舊版（#213 之前）「這份檔太大了…所以這次沒有收它」的病歷。
+// 現行程式碼已經沒有這句：大檔走分次讀＋書籤續讀，不再拒收，所以它不是「用戶自己要修」的錯，
+// 而是舊版留下的紀錄——要重新排隊，走續讀那條路。
+func isLegacyTooBigText(msg string) bool {
+	return strings.Contains(msg, "太大了")
+}
+
+// isNoTextText＝掃描成圖片、沒有文字層的檔（ErrNoText）。#246 c18750：歸「不支援」那一類——
+// 不算可讀檔、不進 !N、不叫用戶動手；檔不動不刪，之後文字辨識（#251）做了再回到可讀檔。
+func isNoTextText(msg string) bool {
+	return strings.Contains(msg, "沒有可抽取的文字")
 }
 
 // isOldCloudText＝病歷上寫的是「雲端還沒有這個功能」（舊版雲端），不是檔案本身的問題。

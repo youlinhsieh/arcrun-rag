@@ -47,6 +47,8 @@ type SyncProgress struct {
 	// subrequests，fail_count 是 7 與 3），講「同步中」等於叫他等一件正在壞掉的事。
 	// 分出來，畫面才判斷得出該不該示警（見 arcrun-app/folder_badge.go）。
 	Failing int `json:"failing"`
+	// NoText＝沒有文字層的掃描檔份數（c18750）：歸「不支援」，**不在 Total 裡**，只供 hover 說「另有幾份暫不收」。
+	NoText int `json:"no_text,omitempty"`
 	// StuckFix＝Stuck 裡「用戶自己做得到什麼就能好」的份數（檔案太大、讀不出字、格式不支援）。
 	// 其餘的 Stuck（Stuck−StuckFix）是「我們沒有 FAQ 的新問題」，畫面給回報按鈕。子集合，不進不變式。
 	StuckFix int `json:"stuck_fix,omitempty"`
@@ -71,9 +73,8 @@ func (p SyncProgress) Waiting() int {
 // 標籤 ≤6 字（字數預算）。判斷字串都來自實撞的錯誤原文（見 collector.log）。
 func FixableKind(lastError string) string {
 	switch {
-	case strings.Contains(lastError, "太大了"):
-		return "檔案太大"
-	case strings.Contains(lastError, "沒有可抽取") || strings.Contains(lastError, "轉檔失敗"):
+	// 🔴 「太大了」不再是用戶要修的事：#213 之後大檔分次讀＋書籤續讀，這句只剩舊版病歷（見 isLegacyTooBigText）。
+	case strings.Contains(lastError, "轉檔失敗"):
 		return "讀不出字"
 	case strings.Contains(lastError, "尚未支援的檔案格式") || strings.Contains(lastError, "不支援"):
 		return "格式不支援"
@@ -90,6 +91,7 @@ func (p SyncProgress) Add(o SyncProgress) SyncProgress {
 		Stuck:      p.Stuck + o.Stuck,
 		Unreadable: p.Unreadable + o.Unreadable,
 		Failing:    p.Failing + o.Failing,
+		NoText:     p.NoText + o.NoText,
 		StuckFix:   p.StuckFix + o.StuckFix,
 		StuckWhy:   firstNonEmptyWhy(p.StuckWhy, o.StuckWhy),
 	}
@@ -110,12 +112,20 @@ func (m *Manifest) Progress() SyncProgress {
 		if e.FormatDupOf != "" {
 			continue
 		}
+		// #246 c18750：讀不出字的掃描檔＝不支援，不進分母、不進 !N（恆等式 Total＝Done+Pending+Stuck+Unreadable 照舊）。
+		if e.IngestedHash != e.ContentHash && isNoTextText(e.LastError) {
+			p.NoText++
+			continue
+		}
 		p.Total++
 		switch {
 		case e.IngestedHash != "" && e.IngestedHash == e.ContentHash:
 			p.Done++
 		case isCardCollisionText(e.LastError):
 			// #246 c18722：撞名由機器自己消歧，不是用戶的錯、不算出錯；舊版留下的病歷照排隊重試。
+			p.Pending++
+		case isLegacyTooBigText(e.LastError):
+			// #246 c18745：舊版「檔太大、沒收」的病歷不是用戶的錯——排隊重來，走分次續讀。
 			p.Pending++
 		case isLocalNetworkText(e.LastError):
 			// #201：上次只是這台電腦沒連上網路 ⇒ 會自己再試，是排隊中，不是卡住。

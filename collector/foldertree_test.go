@@ -402,7 +402,7 @@ func TestFolderTreeDenominatorIsHandledFiles(t *testing.T) {
 	entries := map[string]*ManifestEntry{
 		"a.md":   {ContentHash: "h", IngestedHash: "h"},
 		"b.md":   {ContentHash: "h2"},
-		"c.pdf":  {ContentHash: "h3", FailCount: MaxFailBeforeSkip, LastError: "檔案太大了"},
+		"c.pdf":  {ContentHash: "h3", FailCount: MaxFailBeforeSkip, LastError: "轉檔失敗"},
 		"b.docx": {ContentHash: "h4", FormatDupOf: "b.md"},
 	}
 	tr := BuildFolderTree("/x", "kb", dirs, entries, nil, IngestPlan{}, time.Now())
@@ -419,7 +419,7 @@ func TestFolderTreeDenominatorIsHandledFiles(t *testing.T) {
 func TestFolderTreeErrorItems(t *testing.T) {
 	dirs := map[string]*dirStat{"": {total: 3}, "sub": {total: 2}}
 	entries := map[string]*ManifestEntry{
-		"big.pdf":     {ContentHash: "h1", FailCount: MaxFailBeforeSkip, LastError: "檔案太大了"},
+		"big.pdf":     {ContentHash: "h1", FailCount: MaxFailBeforeSkip, LastError: "轉檔失敗"},
 		"sub/new.md":  {ContentHash: "h2", FailCount: MaxFailBeforeSkip, LastError: "HTTP 500 奇怪的新錯誤"},
 		"sub/wait.md": {ContentHash: "h3", FailCount: 1, LastError: "HTTP 500 暫時的", NextRetry: 1},
 		"ok.md":       {ContentHash: "h", IngestedHash: "h"},
@@ -430,7 +430,7 @@ func TestFolderTreeErrorItems(t *testing.T) {
 		byPath[n.Path] = n
 	}
 	root, sub := byPath[""], byPath["sub"]
-	if len(root.ErrorItems) != 1 || root.ErrorItems[0] != (FolderErrorItem{Rel: "big.pdf", Name: "big.pdf", Kind: "fixable", Why: "檔案太大"}) {
+	if len(root.ErrorItems) != 1 || root.ErrorItems[0] != (FolderErrorItem{Rel: "big.pdf", Name: "big.pdf", Kind: "fixable", Why: "讀不出字"}) {
 		t.Fatalf("根的出錯檔：%+v", root.ErrorItems)
 	}
 	if len(sub.ErrorItems) != 2 || sub.ErrorItems[0].Kind != "unsolvable" || sub.ErrorItems[1].Kind != "retry" {

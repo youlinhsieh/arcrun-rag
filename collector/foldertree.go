@@ -324,6 +324,10 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 			continue
 		}
 		n := ensure(folderOfRel(rel))
+		if (e.IngestedHash == "" || e.IngestedHash != e.ContentHash) && isNoTextText(e.LastError) {
+			n.UnsupportedFiles++ // #246 c18750：讀不出字的掃描檔歸不支援（hover 的「另有 N 個不收」），不進 !N
+			continue
+		}
 		if e.IngestedHash != "" && e.IngestedHash == e.ContentHash {
 			n.SyncedFiles++
 		} else {

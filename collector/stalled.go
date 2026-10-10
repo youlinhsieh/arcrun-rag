@@ -89,6 +89,12 @@ func stalledEntry(e *ManifestEntry) bool {
 	if e == nil || e.FailCount < MaxFailBeforeSkip || strings.TrimSpace(e.LastError) == "" {
 		return false
 	}
+	if isNoTextText(e.LastError) { // #246 c18750：掃描檔＝不支援，不是停工
+		return false
+	}
+	if isLegacyTooBigText(e.LastError) { // #246 c18745：舊版太大病歷，會重排續讀，不是停工
+		return false
+	}
 	if isCardCollisionText(e.LastError) { // #246 c18722：撞名由機器消歧，不是停工
 		return false
 	}
@@ -190,7 +196,7 @@ func StuckSamples(manifestBase, cypherURL string, roots []string) (names []strin
 			continue
 		}
 		for path, e := range m.Entries {
-			if e == nil || e.FailCount < MaxFailBeforeSkip || FixableKind(e.LastError) != "" {
+			if e == nil || e.FailCount < MaxFailBeforeSkip || FixableKind(e.LastError) != "" || isLegacyTooBigText(e.LastError) || isNoTextText(e.LastError) {
 				continue
 			}
 			if len(names) < 5 {

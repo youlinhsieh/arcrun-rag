@@ -112,7 +112,7 @@ func TestProgressFormatDupAndUnprocessable(t *testing.T) {
 	m := &Manifest{Entries: map[string]*ManifestEntry{
 		"d/a.docx":  {ContentHash: "h1", IngestedHash: "h1"},                  // 完成
 		"d/a.md":    {ContentHash: "h2", FormatDupOf: "d/a.docx"},             // 副本：不計
-		"d/big.pdf": {ContentHash: "h3", FailCount: 1, LastError: "這份檔案太大了"},  // 第一次撞就是 !N
+		"d/big.pdf": {ContentHash: "h3", FailCount: 1, LastError: "轉檔失敗"},  // 第一次撞就是 !N
 		"d/new.md":  {ContentHash: "h4"},                                      // 真排隊
 		"e/new.md":  {ContentHash: "h5", FailCount: 2, LastError: "HTTP 500"}, // 暫時性失敗：仍排隊
 	}}
@@ -122,5 +122,40 @@ func TestProgressFormatDupAndUnprocessable(t *testing.T) {
 	}
 	if p.Total != p.Done+p.Pending+p.Stuck+p.Unreadable {
 		t.Fatalf("不變式破了 %+v", p)
+	}
+}
+
+// #246 c18745：舊版「檔太大、沒收」的病歷不是用戶的錯——排隊重來（走分次續讀），不算 !N、不算停工。
+func TestLegacyTooBigIsRequeuedNotStuck(t *testing.T) {
+	old := "這份檔太大了…所以這次沒有收它。把它拆成幾份小一點的檔"
+	e := &ManifestEntry{ContentHash: "h", FailCount: MaxFailBeforeSkip, LastError: old, NextRetry: 1 << 40}
+	m := &Manifest{Entries: map[string]*ManifestEntry{"KB/assets/nri.pdf": e}}
+	p := m.Progress()
+	if p.Stuck != 0 || p.Errors() != 0 || p.Pending != 1 || p.Total != p.Done+p.Pending+p.Stuck+p.Unreadable {
+		t.Fatalf("舊版太大病歷不該算出錯：%+v", p)
+	}
+	if FixableKind(old) != "" {
+		t.Fatalf("太大了不再是用戶要修的事")
+	}
+	if !m.ShouldRetry("KB/assets/nri.pdf", 100, false) {
+		t.Fatalf("舊版太大病歷該立刻重排")
+	}
+	if stalledEntry(e) {
+		t.Fatalf("不該算停工")
+	}
+}
+
+// #246 c18750：掃描檔（沒有文字層）歸不支援：不進分母、不進 !N、樹上算進「不收」。
+func TestNoTextScanIsUnsupportedNotError(t *testing.T) {
+	m := &Manifest{Entries: map[string]*ManifestEntry{
+		"KB/assets/scan.pdf": {ContentHash: "h", FailCount: MaxFailBeforeSkip, LastError: "本地萃取失敗：轉檔失敗（x）：檔案裡沒有可抽取的文字"},
+		"KB/a.md":            {ContentHash: "a", IngestedHash: "a"},
+	}}
+	p := m.Progress()
+	if p.Total != 1 || p.Errors() != 0 || p.NoText != 1 {
+		t.Fatalf("%+v", p)
+	}
+	if stalledEntry(m.Entries["KB/assets/scan.pdf"]) {
+		t.Fatal("不算停工")
 	}
 }

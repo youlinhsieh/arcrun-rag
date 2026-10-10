@@ -567,7 +567,7 @@ function folderProgressHtml(f) {
   let inner;
   switch (f.state) {
     case 'running':
-      inner = `<span class="fstat run" role="img" title="同步中" aria-label="同步中"><i class="beat big"></i><b class="fnum">${fmt(done)}/${fmt(all)}</b></span>`;
+      inner = `<span class="fstat run" role="img" title="同步中" aria-label="同步中"><i class="beat big"></i><b class="fnum">${fmt(done)}/${fmt(all)}</b></span>${(f.errors || 0) > 0 ? bangHtml({ state: f.state, why: f.why || '自動重試中', n: f.errors, reported: f.reported }, f.accIdx, f.path) : ''}`;
       break;
     case 'done':
       inner = `<span class="fstat ok" role="img" title="已全部送上" aria-label="已全部送上"><svg class="fring" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="7" fill="none" class="bg"/><circle cx="9" cy="9" r="7" fill="none" class="arc" stroke-dasharray="44 44" transform="rotate(-90 9 9)"/><path d="m5.6 9.2 2.3 2.3 4.5-4.8" fill="none" class="ck"/></svg><b class="fnum">${fmt(all)}</b></span>`;
@@ -719,9 +719,10 @@ function renderFolderTree(path) {
     // 每一層加總對得上；不在知識範圍的（格式讀不了、程式碼等）只在 hover 說另有幾個。
     const handled = s.synced + s.pending;
     const outOfScope = s.unsupported + s.excluded;
-    const noCount = n.skipped && (n.total_files === 0 || handled === 0);
+    // #246 c18745（依 c18621）：整個資料夾都不在知識範圍（會處理的檔＝0、卻有檔被排除／讀不了）⇒ 只留 ⊘，不寫 0 / 0。
+    const noCount = (n.skipped && (n.total_files === 0 || handled === 0)) || handled === 0;
     const full = !noCount && handled > 0 && s.synced === handled;
-    const shown = noCount ? '—' : `${s.synced.toLocaleString('en-US')} / ${handled.toLocaleString('en-US')}`;
+    const shown = noCount ? (outOfScope > 0 ? '⊘' : '—') : `${s.synced.toLocaleString('en-US')} / ${handled.toLocaleString('en-US')}`;
     const numTip = outOfScope > 0 ? `另有 ${outOfScope.toLocaleString('en-US')} 個不在知識範圍` : (why ? '點一下看原因' : '');
     row += `<span class="num${full ? ' full' : ''}${why ? ' hasWhy' : ''}"`
       + (why
@@ -972,8 +973,10 @@ function libStatusBar(a, s) {
   // 出錯（`!N`）＝可讀的檔案 − 已送上 − 待上傳，三者互斥（#246 c18681）；排在待上傳後面，
   // 不再占第一格（版本才是第一格）。有解／無解時是可點的 popup，其餘時候是純數字。
   const errN = p ? p.errors : 0;
+  // #246 c18745：!N 只要有出錯就一律可點（帶到出錯的位置）——以前只有 state 是 fixable／unsolvable 才是按鈕，
+  // 同步中（running）時同樣的 !40 變成純文字、點不動（leo21c 實撞）。
   const errCell = (a.state === 'fixable' || a.state === 'unsolvable') ? bangHtml(a, ai, '')
-    : errN > 0 ? `<span class="sp" title="出錯（自動重試中）" aria-label="出錯: ${errN}"><span class="bang">!</span><b>${errN}</b></span>` : '';
+    : errN > 0 ? bangHtml({ state: a.state, why: a.why || '自動重試中', n: errN, reported: a.reported }, ai, '') : '';
   const lead = a.state === 'running' ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat big"></i></span>`
     : a.state === 'done' ? `<span class="sp" title="全部完成" aria-label="全部完成">${SYM.done}</span>` : '';
   const bang = '';
