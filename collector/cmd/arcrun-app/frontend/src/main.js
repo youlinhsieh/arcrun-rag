@@ -6,6 +6,7 @@
 //   ④ 一個庫 30 個資料夾放不下 ⇒ **每個知識庫一個獨立分頁**
 //   ⑤「加入資料夾」會加到哪個帳號？⇒ 在庫頁裡加，**作用對象就是那個庫**，不會加錯
 //   ⑥ 首頁要顯示 status：看守／發現變化／萃取／上傳 ⇒ **狀態時間軸**
+import { usageDashboard, startUsageTicker } from './usage.js';
 import './arcrun-cis.css';   // 共用底層（色票/字體/紋理）——唯一真相源在 arcrun-cis/css/
 import './style.css';        // 本 App 的版面
 import { glyphSvg } from './appglyph.js';   // App 圖示：字形由實例提供（與 Portal 同一個來源）
@@ -107,8 +108,9 @@ function needsOf(s, a) {
   // 一個符號一種單位（#240 c18359）：`!` 只數停住的檔案（＝停住卡標題的數字）；
   // 額度用完用 `⏸`、用量快完靠量表變鏽色，各自不進 `!` 的加總（n 為 0）。
   const out = [];
-  const st = (s.stalls || []).filter((x) => x.account === a.name);
-  if (st.length) out.push({ text: `⚠ 停住 ${st.reduce((t, x) => t + x.count, 0)}`, tab: 'sync', n: st.reduce((t, x) => t + x.count, 0), kind: 'stall' });
+  if ((a.state === 'fixable' || a.state === 'unsolvable') && a.why !== '額度用完' && !(a.state === 'unsolvable' && a.reported)) {
+    out.push({ text: `⚠ ${a.why || ''} ${a.n}`, tab: 'sync', n: a.n, kind: 'stall' });
+  }
   const q = s.quota;
   if (q && (q.account === a.name || (!q.account && (s.accounts || []).length === 1))) {
     out.push({ text: q.headline || '⏸ 額度用完', tab: 'sync', n: 0, kind: 'quota' });
@@ -126,7 +128,7 @@ function renderNav() {
   const onAcc = page.startsWith('lib:') ? Number(page.slice(4))
     : page.startsWith('app:') ? Number(page.split(':')[1]) : -1;
   const html = `
-    ${accs.length ? `<div class="sec">帳號</div>` : ''}
+    ${accs.length ? `<div class="sec" title="Cloudflare 帳號">CF 帳號</div>` : ''}
     ${accs.map((a, i) => {
       const needs = needsOf(state, a);
       const tip = needs.length ? `${needs.length} 則通知` : (a.cloudVerStale ? '有新版可更新' : '');
@@ -157,6 +159,12 @@ async function refreshUsage(idx) {
   try { await go.RefreshUsage(idx); await tick(); } catch (e) { /* 問不到就維持原樣 */ }
 }
 window.addEventListener('focus', () => refreshUsage(-1));
+// 用量分頁開著、視窗在前景時，每分鐘重抓一次（CF 分析本身約 1–2 分鐘延遲）；沒人在看就不問。
+setInterval(() => {
+  if (document.visibilityState !== 'visible' || !page.startsWith('lib:')) return;
+  const idx = Number(page.slice(4));
+  if (libTabOf(idx) === 'usage') refreshUsage(idx);
+}, 60000);
 
 function goPage(p) {
   if (p === page) { renderPage(); return; }
@@ -169,6 +177,7 @@ function goPage(p) {
   if (p.startsWith('lib:')) { ensureTabData(Number(p.slice(4))); refreshUsage(Number(p.slice(4))); }
 }
 function ensureTabData(idx) {
+  if (libTabOf(idx) === 'usage') refreshUsage(idx);
   if (libTabOf(idx) === 'apps') loadApps(idx);
 }
 function libTabOf(idx) { return libTab[idx] || 'sync'; }
@@ -199,7 +208,7 @@ function statusStrip(s) {
   const attn = accs.map((a, i) => ({ a, i, n: needsOf(s, a) })).filter((x) => x.n.length);
   const total = attn.reduce((t, x) => t + needsN(x.n), 0);   // 只數停住的檔案
   const quotaHit = attn.some((x) => x.n.some((i) => i.kind === 'quota'));
-  const syncing = accs.filter((a) => a.status && a.status.syncing);
+  const syncing = accs.filter((a) => a.state === 'running');
   const ok = accs.length - attn.length;
   const p = s.progress || {};
   const parts = [];
@@ -383,7 +392,7 @@ function cardQuota(q, p, accounts) {
   // 標題（含種類與恢復時間）由 Go 側 compactUI 組好；這裡只接上排隊數。
   // 多帳號時哪一台爆了，不另寫一行——這張卡本來就只出現在爆的那個帳號自己的分頁。
   void accounts;
-  const queue = p && p.pending > 0 ? ` · 排隊 ${p.pending}` : '';
+  const queue = p && p.waiting > 0 ? ` · 排隊 ${p.waiting}` : '';
   return `
     <div class="card quotacard alertcard" data-quota-kind="${esc(q.kind || '')}" role="alert">
       <button class="x" data-dismiss="${esc(JSON.stringify([q.dismiss_key || '']))}" title="關閉" aria-label="關閉">×</button>
@@ -393,98 +402,8 @@ function cardQuota(q, p, accounts) {
     </div>`;
 }
 
-// 今天的用量：常駐的那張卡（`inkstone/arcrun-rag#209`）。
-//
-// 🔴 它與上面 cardQuota 是**兩張卡，不互相取代**。leo 2026-09-20 原話：
-//   「我覺得**不是告訴他爆了**，而是告訴他你現在的還要多久完成，比如 5 天，
-//     那就 **1/5、2/5** 就是現在不能立刻完成就有進度條⋯⋯
-//     CF 給一個儀表板，我們也要，他隨時可以看到用了多少剩下多少，
-//     而且**看到他查詢不會像大量寫入那樣爆掉**。」
-// ⇒ cardQuota 講「現在怎麼辦」（只在撞頂時出現）；這張講「你在整條路的哪裡」（隨時都在）。
-//
-// 🔴 三條紅線，逐條對應票上的：
-//   ① **數字要簡單**——leo：「數字應該簡單不要囉嗦」「`1000/100000`、`90332/100000`」。
-//      所以分子分母就是一條斜線，**不加千分位、不加句子**（那個形狀是他指名的）。
-//   ② **讀取與寫入不准混成一個數字**——混在一起會讓人以為「這產品就是會爆」，
-//      而事實正好相反：會卡的只有灌存量那一段的寫入。
-//   ③ **算不出來就說算不出來**——搜尋那一行**刻意沒有分子**：搜尋是使用者在網頁上做的，
-//      不經過小幫手 ⇒ 這台數不到，而唯一數得到的地方（Cloudflare 分析 API）打不到
-//      （`inkstone/arcrun-rag#197`／`#198` 已裁過「不假裝查得到用量」）。
-//      放一個假的分子會比空著更貴——它看起來像個答案。
-//
-// 🔴 **所有數字都是後端算好的**（collector/quotameter.go），這裡一個算式都沒有——
-// 同 cardProgress／cardQuota 的慣例：判斷只住一個接縫，前端只負責畫。
-function cardQuotaMeter(m) {
-  if (!m) return '';
-  const rows = [];
-
-  // ── 上傳（寫入）──────────────────────────────────────────────────
-  if (m.write_known) {
-    rows.push(meterRow('上傳', `${m.write_used_rows}/${m.write_limit_rows}`,
-      pct(m.write_used_rows, m.write_limit_rows), m.write_exhausted,
-      `今天送了 ${m.write_cards_today} 張卡，每張約 ${m.write_rows_per_card} 列`));
-  } else {
-    rows.push(`<div class="mrow"><span class="ml">上傳</span>
-      <span class="mn dim" title="${esc(m.write_note || '')}">—</span></div>`);
-  }
-
-  // ── 搜尋（讀取）：只講得出上限與現況，見上面紅線③ ───────────────────
-  rows.push(`<div class="mrow">
-    <span class="ml">搜尋</span>
-    <span class="mn dim" title="${esc(m.read_note || '')}">上限 ${m.read_limit_rows}/天</span>
-    <span class="mstat ${m.read_exhausted ? 'bad' : 'ok'}" role="img"
-      title="${esc(m.read_note || '')}" aria-label="${esc(m.read_note || '')}">${m.read_exhausted ? '🔴' : '✅'}</span>
-  </div>`);
-
-  // ── 這批還要幾天（leo 要的 1/5）──────────────────────────────────
-  let batch = '';
-  if (m.batch_known) {
-    batch = `<div class="mbatch">
-      <div class="mrow">
-        <span class="ml" title="這批還要 ${m.batch_total_days} 天，一天送得了約 ${m.batch_cards_per_day} 張">天</span>
-        <span class="mn">${m.batch_day_no}/${m.batch_total_days}</span>
-        <span class="mbar"><i style="width:${pct(m.batch_day_no, m.batch_total_days)}%"></i></span>
-      </div>
-      <div class="mrow"><span class="ml" title="排隊中的卡">⏳</span><span class="mn">${m.batch_pending_cards}</span></div>
-    </div>`;
-  }
-  // 沒資料就顯示「—」，原因放在滑過去才出現的 title，版面不放句子（#240 c18299）
-  const why = '';
-  return `
-    <div class="card" data-quota-meter="1">
-      <h3>今天的用量</h3>
-      <div class="meter">${rows.join('')}</div>
-      ${why}
-      ${batch}
-      <div class="acts">
-        <button class="ghost" data-openurl="https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5">升級</button>
-        <button class="qmark" data-openurl="https://rag.arcrun.dev/docs/use/quota/" title="額度怎麼算" aria-label="額度怎麼算">?</button>
-      </div>
-    </div>`;
-}
-
-// 🔴 上面「怎麼升級付費」那顆按鈕的錨點是**百分比編碼過的**，而且那串編碼是
-// **從真的建出來的 HTML 抓的**（docs-site `npm run build` 之後
-// `dist/use/quota/index.html` 裡的 `id="怎麼升級四步"`），不是照標題猜的。
-// 標題一改字這個連結就會無聲失效——所以 `quota_meter_links_test.go` 盯著它：
-// 那支測試會讀 docs-site 的原始 md，確認那個標題還在。
-//
-// meterRow＝一行「名稱 ・ 分子/分母 ・ 進度條」。撞頂的那一行整條標紅。
-function meterRow(label, num, width, bad, tip) {
-  return `<div class="mrow">
-    <span class="ml">${esc(label)}</span>
-    <span class="mn${bad ? ' bad' : ''}" title="${esc(tip || '')}">${esc(num)}</span>
-    <span class="mbar${bad ? ' bad' : ''}"><i style="width:${width}%"></i></span>
-  </div>`;
-}
-
-// pct＝進度條寬度（0〜100 的整數）。**只給 CSS 寬度用，畫面上的數字一律是後端給的原值**
-// ——百分比是這裡唯一算的東西，而它不會被當成事實讀（沒有印出來）。
-function pct(a, b) {
-  if (!b || b <= 0) return 0;
-  const v = Math.round((a / b) * 100);
-  return v < 0 ? 0 : (v > 100 ? 100 : v);
-}
+// （「今天的用量」那張卡——✅、天 26/71、⌛——已於 #246 移除，改為 usage.js 的用量儀表：
+//   它用免費日上限估，對付費帳號是錯的，而且 leo 看不懂那三個符號。）
 
 // 你的檔案：分母 + 三個分類（t210，2026-08-08，取代 08-06 逐檔白話翻譯）。
 //
@@ -508,8 +427,8 @@ function cardProgress(p) {
       <div class="kv" style="margin-top:10px;flex-wrap:wrap">
         <div><div class="big-num">${p.total}</div><div class="k">共幾份</div></div>
         <div><div class="big-num">${p.done}</div><div class="k">已送上去</div></div>
-        <div><div class="big-num">${p.pending}</div><div class="k">排隊中</div></div>
-        <div><div class="big-num">${p.cantSync}</div><div class="k">送不上去</div></div>
+        <div><div class="big-num">${p.waiting}</div><div class="k">待上傳</div></div>
+        <div><div class="big-num">${p.errors}</div><div class="k">出錯</div></div>
       </div>
       ${p.cantSync > 0 ? `
       <details class="fail" style="margin-top:14px">
@@ -565,19 +484,102 @@ const SYNC_ICON = { ok: '✅', working: '🔄', trouble: '⚠️', unknown: '○
 //   ① 同步＝環形進度＋已送上/可同步總數；全送完（出錯的不算）＝滿環打勾
 //   ② 出錯＝旁邊獨立的 `!N`，沒有就不顯示
 // 四種組合：同步中＋0 錯／同步中＋有錯／已完成＋0 錯／已完成＋有錯。環不會因為有錯而變色。
+const FAQ_URL = 'https://rag.arcrun.dev/docs/help/faq/';
+
+// 「!N」＝入口，不是說明（c18700 第 9 項，leo 10-10）：!N 的意思是「這裡有一到多個檔出錯」，
+// 點下去要**帶到出錯的位置**（資料夾頁展開到出錯的檔），各檔在自己那一列看原因與解法／回報鈕。
+// 以前這裡是一個 popup：只能在最上面用一個按鈕講三種不同的問題，還會被側欄切掉一半。
+function bangHtml(o, accIdx, folder) {
+  const cls = o.state === 'unsolvable' ? (o.reported ? 'quiet' : 'bad') : 'warn';
+  const tip = `${o.why || '出錯'}——點一下看是哪幾份`;
+  return `<button class="bangbtn ${cls}" data-goerr="${accIdx}|${esc(folder)}"
+      title="${esc(tip)}" aria-label="${esc(tip)}${o.n > 0 ? ': ' + o.n : ''}"><span class="bang">!</span>${o.n > 0 ? `<b>${Number(o.n).toLocaleString('en-US')}</b>` : ''}</button>`;
+}
+
+// 小圖示（說明只放 title／aria-label，畫面上不寫字；#246 c18700 第 1、4、6、7、8 項）
+const icoSvg = (d) => `<svg class="icsvg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const IC_REFRESH = icoSvg('<path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/>');
+const IC_HOME = icoSvg('<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1H10v-5h4v5h3.5a1 1 0 0 0 1-1v-9"/>');
+const IC_CLOUD = icoSvg('<path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5 4.25 4.25 0 0 1 17.5 18Z"/>');
+const IC_FOLDER_PLUS = icoSvg('<path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M12 11v5M9.5 13.5h5"/>');
+
+// 出錯檔的「解法」：用戶自己做得到的事。只放 mouseover，畫面上只有短標籤＋FAQ 鈕。
+const FIX_HINT = { '檔案太大': '把檔案拆小或壓縮後再放回資料夾', '讀不出字': '換成可複製文字的版本（掃描檔先做文字辨識）', '格式不支援': '轉成 PDF 或 Markdown 再放回來' };
+let reportedFiles = {};   // accIdx -> { 'root|rel': true }（已回報過的出錯檔）
+const accIdxOfRoot = (root) => (state.accounts || []).findIndex((a) => (a.folders || []).some((f) => f.path === root));
+
+function errItemHtml(root, it, ind) {
+  const ai = accIdxOfRoot(root);
+  const key = root + '|' + it.rel;
+  const done = ai >= 0 && reportedFiles[ai] && reportedFiles[ai][key];
+  let act = '';
+  if (it.kind === 'fixable') act = `<button class="ftinc" data-openurl="${FAQ_URL}" title="怎麼處理" aria-label="怎麼處理">FAQ</button>`;
+  else if (it.kind === 'unsolvable') act = done ? `<span class="ftdone" title="已回報" aria-label="已回報">✓</span>`
+    : `<button class="ftinc" data-fprob="${ai}" data-froot="${esc(root)}" data-frel="${esc(it.rel)}" title="回報給 Arcrun" aria-label="回報給 Arcrun">回報</button>`;
+  const tip = it.kind === 'fixable' ? (FIX_HINT[it.why] || it.why) : (it.kind === 'retry' ? '自動重試中，不用處理' : '我們還沒有這類問題的解法');
+  return `<div class="fterr ${esc(it.kind)}" data-errrow="${esc(key)}" style="padding-left:${ind}px">`
+    + `<span class="bang">!</span><span class="nm" title="${esc(it.rel)}">${esc(it.name)}</span>`
+    + `<span class="why" title="${esc(tip)}">${esc(it.why)}</span>${act}</div>`;
+}
+
+// 「!N」被按下：帶到出錯的位置。folder 空字串＝整個帳號（展開每個有出錯的資料夾），
+// 否則只展開那一個。找不到任何出錯檔（例如額度用完、引擎沒在跑）就去同步頁，那裡有對應的卡。
+let errFocus = null;
+async function goToErrors(accIdx, folder) {
+  const a = (state.accounts || [])[accIdx];
+  if (!a) return;
+  const folders = (a.folders || []).filter((f) => !f.retiring);
+  const cand = folder ? folders.filter((f) => f.path === folder)
+    : folders.filter((f) => (f.errors || 0) > 0 || f.state === 'fixable' || f.state === 'unsolvable');
+  if (!cand.length) { libTab[accIdx] = 'sync'; if (page === 'lib:' + accIdx) renderPage(); else goPage('lib:' + accIdx); return; }
+  try { const r = await go.ReportedFiles(accIdx); reportedFiles[accIdx] = Object.fromEntries((r || []).map((k) => [k, true])); } catch (e) {}
+  let first = null;
+  for (const f of cand) {
+    treeState.open[f.path] = true;
+    try { treeState.data[f.path] = (await go.GetFolderTree(f.path)) || null; } catch (e) { treeState.data[f.path] = null; }
+    const t = treeState.data[f.path];
+    if (!t || !t.nodes) continue;
+    const byPath = {}; t.nodes.forEach((n) => { byPath[n.path] = n; });
+    const st = treeState.nodes[f.path] || (treeState.nodes[f.path] = {});
+    t.nodes.filter((n) => (n.error_items || []).length).forEach((n) => {
+      for (let x = n; x; x = byPath[x.parent]) st[x.path] = true;   // 自己與祖先都展開
+      if (!first) first = { root: f.path, key: f.path + '|' + n.error_items[0].rel };
+    });
+  }
+  libTab[accIdx] = 'folders';
+  errFocus = first;
+  if (page === 'lib:' + accIdx) renderPage(); else goPage('lib:' + accIdx);
+  setTimeout(focusErrRow, 60);
+}
+function focusErrRow() {
+  if (!errFocus) return;
+  const el = document.querySelector(`[data-errrow="${cssq(errFocus.key)}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('flash');
+  errFocus = null;
+}
+
+// 資料夾一列的狀態（c18615）：在跑＝呼吸燈＋已送上/總數；完成＝✓；沒在跑＝「!N」popup；沒有「有錯誤但打勾」這種矛盾。
 function folderProgressHtml(f) {
-  const total = f.total || 0, done = f.done || 0, errs = f.errors || 0;
-  const frac = total ? Math.min(1, done / total) : 0;
-  const C = 2 * Math.PI * 7;
-  const ring = `<svg class="fring" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
-    <circle cx="9" cy="9" r="7" fill="none" class="bg"/>
-    <circle cx="9" cy="9" r="7" fill="none" class="arc" stroke-dasharray="${(C * frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 9 9)"/>
-    ${f.sync === 'ok' ? '<path d="m5.6 9.2 2.3 2.3 4.5-4.8" fill="none" class="ck"/>' : ''}</svg>`;
   const fmt = (n) => Number(n).toLocaleString('en-US');
-  const nums = f.sync === 'ok' ? fmt(total) : (total ? `${fmt(done)}/${fmt(total)}` : '—');
-  const sync = `<span class="fstat fprog ${esc(f.sync || 'unknown')}" role="img" title="${esc(f.syncTip || '')}" aria-label="${esc(f.syncTip || '')}">${ring}<b class="fnum">${nums}</b></span>`;
-  const err = errs ? `<span class="ferr" role="img" title="${errs} 份出錯" aria-label="${errs} 份出錯">!${fmt(errs)}</span>` : '';
-  return `<span class="fpair">${sync}${err}</span>`;
+  const all = (f.total || 0) + (f.errors || 0), done = f.done || 0;
+  let inner;
+  switch (f.state) {
+    case 'running':
+      inner = `<span class="fstat run" role="img" title="同步中" aria-label="同步中"><i class="beat big"></i><b class="fnum">${fmt(done)}/${fmt(all)}</b></span>`;
+      break;
+    case 'done':
+      inner = `<span class="fstat ok" role="img" title="已全部送上" aria-label="已全部送上"><svg class="fring" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="7" fill="none" class="bg"/><circle cx="9" cy="9" r="7" fill="none" class="arc" stroke-dasharray="44 44" transform="rotate(-90 9 9)"/><path d="m5.6 9.2 2.3 2.3 4.5-4.8" fill="none" class="ck"/></svg><b class="fnum">${fmt(all)}</b></span>`;
+      break;
+    case 'fixable':
+    case 'unsolvable':
+      inner = `<span class="fnum dim">${fmt(done)}/${fmt(all)}</span>${bangHtml(f, f.accIdx, f.path)}`;
+      break;
+    default:
+      inner = `<span class="sp" title="還在確認">—</span>`;
+  }
+  return `<span class="fpair">${inner}</span>`;
 }
 
 // 資料夾路徑當不了 DOM id（含空白、斜線、中文）⇒ 折成一個穩定的短碼。
@@ -601,10 +603,10 @@ function rollupTree(nodes) {
   nodes.forEach((n) => { byPath[n.path] = n; (kids[n.parent] = kids[n.parent] || []).push(n); });
   const sums = {};
   function walk(n) {
-    const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0, inProgress: [] };
+    const acc = { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0, errors: 0, inProgress: [] };
     if (!n.skipped || n.total_files > 0) {
       acc.total = n.total_files; acc.synced = n.synced_files; acc.pending = n.pending_files;
-      acc.unsupported = n.unsupported_files; acc.excluded = n.excluded_files;
+      acc.unsupported = n.unsupported_files; acc.excluded = n.excluded_files; acc.errors = n.error_files || 0;
       // arcrun-rag#213／c10630：走過續讀機制、還沒讀完的大檔——跟其他計數同一套疊法，
       // 這樣不管在哪一層展開，都看得到底下有沒有正在分次讀的大檔。
       if (n.in_progress_files && n.in_progress_files.length) acc.inProgress = n.in_progress_files.slice();
@@ -612,7 +614,7 @@ function rollupTree(nodes) {
     (kids[n.path] || []).forEach((c) => {
       const x = walk(c);
       acc.total += x.total; acc.synced += x.synced; acc.pending += x.pending;
-      acc.unsupported += x.unsupported; acc.excluded += x.excluded;
+      acc.unsupported += x.unsupported; acc.excluded += x.excluded; acc.errors += x.errors;
       if (x.inProgress.length) acc.inProgress = acc.inProgress.concat(x.inProgress);
     });
     sums[n.path] = acc;
@@ -625,13 +627,13 @@ function rollupTree(nodes) {
   return { sums, kids, byPath };
 }
 
-// 差額必須解釋得了：總數 − 已同步 ＝ 不支援 ＋ 不收 ＋ 處理中。
+// 分母＝會處理的檔（#246 c18652）；差額只剩「處理中」，不在知識範圍的進 hover。
 // 這行文案的存在理由就是 leo 那句「不上傳通常是不支援，比如程式碼、不支援的格式」
 // ——畫面要自己回答，不必問人。
 function gapWhy(s) {
+  // #246 c18652：分母＝會處理的檔（已送上＋還沒送完）；不在知識範圍的（格式讀不了、程式碼等）
+  // 不進分母，只在數字的 hover 說「另有 N 個」。所以這裡只剩「處理中」。
   const parts = [];
-  if (s.unsupported > 0) parts.push(s.unsupported + ' 份格式還讀不了');
-  if (s.excluded > 0) parts.push(s.excluded + ' 份不在收檔範圍（程式碼等）');
   if (s.pending > 0) parts.push(s.pending + ' 份處理中');
   // arcrun-rag#213／c10630：大檔一次讀不完時，「處理中」不再是一句話帶過——
   // 至少讓使用者看得到「正在動、動到哪了」，不是卡住。小檔沒有這份清單，這裡不加東西。
@@ -672,7 +674,9 @@ function renderFolderTree(path) {
   function emit(n) {
     const s = r.sums[n.path] || { total: 0, synced: 0, pending: 0, unsupported: 0, excluded: 0 };
     const kids = (r.kids[n.path] || []).slice().sort((a, b) => (a.path < b.path ? -1 : 1));
-    const open = kids.length ? nodeIsOpen(path, n) : false;
+    const errItems = n.error_items || [];     // #246 c18700：這一層出錯的檔，各自一列
+    const expandable = kids.length > 0 || errItems.length > 0;
+    const open = expandable ? nodeIsOpen(path, n) : false;
     // 縮排 16px 一層＝檔案總管的量級；一列一行、往後退縮（Arcrun#144 的形狀）。
     const indent = 4 + n.depth * 16;
     // 🔴 三角形用 CSS 畫（`<i>` 那個空元素），**不用 ▸▾ 字元**：
@@ -681,13 +685,13 @@ function renderFolderTree(path) {
     //    畫出來的三角形每一台都一樣大，也才控得住點擊區。
     // 可展開的那幾列是**按鈕**，不是裝飾用的 div：標上 role/tabindex/aria-expanded
     // ⇒ 鍵盤按得到、輔助技術念得出「收合／展開」，機械檢查也看得見它是可操作的。
-    let row = `<div class="ftrow${kids.length ? ' has' : ''}${open ? ' open' : ''}" style="padding-left:${indent}px"`
-      + (kids.length
+    let row = `<div class="ftrow${expandable ? ' has' : ''}${open ? ' open' : ''}" style="padding-left:${indent}px"`
+      + (expandable
         ? ` data-tnode="${esc(n.path)}" data-troot="${esc(path)}" role="button" tabindex="0"`
           + ` aria-expanded="${open}" title="${open ? '收合' : '展開'}「${esc(n.name || '')}」"`
         : '') + `>`
-      + `<span class="tw">${kids.length ? '<i></i>' : ''}</span>`
-      + `<span class="ic">${kids.length && open ? '📂' : '📁'}</span>`
+      + `<span class="tw">${expandable ? '<i></i>' : ''}</span>`
+      + `<span class="ic">${expandable && open ? '📂' : '📁'}</span>`
       + `<span class="nm">${esc(n.name || '（未命名）')}</span>`;
     // ── 一列只有：三角形 ＋ 資料夾名 ＋ `X / Y`（`inkstone/arcrun-rag#159`）──
     //
@@ -711,14 +715,20 @@ function renderFolderTree(path) {
     if (n.parent === '-' && tree.reason) why = why ? `${tree.reason}（${why}）` : tree.reason;
     // 整棵沒走進去（#180 之後：skipped 且 total_files 為 0）⇒ 不准顯示 0/0，
     // 那會是我們自己編的數字。用「—」表示「這個數字我沒有」。
-    const noCount = n.skipped && n.total_files === 0;
-    const full = !noCount && s.total > 0 && s.synced === s.total;
-    const shown = noCount ? '—' : `${s.synced} / ${s.total}`;
+    // #246 c18652：分母一律＝會處理的檔（已送上＋還沒送完），與上層資料夾列、帳號進度同一把尺，
+    // 每一層加總對得上；不在知識範圍的（格式讀不了、程式碼等）只在 hover 說另有幾個。
+    const handled = s.synced + s.pending;
+    const outOfScope = s.unsupported + s.excluded;
+    const noCount = n.skipped && (n.total_files === 0 || handled === 0);
+    const full = !noCount && handled > 0 && s.synced === handled;
+    const shown = noCount ? '—' : `${s.synced.toLocaleString('en-US')} / ${handled.toLocaleString('en-US')}`;
+    const numTip = outOfScope > 0 ? `另有 ${outOfScope.toLocaleString('en-US')} 個不在知識範圍` : (why ? '點一下看原因' : '');
     row += `<span class="num${full ? ' full' : ''}${why ? ' hasWhy' : ''}"`
       + (why
-        ? ` data-twhy="${esc(n.path)}" data-twroot="${esc(path)}" role="button" tabindex="0" title="點一下看原因"`
-        : '')
+        ? ` data-twhy="${esc(n.path)}" data-twroot="${esc(path)}" role="button" tabindex="0" title="${esc(numTip)}"`
+        : (numTip ? ` title="${esc(numTip)}"` : ''))
       + `>${shown}</span>`;
+    if (!noCount && s.errors > 0) row += `<span class="ftbang" title="出錯 ${s.errors.toLocaleString('en-US')} 份" aria-label="出錯 ${s.errors}"><b>!</b>${s.errors.toLocaleString('en-US')}</span>`;
     html += row + `</div>`;
     if (why && (treeState.why[path] || {})[n.path]) {
       // #136 驗收 5／7：被跳過但底下有檔的資料夾 ⇒ 給「收進來」；已收進來的 ⇒ 給「取消收進來」。
@@ -734,7 +744,10 @@ function renderFolderTree(path) {
       }
       html += `<div class="ftwhy" style="padding-left:${indent + 21}px">${esc(why)}${act}</div>`;
     }
-    if (open) kids.forEach(emit);
+    if (open) {
+      errItems.forEach((it) => { html += errItemHtml(path, it, indent + 37); });
+      kids.forEach(emit);
+    }
   }
   (r.kids['-'] || []).forEach(emit);
   // 父親不在清單裡的孤兒（樹被截斷時會有）——照樣列出來，缺角要看得見，不要偷偷藏起來
@@ -792,6 +805,20 @@ async function toggleFolderTree(path) {
 function cssq(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
 function wireTree() {
+  // 出錯檔那一列的按鈕（樹是自己重畫的，不經過 wire()，所以在這裡接）
+  document.querySelectorAll('.fterr [data-openurl]').forEach((b) => { b.onclick = (ev) => { ev.stopPropagation(); go.OpenURL(b.dataset.openurl); }; });
+  document.querySelectorAll('.fterr [data-fprob]').forEach((b) => {
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      const ai = Number(b.dataset.fprob), root = b.dataset.froot, rel = b.dataset.frel;
+      b.disabled = true;
+      try {
+        await go.ReportFileProblem(ai, root, rel);
+        (reportedFiles[ai] = reportedFiles[ai] || {})[root + '|' + rel] = true;
+        renderFolderTree(root);
+      } catch (ex) { b.disabled = false; b.textContent = '重試'; b.title = errText(ex); }
+    };
+  });
   document.querySelectorAll('[data-tnode]').forEach((el) => {
     const toggle = () => {
       const root = el.dataset.troot, np = el.dataset.tnode;
@@ -878,13 +905,22 @@ function usageGauge(b) {
     }
     cells = `<span class="cells">${cells}</span><span class="ut">${esc(String(Math.round(b.percent)))}%</span>`;
   }
-  const inf = b.paid ? `<span class="inf" title="付費帳號：用完免費額度也不會停">∞</span>${b.billing ? '<span class="bill" title="免費額度已用完，現在計費">計費中</span>' : ''}` : '';
+  const inf = b.paid ? `<span class="inf" title="付費帳號：用完免費額度也不會停">∞</span>${b.billing ? '<span class="bill" title="免費額度已用完，現在計費" aria-label="現在計費">$</span>' : ''}` : '';
   return `<span class="ugauge ${esc(b.level)}${b.paid ? ' paid' : ''}" title="${esc(b.line)}" aria-label="${esc(b.line)}">${UARROW}${cells}${inf}</span>`;
 }
 
 // ── 帳號分頁（inkstone/arcrun-rag#240 c18254）──
 // 第一行＝帳號名稱；這個帳號自己的狀態、動態、用量、錯誤都在名稱底下；別人的不出現。
 // 分頁：同步／資料夾／App／用量／AI 與設定。
+// 頁籤用圖示（#246 c18651，leo 10-10）：訊息／資料夾／九宮格／碼表／扳手——免翻譯，名稱只在 hover。
+const tabSvg = (d) => `<svg class="tabic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const TAB_ICONS = {
+  sync: tabSvg('<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9l-5 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/>'),
+  folders: tabSvg('<path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/>'),
+  apps: tabSvg('<circle cx="6" cy="6" r="1.4"/><circle cx="12" cy="6" r="1.4"/><circle cx="18" cy="6" r="1.4"/><circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/><circle cx="6" cy="18" r="1.4"/><circle cx="12" cy="18" r="1.4"/><circle cx="18" cy="18" r="1.4"/>'),
+  usage: tabSvg('<path d="M4.5 17a8 8 0 1 1 15 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15" r="1.2"/>'),
+  ai: tabSvg('<path d="M14.5 5.5a4 4 0 0 0-5 5L4 16l2 2 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-2-.5-.5-2Z"/>'),
+};
 const LIB_TABS = [['sync', '同步'], ['folders', '資料夾'], ['apps', 'App'], ['usage', '用量'], ['ai', '設定']];
 
 function libPortalURL(a) {
@@ -896,11 +932,12 @@ function libHeadHtml(a) {
   // 網址不放（與「開啟知識庫網頁」重複）；同步中的句子也不放——狀態列用符號（#240 c18299）
   return `
     <header class="acchead">
+      <button class="icbtn plain" data-gohome="1" title="回首頁" aria-label="回首頁">${IC_HOME}</button>
       <div class="g">
         <h1 class="nm">${esc(a.name)}</h1>
       </div>
       <div class="accmeter" title="${esc(b ? b.line : '')}">${usageGauge(b)}</div>
-      <button class="primary" data-synclib="1">同步</button>
+      <button class="icbtn primary" data-synclib="1" title="同步" aria-label="同步">${IC_REFRESH}</button>
     </header>
     ${libStatusBar(a, state)}`;
 }
@@ -924,17 +961,25 @@ function libStatusBar(a, s) {
       : `<span class="sp"><span class="kbv${a.cloudVerFresh ? '' : ' dim'}" title="雲端版本">${esc(a.cloudVerMine)}</span></span>`)
     : '';
   const cells = p ? [
-    item('', SYM.files, p.total, '這個帳號的檔案'),
+    item('', SYM.files, p.total, '可讀的檔案（＝已送上＋待上傳＋出錯）'),
     item('', SYM.done, p.done, '已送上'),
-    item('', SYM.queue, p.pending, '排隊中'),
+    item('', SYM.queue, p.waiting, '待上傳'),
   ].join('') : `<span class="sp" title="還沒有檔案進度">—</span>`;
   // `!` ＝下面卡片上能處理的件數（同一個數字）；`↻`＝自動重試中，灰色
   // 近一小時送上雲端幾份：各帳號各自前進、量得出變快了沒（#240 c18413）
   const rate = a.sentHour != null ? `<span class="sp" title="近一小時送上" aria-label="近一小時送上: ${a.sentHour}"><svg class="symic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg><b>${a.sentHour}</b>/h</span>` : '';
-  const bang = need ? item('bad', '<span class="bang">!</span>', need, '停住的檔案') : '';
+  const ai = (state.accounts || []).indexOf(a);
+  // 出錯（`!N`）＝可讀的檔案 − 已送上 − 待上傳，三者互斥（#246 c18681）；排在待上傳後面，
+  // 不再占第一格（版本才是第一格）。有解／無解時是可點的 popup，其餘時候是純數字。
+  const errN = p ? p.errors : 0;
+  const errCell = (a.state === 'fixable' || a.state === 'unsolvable') ? bangHtml(a, ai, '')
+    : errN > 0 ? `<span class="sp" title="出錯（自動重試中）" aria-label="出錯: ${errN}"><span class="bang">!</span><b>${errN}</b></span>` : '';
+  const lead = a.state === 'running' ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat big"></i></span>`
+    : a.state === 'done' ? `<span class="sp" title="全部完成" aria-label="全部完成">${SYM.done}</span>` : '';
+  const bang = '';
   const pause = needsOf(s, a).some((i) => i.kind === 'quota') ? `<span class="sp bad" title="額度用完" aria-label="額度用完">⏸</span>` : '';
-  const retry = a.trouble ? `<span class="sp quiet" title="自動重試中" aria-label="自動重試中: ${a.trouble.count}">↻&thinsp;${a.trouble.count}</span>` : '';
-  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${cells}${rate}${bang}${pause}${retry}<span class="grow"></span>${st.syncing ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat"></i>${SYM_SYNC}</span>` : ''}</section>`;
+  const retry = '';
+  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${lead}${cells}${errCell}${rate}${bang}${pause}${retry}<span class="grow"></span></section>`;
 }
 
 function libTabsHtml(a, idx) {
@@ -942,9 +987,9 @@ function libTabsHtml(a, idx) {
   return `
     <div class="tabs" role="tablist" aria-label="這個帳號">
       ${LIB_TABS.map(([k, label]) => `
-        <button role="tab" class="tab${k === cur ? ' on' : ''}" aria-selected="${k === cur}" data-libtab="${k}">${label}${k === 'folders' ? ` <span class="cnt">${(a.folders || []).length}</span>` : ''}</button>`).join('')}
+        <button role="tab" class="tab${k === cur ? ' on' : ''}" aria-selected="${k === cur}" data-libtab="${k}" title="${esc(label)}" aria-label="${esc(label)}">${TAB_ICONS[k]}${k === 'folders' ? `<span class="cnt">${(a.folders || []).length}</span>` : ''}</button>`).join('')}
       <span class="grow"></span>
-      <button class="lnk" data-portal="${esc(libPortalURL(a))}">網頁 ↗</button>
+      <button class="icbtn plain" data-portal="${esc(libPortalURL(a))}" title="開啟知識庫網頁" aria-label="開啟知識庫網頁">${IC_CLOUD}</button>
     </div>`;
 }
 
@@ -958,14 +1003,27 @@ function libBodyHtml(s, a, idx) {
   }
 }
 
+// 帳號層級的狀態卡：!N 點下去找不到任何出錯的檔（引擎沒在跑、近一小時沒送出…）時的落點。
+// 不是 popup——直接在同步頁的頁面裡，不會被側欄切到。額度用完另有自己的卡，這裡不重複。
+function cardAccountState(a) {
+  const n = a.progress ? a.progress.errors : 0;
+  if (n > 0 || a.why === '額度用完' || !(a.state === 'fixable' || a.state === 'unsolvable')) return '';
+  const ai = (state.accounts || []).indexOf(a);
+  const act = a.state === 'fixable'
+    ? `<button class="primary" data-openurl="${FAQ_URL}">FAQ</button>`
+    : (a.reported ? `<span class="ftdone" title="已回報" aria-label="已回報">✓</span>`
+      : `<button class="primary" data-prob="${ai}" data-pfolder="">回報</button>`);
+  return `<div class="card alertcard"><div class="qrow"><span class="qt">${esc(a.why || '')}</span>${act}</div><div class="d stallmsg"></div></div>`;
+}
+
 function tabSync(s, a) {
   const q = s.quota && (s.quota.account === a.name || (!s.quota.account && (s.accounts || []).length === 1))
     ? cardQuota(s.quota, a.progress, s.accounts) : '';
   // 「送不上去」的分類統計沒有帳號維度，只有一個帳號時才拿來用，免得把別人的數字掛在這頁
   const groups = (s.accounts || []).length === 1 ? cardProgress(s.progress) : '';
   return `
-    ${cardStalls(s.stalls, a.name)}
     ${q}
+    ${cardAccountState(a)}
     ${groups}`;
 }
 
@@ -974,7 +1032,7 @@ function libTroubleHtml() { return ''; }   // 自動重試中的失敗用戶做�
 function tabFolders(s, a, idx) {
   return `
     <div class="folderbar">
-      <button class="primary" data-addto="${idx}">加資料夾</button>
+      <button class="icbtn primary" data-addto="${idx}" title="加資料夾" aria-label="加資料夾">${IC_FOLDER_PLUS}</button>
     </div>
     ${(a.folders || []).map((f) => f.retiring ? `
       <div class="folder">
@@ -1014,7 +1072,7 @@ function tabApps(a, idx) {
   const apps = r.apps || [];
   return `
     <div class="appbar"><span class="s" title="已安裝的 App">${apps.length}</span>
-      <button id="apRefresh">重整</button></div>
+      <button class="icbtn" id="apRefresh" title="重整" aria-label="重整">${IC_REFRESH}</button></div>
     <div class="appgrid">
       ${apps.map((x) => `
         <div class="appcell">
@@ -1032,19 +1090,18 @@ function tabApps(a, idx) {
 }
 
 function tabUsage(s, a) {
-  const b = a.battery;
-  const head = `<div class="card usagecard"><div class="bigmeter">${usageGauge(b)}</div></div>`;
-  // 用量明細（上傳列數、這批還要幾天）只算得出「最吃緊的那一個」帳號，不是這個帳號才畫
-  const m = s.quotaMeter && s.quotaMeter.account === a.host ? cardQuotaMeter(s.quotaMeter) : '';
-  return `${libBatteryWarnHtml(a)}${head}${m}`;
+  // #246：離爆／收費多遠。舊版 `今天的用量` 那張卡（✅、天 26/71、⌛）已拿掉：
+  // 它用免費日上限估，對付費帳號是錯的；排隊與進度本來就在同步分頁的狀態列。
+  const head = a.usage ? '' : `<div class="card usagecard"><div class="bigmeter">${usageGauge(a.battery)}</div></div>`;
+  startUsageTicker();
+  return `${libBatteryWarnHtml(a)}${head}${usageDashboard(a.usage)}`;
 }
 
 function tabAI(a) {
   return `
     <div class="card">
-      <h3>這個知識庫</h3>
-      <div class="kv" style="margin-top:10px;flex-wrap:wrap">
-        ${a.email ? `<div><div class="k">帳號</div><div class="mono">${esc(a.email)}</div></div>` : ''}
+      <div class="kv" style="flex-wrap:wrap">
+        ${a.email ? `<div><div class="k" title="Cloudflare 帳號">CF 帳號</div><div class="mono">${esc(a.email)}</div></div>` : ''}
         <div><div class="k">雲端版本</div><div class="kbver">${kbVersionLine(a)}</div></div>
       </div>
     </div>`;
@@ -1455,6 +1512,14 @@ function wire(root) {
   all('[data-synclib]').forEach((b) => { b.onclick = async () => { await go.SyncNow(); tick(); }; });
   all('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
   all('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
+  all('[data-goerr]').forEach((b) => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const i = b.dataset.goerr.indexOf('|');
+      goToErrors(Number(b.dataset.goerr.slice(0, i)), b.dataset.goerr.slice(i + 1));
+    };
+  });
+  all('[data-gohome]').forEach((b) => { b.onclick = () => goPage('home'); });
   all('[data-stallall]').forEach((b) => {
     b.onclick = async () => {
       const fps = JSON.parse(b.dataset.stallall || '[]');

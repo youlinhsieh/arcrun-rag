@@ -213,3 +213,20 @@
 | 2026-10-10 11:12:08 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 19 次） |
 | 2026-10-10 11:27:21 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward a667ec3→HEAD，2 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-10-10 11:30:09 | git.uncle6.me/inkstone/arcrun-rag | feat/297-no-block-embed | ✅ 放行 | 目標不是 main／master |
+| 2026-10-10 11:38:18 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-10-10 11:41:12 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-10-10 12:40:26 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 74d0d0c→HEAD，1 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 12:42:52 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward 1392c18→HEAD，20 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 13:01:31 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 489469e→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 13:05:01 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward 7009b48→HEAD，8 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 13:51:13 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 22739e0→HEAD，6 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 13:55:42 | git.uncle6.me/inkstone/arcrun-rag | ship/246-stage-daemon-0.18.84 | ✅ 放行 | 目標不是 main／master |
+| 2026-10-10 13:55:46 | git.uncle6.me/inkstone/arcrun-collector | main | ⛔ 擋下 | 機械檢查：這一推會刪掉遠端 main 上的 1 個檔：cmd/arcrun-app/check-quota-meter.mjs |
+| 2026-10-10 13:58:11 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward d0d044e→HEAD，21 個檔有變（含 1 個刪除，--allow-deletions 放行）、.gitignore 沒變短 |
+| 2026-10-10 15:04:56 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 3e6ffc5→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 15:08:25 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward 591e417→HEAD，18 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 15:43:10 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward c164e16→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 15:46:50 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward e3e8ef8→HEAD，14 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 16:06:08 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 54e7674→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 16:08:41 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 54e7674→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 16:13:36 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward f402c10→HEAD，10 個檔有變、沒有刪檔、.gitignore 沒變短 |

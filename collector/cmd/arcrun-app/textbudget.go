@@ -108,6 +108,21 @@ func compactUI(st *UIState) {
 
 // batteryShort：量表旁的 hover（Line）與通知標題（Warning，沒事就空）。
 func batteryShort(b *UIBattery) (line, warning string) {
+	if b.FromUsage {
+		// #246 c18653：數字＝儀表最吃緊那一項的已用 %；付費越線不警告（儀表的 $ 已經在講）
+		pct := trimPercent(b.Percent)
+		line = "已用 " + pct + "%"
+		switch {
+		case !b.PctKnown || b.Paid:
+		case b.Level == "crit":
+			warning = "⏸ 用量用完"
+		case b.Saver:
+			warning = "⚠ 用量 " + pct + "% · 放慢"
+		case b.Level == "warn":
+			warning = "⚠ 用量 " + pct + "%"
+		}
+		return
+	}
 	pct := trimPercent(b.Percent)
 	if b.Paid {
 		if b.PctKnown {

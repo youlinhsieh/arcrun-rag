@@ -98,11 +98,8 @@ func TestExtractWithWorkersAI_VaultExistingCardNotClobbered(t *testing.T) {
 	defer stubClose()
 
 	_, err := ExtractWithWorkersAI(stubURL, "k123", root, srcRel, testOrigin())
-	if err == nil {
-		t.Fatal("目標位置被別人佔用時應報錯，不得無聲覆蓋")
-	}
-	if !strings.Contains(err.Error(), "佔用") {
-		t.Fatalf("錯誤訊息看不出原因：%v", err)
+	if err != nil { // #246 c18722：撞名不是錯誤——機器自己消歧閃開，只是不得覆蓋原檔
+		t.Fatalf("目標位置被別人佔用時應自行消歧而非報錯：%v", err)
 	}
 	data, _ := os.ReadFile(cardPath)
 	if string(data) != preexisting {

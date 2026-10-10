@@ -11,12 +11,12 @@ import (
 	"testing"
 )
 
-// 三種格式、同檔名主幹、活在兄弟目錄（照實據的 markdown/ vs json/ 結構）
+// 三種格式、同檔名主幹、同一個目錄（#240 c18620：不同資料夾的同名檔是不同內容，不再合併）
 // → 只有一份（依優先序 docx > pptx > xlsx > csv > pdf > md > markdown > txt）進事件管線。
 func TestScan_FormatDuplicate_OnlyOneEventPerStem(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "markdown/160-00F3_001.md", "# 錯誤說明\nM118/M128 不可同時使用", baseTime)
-	writeFile(t, root, "csv/160-00F3_001.csv", "code,msg\n160-00F3,M118/M128 不可同時使用", baseTime)
+	writeFile(t, root, "doc/160-00F3_001.md", "# 錯誤說明\nM118/M128 不可同時使用", baseTime)
+	writeFile(t, root, "doc/160-00F3_001.csv", "code,msg\n160-00F3,M118/M128 不可同時使用", baseTime)
 	writeFile(t, root, "doc/160-00F3_001.docx", "docx 二進位占位", baseTime)
 
 	m := newTestManifest()
@@ -45,7 +45,7 @@ func TestScan_FormatDuplicate_OnlyOneEventPerStem(t *testing.T) {
 		if d.KeptPath != "doc/160-00F3_001.docx" {
 			t.Errorf("KeptPath=%q，應指向留下的那份", d.KeptPath)
 		}
-		if d.Stem != "160-00f3_001" {
+		if d.Stem != "doc/160-00f3_001" {
 			t.Errorf("Stem=%q", d.Stem)
 		}
 	}

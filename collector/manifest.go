@@ -87,6 +87,16 @@ type ManifestEntry struct {
 	// 🔴 不記這一格的話，對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、永遠停不下來。
 	//    舊的 manifest 沒有這一格＝當成「送過」，那正是本票要救的那批檔的處境。
 	NoCloudCard bool `json:"no_cloud_card,omitempty"`
+	// FormatDupOf＝同一個目錄下「同名不同格式」的另一份（優先序更高、真正進管線的那份）的相對路徑；
+	// ""＝這份就是本尊。每輪掃描重算、不跨輪 carry。進度統計不把它算成一份獨立的原文件
+	// （用戶的一份文件只算一次，#240 c18620）。
+	FormatDupOf string `json:"format_dup_of,omitempty"`
+	// TwinRoot／TwinPath＝這份檔的內容（hash）和「本尊」那份一模一樣，所以**沒有自己的卡**，
+	// 只在本尊那張卡上多寫一行出處（inkstone/arcrun-rag#246 c18734：同內容的檔不論在哪兩個互不相關的
+	// 路徑，只萃一張卡）。本尊＝另一個監看根（或同根另一路徑）的 manifest 條目。
+	// 本尊消失／內容變了，下一輪由 sweepOrphanTwins 把這份放回佇列自己萃。
+	TwinRoot string `json:"twin_root,omitempty"`
+	TwinPath string `json:"twin_path,omitempty"`
 }
 
 // retryBackoff 退避階梯：1m → 5m → 15m → 1h → 6h，之後每次 6h。
@@ -263,6 +273,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	// 誤標 false ⇒ 頂多多對一次帳（一個唯讀請求）；誤標 true ⇒ 這個檔從此
 	// 不再被對帳，雲端掉了也沒人發現——那正是本票在修的病。
 	e.NoCloudCard = false
+	e.TwinRoot, e.TwinPath = "", "" // 自己萃過卡＝不再是別人的雙胞胎（#246 c18734）
 	// 🔴 CloudCheckedAt／CloudMissingAt **刻意不清**：
 	//    前者是輪值排序的依據，後者是防重送迴圈的 grace 窗口與「補送過」的證據
 	//    （ResyncSummary 靠 IngestedAt >= CloudMissingAt 判斷這份是不是剛補回來的）。
@@ -378,6 +389,9 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 		if (isTransientCloudText(e.LastError) || isD1QuotaText(e.LastError)) && now >= e.NextRetry {
 			return true
 		}
+		if isCardCollisionText(e.LastError) && now >= e.NextRetry {
+			return true // #246 c18722：舊版把撞名當成死路；現在機器自己消歧，病歷照退避窗口重排
+		}
 		if cardNumberRuleFixedSince(e) {
 			return true // #240：舊規則誤判的暫停，規則修好後一次性重排（再失敗會記新規則版號，不會再自動重排）
 		}
@@ -437,6 +451,11 @@ func isTransientCloudText(msg string) bool {
 		}
 	}
 	return false
+}
+
+// isCardCollisionText＝舊版「卡片位置被佔用」的病歷（現在由消歧處理，不再是錯誤）。
+func isCardCollisionText(msg string) bool {
+	return strings.Contains(msg, "卡片位置被佔用")
 }
 
 // isOldCloudText＝病歷上寫的是「雲端還沒有這個功能」（舊版雲端），不是檔案本身的問題。

@@ -64,6 +64,12 @@ func hasLegacySourceLine(card string) bool {
 // rewriteSourceBlock 把卡片裡的「### 出處」整塊換成新形。
 // 找不到那一塊＝不是本塑形層產的卡，原樣回傳（不亂加東西）。
 func rewriteSourceBlock(card string, o SourceOrigin, cardName string) string {
+	return rewriteSourceBlockMulti(card, []SourceOrigin{o}, cardName)
+}
+
+// rewriteSourceBlockMulti 同上，但出處可以有多個（同內容的檔從好幾個路徑進來，只留一張卡，
+// 出處一路一行；inkstone/arcrun-rag#246 c18734）。
+func rewriteSourceBlockMulti(card string, origins []SourceOrigin, cardName string) string {
 	i := strings.Index(card, sourceHeading)
 	if i < 0 {
 		return card
@@ -88,7 +94,14 @@ func rewriteSourceBlock(card string, o SourceOrigin, cardName string) string {
 		}
 	}
 	var b strings.Builder
-	renderSourceLine(&b, o, cardName)
+	for k, o := range origins {
+		if k == 0 {
+			renderSourceLine(&b, o, cardName)
+			continue
+		}
+		b.WriteString("- 原文位置（機器" + originSep + "知識庫" + originSep + "庫內路徑）：`" + o.Human() + "`\n")
+		b.WriteString("- `" + o.Ref() + "`" + triSep + "提及" + triSep + cardName + "\n")
+	}
 	return card[:i] + b.String() + card[end:]
 }
 

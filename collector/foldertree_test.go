@@ -36,7 +36,8 @@ import (
 // ⇒ 測試不是紅，是**掛住到 8 分鐘 timeout**（比紅更難查：看起來像「測試很慢」）。
 //
 // ⇒ 以後再加第四個 daemon 端點時，凡是「數 POST 幾次／記 page_name」的 stub
-//    都要先問過這一句，不要再讓萬用 handler 去猜。
+//
+//	都要先問過這一句，不要再讓萬用 handler 去猜。
 func answeredFolderTreePost(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.HasSuffix(r.URL.Path, "/portal/daemon/folder-tree") {
 		return false
@@ -154,7 +155,7 @@ func TestFolderTree空資料夾照樣有根節點(t *testing.T) {
 }
 
 // 走進得去但一個檔都沒有的子資料夾，也要有自己的節點
-//（leo 的規格是「不管那層有沒有文件，整棵樹都要採」）。
+// （leo 的規格是「不管那層有沒有文件，整棵樹都要採」）。
 func TestFolderTree空的子資料夾也有節點(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a.md"), "# A")
@@ -395,3 +396,66 @@ func TestSyncFolderTree失敗退避(t *testing.T) {
 	}
 }
 
+// #246 c18654：樹的分母＝會處理的檔（已送上＋還沒送完，同名副本不算），出錯數單獨列，磁碟全部檔數不進分母。
+func TestFolderTreeDenominatorIsHandledFiles(t *testing.T) {
+	dirs := map[string]*dirStat{"": {total: 10, unsupported: 3, excluded: 4}}
+	entries := map[string]*ManifestEntry{
+		"a.md":   {ContentHash: "h", IngestedHash: "h"},
+		"b.md":   {ContentHash: "h2"},
+		"c.pdf":  {ContentHash: "h3", FailCount: MaxFailBeforeSkip, LastError: "檔案太大了"},
+		"b.docx": {ContentHash: "h4", FormatDupOf: "b.md"},
+	}
+	tr := BuildFolderTree("/x", "kb", dirs, entries, nil, IngestPlan{}, time.Now())
+	n := tr.Nodes[0]
+	if n.SyncedFiles != 1 || n.PendingFiles != 2 || n.ErrorFiles != 1 {
+		t.Fatalf("分子分母：已送 %d 待 %d 錯 %d", n.SyncedFiles, n.PendingFiles, n.ErrorFiles)
+	}
+	if n.TotalFiles != 10 || n.UnsupportedFiles+n.ExcludedFiles != 7 {
+		t.Fatalf("磁碟數字仍要在（進 hover）：%+v", n)
+	}
+}
+
+// #246 c18700 第 9 項：!N 點下去，每份出錯檔各自帶原因與種類；只存本機，不上雲、不進雜湊。
+func TestFolderTreeErrorItems(t *testing.T) {
+	dirs := map[string]*dirStat{"": {total: 3}, "sub": {total: 2}}
+	entries := map[string]*ManifestEntry{
+		"big.pdf":     {ContentHash: "h1", FailCount: MaxFailBeforeSkip, LastError: "檔案太大了"},
+		"sub/new.md":  {ContentHash: "h2", FailCount: MaxFailBeforeSkip, LastError: "HTTP 500 奇怪的新錯誤"},
+		"sub/wait.md": {ContentHash: "h3", FailCount: 1, LastError: "HTTP 500 暫時的", NextRetry: 1},
+		"ok.md":       {ContentHash: "h", IngestedHash: "h"},
+	}
+	tr := BuildFolderTree("/x", "kb", dirs, entries, nil, IngestPlan{}, time.Now())
+	byPath := map[string]FolderNode{}
+	for _, n := range tr.Nodes {
+		byPath[n.Path] = n
+	}
+	root, sub := byPath[""], byPath["sub"]
+	if len(root.ErrorItems) != 1 || root.ErrorItems[0] != (FolderErrorItem{Rel: "big.pdf", Name: "big.pdf", Kind: "fixable", Why: "檔案太大"}) {
+		t.Fatalf("根的出錯檔：%+v", root.ErrorItems)
+	}
+	if len(sub.ErrorItems) != 2 || sub.ErrorItems[0].Kind != "unsolvable" || sub.ErrorItems[1].Kind != "retry" {
+		t.Fatalf("子層的出錯檔：%+v", sub.ErrorItems)
+	}
+	if root.ErrorFiles != len(root.ErrorItems) || sub.ErrorFiles != len(sub.ErrorItems) {
+		t.Fatalf("清單筆數要與 ErrorFiles 同一把尺")
+	}
+	// 不進雜湊：出錯清單變動不該讓整棵樹重送
+	h1 := tr.Hash()
+	tr2 := tr
+	tr2.Nodes = append([]FolderNode(nil), tr.Nodes...)
+	for i := range tr2.Nodes {
+		tr2.Nodes[i].ErrorItems = nil
+	}
+	if h1 != tr2.Hash() {
+		t.Errorf("ErrorItems 不該進雜湊")
+	}
+	// 不上雲：檔名與錯誤只留本機
+	for _, n := range tr.uploadNodes() {
+		if len(n.ErrorItems) != 0 {
+			t.Errorf("上行節點不該帶出錯檔細節：%+v", n)
+		}
+	}
+	if len(tr.Nodes[0].ErrorItems)+len(tr.Nodes[1].ErrorItems) == 0 {
+		t.Errorf("uploadNodes 不該改動原樹")
+	}
+}

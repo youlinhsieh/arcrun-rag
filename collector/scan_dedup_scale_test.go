@@ -36,9 +36,9 @@ func TestScan_FormatDuplicate_EvanDatasetScale(t *testing.T) {
 	const nTripleStem = 500
 	for i := 0; i < nTripleStem; i++ {
 		stem := fmt.Sprintf("triple-%05d", i)
-		writeFile(t, root, "a/"+stem+".md", "md", baseTime)
-		writeFile(t, root, "b/"+stem+".txt", "txt", baseTime)
-		writeFile(t, root, "c/"+stem+".csv", "csv,x", baseTime)
+		writeFile(t, root, "t/"+stem+".md", "md", baseTime)
+		writeFile(t, root, "t/"+stem+".txt", "txt", baseTime)
+		writeFile(t, root, "t/"+stem+".csv", "csv,x", baseTime)
 	}
 
 	m := newTestManifest()

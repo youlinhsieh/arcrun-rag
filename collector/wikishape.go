@@ -646,6 +646,33 @@ func buildWikiDocLocked(absRoot, relPath, srcText string, ex *DocExtract, origin
 	taken := map[string]bool{"00-INDEX": true}
 	fold := strings.ToLower
 	old := m.find(nodeKey, base)
+	// 🔴 撞名不是用戶的錯，也不是錯誤（inkstone/arcrun-rag#246 c18722）：磁碟上已經有、而且不是
+	// 「本文件上一輪的卡」也不是「同一份原文的卡」的檔，等於被別份文件佔了——先把它們算進 taken，
+	// 後面的消歧（概念名加「（文件卡名）」、文件卡加編號）自然閃開，不用等寫檔時才撞牆、也不叫用戶改名。
+	// 典型：兩個監看根疊在一起（pms 與 pms/pms_v1_legacy），各有自己的 .wiki/manifest.json，卻寫進同一個 .wiki/。
+	ownedPrev := map[string]bool{}
+	if old != nil {
+		for _, c := range old.Cards {
+			ownedPrev[filepath.ToSlash(c)] = true
+		}
+	}
+	cardDirRel := filepath.ToSlash(filepath.Join(nodeFromKey(nodeKey), wikiRelDir))
+	if ents, derr := os.ReadDir(filepath.Join(absRoot, filepath.FromSlash(cardDirRel))); derr == nil {
+		for _, de := range ents {
+			nm := de.Name()
+			if de.IsDir() || !strings.HasSuffix(nm, ".md") {
+				continue
+			}
+			stem := strings.TrimSuffix(nm, ".md")
+			if ownedPrev[path.Join(cardDirRel, nm)] {
+				continue
+			}
+			if b, rerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(cardDirRel), nm)); rerr == nil && cardIsFromSameSource(string(b), origin, stem) {
+				continue
+			}
+			taken[fold(stem)] = true
+		}
+	}
 	for i := range m.Docs {
 		if m.Docs[i].Node != nodeKey || m.Docs[i].Path == base {
 			continue
@@ -780,8 +807,12 @@ func buildWikiDocLocked(absRoot, relPath, srcText string, ex *DocExtract, origin
 	writeCard := func(cardName, content string) (string, error) {
 		r := rel(cardName)
 		destAbs := filepath.Join(absRoot, filepath.FromSlash(r))
-		if _, err := os.Stat(destAbs); err == nil && !owned[r] && !isOrphanOfThisDoc(destAbs, origin, cardName) {
-			return "", fmt.Errorf("卡片位置被佔用（不覆蓋既有檔案）：%s", r)
+		if prev, err := os.ReadFile(destAbs); err == nil {
+			if !owned[r] && !isOrphanOfThisDoc(destAbs, origin, cardName) && !cardIsFromSameSource(string(prev), origin, cardName) {
+				return "", fmt.Errorf("卡片位置被佔用（不覆蓋既有檔案）：%s", r)
+			}
+			// 同一份原文從兩個監看根進來：出處多寫一行，不分兩張卡（#246 c18722）。
+			content = mergeOtherOrigins(content, string(prev), origin, cardName)
 		}
 		return r, writeWikiFile(absRoot, destAbs, []byte(content))
 	}
@@ -1011,4 +1042,71 @@ func isOrphanOfThisDoc(destAbs string, o SourceOrigin, cardName string) bool {
 		return false
 	}
 	return strings.Contains(string(b), "- `"+o.Ref()+"`"+triSep+"提及"+triSep+cardName+"\n")
+}
+
+// provenanceRefs 回卡內「### 出處」裡指向 cardName 的三元組主詞（Ref）清單，以及各自前一行的人話位置（若有）。
+func provenanceRefs(body, cardName string) (refs []string, humans map[string]string) {
+	humans = map[string]string{}
+	lines := strings.Split(body, "\n")
+	suffix := "`" + triSep + "提及" + triSep + cardName
+	for i, ln := range lines {
+		ln = strings.TrimRight(ln, " \r")
+		if !strings.HasPrefix(ln, "- `") || !strings.HasSuffix(ln, suffix) {
+			continue
+		}
+		ref := strings.TrimSuffix(strings.TrimPrefix(ln, "- `"), suffix)
+		refs = append(refs, ref)
+		if i > 0 && strings.HasPrefix(lines[i-1], "- 原文位置") {
+			humans[ref] = lines[i-1]
+		}
+	}
+	return refs, humans
+}
+
+// sameFileRef：兩個 Ref（庫名/庫內路徑）指向同一個實體檔嗎？
+// 監看根疊在一起時（pms 與 pms/pms_v1_legacy），同一個檔在兩邊的 Ref 只差前面一段路徑。
+func sameFileRef(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
+}
+
+// cardIsFromSameSource：這張卡的出處是不是同一份原文（Ref 相同，或疊根造成的同檔不同 Ref）。
+func cardIsFromSameSource(body string, o SourceOrigin, cardName string) bool {
+	refs, _ := provenanceRefs(body, cardName)
+	mine := o.Ref()
+	for _, r := range refs {
+		if sameFileRef(r, mine) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeOtherOrigins 把既有卡上「其他來路」的出處行併進新內容（只是多一行字）。
+func mergeOtherOrigins(content, prev string, o SourceOrigin, cardName string) string {
+	refs, humans := provenanceRefs(prev, cardName)
+	mine := o.Ref()
+	own := "- `" + mine + "`" + triSep + "提及" + triSep + cardName + "\n"
+	if !strings.Contains(content, own) {
+		return content
+	}
+	var extra strings.Builder
+	for _, r := range refs {
+		if r == mine || strings.Contains(content, "- `"+r+"`"+triSep) {
+			continue
+		}
+		if h := humans[r]; h != "" {
+			extra.WriteString(h + "\n")
+		}
+		extra.WriteString("- `" + r + "`" + triSep + "提及" + triSep + cardName + "\n")
+	}
+	if extra.Len() == 0 {
+		return content
+	}
+	return strings.Replace(content, own, own+extra.String(), 1)
 }

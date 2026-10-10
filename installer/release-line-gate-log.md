@@ -126,3 +126,10 @@
 | 2026-10-10 11:13:34 | prod | bundle 1.4.93；daemon 0.18.79；installer 1.0.50 | ✅ 放行 | — |
 | 2026-10-10 11:26:47 | prod | bundle 1.4.93；daemon 0.18.79；installer 1.0.50 | ✅ 放行 | — |
 | 2026-10-10 11:30:14 | stage | bundle 1.4.94；daemon 0.18.79；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 11:41:21 | prod | bundle 1.4.94；daemon 0.18.79；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 12:45:39 | stage | bundle 1.4.94；daemon 0.18.80；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 13:10:03 | stage | bundle 1.4.94；daemon 0.18.82；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 14:00:28 | stage | bundle 1.4.95；daemon 0.18.84；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 15:11:15 | stage | bundle 1.4.95；daemon 0.18.87；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 15:50:22 | stage | bundle 1.4.95；daemon 0.18.88；installer 1.0.51 | ✅ 放行 | — |
+| 2026-10-10 16:16:59 | stage | bundle 1.4.95；daemon 0.18.89；installer 1.0.51 | ✅ 放行 | — |

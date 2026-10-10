@@ -331,8 +331,8 @@ func TestVaultFootprint_ForeignWikiFileNotClobbered(t *testing.T) {
 	}
 
 	defer extractCardStub(t, cardFixture("會議記錄", "專案"))()
-	if _, err := ExtractWithWorkersAI("https://stub.invalid", "k-test", root, srcRel, testOrigin()); err == nil {
-		t.Fatal("目標被佔用時應報錯，不得無聲覆蓋")
+	if _, err := ExtractWithWorkersAI("https://stub.invalid", "k-test", root, srcRel, testOrigin()); err != nil {
+		t.Fatalf("目標被佔用時應自行消歧而非報錯（#246 c18722）：%v", err)
 	}
 	data, _ := os.ReadFile(filepath.Join(cardDir, "會議記錄.md"))
 	if string(data) != preexisting {

@@ -523,12 +523,13 @@ func TestPlanIngest_排除判準與模式選擇都不看有沒有版控(t *testi
 		set := strings.Join(got, "\n")
 		if firstSet == "" {
 			firstSet = set
-			// 34＝30 篇日記＋docs/說明＋build/樂高＋wiki 的 2 張。
+			// 35＝30 篇日記＋docs/說明＋build/樂高＋wiki 的 2 張＋system-dev/wiki/status.md。
+			// （最後一張以前被「同副檔名同名檔當重複」的 bug 吞掉所以是 34；#240 c18614 修掉後它正常被收。）
 			// （`system-dev/` 是 template 鋪出來的產物區，任何模式都不收——那條規則
 			//   比本票更早存在，也正是舊判準的殺傷力所在：一旦翻成 curated-wiki，
 			//   **唯一被收的就只剩那個平常根本不收的目錄**。）
-			if len(got) != 34 {
-				t.Fatalf("%s：只送出 %d 個檔（want 34）：%v", tc.name, len(got), got)
+			if len(got) != 35 {
+				t.Fatalf("%s：只送出 %d 個檔（want 35）：%v", tc.name, len(got), got)
 			}
 		} else if set != firstSet {
 			t.Fatalf("🔴 跑一次 `git init` 就改變了收到的東西——這正是本票要拆掉的引信。\n"+

@@ -216,13 +216,17 @@ func formatPriority(relPath string) int {
 	return len(dedupFormatPriority)
 }
 
-// dedupStemOf 回傳去重判準：檔名主幹（basename 去副檔名），轉小寫（跨平台大小寫不敏感）。
-// 刻意只看 basename、不看目錄——leo 實據的 md/json 恰好活在不同的兄弟目錄
-// （markdown/160-00F3_001.md vs json/160-00F3_001.json），只有 basename 主幹相同。
+// dedupStemOf 回傳去重判準：「所在目錄＋檔名主幹（去副檔名）」，轉小寫（跨平台大小寫不敏感）。
+//
+// 🔴 #240 c18620（leo 2026-10-10）：「不同資料夾同一個檔名是不同的內容，不能當作一份，
+// 表示檔名前要保留路徑。」以前只看 basename，各資料夾的 README／SKILL／00-INDEX 被當成同一份；
+// 而且 markdown/x.md 與 json/x.json 那種「不同資料夾的轉檔產物」也不再合併——
+// 同一個目錄下 a.docx 與 a.md 才是同一份文件的不同存檔。
 func dedupStemOf(relPath string) string {
+	dir := filepath.ToSlash(filepath.Dir(relPath))
 	base := filepath.Base(relPath)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	return strings.ToLower(stem)
+	return strings.ToLower(dir + "/" + stem)
 }
 
 // detectFormatDuplicates 在 current（本輪掃到、通過 allowedExt 的檔）裡找出同檔名主幹的分組，
@@ -254,10 +258,21 @@ func detectFormatDuplicates(current map[string]fileState) (map[string]string, []
 			}
 			return group[i] < group[j] // 同優先序時字母序，確定性
 		})
-		winner := group[0]
-		for _, loser := range group[1:] {
-			loserOf[loser] = winner
-			dups = append(dups, FormatDuplicate{Path: loser, KeptPath: winner, Stem: stem})
+		// 🔴 #240 c18614：只有「不同格式」才是同一份文件的多種存檔。
+		// 以前同副檔名的同名檔（各資料夾的 README.md／SKILL.md／00-INDEX.md）也被當成重複，
+		// 只留字母序第一份，其餘永遠不會被送出、卻永遠算在「排隊中」——這就是 leo21c 的 68 份排著不動。
+		// 現在一個檔只會輸給「副檔名不同、優先序更高」的那一份。
+		for _, loser := range group {
+			for _, w := range group {
+				if strings.ToLower(filepath.Ext(w)) == strings.ToLower(filepath.Ext(loser)) {
+					continue
+				}
+				if formatPriority(w) < formatPriority(loser) {
+					loserOf[loser] = w
+					dups = append(dups, FormatDuplicate{Path: loser, KeptPath: w, Stem: stem})
+					break
+				}
+			}
 		}
 	}
 	return loserOf, dups
@@ -681,7 +696,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 	//    防呆觸發時 removed 條目保留（下輪重評、警告會再響，直到人確認或檔案回來）。
 	newEntries := make(map[string]*ManifestEntry, len(current))
 	for p, st := range current {
-		ne := &ManifestEntry{ContentHash: st.hash, Size: st.size, Mtime: st.mtime}
+		ne := &ManifestEntry{ContentHash: st.hash, Size: st.size, Mtime: st.mtime, FormatDupOf: dupLoser[p]}
 		var carry *ManifestEntry
 		if op, isRenamed := renamedOldOf[p]; isRenamed {
 			carry = orig[op]
@@ -717,6 +732,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			ne.CloudCheckedAt = carry.CloudCheckedAt
 			ne.CloudMissingAt = carry.CloudMissingAt
 			ne.NoCloudCard = carry.NoCloudCard
+			ne.TwinRoot, ne.TwinPath = carry.TwinRoot, carry.TwinPath // #246 c18734：同內容併卡的指向，漏 carry 就每輪重萃
 		}
 		newEntries[p] = ne
 	}

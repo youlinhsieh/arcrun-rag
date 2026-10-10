@@ -78,3 +78,18 @@ func TestNoAccountClaimsSyncingWithoutRound(t *testing.T) {
 		}
 	}
 }
+
+// #240 c18629：已暫停自動重試的失敗不算「自動重試中」。
+func TestAccountTroubleSkipsPaused(t *testing.T) {
+	fs := []collector.ExtractFail{
+		{Path: "a", Account: "geek.example", Error: "連續失敗 8 次，已暫停自動重試（改檔或按「立刻同步」會再試）｜原因：x"},
+		{Path: "b", Account: "geek.example", Error: "上次失敗（第 2 次），5m 後重試"},
+	}
+	tr := accountTrouble(fs, "geek.example")
+	if tr == nil || tr.Count != 1 {
+		t.Fatalf("只該數會自己再試的 1 筆，got %+v", tr)
+	}
+	if accountTrouble(fs[:1], "geek.example") != nil {
+		t.Fatal("全是已暫停的，不該有 ↻")
+	}
+}

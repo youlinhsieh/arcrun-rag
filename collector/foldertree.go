@@ -135,6 +135,13 @@ type FolderNode struct {
 	SyncedFiles int `json:"synced_files"`
 	// PendingFiles＝認得、還沒送完（排隊中／退避中／已放棄自動重試）。
 	PendingFiles int `json:"pending_files"`
+	// ErrorFiles＝這一層「會處理、但出錯」的檔（與上層資料夾列的 !N 同一把尺：放棄重試＋正在失敗重試）。
+	// 已含在 PendingFiles 內，不進分母加總（#246 c18654：完成／會處理 !出錯）。
+	ErrorFiles int `json:"error_files,omitempty"`
+	// ErrorItems＝這一層出錯的那幾份檔各自的原因（#246 c18700 第 9 項：!N 點下去要帶到出錯的檔，
+	// 每份看得到自己的原因＋解法或回報鈕）。**只存本機、不上雲、不進雜湊**：檔名與錯誤是這台電腦的事，
+	// 上行酬載用 StripLocalOnly() 剝掉；與 ErrorFiles 同理，每次重試都會變，不能觸發整棵樹重送。
+	ErrorItems []FolderErrorItem `json:"error_items,omitempty"`
 	// UnsupportedFiles＝副檔名我們還讀不了的（leo 講的「不支援的格式」）。
 	UnsupportedFiles int `json:"unsupported_files"`
 	// ExcludedFiles＝收檔策略決定不收的（leo 講的「程式碼」多半落在這裡，見 ingestplan.go）。
@@ -168,6 +175,18 @@ type FolderNode struct {
 	// 光看 Skipped 就分不出「本來就沒被跳過」與「被使用者救回來了」，所以要這一格。
 	Included bool `json:"included,omitempty"`
 }
+
+// FolderErrorItem＝一份出錯的檔。Kind 三種：fixable（用戶做得到：檔案太大、讀不出字…→ FAQ）、
+// unsolvable（放棄重試、我們沒有 FAQ → 回報）、retry（還在自動重試，用戶不必做什麼）。
+type FolderErrorItem struct {
+	Rel  string `json:"rel"`  // 相對監看根的路徑（回報用）
+	Name string `json:"name"` // 檔名（含副檔名）
+	Kind string `json:"kind"`
+	Why  string `json:"why"` // ≤6 字短標籤
+}
+
+// maxErrorItemsPerNode：一層最多帶幾份出錯檔的細節（數字 ErrorFiles 仍是全量）。
+const maxErrorItemsPerNode = 100
 
 // LargeFileProgress＝一份還沒讀完的大檔目前的進度（0-100）。
 type LargeFileProgress struct {
@@ -299,11 +318,31 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 		if e == nil {
 			continue
 		}
+		// #246 c18652：分母＝「會處理的檔」，與上層列（Progress()）同一把尺——
+		// 同目錄同名不同格式的副本不是另一份原文件，不進分子也不進分母。
+		if e.FormatDupOf != "" {
+			continue
+		}
 		n := ensure(folderOfRel(rel))
 		if e.IngestedHash != "" && e.IngestedHash == e.ContentHash {
 			n.SyncedFiles++
 		} else {
 			n.PendingFiles++
+			if one := (&Manifest{Entries: map[string]*ManifestEntry{rel: e}}).Progress(); one.Stuck+one.Failing > 0 {
+				n.ErrorFiles++
+				if len(n.ErrorItems) < maxErrorItemsPerNode {
+					it := FolderErrorItem{Rel: rel, Name: path.Base(rel)}
+					switch fk := FixableKind(e.LastError); {
+					case fk != "":
+						it.Kind, it.Why = "fixable", fk
+					case one.Stuck > 0:
+						it.Kind, it.Why = "unsolvable", "新問題"
+					default:
+						it.Kind, it.Why = "retry", "重試中"
+					}
+					n.ErrorItems = append(n.ErrorItems, it)
+				}
+			}
 			// arcrun-rag#213／c10630：這份檔如果走過續讀機制，本機書籤記得住
 			// 目前讀到幾 %——PendingFiles 只講得出「還沒完成」，這裡補上多少。
 			// 小檔（沒走過續讀）沒有書籤，ExtractProgressPercent 回 has=false，
@@ -314,6 +353,11 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 				})
 			}
 		}
+	}
+
+	// map 走訪順序不定，出錯檔清單排序，輸出才確定。
+	for _, n := range nodes {
+		sort.Slice(n.ErrorItems, func(i, j int) bool { return n.ErrorItems[i].Rel < n.ErrorItems[j].Rel })
 	}
 
 	// 整棵被剪掉的目錄：列出來、講理由，數字留 0 但標 Skipped
@@ -408,12 +452,28 @@ func folderNodeName(absRoot, rel string) string {
 func (t FolderTree) Hash() string {
 	c := t
 	c.GeneratedAt = 0
+	// ErrorFiles 不進雜湊：出錯數每次重試都會變，進了雜湊就會讓冷卻中的帳號因此重送整棵樹
+	// （額度用完的冷卻期內不該再打雲端）。畫面上它隨下一次內容變動或心跳更新。
+	c.Nodes = append([]FolderNode(nil), t.Nodes...)
+	for i := range c.Nodes {
+		c.Nodes[i].ErrorFiles = 0
+		c.Nodes[i].ErrorItems = nil
+	}
 	data, err := json.Marshal(c)
 	if err != nil {
 		return ""
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// uploadNodes＝送上雲端的節點：剝掉只屬於本機的東西（出錯檔的檔名與原因，c18700）。
+func (t FolderTree) uploadNodes() []FolderNode {
+	out := append([]FolderNode(nil), t.Nodes...)
+	for i := range out {
+		out[i].ErrorItems = nil
+	}
+	return out
 }
 
 // syncFolderTree 每輪掃描後把樹送上雲端。回 nil＝這輪不必送。
@@ -496,7 +556,7 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		"total_nodes":  tree.TotalNodes,
 		"generated_at": tree.GeneratedAt,
 		"sync_token":   h,
-		"nodes":        tree.Nodes,
+		"nodes":        tree.uploadNodes(),
 		// 🔴 機器身分（`inkstone/Arcrun#180`）：欄名與卡片那條路一字不差
 		// （`folderindex.go`／`inventory.go`／`sourcerepair.go`），收端不必另認一組。
 		// 值取自 `tree`（已由 StampMachine 蓋章）而不是這裡再問一次 cfg——

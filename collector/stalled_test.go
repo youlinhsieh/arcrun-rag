@@ -42,12 +42,12 @@ func TestStalledGroups_BelowThresholdAndSelfRecoveringIgnored(t *testing.T) {
 
 func TestStalledGroups_DifferentReasonsSeparateGroups(t *testing.T) {
 	a := stalledManifest(4, "品質未過（不送）：H1: x", 8)
-	b := stalledManifest(3, "卡片位置被佔用（不覆蓋既有檔案）：.wiki/x.md", 8)
+	b := stalledManifest(3, "雲端沒有把這一份寫進知識庫", 8)
 	for k, v := range b.Entries {
 		a.Entries["b-"+k] = v
 	}
 	g := StalledGroups("h", map[string]*Manifest{"/r": a})
-	if len(g) != 2 || g[0].Count != 4 || g[1].Key != "card_name_taken" {
+	if len(g) != 2 || g[0].Count != 4 || g[1].Key != "cloud_write" {
 		t.Fatalf("got %+v", g)
 	}
 }

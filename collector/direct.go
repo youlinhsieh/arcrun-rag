@@ -1823,6 +1823,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// incremental saveManifest()，就會把「還沒確認下架成功」的路徑一併存進磁碟，
 	// 下一輪 Scan() 兩邊都找不到它 ⇒ 永遠不會再補發 removed 事件、下架永遠不會重試。
 	// 先存一份，Scan() 後把這些路徑「暫時放回去」，直到對應的 removed 事件真的成功。
+	// 🔴 #246 c18734：同內容併卡的雙胞胎，本尊不在了（刪了／內容變了／資料夾不再監看）⇒ 放回佇列自己萃。
+	// 必須在 Scan() 之前：清掉章之後，掃描才會把它當成「曾偵測但從未成功 ingest」補一發 added。
+	if !dryRun && cfg.Extractor != "" {
+		if n := cfg.sweepOrphanTwins(absRoot, m); n > 0 {
+			saveManifest()
+		}
+	}
 	preScanEntries := make(map[string]*ManifestEntry, len(m.Entries))
 	for k, v := range m.Entries {
 		preScanEntries[k] = v
@@ -2045,6 +2052,15 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	lane := newFileLane(laneMax, laneStartFor(laneHost, laneMax, directNow()))
 	perEvent := make([][]DirectResult, len(orderedEvents))
 
+	// #246 c18734：同內容併卡的索引（用到才建；在 stateMu 底下呼叫）。
+	var twinsIx *twinIndex
+	getTwins := func() *twinIndex {
+		if twinsIx == nil {
+			twinsIx = cfg.buildTwinIndex(absRoot, m)
+		}
+		return twinsIx
+	}
+
 	handleContent := func(idx int, ev Event) {
 		stateMu.Lock()
 		defer stateMu.Unlock()
@@ -2155,6 +2171,74 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			res.Status = "planned"
 			out = append(out, res)
 			return
+		}
+		// 🔴 同內容的檔只萃一張卡（inkstone/arcrun-rag#246 c18722／c18734，細節見 contenttwin.go）：
+		// 內容（hash）和別份已上雲的檔一模一樣 ⇒ 不萃、不上雲，只在那張卡的「### 出處」多寫一行。
+		// 撞名不是用戶的錯，也不是錯誤：hash 一樣擇一並指向它，hash 不一樣就各自一張卡（wikishape 消歧）。
+		var tw *twinIndex
+		if cfg.Extractor != "" && ev.SourceHash != "" {
+			tw = getTwins()
+			canon, found := tw.find(ev.SourceHash, absRoot, ev.Path)
+			if e := m.Entries[ev.Path]; e != nil && e.TwinPath != "" {
+				prev := twinRef{e.TwinRoot, e.TwinPath}
+				if !found || canon != prev || e.IngestedHash != ev.SourceHash {
+					// 內容變了或改指別的本尊：先從舊本尊的卡上拿掉自己這一行（盡力而為，不擋這份檔）。
+					e.TwinRoot, e.TwinPath = "", ""
+					origins := cfg.twinOrigins(prev, absRoot, m, nil, nil)
+					stateMu.Unlock()
+					paceGate.Lock()
+					paceFor(cfg)
+					paceGate.Unlock()
+					_ = cfg.refreshCanonCard(prev, origins)
+					stateMu.Lock()
+				}
+			}
+			if found {
+				self := twinRef{absRoot, ev.Path}
+				origins := cfg.twinOrigins(canon, absRoot, m, &self, nil)
+				stateMu.Unlock()
+				paceGate.Lock()
+				paceFor(cfg)
+				paceGate.Unlock()
+				rerr := cfg.refreshCanonCard(canon, origins)
+				stateMu.Lock()
+				if rerr != nil {
+					res.Status, res.Error = "failed", "更新合併卡的出處失敗："+rerr.Error()
+					if isRouteBackoff(rerr) {
+						res.Status = "skipped" // 沒打出去，不是這個檔的失敗
+					} else if isLocalNetworkErr(rerr) {
+						res.Status = "skipped"
+						res.Error = networkDownNote(cfg, rerr)
+						m.MarkNetworkUnavailable(ev.Path, now, rerr.Error())
+					} else {
+						m.MarkFailed(ev.Path, now, res.Error)
+						exit = 1
+					}
+					saveManifest()
+					liveReport(res.Status)
+					out = append(out, res)
+					return
+				}
+				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+				m.MarkNoCloudCard(ev.Path) // 它自己沒有卡上雲：雲端對帳不要為它重萃
+				if e := m.Entries[ev.Path]; e != nil {
+					e.TwinRoot, e.TwinPath = canon.Root, canon.Path
+				}
+				res.Status = "ingested"
+				res.Error = twinNote(canon)
+				saveManifest()
+				liveReport(res.Status)
+				out = append(out, res)
+				return
+			}
+			if !tw.claim(ev.SourceHash, absRoot, ev.Path) {
+				// 同內容的另一份正在萃：這輪先不動，等它落地後下一輪併成同一張卡（不記失敗、不燒額度）。
+				res.Status = "skipped"
+				res.Error = "有一份內容一模一樣的檔正在整理，整理好後會併成同一張卡"
+				out = append(out, res)
+				return
+			}
+			defer tw.release(ev.SourceHash, absRoot, ev.Path)
 		}
 		// 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下。
 		// 🔴 inkstone/Arcrun#297：多份檔同時處理時，節流改成「啟動間隔」——
@@ -2370,6 +2454,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				lane.good() // #297：連續成功 ⇒ 並行數慢慢爬回上限
 				// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
 				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+				if tw != nil {
+					tw.add(ev.SourceHash, absRoot, ev.Path) // #246 c18734：從此它是這份內容的本尊
+				}
 				// 🔴 #140：`cards` 為空＝該檔被判「無可萃取概念」，這一輪**一張卡都沒上雲**。
 				//   不記下來的話，雲端對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、
 				//   永遠停不下來，而且每次都燒一份 AI 額度。
@@ -2382,7 +2469,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			} else {
 				// t195：記下失敗並排定退避，否則下輪又把它當新檔重試
 				//（實撞：1387 輪 × 11 小時全在撞同一面 401 的牆，還拖住整個佇列）。
-				m.MarkFailed(ev.Path, now, res.Error)
+				m.MarkFailed(ev.Path, now, failureWithUpstream(res.Error, res.Detail))
 				exit = 1
 			}
 			saveManifest()
@@ -2437,6 +2524,31 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		res := DirectResult{Type: ev.Type, Path: ev.Path}
 		if dryRun {
 			res.Status = "planned"
+			out = append(out, res)
+			return
+		}
+		// #246 c18734：雙胞胎自己沒有卡可下架——只要從本尊那張卡的「### 出處」拿掉這一行。
+		// 拿不掉（雲端沒回）就維持「暫時放回」，下一輪自然重試。
+		if e := m.Entries[ev.Path]; e != nil && e.TwinPath != "" && cfg.Extractor != "" {
+			canon := twinRef{e.TwinRoot, e.TwinPath}
+			self := twinRef{absRoot, ev.Path}
+			if note := cfg.routeNote(cfg.triggerURL(cfg.CardIngestWF)); note != "" {
+				res.Status, res.Error = "skipped", note
+				out = append(out, res)
+				return
+			}
+			origins := cfg.twinOrigins(canon, absRoot, m, nil, &self)
+			paceFor(cfg)
+			if rerr := cfg.refreshCanonCard(canon, origins); rerr != nil {
+				res.Status, res.Error = "failed", "更新合併卡的出處失敗："+rerr.Error()
+				exit = 1
+				out = append(out, res)
+				return
+			}
+			res.Status = "removed"
+			delete(m.Entries, ev.Path)
+			saveManifest()
+			liveReport("removed")
 			out = append(out, res)
 			return
 		}

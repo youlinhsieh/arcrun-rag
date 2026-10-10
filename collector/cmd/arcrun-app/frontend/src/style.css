@@ -803,3 +803,108 @@ main { padding: 22px 32px 28px; }
 .okflash { animation: okfade .4s ease-out 2.6s forwards; }
 @keyframes okfade { to { opacity: 0; } }
 .okflash .nt { color: rgba(var(--ink-rgb), .8); margin: 0; }
+
+/* #240 c18615/c18616：在跑＝呼吸燈；沒在跑＝「!N」popup（有解→FAQ、無解→回報） */
+i.beat.big { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--ink); animation: pulse 1.4s ease-in-out infinite; }
+.folder .fstat.run { display: inline-flex; align-items: center; gap: 7px; opacity: 1; filter: none; }
+.folder .fstat.ok { display: inline-flex; align-items: center; gap: 6px; }
+.fnum.dim { opacity: .5; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.bangbtn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; cursor: pointer; padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, Menlo, monospace; font-weight: 700; font-size: 13px; color: var(--amber); }
+.bangbtn.quiet { color: rgba(var(--ink-rgb), .45); }
+.bangbtn:hover { background: rgba(var(--ink-rgb), .08); }
+
+/* ── 帳號頁籤改圖示（#246 c18651）── */
+.tabs .tab { display: inline-flex; align-items: center; gap: 5px; }
+.tabs .tab .tabic { display: block; opacity: .7; }
+.tabs .tab.on .tabic, .tabs .tab:hover .tabic { opacity: 1; }
+
+/* ── 用量儀表（#246）：三態 ok=還遠 near=接近 over=越線；顏色只用 CIS 既有 token ── */
+.udash { --lv: var(--ok); display: flex; flex-direction: column; gap: 14px; }
+.udash.near { --lv: var(--amber); }
+.udash.over { --lv: var(--err); }
+.udash .uhead { display: flex; align-items: center; gap: 10px; color: rgba(var(--ink-rgb), .55); }
+.udash .uhead .grow { flex: 1; }
+.udash .uhelp, .udash .ulamp { display: inline-flex; cursor: help; }
+.udash .ulamp.warn { color: var(--amber); }
+.udash.unk { align-items: center; color: rgba(var(--ink-rgb), .4); padding: 22px; }
+.uic { flex: none; display: block; }
+.uhigh { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.udial { position: relative; width: 170px; height: 99px; flex: none; color: var(--ok); }
+.udial.near { color: var(--amber); } .udial.over { color: var(--err); }
+.udial .dtrack, .udial .dfill { fill: none; stroke-width: 9; stroke-linecap: round; }
+.udial .dtrack { stroke: rgba(var(--ink-rgb), .12); }
+.udial .dfill { stroke: currentColor; transition: stroke-dasharray .8s ease; }
+.udial .dmid { position: absolute; left: 0; right: 0; top: 34px; display: flex; justify-content: center; color: currentColor; }
+.udial .dpct { position: absolute; left: 0; right: 0; bottom: 0; text-align: center; font: 700 24px/1 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; color: currentColor; }
+.udial .dpct small { font-size: 12px; margin-left: 1px; opacity: .7; }
+.uright { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.uodo { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.uodo .uico { color: var(--lv); display: inline-flex; }
+.uodov { font: 600 26px/1.1 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.uodov .useg { opacity: .35; margin: 0 4px; font-weight: 400; }
+.uodov .u2 { opacity: .75; }
+.udash .bad { color: var(--err); }
+.urate { font: 500 12px/1 ui-monospace, Menlo, monospace; color: rgba(var(--ink-rgb), .55); }
+.urate small { opacity: .7; }
+.umoney { display: flex; align-items: center; gap: 6px; font: 600 15px/1 ui-monospace, Menlo, monospace; color: var(--err); }
+.udollar { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--err); color: var(--err); font: 700 12px/1 ui-monospace, Menlo, monospace; flex: none; }
+.udollar.glow { animation: uglow 2.4s ease-in-out infinite; }
+@keyframes uglow { 0%, 100% { box-shadow: 0 0 0 0 rgba(var(--err-rgb), 0); } 50% { box-shadow: 0 0 9px 1px rgba(var(--err-rgb), .55); } }
+.upause { display: inline-flex; color: var(--err); }
+.ureset { display: inline-flex; align-items: center; gap: 4px; color: rgba(var(--ink-rgb), .55); font: 500 12px/1 ui-monospace, Menlo, monospace; min-width: 62px; }
+.flash { animation: uflash .5s ease-out; }
+@keyframes uflash { 0% { color: var(--amber); } 100% { color: inherit; } }
+
+.ucells { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.ucell { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; border-radius: 10px; border: 1px solid rgba(var(--ink-rgb), .12); background: rgba(var(--ink-rgb), .03); color: rgba(var(--ink-rgb), .7); font: 600 14px/1 ui-monospace, Menlo, monospace; padding: 6px 10px; }
+.ucell.dist.ok { color: var(--ok); } .ucell.dist.near { color: var(--amber); border-color: var(--amber); } .ucell.dist.over { color: var(--err); border-color: var(--err); }
+.ucell .uico { display: inline-flex; opacity: .85; }
+.ucell.upg { cursor: pointer; font-family: inherit; }
+.ucell.upg.billing b, .ucell.upg.advise b { font-family: ui-monospace, Menlo, monospace; }
+.ucell.upg.advise { color: var(--amber); border-color: var(--amber); }
+.ucell.upg.billing { color: var(--err); }
+.ucell.upg.na { cursor: default; opacity: .5; }
+.ucell.brk.on { color: var(--ok); } .ucell.brk.off { color: var(--amber); } .ucell.brk.na { opacity: .5; }
+.ucell .cv { display: inline-flex; opacity: .6; }
+
+.urows { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid rgba(var(--ink-rgb), .1); padding-top: 12px; }
+.urow { display: grid; grid-template-columns: 28px minmax(160px, 1fr) 24px 82px 88px; align-items: center; gap: 10px; font-size: 13px; }
+.urow .uname { color: rgba(var(--ink-rgb), .6); display: inline-flex; }
+.urow.near .uname { color: var(--amber); } .urow.over .uname { color: var(--err); }
+.urow .unum { font: 500 13.5px/1.2 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.urow .unum .useg { opacity: .3; margin: 0 5px; }
+.urow .unum .u2 { opacity: .6; }
+.urow .unum .u2.bad { opacity: 1; }
+.urow .usym { width: 20px; }
+.ubar { height: 5px; border-radius: 3px; background: rgba(var(--ink-rgb), .1); overflow: hidden; display: block; }
+.ubar i { display: block; height: 100%; background: var(--ok); border-radius: 3px; transition: width .6s ease; }
+.ubar.near i { background: var(--amber); }
+.ubar.over i { background: repeating-linear-gradient(135deg, var(--err) 0 6px, rgba(var(--err-rgb), .55) 6px 12px); background-size: 24px 24px; }
+.ubar.flow i { animation: uflow 1s linear infinite; }
+@keyframes uflow { to { background-position: 24px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .udial .dfill, .ubar i { transition: none; }
+  .udollar.glow, .ubar.flow i, .flash { animation: none; }
+}
+.ftbang { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; font: 600 12px/1 ui-monospace, Menlo, monospace; color: var(--err); }
+.ftbang b { font-weight: 800; }
+
+/* ── #246 c18700：圖示按鈕、出錯檔那一列 ── */
+button.icbtn { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 9px; flex: none; }
+button.icbtn.primary { border: none; }
+button.icbtn.plain { border-color: transparent; background: none; color: rgba(var(--ink-rgb), .6); }
+button.icbtn.plain:hover { background: var(--well); color: var(--ink); }
+.acchead > button.icbtn { height: 36px; padding: 0; }
+.acchead > button.icbtn.plain { margin-top: 2px; }
+.tabs .icbtn { align-self: center; }
+.icsvg { display: block; }
+.ugauge .bill { font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
+.fterr { display: flex; align-items: center; gap: 8px; font-size: 12.5px; line-height: 1.7; padding-right: 6px; border-radius: 6px; }
+.fterr .bang { color: var(--amber); font-weight: 700; font-family: ui-monospace, Menlo, monospace; }
+.fterr.retry .bang { color: rgba(var(--ink-rgb), .4); }
+.fterr .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fterr .why { flex: none; color: rgba(var(--ink-rgb), .6); }
+.fterr .ftinc { margin-left: 0; }
+.fterr.flash { animation: errflash 2.4s ease-out 1; }
+@keyframes errflash { 0%, 40% { background: rgba(var(--amber-rgb), .22); } 100% { background: transparent; } }
+.ftdone { color: rgba(var(--ink-rgb), .55); font-size: 13px; }

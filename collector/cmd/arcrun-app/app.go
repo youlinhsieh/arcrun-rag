@@ -314,6 +314,12 @@ type UIFolder struct {
 	Done   int `json:"done"`
 	Total  int `json:"total"`  // 可同步的總數（不含出錯的）
 	Errors int `json:"errors"` // 出錯的份數，獨立於同步進度
+	// 狀態（c18615）：running／done／fixable／unsolvable／unknown，見 activity_state.go。
+	// Why＝短標籤（≤6 字），N＝「!」旁的數字，Reported＝無解已回報。
+	State    string `json:"state,omitempty"`
+	Why      string `json:"why,omitempty"`
+	N        int    `json:"n,omitempty"`
+	Reported bool   `json:"reported,omitempty"`
 }
 type UIAccount struct {
 	Name    string     `json:"name"`
@@ -341,6 +347,8 @@ type UIAccount struct {
 	// Battery＝**這個知識庫自己那台雲端**的剩餘用量（inkstone/arcrun-rag#240 c18058／c18101，母票 Arcrun#293）。
 	// nil＝問不到雲端（舊版雲端）才不顯示；付費／放行＝永遠滿格。
 	Battery *UIBattery `json:"battery,omitempty"`
+	// Usage＝用量分頁的儀表資料（#246）：離爆／收費多遠、哪一項、剎車與升級。nil＝雲端查不到（舊版雲端）。
+	Usage *UIUsage `json:"usage,omitempty"`
 	// Progress＝**這個知識庫自己**的檔案進度（把它看守的資料夾逐個加總）。
 	// 帳號頁的「同步」分頁只講自己的數字，不拿全站總量冒充（inkstone/arcrun-rag#240 c18254）。
 	// nil＝collector 還沒回報過它的任何資料夾。
@@ -348,6 +356,11 @@ type UIAccount struct {
 	// SentHour＝近一小時這個帳號送上雲端的份數（來自 manifest 的送出時間，#240 c18413）：
 	// 看得出各帳號各自在前進、也量得出「變快了沒」。nil＝還沒算過。
 	SentHour *int `json:"sentHour,omitempty"`
+	// 這個帳號整體的狀態（同 UIFolder.State）。
+	State    string `json:"state,omitempty"`
+	Why      string `json:"why,omitempty"`
+	N        int    `json:"n,omitempty"`
+	Reported bool   `json:"reported,omitempty"`
 }
 
 // UIBattery＝一個知識庫旁邊「今天剩多少用量」的表示。判準全在雲端（battery.state），這裡只轉成畫面用的字。
@@ -370,6 +383,9 @@ type UIBattery struct {
 	DismissKey string `json:"dismissKey,omitempty"`
 	// Billing＝免費額度已用完、現在計費中；畫面在 ∞ 旁顯示「計費中」。
 	Billing bool `json:"billing,omitempty"`
+	// FromUsage＝這份是用「用量儀表」的數字畫的（#246 c18653）：Percent 變成**已用 %**（可超過 100），
+	// 格數＝已用格，與儀表的主表盤是同一個數字——側欄、頁首、警示條、儀表不准各說各話。
+	FromUsage bool `json:"fromUsage,omitempty"`
 }
 
 const usageCells = 5
@@ -437,7 +453,8 @@ func accountProgress(sync syncStatus, folders []string) *UIProgress {
 	if !seen {
 		return nil
 	}
-	return &UIProgress{Total: sum.Total, Done: sum.Done, Pending: sum.Pending, CantSync: sum.Stuck + sum.Unreadable}
+	return &UIProgress{Total: sum.Total, Done: sum.Done, Pending: sum.Pending, CantSync: sum.Stuck + sum.Unreadable,
+		Waiting: sum.Waiting(), Errors: sum.Errors()}
 }
 
 func trimPercent(p float64) string {
@@ -483,6 +500,11 @@ func accountTrouble(failures []collector.ExtractFail, host string) *UITrouble {
 	detail := ""
 	for _, f := range failures {
 		if f.Account == "" || f.Account != host {
+			continue
+		}
+		// #240 c18629：已暫停自動重試的不是「自動重試中」——它們屬於「!N」（可處理／可回報），
+		// 這裡只數真的會自己再試的，↻ 才不會騙人。
+		if strings.Contains(f.Error, "已暫停自動重試") {
 			continue
 		}
 		n++
@@ -580,9 +602,13 @@ type UISkipped struct {
 // Groups 原樣照後端給的 category/count 陣列畫，順序也照後端給的（FailCategories）。
 // 之後把分類改成資料驅動時，才只需要動那一個檔。
 type UIProgress struct {
-	Total    int           `json:"total"`    // 你的檔案，共幾份
-	Done     int           `json:"done"`     // 已送上去
-	Pending  int           `json:"pending"`  // 排隊中（會自動接著做）
+	Total   int `json:"total"`   // 你的檔案，共幾份
+	Done    int `json:"done"`    // 已送上去
+	Pending int `json:"pending"` // 排隊中（會自動接著做）
+	// Waiting／Errors＝畫面用的互斥口徑（#246 c18681）：Total == Done + Waiting + Errors。
+	// Waiting＝待上傳（沒失敗過的排隊）；Errors＝停住＋讀不了＋失敗等重試。
+	Waiting  int           `json:"waiting"`
+	Errors   int           `json:"errors"`
 	CantSync int           `json:"cantSync"` // 送不上去（=卡住＋讀不了，預設摺疊，展開看 Groups）
 	Groups   []UIFailGroup `json:"groups"`   // 「送不上去」展開後的分類統計；沒有就是空陣列
 }
@@ -602,6 +628,8 @@ func buildProgress(s syncStatus) UIProgress {
 		Done:     p.Done,
 		Pending:  p.Pending,
 		CantSync: p.Stuck + p.Unreadable,
+		Waiting:  p.Waiting(),
+		Errors:   p.Errors(),
 	}
 	for _, g := range s.FailureBreakdown.Groups {
 		u.Groups = append(u.Groups, UIFailGroup{Category: g.Category, Count: g.Count})
@@ -770,8 +798,13 @@ func (a *App) GetState() UIState {
 	}
 
 	engineSyncing := collectorAlive() && collectorSyncing()
+	alive := collectorAlive()
+	qn := pickQuotaNotice(sync, time.Now())
+	reports := loadStallReports()
 	for i, acc := range cfg.Accounts {
 		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email}
+		var folderP []collector.SyncProgress
+		var folderKnown []bool
 		for _, f := range acc.WatchFolders {
 			uf := UIFolder{Path: f, AccIdx: i}
 			// arcrun-rag#140：雲端補送中就把那句人話帶到畫面上。
@@ -786,6 +819,8 @@ func (a *App) GetState() UIState {
 			uf.Done, uf.Errors = fp.Done, folderErrors(fp)
 			uf.Total = fp.Total - uf.Errors
 			ui.Folders = append(ui.Folders, uf)
+			folderP = append(folderP, fp)
+			folderKnown = append(folderKnown, known)
 		}
 		// 收回中的資料夾照樣列出來，只是標成「收回中」——不然按下移除之後它立刻消失，
 		// 使用者無從知道撤除還在跑、更看不到失敗的原因（那正是這張票的病的另一面）。
@@ -811,6 +846,11 @@ func (a *App) GetState() UIState {
 		if lb := liveBatteryFor(ui.Host); lb != nil {
 			ui.Battery = accountBattery(lb)
 		}
+		// #246：用量儀表（CF 自己的數字，經雲端交來；使用者動手時才問，見 livebattery.go）
+		if lu := liveUsageFor(ui.Host); lu != nil {
+			ui.Usage = buildUsageUI(lu, time.Now())
+			ui.Battery = overlayUsageOnBattery(ui.Battery, ui.Usage) // c18653：同一件事只有一個數字
+		}
 		// 雲端版本也跟當下（使用者動手時問過的）：升級後不必等下一輪同步（#240 c18387）
 		if v, ok := liveVersionFor(ui.Host); ok {
 			ui.CloudVerMine, ui.CloudVerFresh = v, true
@@ -821,6 +861,29 @@ func (a *App) GetState() UIState {
 		ui.SentHour = sentLastHour(cfg, acc)
 		ui.Trouble = accountTrouble(sync.Failures, ui.Host)
 		ui.Status = accountStatus(sync, ui.Host, engineSyncing, time.Now())
+		// c18615：帳號與資料夾的狀態（在跑／完成／有解／無解）
+		blocked := qn != nil && (qn.Account == ui.Host || (qn.Account == "" && len(cfg.Accounts) == 1))
+		sentH := -1
+		if ui.SentHour != nil {
+			sentH = *ui.SentHour
+		}
+		var sum collector.SyncProgress
+		anyKnown := false
+		for k := range folderP {
+			sum = sum.Add(folderP[k])
+			anyKnown = anyKnown || folderKnown[k]
+		}
+		ao := activityOf(activityIn{P: sum, Known: anyKnown, Alive: alive, Blocked: blocked, SentHour: sentH})
+		ui.State, ui.Why, ui.N = ao.State, ao.Why, ao.N
+		_, ui.Reported = reports[problemKey(ui.Host, "")]
+		for k := range ui.Folders {
+			if ui.Folders[k].Retiring || k >= len(folderP) {
+				continue
+			}
+			fo := activityOf(activityIn{P: folderP[k], Known: folderKnown[k], Alive: alive, Blocked: blocked, SentHour: sentH})
+			ui.Folders[k].State, ui.Folders[k].Why, ui.Folders[k].N = fo.State, fo.Why, fo.N
+			_, ui.Folders[k].Reported = reports[problemKey(ui.Host, ui.Folders[k].Path)]
+		}
 		st.Accounts = append(st.Accounts, ui)
 	}
 

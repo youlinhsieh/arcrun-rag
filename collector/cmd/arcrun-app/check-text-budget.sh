@@ -11,3 +11,5 @@ OUT="$(mktemp -t arcrun-state.XXXXXX)"
 trap 'rm -f "$OUT"' EXIT
 ARCRUN_DUMP_STATE="$OUT" go test -run TestDumpStateManual . >/dev/null
 node check-text-budget.mjs "$OUT"
+# 用量分頁（#246）：同一份 GetState 輸出，真瀏覽器逛一次
+node check-usage.mjs "$OUT"

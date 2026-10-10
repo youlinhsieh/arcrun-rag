@@ -54,6 +54,11 @@ func refreshLiveBattery(acc accountCfg) {
 	if b := collector.BatteryNow(acc.CypherURL, acc.APIKey, host); b != nil {
 		setLiveBattery(host, b)
 	}
+	if u := collector.UsageNow(acc.CypherURL, acc.APIKey, host); u != nil {
+		setLiveUsage(host, u)
+	} else {
+		clearLiveUsage(host)
+	}
 	if v, ok := collector.CloudVersionNow(acc.CypherURL); ok && v != "" {
 		setLiveVersion(host, v)
 	}
@@ -93,4 +98,36 @@ func liveVersionFor(host string) (string, bool) {
 		return x.v, true
 	}
 	return "", false
+}
+
+// #246 用量儀表：同樣只在人為動作（開啟／切到用量分頁／視窗回前景／分頁開著時每分鐘）問，記在記憶體。
+type liveUse struct {
+	at time.Time
+	u  *collector.Usage
+}
+
+var liveUses = map[string]liveUse{}
+
+// 比電池的 15 分鐘短：儀表靠往前推，過舊就不能再冒充「現在」。
+const liveUsageFresh = 10 * time.Minute
+
+func setLiveUsage(host string, u *collector.Usage) {
+	liveBatMu.Lock()
+	defer liveBatMu.Unlock()
+	liveUses[host] = liveUse{at: time.Now(), u: u}
+}
+
+func clearLiveUsage(host string) {
+	liveBatMu.Lock()
+	defer liveBatMu.Unlock()
+	delete(liveUses, host)
+}
+
+func liveUsageFor(host string) *collector.Usage {
+	liveBatMu.Lock()
+	defer liveBatMu.Unlock()
+	if x, ok := liveUses[host]; ok && x.u != nil && time.Since(x.at) < liveUsageFresh {
+		return x.u
+	}
+	return nil
 }

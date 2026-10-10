@@ -34,7 +34,7 @@ func TestDirectExtractor_FormatDuplicate_ExtractAndUploadOnce(t *testing.T) {
 	// 也防後人把 dedup 改成讀內容時，這支測試仍站得住。
 	const body = "# 報銷規則\n\nM118/M128 不可同時使用；上限 3000 元。機密內容 XYZZY"
 	writeSameContent(t, filepath.Join(root, "markdown", "報銷規則.md"), body)
-	writeSameContent(t, filepath.Join(root, "txt", "報銷規則.txt"), body)
+	writeSameContent(t, filepath.Join(root, "markdown", "報銷規則.txt"), body)
 
 	// 假 cypher：數「內容卡」上雲幾次。
 	// 排除機械卡（零 LLM）：資料夾總覽（「資料夾總覽：…」）與逐層資料夾卡（「資料夾：…」），

@@ -106,3 +106,21 @@ func TestBuildFailureBreakdown(t *testing.T) {
 		t.Fatalf("分組加總 %d ≠ 總數 %d", sum, b.Total)
 	}
 }
+
+// #240 c18620：同目錄同名不同格式的副本不算獨立一份原文件；無法處理的不躺在排隊。
+func TestProgressFormatDupAndUnprocessable(t *testing.T) {
+	m := &Manifest{Entries: map[string]*ManifestEntry{
+		"d/a.docx":  {ContentHash: "h1", IngestedHash: "h1"},                  // 完成
+		"d/a.md":    {ContentHash: "h2", FormatDupOf: "d/a.docx"},             // 副本：不計
+		"d/big.pdf": {ContentHash: "h3", FailCount: 1, LastError: "這份檔案太大了"},  // 第一次撞就是 !N
+		"d/new.md":  {ContentHash: "h4"},                                      // 真排隊
+		"e/new.md":  {ContentHash: "h5", FailCount: 2, LastError: "HTTP 500"}, // 暫時性失敗：仍排隊
+	}}
+	p := m.Progress()
+	if p.Total != 4 || p.Done != 1 || p.Stuck != 1 || p.Pending != 2 {
+		t.Fatalf("got %+v", p)
+	}
+	if p.Total != p.Done+p.Pending+p.Stuck+p.Unreadable {
+		t.Fatalf("不變式破了 %+v", p)
+	}
+}

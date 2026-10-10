@@ -78,14 +78,71 @@ func TestBuildWikiDoc_OwnOrphanCardOverwritten(t *testing.T) {
 	if _, err := BuildWikiDoc(root, rel, src, ex(), wsOrigin(rel), wsNow); err != nil {
 		t.Fatalf("自己的殘卡應可覆寫：%v", err)
 	}
-	// 別人的檔（沒有本文件的出處行）仍不覆蓋
+	// 別人的檔（沒有本文件的出處行）仍不覆蓋——但也不報錯，概念卡改名閃開（#246 c18722）。
 	other := filepath.Join(root, ".wiki", "乙.md")
 	mustWrite(t, other, "使用者自己寫的")
 	ex2 := ex()
 	ex2.Concepts[0].Name = "乙"
 	ex2.Points = []string{"p [[乙]]"}
-	if _, err := BuildWikiDoc(root, rel, src, ex2, wsOrigin(rel), wsNow); err == nil {
+	if _, err := BuildWikiDoc(root, rel, src, ex2, wsOrigin(rel), wsNow); err != nil {
+		t.Fatalf("撞名不該是錯誤：%v", err)
+	}
+	if b, _ := os.ReadFile(other); string(b) != "使用者自己寫的" {
 		t.Fatal("使用者原有的檔不該被覆蓋")
+	}
+}
+
+// 兩個監看根疊在一起：同一份原文只一張卡、出處兩行；不同原文同卡名則兩份都有。#246 c18722
+func TestBuildWikiDoc_OverlappingRootsNoCollisionError(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "legacy")
+	mustWrite(t, filepath.Join(inner, "A.md"), "# A\n\n內文")
+	mustWrite(t, filepath.Join(inner, "B.md"), "# B\n\n別的內文")
+	mk := func(name string) *DocExtract {
+		return &DocExtract{Gloss: "g", Summary: "s", Points: []string{"p [[" + name + "]]"},
+			Concepts: []WikiConcept{{Name: name, Gloss: "g", Summary: "s", Points: []string{"x"}}}}
+	}
+	innerOrigin := SourceOrigin{MachineLabel: "m", Library: "legacy", LibraryPath: "A.md"}
+	outerOrigin := SourceOrigin{MachineLabel: "m", Library: "pms", LibraryPath: "legacy/A.md"}
+	if _, err := BuildWikiDoc(inner, "A.md", "# A\n\n內文", mk("共用概念"), innerOrigin, wsNow); err != nil {
+		t.Fatal(err)
+	}
+	// 外層根的 .wiki 在 legacy/.wiki（同一個資料夾），但它自己的 manifest 不知道內層寫過什麼
+	if _, err := BuildWikiDoc(outer, "legacy/A.md", "# A\n\n內文", mk("共用概念"), outerOrigin, wsNow); err != nil {
+		t.Fatalf("同一份原文疊根不該報錯：%v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(inner, ".wiki", "共用概念.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "- `legacy/A.md`") || !strings.Contains(string(b), "- `pms/legacy/A.md`") {
+		t.Fatalf("卡上應指向兩條出處：\n%s", b)
+	}
+	// 不同原文、同一個概念名：兩份都在，各留出處
+	if _, err := BuildWikiDoc(outer, "legacy/B.md", "# B\n\n別的內文", mk("共用概念"), SourceOrigin{MachineLabel: "m", Library: "pms", LibraryPath: "legacy/B.md"}, wsNow); err != nil {
+		t.Fatalf("不同原文同名不該報錯：%v", err)
+	}
+	ents, _ := os.ReadDir(filepath.Join(inner, ".wiki"))
+	n := 0
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "共用概念") {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("同名概念應各留一張（共用概念＋共用概念（B）），實際 %d", n)
+	}
+}
+
+// 舊版留下的「卡片位置被佔用」病歷：不算出錯、會重排。
+func TestCardCollisionLegacyErrorIsNotAnError(t *testing.T) {
+	m := &Manifest{Entries: map[string]*ManifestEntry{"x.md": {ContentHash: "h", FailCount: 8,
+		LastError: "本地萃取失敗：卡片位置被佔用（不覆蓋既有檔案）：.wiki/x.md"}}}
+	if p := m.Progress(); p.Errors() != 0 || p.Waiting() != 1 {
+		t.Fatalf("撞名不得算出錯：%+v", p)
+	}
+	if !m.ShouldRetry("x.md", 1<<40, false) {
+		t.Fatal("舊撞名病歷應重排")
 	}
 }
 

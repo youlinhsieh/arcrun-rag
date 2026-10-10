@@ -47,6 +47,38 @@ type SyncProgress struct {
 	// subrequests，fail_count 是 7 與 3），講「同步中」等於叫他等一件正在壞掉的事。
 	// 分出來，畫面才判斷得出該不該示警（見 arcrun-app/folder_badge.go）。
 	Failing int `json:"failing"`
+	// StuckFix＝Stuck 裡「用戶自己做得到什麼就能好」的份數（檔案太大、讀不出字、格式不支援）。
+	// 其餘的 Stuck（Stuck−StuckFix）是「我們沒有 FAQ 的新問題」，畫面給回報按鈕。子集合，不進不變式。
+	StuckFix int `json:"stuck_fix,omitempty"`
+	// StuckWhy＝StuckFix 裡最多的那一類的短標籤（≤6 字），畫面直接顯示。
+	StuckWhy string `json:"stuck_why,omitempty"`
+}
+
+// Errors＝出錯的份數：停住（Stuck）＋讀不了（Unreadable）＋排隊中但已失敗過、等重試的（Failing）。
+// 🔴 畫面上所有「!N」（狀態列、資料夾列、同步分頁）都只准用這一個口徑（#246 c18681）。
+func (p SyncProgress) Errors() int { return p.Stuck + p.Unreadable + p.Failing }
+
+// Waiting＝待上傳的份數：還在排隊、而且**沒有**失敗過。與 Done、Errors 三者互斥，
+// 恆等式 Total == Done + Waiting + Errors（同一份檔不會既算排隊又算出錯）。
+func (p SyncProgress) Waiting() int {
+	if w := p.Pending - p.Failing; w > 0 {
+		return w
+	}
+	return 0
+}
+
+// FixableKind 回「用戶自己能處理」的問題短標籤；空字串＝我們沒有現成解法（要回報）。
+// 標籤 ≤6 字（字數預算）。判斷字串都來自實撞的錯誤原文（見 collector.log）。
+func FixableKind(lastError string) string {
+	switch {
+	case strings.Contains(lastError, "太大了"):
+		return "檔案太大"
+	case strings.Contains(lastError, "沒有可抽取") || strings.Contains(lastError, "轉檔失敗"):
+		return "讀不出字"
+	case strings.Contains(lastError, "尚未支援的檔案格式") || strings.Contains(lastError, "不支援"):
+		return "格式不支援"
+	}
+	return ""
 }
 
 // Add 把另一個資料夾／帳號的進度累加進來——首頁與診斷檔講的都是總量。
@@ -58,6 +90,8 @@ func (p SyncProgress) Add(o SyncProgress) SyncProgress {
 		Stuck:      p.Stuck + o.Stuck,
 		Unreadable: p.Unreadable + o.Unreadable,
 		Failing:    p.Failing + o.Failing,
+		StuckFix:   p.StuckFix + o.StuckFix,
+		StuckWhy:   firstNonEmptyWhy(p.StuckWhy, o.StuckWhy),
 	}
 }
 
@@ -66,21 +100,36 @@ func (p SyncProgress) Add(o SyncProgress) SyncProgress {
 // ⇒ 這裡原地數就是對的，不必另外維護計數器（也就不會有「計數器漂掉」那類病）。
 func (m *Manifest) Progress() SyncProgress {
 	var p SyncProgress
+	whyCount := map[string]int{}
 	for _, e := range m.Entries {
 		if e == nil {
+			continue
+		}
+		// #240 c18620：同目錄同名不同格式的副本不是另一份原文件（用戶的一份文件只算一次），
+		// 也不會被送——它不進分母，才不會永遠掛在「排隊」。
+		if e.FormatDupOf != "" {
 			continue
 		}
 		p.Total++
 		switch {
 		case e.IngestedHash != "" && e.IngestedHash == e.ContentHash:
 			p.Done++
+		case isCardCollisionText(e.LastError):
+			// #246 c18722：撞名由機器自己消歧，不是用戶的錯、不算出錯；舊版留下的病歷照排隊重試。
+			p.Pending++
 		case isLocalNetworkText(e.LastError):
 			// #201：上次只是這台電腦沒連上網路 ⇒ 會自己再試，是排隊中，不是卡住。
 			p.Pending++
-		case e.FailCount >= MaxFailBeforeSkip:
+		case e.FailCount >= MaxFailBeforeSkip || (e.FailCount > 0 && FixableKind(e.LastError) != ""):
+			// #240 c18620：「無法處理或刻意不處理」（檔案太大、讀不出字、卡位被佔、格式不支援）
+			// 重試也不會好，第一次撞上就歸「!N」，不躺在排隊裡等一件不會發生的事。
 			// 已經放棄自動重試的不能混在 Pending 裡假裝還在排隊——
 			// 使用者會一直等一件永遠不會發生的事。
 			p.Stuck++
+			if k := FixableKind(e.LastError); k != "" {
+				p.StuckFix++
+				whyCount[k]++
+			}
 		default:
 			p.Pending++
 			if e.FailCount > 0 {
@@ -90,7 +139,20 @@ func (m *Manifest) Progress() SyncProgress {
 			}
 		}
 	}
+	best := 0
+	for k, n := range whyCount {
+		if n > best || (n == best && k < p.StuckWhy) {
+			best, p.StuckWhy = n, k
+		}
+	}
 	return p
+}
+
+func firstNonEmptyWhy(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // ── 失敗分類（取代逐檔解釋）──────────────────────────────────────────────

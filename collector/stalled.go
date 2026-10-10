@@ -89,6 +89,9 @@ func stalledEntry(e *ManifestEntry) bool {
 	if e == nil || e.FailCount < MaxFailBeforeSkip || strings.TrimSpace(e.LastError) == "" {
 		return false
 	}
+	if isCardCollisionText(e.LastError) { // #246 c18722：撞名由機器消歧，不是停工
+		return false
+	}
 	if selfRecovering(e) {
 		return e.FailCount >= MaxFailBeforeSkip+stallExtraTries
 	}
@@ -171,4 +174,49 @@ func LoadStalledGroups(manifestBase, cypherURL string, roots []string) []Stalled
 		}
 	}
 	return StalledGroups(instanceHostOf(cypherURL), ms)
+}
+
+// StuckSamples 回這批資料夾裡「已停止重試」的檔名樣本（basename，最多 5 個）與其中一份的錯誤原文。
+// 給「無解」回報用；只碰帳本，不碰文件內容。
+func StuckSamples(manifestBase, cypherURL string, roots []string) (names []string, rawErr string) {
+	for _, r := range roots {
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		p := ManifestPathFor(manifestBase, cypherURL, abs)
+		m, err := LoadManifest(p, abs)
+		if err != nil {
+			continue
+		}
+		for path, e := range m.Entries {
+			if e == nil || e.FailCount < MaxFailBeforeSkip || FixableKind(e.LastError) != "" {
+				continue
+			}
+			if len(names) < 5 {
+				names = append(names, filepath.Base(path))
+			}
+			if rawErr == "" {
+				rawErr = e.LastError
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, rawErr
+}
+
+// FileLastError 回某一份檔最後一次失敗的原文（找不到回空字串）。給「這一份」的回報用（#246 c18700）。
+func FileLastError(manifestBase, cypherURL, root, rel string) string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	m, err := LoadManifest(ManifestPathFor(manifestBase, cypherURL, abs), abs)
+	if err != nil {
+		return ""
+	}
+	if e := m.Entries[rel]; e != nil {
+		return e.LastError
+	}
+	return ""
 }

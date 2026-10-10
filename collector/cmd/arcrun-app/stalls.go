@@ -156,3 +156,84 @@ func (a *App) ReportStall(fingerprint string) error {
 	}
 	return nil
 }
+
+func problemKey(host, folder string) string { return "problem|" + host + "|" + folder }
+
+// ReportProblem：「!N」popup 裡「無解」的一鍵回報（c18616）。folder 空字串＝整個帳號。
+// 事實一律在這裡現場重算，不信任前端；回報過就不再送（鍵＝知識庫＋資料夾）。
+func (a *App) ReportProblem(accIdx int, folder string) error {
+	cfg, err := loadCfg()
+	if err != nil || accIdx < 0 || accIdx >= len(cfg.Accounts) {
+		return fmt.Errorf("讀不到設定")
+	}
+	acc := cfg.Accounts[accIdx]
+	host := shortHost(acc.CypherURL)
+	key := problemKey(host, folder)
+	if _, done := loadStallReports()[key]; done {
+		return nil
+	}
+	roots := acc.WatchFolders
+	if folder != "" {
+		roots = []string{folder}
+	}
+	var p collector.SyncProgress
+	sync := loadSyncStatus()
+	for _, r := range roots {
+		if fp, ok := sync.FolderProgress[r]; ok {
+			p = p.Add(fp)
+		}
+	}
+	sent := -1
+	if n := sentLastHour(cfg, acc); n != nil {
+		sent = *n
+	}
+	out := activityOf(activityIn{P: p, Known: true, Alive: collectorAlive(), SentHour: sent})
+	names, raw := collector.StuckSamples(cfg.Manifest, acc.CypherURL, roots)
+	if err := a.SubmitFeedback(problemReportText(accountName(acc), host, folder, p, out, names, raw), true); err != nil {
+		return err
+	}
+	_ = markStallReported(key, out.N)
+	return nil
+}
+
+// ReportFileProblem：資料夾樹裡「這一份」出錯檔的回報鈕（c18700 第 9 項）。
+// 鍵＝知識庫＋資料夾＋檔案，回報過就不再送；內容只有檔名（basename）、分類與錯誤原文（路徑已遮蔽）。
+func (a *App) ReportFileProblem(accIdx int, root, rel string) error {
+	cfg, err := loadCfg()
+	if err != nil || accIdx < 0 || accIdx >= len(cfg.Accounts) || strings.TrimSpace(rel) == "" {
+		return fmt.Errorf("讀不到設定")
+	}
+	acc := cfg.Accounts[accIdx]
+	host := shortHost(acc.CypherURL)
+	key := problemKey(host, root) + "|" + rel
+	if _, done := loadStallReports()[key]; done {
+		return nil
+	}
+	raw := collector.FileLastError(cfg.Manifest, acc.CypherURL, root, rel)
+	text := "【自動回報：一份檔案出錯】用戶按了這份檔案旁的「回報」。\n\n" +
+		fmt.Sprintf("- 知識庫：%s（%s）\n- 資料夾：%s\n- 檔名：%s\n", accountName(acc), host, filepath.Base(root), filepath.Base(rel))
+	if raw != "" {
+		text += "- 錯誤原文：" + redactLocalPaths(raw) + "\n"
+	}
+	text += fmt.Sprintf("- 小幫手版本：%s\n\n（此回報由小幫手自動產生，不含任何文件內容。）", version)
+	if err := a.SubmitFeedback(text, true); err != nil {
+		return err
+	}
+	return markStallReported(key, 1)
+}
+
+// ReportedFiles：這個帳號已回報過的出錯檔（鍵＝資料夾|相對路徑），畫面據此標 ✓。
+func (a *App) ReportedFiles(accIdx int) []string {
+	cfg, err := loadCfg()
+	if err != nil || accIdx < 0 || accIdx >= len(cfg.Accounts) {
+		return nil
+	}
+	prefix := "problem|" + shortHost(cfg.Accounts[accIdx].CypherURL) + "|"
+	var out []string
+	for k := range loadStallReports() {
+		if strings.HasPrefix(k, prefix) && strings.Count(k, "|") >= 3 {
+			out = append(out, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return out
+}

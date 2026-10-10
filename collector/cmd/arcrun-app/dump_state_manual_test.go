@@ -88,6 +88,23 @@ func TestDumpStateManual(t *testing.T) {
 	if err := os.WriteFile(statusPath(), sb, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// #246：三種長相的用量儀表（geek 付費已在收費＝真實數字；youlin 免費接近；leo21c 付費還遠）
+	gu := geekUsage()
+	gu.Received = time.Now()
+	setLiveUsage(gh, gu)
+	setLiveUsage(yh, &collector.Usage{Plan: collector.UsagePlanFree, Received: time.Now(), DelaySec: 120,
+		Brake: &collector.UsageBrake{On: true, Covers: []string{"d1_write", "ai"}},
+		Items: []collector.UsageItem{
+			{Key: "ai", Used: 8600, Limit: pf(10000), Period: "day", ResetAt: "2026-10-11T00:00:00Z", RatePerMin: 40},
+			{Key: "d1_write", Used: 31000, Limit: pf(100000), Period: "day", ResetAt: "2026-10-11T00:00:00Z", RatePerMin: 20},
+			{Key: "d1_read", Used: 1200000, Limit: pf(5000000), Period: "day", ResetAt: "2026-10-11T00:00:00Z"},
+		}})
+	setLiveUsage(lh, &collector.Usage{Plan: collector.UsagePlanPaid, BaseUSD: 5, Received: time.Now(), DelaySec: 120,
+		Brake: &collector.UsageBrake{On: false, Covers: []string{"d1_write"}},
+		Items: []collector.UsageItem{
+			{Key: "ai", Used: 2100, Limit: pf(10000), Period: "day", ResetAt: "2026-10-11T00:00:00Z", RatePerMin: 8},
+			{Key: "d1_write", Used: 880000, Limit: pf(50000000), Period: "month", ResetAt: "2026-10-31T16:00:00Z"},
+		}})
 	s := (&App{}).GetState()
 	s.EngineTrouble = false
 	s.StatusBig = "同步中…"

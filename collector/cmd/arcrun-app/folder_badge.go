@@ -63,7 +63,7 @@ const (
 )
 
 // folderErrors＝這個資料夾裡出錯的份數：已放棄重試的（Stuck）加正在失敗重試的（Failing）。
-func folderErrors(p collector.SyncProgress) int { return p.Stuck + p.Failing }
+func folderErrors(p collector.SyncProgress) int { return p.Errors() }
 
 // folderBadge 回同步維度的代碼與一句短提示（tooltip）。出錯與否不影響它。
 func folderBadge(p collector.SyncProgress, known bool) (state, tip string) {
