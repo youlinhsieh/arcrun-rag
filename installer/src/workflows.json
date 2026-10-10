@@ -407,7 +407,7 @@
           "content": "{{block.content}}",
           "owner_id": "__NAMESPACE__",
           "page_name": "{{block.page_name}}",
-          "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\",\"embed\":true}"
+          "metadata_json": "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\"}"
         }
       },
       "post_const_source_uri": {

@@ -406,7 +406,7 @@ config:
       # machine／machine_label（`inkstone/mira#6`）與 source／source_path／library 並排：
       # 這四格合起來就是「這則知識的原稿在哪」——哪台機器、哪個庫、哪個相對路徑、第幾段。
       # 空字串＝舊版 daemon 沒送 ⇒ portal 顯示「未知來源」，**不猜、不填假名**。
-      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\",\"embed\":true}"
+      metadata_json: "{\"source\":\"{{block.source}}\",\"source_path\":\"{{block.source_path}}\",\"library\":\"{{block.library}}\",\"machine\":\"{{block.machine}}\",\"machine_label\":\"{{block.machine_label}}\",\"card_hash\":\"{{block.card_hash}}\",\"card_blocks\":\"{{block.card_blocks}}\",\"card_rels\":\"{{block.card_rels}}\"}"
 
   # ── 常數格共用（`inkstone/InkStoneCo#140` comment 10651，2026-09-21）────────────
   # 同一張卡的每一條三元組，source_uri/status/library/machine 四格內容永遠相同
