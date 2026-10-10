@@ -25,11 +25,11 @@ package collector
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/klippa-app/go-pdfium"
+	"github.com/klippa-app/go-pdfium/enums"
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/webassembly"
 )
@@ -47,7 +47,7 @@ var (
 //
 // 為什麼不用 init()：WASM runtime 啟動要吃記憶體與時間，而**多數使用者的資料夾裡
 // 可能一個 PDF 都沒有**。沒 PDF 就不該付這個代價。
-//（注意：go:embed 的 wasm 位元組仍在執行檔裡，體積代價省不掉，省的是執行期記憶體。）
+// （注意：go:embed 的 wasm 位元組仍在執行檔裡，體積代價省不掉，省的是執行期記憶體。）
 func initPDFPool() error {
 	pdfPoolOnce.Do(func() {
 		pdfPool, pdfPoolErr = webassembly.Init(webassembly.Config{
@@ -60,8 +60,15 @@ func initPDFPool() error {
 }
 
 func extractPDF(data []byte) (string, error) {
+	txt, _, err := extractPDFDetailed(data)
+	return txt, err
+}
+
+// extractPDFDetailed＝extractPDF，多回一份「讀不到什麼」的盤點（圖片表、大圖頁），
+// 全文每頁前帶頁界〔PDF 第 N 頁〕（inkstone/arcrun-rag#253，見 convert_pdf_report.go）。
+func extractPDFDetailed(data []byte) (string, *PDFReadReport, error) {
 	if err := initPDFPool(); err != nil {
-		return "", fmt.Errorf("PDF 引擎啟動失敗：%w", err)
+		return "", nil, fmt.Errorf("PDF 引擎啟動失敗：%w", err)
 	}
 
 	pdfMu.Lock()
@@ -69,37 +76,79 @@ func extractPDF(data []byte) (string, error) {
 
 	inst, err := pdfPool.GetInstance(30 * time.Second)
 	if err != nil {
-		return "", fmt.Errorf("PDF 引擎取用失敗：%w", err)
+		return "", nil, fmt.Errorf("PDF 引擎取用失敗：%w", err)
 	}
 	defer inst.Close()
 
 	doc, err := inst.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
 		// 密碼保護的 PDF 也會走到這裡——訊息要讓用戶看得懂是「打不開」而非「沒內容」。
-		return "", fmt.Errorf("PDF 打不開（可能損壞或有密碼保護）：%w", err)
+		return "", nil, fmt.Errorf("PDF 打不開（可能損壞或有密碼保護）：%w", err)
 	}
 	defer inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
 
 	pageCount, err := inst.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
 	if err != nil {
-		return "", fmt.Errorf("讀 PDF 頁數失敗：%w", err)
+		return "", nil, fmt.Errorf("讀 PDF 頁數失敗：%w", err)
 	}
 
-	var sb strings.Builder
+	pages := make([]pdfPageInfo, 0, pageCount.PageCount)
 	for i := 0; i < pageCount.PageCount; i++ {
-		txt, err := inst.GetPageText(&requests.GetPageText{
-			Page: requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}},
-		})
+		pg := requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}}
+		info := pdfPageInfo{Index: i}
+		txt, err := inst.GetPageText(&requests.GetPageText{Page: pg})
 		if err != nil {
 			// 單頁失敗不該讓整份放棄——有內容總比沒有好，但要留痕跡。
-			sb.WriteString(fmt.Sprintf("\n（第 %d 頁讀取失敗）\n", i+1))
+			info.Failed = true
+			pages = append(pages, info)
 			continue
 		}
-		sb.WriteString(txt.Text)
-		sb.WriteString("\n")
+		info.Text = txt.Text
+		info.BigImages = countBigImages(inst, pg)
+		pages = append(pages, info)
 	}
 
 	// 抽不出字＝掃描件／影像 PDF。回空字串會被 ConvertToText 轉成 ErrNoText，
 	// 上層才能告訴用戶「這個檔看起來是掃描的圖，沒有文字可讀」。
-	return sb.String(), nil
+	return renderPDFPages(pages), buildPDFReport(pages), nil
+}
+
+// countBigImages 數一頁上「大圖」的個數（面積超過頁面 bigImageFrac）。
+// 量測失敗一律當 0——這是加值的盤點，不能因此讓整頁讀不了。
+func countBigImages(inst pdfium.Pdfium, pg requests.Page) int {
+	w, err := inst.FPDF_GetPageWidthF(&requests.FPDF_GetPageWidthF{Page: pg})
+	if err != nil {
+		return 0
+	}
+	h, err := inst.FPDF_GetPageHeightF(&requests.FPDF_GetPageHeightF{Page: pg})
+	if err != nil {
+		return 0
+	}
+	area := float64(w.PageWidth) * float64(h.PageHeight)
+	if area <= 0 {
+		return 0
+	}
+	cnt, err := inst.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{Page: pg})
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for k := 0; k < cnt.Count; k++ {
+		o, err := inst.FPDFPage_GetObject(&requests.FPDFPage_GetObject{Page: pg, Index: k})
+		if err != nil {
+			continue
+		}
+		t, err := inst.FPDFPageObj_GetType(&requests.FPDFPageObj_GetType{PageObject: o.PageObject})
+		if err != nil || t.Type != enums.FPDF_PAGEOBJ_IMAGE {
+			continue
+		}
+		b, err := inst.FPDFPageObj_GetBounds(&requests.FPDFPageObj_GetBounds{PageObject: o.PageObject})
+		if err != nil {
+			continue
+		}
+		if float64(b.Right-b.Left)*float64(b.Top-b.Bottom) > bigImageFrac*area {
+			n++
+		}
+	}
+	return n
 }

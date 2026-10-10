@@ -30,7 +30,7 @@ func TestStatusAndTreeMoveWhileRoundIsStillRunning(t *testing.T) {
 		}
 	}
 
-	nameRe := regexp.MustCompile(`檔名：([^）]+)）`)
+	nameRe := regexp.MustCompile(`"page_name":"([^"]+)"`) // Arcrun#299：請求不再帶 prompt，改認 page_name
 	restoreGemma := extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		name := "a"

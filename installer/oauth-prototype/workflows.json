@@ -327,7 +327,7 @@
       "list_old_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries?page_name={{input.page_name}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+        "url": "__KBDB_BASE__/entries?page_name={{input.page_name}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -913,7 +913,7 @@
       "list_dead_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"

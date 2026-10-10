@@ -152,8 +152,9 @@ func TestManifest201_LegacyNetworkPauseRetriesByItself(t *testing.T) {
 	if !m.ShouldRetry("journals/2026_04_28.md", now, false) {
 		t.Fatal("斷網被記滿 8 次的檔，網路好了要自己再試，不必按「立刻同步」")
 	}
-	if m.ShouldRetry("assets/scan.pdf", now, false) {
-		t.Fatal("檔案本身的問題（讀不出文字）照舊暫停")
+	// #251：讀不出文字（掃描檔）不再是死路——雲端有了讀圖功能就能讀，所以窗口過後要自己再試。
+	if !m.ShouldRetry("assets/scan.pdf", now, false) {
+		t.Fatal("掃描檔病歷（讀不出文字）要在退避窗口後自己再試（雲端更新後可讀圖）")
 	}
 	if m.HasOwnFailure("journals/2026_04_28.md") {
 		t.Fatal("斷網不算這個檔的前科")

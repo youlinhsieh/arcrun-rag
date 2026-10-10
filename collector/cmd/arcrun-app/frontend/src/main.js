@@ -180,7 +180,10 @@ function ensureTabData(idx) {
   if (libTabOf(idx) === 'usage') refreshUsage(idx);
   if (libTabOf(idx) === 'apps') loadApps(idx);
 }
-function libTabOf(idx) { return libTab[idx] || 'sync'; }
+// 預設落在儀表板（碼表／用量）頁：用戶開 App 第一件事是「它有沒有在跑」，儀表板有跳動的數字，一眼就知道（#246 c18824）。
+// 用戶手動切過頁籤就記住（只在這次開著 App 期間；重開 App 回到儀表板），不會在換帳號、回首頁再進來時被硬拉回去。
+const DEFAULT_LIB_TAB = 'usage';
+function libTabOf(idx) { return libTab[idx] || DEFAULT_LIB_TAB; }
 function setLibTab(idx, tab) {
   libTab[idx] = tab;
   renderPage();

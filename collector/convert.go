@@ -98,36 +98,53 @@ func CanConvert(path string) bool {
 //   - preNormExtractors：抽取器自己在 XML CharData 層套 NFKC，
 //     後處理只跑 normalizeFormatting，避免結構標記被二次正規化。
 func ConvertToText(path string, data []byte) (string, error) {
+	txt, _, err := ConvertToTextReport(path, data)
+	return txt, err
+}
+
+// ConvertToTextReport＝ConvertToText，多回一份「這份檔讀不到什麼」的盤點（目前只有 PDF 的圖片表／大圖頁，
+// inkstone/arcrun-rag#253）。其他格式回 nil。盤點是加值：呼叫端不理它，行為與 ConvertToText 完全一致。
+func ConvertToTextReport(path string, data []byte) (string, *PDFReadReport, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if IsPlainText(path) {
-		return normalizeText(string(data)), nil
+		return normalizeText(string(data)), nil, nil
 	}
 
 	if ex, ok := preNormExtractors[ext]; ok {
 		txt, err := ex(data)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		txt = normalizeFormatting(txt)
 		if strings.TrimSpace(txt) == "" {
-			return "", ErrNoText
+			return "", nil, ErrNoText
 		}
-		return txt, nil
+		return txt, nil, nil
 	}
 
 	ex, ok := extractors[ext]
 	if !ok {
-		return "", fmt.Errorf("%w：%s", ErrUnsupported, ext)
+		return "", nil, fmt.Errorf("%w：%s", ErrUnsupported, ext)
 	}
-	txt, err := ex(data)
+	var (
+		txt string
+		rep *PDFReadReport
+		err error
+	)
+	if ext == ".pdf" {
+		txt, rep, err = extractPDFDetailed(data)
+	} else {
+		txt, err = ex(data)
+	}
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	txt = normalizeText(txt)
 	if strings.TrimSpace(txt) == "" {
-		return "", ErrNoText
+		// 掃描檔：連同「哪幾頁是圖」一起回，讓呼叫端有機會走讀圖（#251）；其他呼叫端照舊只看 err。
+		return "", rep, ErrNoText
 	}
-	return txt, nil
+	return txt, rep, nil
 }
 
 // normalizeText 做兩件事，兩件都是實測後才加的：

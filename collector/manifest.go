@@ -394,6 +394,9 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 		if (isTransientCloudText(e.LastError) || isD1QuotaText(e.LastError)) && now >= e.NextRetry {
 			return true
 		}
+		if isNoTextText(e.LastError) && now >= e.NextRetry {
+			return true // #251：掃描檔病歷是在沒有讀圖的版本／雲端上記的；雲端更新後照退避窗口再試（舊雲端會在第一發 404 就回原病歷）
+		}
 		if isCardCollisionText(e.LastError) && now >= e.NextRetry {
 			return true // #246 c18722：舊版把撞名當成死路；現在機器自己消歧，病歷照退避窗口重排
 		}

@@ -76,6 +76,9 @@ type DocExtract struct {
 	NoConcept bool          `json:"no_concept"`
 	Reason    string        `json:"reason"`
 	Concepts  []WikiConcept `json:"concepts"`
+	// Unreadable＝這份原稿「讀不到」的部分（圖片表等），由轉檔層機械產生（不是 LLM 說的），
+	// 文件卡會原樣寫成「## 讀不到的內容」段（inkstone/arcrun-rag#253）。
+	Unreadable []string `json:"-"`
 }
 
 // ── manifest（`<監看根>/.wiki/manifest.json`；doc_id ↔ 現在路徑 ↔ 雜湊）──
@@ -504,6 +507,13 @@ func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin Sou
 		b.WriteString("- 本文件整理成 " + itoa(len(conceptNames)) + " 張概念卡，入口是 [[" + conceptNames[0] + "]]\n")
 	}
 	b.WriteString("\n")
+	if len(ex.Unreadable) > 0 {
+		b.WriteString("## 讀不到的內容\n")
+		for _, n := range ex.Unreadable {
+			b.WriteString("- " + n + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	ents := ex.Entities
 	if len(ents) == 0 { // 文件卡的實體：借用各概念的第一個實體

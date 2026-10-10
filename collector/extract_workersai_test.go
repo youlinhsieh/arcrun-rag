@@ -103,42 +103,63 @@ func TestExtractWithWorkersAI_NonVaultUnchanged(t *testing.T) {
 	}
 }
 
-// ── Arcrun#134：workers-ai 路與 gemma 路共用同一份契約 ─────────────────────────
+// ── Arcrun#299：指示住雲端那張表，小幫手只送「這段是哪一類」 ───────────────────
 //
-// 修法＝daemon 把 wikiExtractPrompt 整段帶去雲端（request `prompt` 欄位），
-// 雲端只回模型原文（response `output`），解析與組卡回到本 package 與 gemma 路
-// 同一段程式碼。⇒ 「兩條路的卡同形」不再是兩份 prompt 各自維持的巧合，
-// 是同一份程式碼的必然。以下兩則就是這句話的機械守衛；
-// 檔案上方兩則既有測試（stub 只回 `card`）則守住「舊雲端 fallback 不斷炊」。
+// Arcrun#134 時代小幫手把 208 行提示詞整段帶上雲；#299 起改成雲端一張有 key、有版本的表，
+// 小幫手只送 prompt_table＋kinds（讀檔特例編號）＋hints（機械掃出的資料）。
+// 以下守衛：①請求裡**不准再出現整段 prompt**（出現＝又養了第二份指示）
+// ②一般文件不帶任何類別 ③重複條目結構（chunk-cliff）帶上類別與候選清單。
+// 檔案上方兩則既有測試（stub 只回 `card`）仍守住「舊雲端 fallback 不斷炊」。
 
-// request 必帶 prompt，且必須就是 wikiExtractPrompt 本人——不是另一份手抄。
-func TestExtractWithWorkersAI_SendsSharedPrompt(t *testing.T) {
+func captureExtractRequest(t *testing.T, srcBody string) map[string]any {
+	t.Helper()
 	root := t.TempDir()
 	const srcName = "報銷規則.md"
-	const srcBody = "# 報銷規則\n\n內文"
 	if err := os.WriteFile(filepath.Join(root, srcName), []byte(srcBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var gotPrompt string
+	var got map[string]any
 	url, closeFn := workersAIStub(t, func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		gotPrompt = req["prompt"]
+		_ = json.NewDecoder(r.Body).Decode(&got)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,
 			"output":  cardFixture("報銷規則", "財務"),
+			"prompt":  map[string]any{"name": "extract_wiki", "source": "builtin", "blocks": []string{"common.role@1"}},
 		})
 	})
 	defer closeFn()
-
 	if _, err := ExtractWithWorkersAI(url, "key123", root, srcName, testOrigin()); err != nil {
 		t.Fatal(err)
 	}
-	srcText, err := ConvertToText(srcName, []byte(srcBody))
-	if err != nil {
-		t.Fatal(err)
+	return got
+}
+
+func TestExtractWithWorkersAI_SendsTableNotPrompt(t *testing.T) {
+	got := captureExtractRequest(t, "# 報銷規則\n\n內文")
+	if _, has := got["prompt"]; has {
+		t.Fatalf("請求還帶著整段 prompt——指示應該住雲端那張表（Arcrun#299）：%v", got["prompt"])
 	}
-	if want := wikiExtractPrompt("報銷規則", srcText); gotPrompt != want {
-		t.Fatalf("送上雲的 prompt 不是共用那份 wikiExtractPrompt（len got=%d want=%d）", len(gotPrompt), len(want))
+	if got["prompt_table"] != "extract_wiki" {
+		t.Fatalf("prompt_table = %v，want extract_wiki", got["prompt_table"])
+	}
+	if kinds, _ := got["kinds"].([]any); len(kinds) != 0 {
+		t.Fatalf("一般文件不該帶任何類別：%v", kinds)
+	}
+}
+
+func TestExtractWithWorkersAI_RepeatedRecordsSendChunkCliff(t *testing.T) {
+	var b strings.Builder
+	for _, code := range []string{"E101", "E102", "E103", "E104"} {
+		b.WriteString(code + "\nERROR MESSAGE\n某訊息\nCAUSE OF ERROR\n某原因\n")
+	}
+	got := captureExtractRequest(t, b.String())
+	kinds, _ := got["kinds"].([]any)
+	if len(kinds) != 1 || kinds[0] != "chunk-cliff" {
+		t.Fatalf("kinds = %v，want [chunk-cliff]", kinds)
+	}
+	hints, _ := got["hints"].(map[string]any)
+	labels, _ := hints["labels"].([]any)
+	if len(labels) != 4 || labels[0] != "E101" || labels[3] != "E104" {
+		t.Fatalf("hints.labels = %v，want E101..E104", labels)
 	}
 }

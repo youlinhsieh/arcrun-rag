@@ -75,9 +75,9 @@ func FixableKind(lastError string) string {
 	switch {
 	// 🔴 「太大了」不再是用戶要修的事：#213 之後大檔分次讀＋書籤續讀，這句只剩舊版病歷（見 isLegacyTooBigText）。
 	case strings.Contains(lastError, "轉檔失敗"):
-		return "讀不出字"
+		return LabelNoText
 	case strings.Contains(lastError, "尚未支援的檔案格式") || strings.Contains(lastError, "不支援"):
-		return "格式不支援"
+		return LabelUnsupFmt
 	}
 	return ""
 }

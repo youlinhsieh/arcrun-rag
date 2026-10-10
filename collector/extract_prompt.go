@@ -14,16 +14,38 @@ import (
 	"strings"
 )
 
-// wikiExtractPrompt 組出「文件卡＋N 張原子概念卡」的結構化萃取指令（InkStoneCo#44 ④）。
+// extractTableRequest 是送上雲的萃取請求「這段是哪一類」的部分（inkstone/Arcrun#299）。
 //
-// 🔴 這是**全部萃取路共用的唯一一份**提示詞（Arcrun#134 起原名 gemmaPrompt 改此名）：
-// daemon 把它整段帶去雲端（`prompt` 欄位）給實例自己的 AI 跑。
-// 契約（提示詞＋parseWikiExtractJSON＋BuildWikiDoc）同住本 package ⇒ 卡片形狀由同一份程式碼保證。
+// 🔴 2026-10-10 起**指示不住小幫手**：原本這裡有一段 208 行的 wikiExtractPrompt，整段帶上雲
+// （Arcrun#134 的設計）。leo：「現在的 prompt 就是程式碼，既然程式碼解耦，prompt 也應該解耦」
+// ⇒ 指示改成雲端的一張表（每塊一個 key、一個版本，Arcrun `cypher-executor/src/lib/prompt-tables/`），
+// 改一個決策＝雲端改一塊，不必等每位用戶更新小幫手。ADR：Arcrun
+// `system-dev/docs/2-architecture/decisions/ADR-299-extract-prompt-table.md`。
 //
-// 🔴 分工：模型只回 JSON（判斷），格式與落點全由 wikishape.go 機械組裝——
-// 模型不寫 markdown、不決定檔名、不碰路徑。Luhmann ②（一卡一概念）在**萃取端**做，
-// 否則 place_card 只會一直回 orphan（規範待裁 6 的裁定理由）。
-// candidateRecordLabels 機械掃出「這段文字裡有沒有重複出現的條目識別碼」。
+// 小幫手只送三樣：哪一張表（PromptTable）、這段是哪一類（Kinds，讀檔特例編號，見 edgecases.go）、
+// 機械掃出的資料（Hints）。判斷「是哪一類」仍是小幫手的事（偵測住 Go、登記在 edgecases.go），
+// 「是這一類時要怎麼跟模型說」是雲端那張表的事。
+// 契約的另一半（模型回的 JSON 怎麼解析、卡怎麼組）仍住本 package：parseWikiExtractJSON／BuildWikiDoc。
+const extractPromptTable = "extract_wiki"
+
+type extractTableRequest struct {
+	Kinds []string            `json:"kinds"`
+	Hints map[string][]string `json:"hints"`
+}
+
+// extractRequestFor 判斷這段文字是哪一類，並附上機械掃出的資料。
+// 目前只有一類：chunk-cliff（重複條目結構，見 candidateRecordLabels）。新增一類＝
+// 先在 edgecases.go 登記那個編號、在這裡偵測、再到雲端那張表加一塊 when=<編號> 的指示。
+func extractRequestFor(content string) extractTableRequest {
+	req := extractTableRequest{Kinds: []string{}, Hints: map[string][]string{}}
+	if labels := candidateRecordLabels(content); len(labels) >= 3 {
+		req.Kinds = append(req.Kinds, "chunk-cliff")
+		req.Hints["labels"] = labels
+	}
+	return req
+}
+
+// candidateRecordLabels 機械掃出「這段文字裡有沒有重複出現的條目識別碼」（特例 chunk-cliff 的偵測）。
 //
 // 🔴 為什麼要有這個函式（arcrun-rag#213，總管 c10637 要求「調到全數覆蓋」，實測見下）：
 // 光靠文字指示 LLM「原稿有重複條目就每條都列成 entity」，實測（`api-recipe-seeds.ts`
@@ -36,9 +58,9 @@ import (
 //
 // 🔴 這不是「查表型偵測」（c10627 明文禁止的：偵測文件形狀 → 換一條主路徑／換切法）：
 // 本函式**不影響**切段大小、不影響走不走續讀機制、不影響任何路由決策——它只是在
-// 「已經定案要送出去的這個 chunk」裡，順手掃出候選清單塞進同一份 prompt。沒有重複
-// 條目結構的一般文件（散文、報告）呼叫這個函式只會拿到空清單，prompt 一個字都不變，
-// 跟這個函式存在之前完全一樣。
+// 「已經定案要送出去的這個 chunk」裡，順手掃出候選清單（#299 起以 hints.labels 送上雲，
+// 由雲端表上 when=chunk-cliff 那一塊帶給模型）。沒有重複條目結構的一般文件（散文、報告）
+// 呼叫這個函式只會拿到空清單，請求裡就不會有 chunk-cliff 這一類。
 //
 // 判準是純結構性的，不認得任何領域詞彙，也不依賴空行（轉檔後的純文字不一定保留
 // 段落間的空行——實測 `ConvertToText` 對這份 PDF 的輸出逐行相接，沒有空行）：
@@ -75,54 +97,6 @@ func candidateRecordLabels(content string) []string {
 		return nil // 訊號太弱——一般文件，不受影響
 	}
 	return labels
-}
-
-func wikiExtractPrompt(pageName, content string) string {
-	labelSection := ""
-	if labels := candidateRecordLabels(content); len(labels) >= 3 {
-		labelSection = fmt.Sprintf(
-			"\n\n機械掃出的候選識別碼清單（原稿裡偵測到重複的欄位結構，"+
-				"以下每一個都要在 entities 裡各自寫一筆，逐字使用清單裡的原文當 name；"+
-				"不准新增清單外的碼，也不准漏掉清單裡的任何一個）：\n- %s",
-			strings.Join(labels, "\n- "))
-	}
-	return `你是知識整理員。讀完原稿後，把它整理成「一份文件的總覽＋N 個原子概念」。只輸出一個 JSON 物件，不要任何說明、markdown 圍欄或思考過程。` + labelSection + `
-
-規則（違反任何一條都算失敗）：
-- 卡片內容是你的**判斷與重組**（正體中文），禁止整句照抄原稿。
-- 概念數由內容決定（多數文件 1-5 個）；每個概念要能**離開原稿獨立成立**。
-- 報價單、發票、純待辦、純流水帳＝沒有可萃取概念：回 {"no_concept":true,"reason":"一句話理由"} 即可。
-- gloss＝一句話（40 字內）。summary＝一小段（80-200 字）。points＝3-8 條判斷句（不是條列複述）。
-- 文件層的 points 每條要把相關概念名用 [[概念名]] 嵌在**句子中間**（不可放句首當標題）。
-- entities：每個實體帶 type（人物/組織/工具/概念/地點/事件/檔案 擇一）與一句描述。
-- 🔴 **先數一遍：原稿裡有沒有重複出現的「條目」結構**——同一種短識別碼（型號／代碼／
-  單號／參數名，任何原稿自己用來標示每一條的字串）在原稿裡各自帶開一段說明，
-  一段接一段地重複。有的話：
-  1. 先數出原稿裡總共有幾條這種條目，在心裡記住這個數字 N。
-  2. entities 陣列（所有概念合計）要正好列出 N 筆，逐一對應原稿的每一條——
-     **不是舉幾個例子代表其餘的，是每一條都要有自己的一筆**。漏掉任何一條都算失敗。
-  3. 開少數幾個概念（1-3 個，按主題分組）當容器，把 N 筆 entities 分裝進去；
-     每個概念的 entities 陣列可以很長（十幾、幾十筆都正常），**不要因為「這樣看起來
-     很長」就自己截斷、只挑前面幾筆或看起來重要的幾筆**——你不是在寫摘要給人瀏覽，
-     是在建一份查找用的索引，缺一筆，那一條在索引裡就永久找不到。
-  4. entity 的 name＝識別碼原文（逐字，不意譯）。desc 要把該識別碼底下**每一個子欄位**
-     （例如原稿標的「訊息／原因／處置」，或該格式對應的其他欄位）都摘要進同一句話，
-     不是只抄第一個欄位——讀者要能光看 desc 就知道發生什麼、為什麼、怎麼處理，
-     並保留原碼、參數名、數字。
-  原稿沒有這種重複條目結構（一般散文／報告）就不受本條約束，照一般寫法整理。
-- facts＝[主詞,述詞,受詞] 三元組，端點盡量用 entities 的名字；任何欄位不得含雙箭頭符號。
-- relations＝概念之間的關係（to 填另一個概念的 name）。
-
-JSON 形狀（照這個結構填）：
-{"gloss":"","tags":[""],"summary":"","points":["…句子中間嵌 [[概念名]]…"],
- "no_concept":false,"reason":"",
- "concepts":[{"name":"","gloss":"","tags":[""],"summary":"","points":[""],
-   "entities":[{"name":"","type":"","desc":""}],
-   "facts":[["","",""]],
-   "relations":[{"to":"","pred":""}]}]}
-
-原稿（檔名：` + pageName + `）：
-` + content
 }
 
 // parseWikiExtractJSON 從模型輸出撈出 JSON 並解析成 DocExtract。

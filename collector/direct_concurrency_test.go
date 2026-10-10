@@ -53,7 +53,7 @@ func runConcurrencyFixture(t *testing.T, fileConcurrency, nFiles int, delay time
 			t.Fatal(err)
 		}
 	}
-	nameRe := regexp.MustCompile(`檔名：([^）]+)）`)
+	nameRe := regexp.MustCompile(`"page_name":"([^"]+)"`) // Arcrun#299：請求不再帶 prompt，改認 page_name
 	probe = &concurrencyProbe{sent: map[string]int{}}
 	restore := extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -192,7 +192,7 @@ func TestDirectConcurrency_SecondRoundSendsNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	nameRe := regexp.MustCompile(`檔名：([^）]+)）`)
+	nameRe := regexp.MustCompile(`"page_name":"([^"]+)"`) // Arcrun#299：請求不再帶 prompt，改認 page_name
 	restore := extractStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		name := "a"

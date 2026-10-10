@@ -186,7 +186,7 @@ func clearExtractProgress(absRoot, node, nodeKey, base string) {
 // extractResumableWorkersAI＝續讀機制主體。url／apiKey／absRoot／relPath／origin／retry
 // 與 extractWithWorkersAI 一致；srcText 是已經轉好的純文字（呼叫端已經做過 ConvertToText，
 // 這裡不重讀原始檔，維持「LLM 只碰得到文字」的既有邊界）。
-func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, origin SourceOrigin, retry bool) ([]string, error) {
+func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, origin SourceOrigin, retry bool, unreadable ...string) ([]string, error) {
 	pageName := pageNameOf(relPath)
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
@@ -224,7 +224,7 @@ func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, or
 	for progress.Done < total && processedThisCall < maxChunksPerInvocation {
 		chunk := srcText[progress.ChunkBounds[progress.Done]:progress.ChunkBounds[progress.Done+1]]
 		client := &http.Client{Timeout: chunkCallTimeout(len(chunk))}
-		output, legacyCard, callErr := callWorkersAIExtract(client, url, apiKey, pageName, chunk, wikiExtractPrompt(pageName, chunk), retry)
+		output, legacyCard, callErr := callWorkersAIExtract(client, url, apiKey, pageName, chunk, extractRequestFor(chunk), retry)
 		if callErr != nil {
 			if strings.TrimSpace(legacyCard) != "" {
 				// 舊雲端不認得 prompt、只會回 legacy markdown——沒辦法把段落併回結構化的卡。
@@ -290,6 +290,7 @@ func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, or
 	// 一檔一份文件卡（hub）＋累積到現在的概念卡——「一檔一張文件卡、page_name 跟原稿走」
 	// 的既有設計不變；概念卡數量隨著讀的進度增加，之前完成的段落卡內容不會因為
 	// 這一輪而改變（mergeConcept 對同名概念取聯集，不同名概念純累加）。
+	merged.Unreadable = unreadable // #253：轉檔層盤點出的讀不到部分，文件卡明講
 	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, &merged, origin, time.Now())
 	if berr != nil {
 		return nil, berr

@@ -26,7 +26,7 @@
 // 之前雲端自備一份 prompt、daemon 另有一份 gemma 用的，兩份靠註解叮嚀「一起改」——
 // InkStoneCo#44 ④ 改了 gemma 那份（JSON 契約＋wikishape 機械組卡），雲端沒跟上，
 // 免金鑰預設路的用戶因此繼續拿舊格式卡。修法＝契約只住本 package 一份
-// （wikiExtractPrompt ＋ parseWikiExtractJSON ＋ BuildWikiDoc 同進同出），
+// （雲端指示表 extract_wiki ＋ parseWikiExtractJSON ＋ BuildWikiDoc；Arcrun#299 起指示住雲端），
 // 雲端只是「用實例自己的 env.AI 跑生成」的執行器，回應 `output` 原文。
 // 版本歪斜：舊雲端會忽略 prompt、照舊回 `card`（舊格式 markdown）⇒ 本檔 fallback
 // 走 legacy 落卡（收端 lint 新舊雙軌仍接受，#60 的前綴與不覆蓋保護原封不動）。
@@ -38,6 +38,7 @@ package collector
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,27 +138,43 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 
 	// 本地轉檔層與 gemma 路共用同一份（t73/t16）：任何格式在這裡變成純文字。
 	// **LLM 只會收到文字，永遠不會收到二進位**。刻意不吞錯——靜默略過正是 leo 撞過的病。
-	srcText, err := ConvertToText(relPath, raw)
+	srcText, readRep, err := ConvertToTextReport(relPath, raw)
+	pageName := pageNameOf(relPath)
+	url := workersAIExtractURL(cypherURL)
+
+	// #251：PDF 裡的圖片頁（含整份掃描）寫入時讀一次存成文字。舊雲端沒有讀圖入口 ⇒ 維持原行為。
+	if (err == nil || errors.Is(err, ErrNoText)) && readRep != nil && len(readRep.ImagePageNums) > 0 {
+		rd := cachedImageReader(filepath.Join(wikiDirFor(absRoot, ""), ".imageread-cache"),
+			cloudImageReader(imageReadHTTP, workersAIReadImageURL(cypherURL), apiKey))
+		if res, rerr := readPDFImages(raw, readRep, pageName, rd); rerr == nil && res != nil {
+			if t := res.Text(); t != "" {
+				if strings.TrimSpace(srcText) == "" {
+					srcText = t
+				} else {
+					srcText = srcText + "\n\n" + t
+				}
+				err = nil
+			}
+			readRep = readRep.afterRead(res)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("轉檔失敗（%s）：%w", relPath, err)
 	}
-
-	pageName := pageNameOf(relPath)
-	url := workersAIExtractURL(cypherURL)
 
 	// 🔴 arcrun-rag#213（leo 2026-09-22 定向）：原稿超過單發上限 ⇒ **不再拒收**，
 	// 改走一般化的「分段、本機存書籤、每天接著讀」機制（extract_resume.go）。
 	// 這是**任何**大檔的共通路，不綁定文件形狀（不做「查表型偵測」之類的特判）。
 	if len(srcText) > maxWorkersAIExtractBytes {
-		return extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText, origin, retry)
+		return extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText, origin, retry, readRep.Notes()...)
 	}
 
-	output, legacyCard, err := callWorkersAIExtract(workersAIHTTP, url, apiKey, pageName, srcText, wikiExtractPrompt(pageName, srcText), retry)
+	output, legacyCard, err := callWorkersAIExtract(workersAIHTTP, url, apiKey, pageName, srcText, extractRequestFor(srcText), retry)
 	if err != nil {
 		return nil, err
 	}
 
-	// #134 主線：新雲端回 `output`（模型對 wikiExtractPrompt 的原始回應）⇒
+	// #134 主線：新雲端回 `output`（模型照雲端指示表回的原文，Arcrun#299）⇒
 	// 與 gemma 路走**同一段**收尾：解析 JSON 判斷 → wikishape 機械組卡落 `.wiki/`。
 	// 兩條萃取路的卡片形狀從此由同一份程式碼保證，不是由兩份 prompt 各自維持。
 	if strings.TrimSpace(output) != "" {
@@ -165,6 +182,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		if perr != nil {
 			return nil, perr
 		}
+		ex.Unreadable = readRep.Notes() // #253：圖片表等讀不到的部分，文件卡明講
 		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
 		if berr != nil {
 			return nil, berr
@@ -207,12 +225,36 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 // 抽成獨立函式是為了讓「一發」與「大檔分段各打一發」（extract_resume.go）
 // 共用完全同一段連線／記帳／解析邏輯，不會有第二份漂移的實作。
 // client 可傳入不同逾時的 *http.Client（分段大檔的逾時要跟段落大小一起設定，見 chunkCallTimeout）。
-func callWorkersAIExtract(client *http.Client, url, apiKey, pageName, text, prompt string, retry bool) (output, legacyCard string, err error) {
-	reqBody, _ := json.Marshal(map[string]string{
-		"page_name": pageName,
-		"text":      text,
-		"prompt":    prompt,
+//
+// 🔴 inkstone/Arcrun#299：請求不再帶 `prompt`（整段指示），改帶 `prompt_table`＋`kinds`＋`hints`——
+// 指示住雲端那張表。撞到 #299 之前的舊雲端（不認得 prompt_table）時，它會走 legacy 路回 `card`，
+// 下面照舊 fallback 落 legacy 卡（不斷炊）；請先更新雲端再發這版小幫手。
+func callWorkersAIExtract(client *http.Client, url, apiKey, pageName, text string, tr extractTableRequest, retry bool) (output, legacyCard string, err error) {
+	if _, old := oldCloudURLs.Load(url); old {
+		return postWorkersAIExtract(client, url, apiKey, retry, map[string]any{
+			"page_name": pageName, "text": text, "prompt": wikiExtractPrompt(pageName, text),
+		})
+	}
+	output, legacyCard, err = postWorkersAIExtract(client, url, apiKey, retry, map[string]any{
+		"page_name":    pageName,
+		"text":         text,
+		"prompt_table": extractPromptTable,
+		"kinds":        tr.Kinds,
+		"hints":        tr.Hints,
 	})
+	// 舊雲端不認得 prompt_table ⇒ 走 legacy 路回 card（沒有 output）。
+	// 記下它是舊的，這一段改用 prompt 重打一次（舊雲端回 output，卡片形狀與 0.18.90 相同）。
+	if err == nil && strings.TrimSpace(output) == "" && strings.TrimSpace(legacyCard) != "" {
+		oldCloudURLs.Store(url, true)
+		return postWorkersAIExtract(client, url, apiKey, retry, map[string]any{
+			"page_name": pageName, "text": text, "prompt": wikiExtractPrompt(pageName, text),
+		})
+	}
+	return output, legacyCard, err
+}
+
+func postWorkersAIExtract(client *http.Client, url, apiKey string, retry bool, payload map[string]any) (output, legacyCard string, err error) {
+	reqBody, _ := json.Marshal(payload)
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
