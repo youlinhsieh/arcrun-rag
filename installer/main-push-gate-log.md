@@ -208,3 +208,6 @@
 | 2026-10-10 10:28:07 | git.uncle6.me/inkstone/arcrun-rag | feat/297-foreach-parallel-ingest | ✅ 放行 | 目標不是 main／master |
 | 2026-10-10 10:43:19 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 53f5dc5→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-10-10 10:48:04 | git.uncle6.me/inkstone/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward d0df9d2→HEAD，7 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-10 11:07:57 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-10-10 11:12:04 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-10-10 11:12:08 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 19 次） |
