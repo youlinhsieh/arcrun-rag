@@ -1,10 +1,10 @@
 {
  "_algo": 5,
- "version": "0.18.78",
- "fingerprint": "a70cf2790a0f7aa7",
+ "version": "0.18.79",
+ "fingerprint": "cef76917aaff6128",
  "files": {
   ".gitignore": "6da4cfd8c4f9759e2c934bd4aacf9c72890f87125ad5f6fb0a3e1ef4fe3aaf16",
-  "CHANGELOG.md": "38468f9c5309f3116b8f88d0039eadd6ad01e68422b57fd45e414bd5aa6c6c28",
+  "CHANGELOG.md": "21a9c2dff987b8d931cab194f906187862d698818161d7a1649b53f292ef9945",
   "DAEMON_LINE": "d5019abbdc8a5f2919e9e3510391891cd7fbdf0765bf16ec83caa779f370116d",
   "README.md": "9d92cac236b20a0b183eea3e7f5e39ad492f05192c4ea602eb11c3d09967327f",
   "battery.go": "6ddd1f36a6c92679a57ac45272a0b0a1f3b9ea416eb7f2c8ae2665e3e4b9f7a7",
@@ -108,13 +108,14 @@
   "convert_pptx.go": "6fa4e1a4485fa66459758b24c1e217181bb0b150e7c84363dc6d20b740562f24",
   "convert_table.go": "5313b96e4d85d65e6c3c8b51e7c0e25aee11a47fdbda534fe8432fbea87836c5",
   "credentialcause.go": "ea2c321e4a931b55523583ab4ae48e3ba30a9d0fc2da5135fab7bc00ff795864",
-  "direct.go": "d95b53e785a0e7a9fdac445dca587c5d699510942e50c1dfbdb1373ae3e6019a",
+  "direct.go": "4c7e73e95c68469bd60c4c7654ff617dc7adde4e454526804c35a41b3bf8c74e",
   "direct_pacing.go": "b54838ce85f72ecd2d3388fa7cf89050c87fb10bd67dca07cd18d49568a8837c",
   "extract.go": "4640d54196cbe64cdd83ba8e098b69f379a8e56cdb374a8c460967f16729420c",
   "extract_chunk.go": "6d61a4117e8cd765a053c58ca825d7db6a85efaa2e8aa16013a55735a208ca55",
   "extract_prompt.go": "55cb8a35357c43bc1b8f0edab8e7536af5d920fe8877392bee103dc0b3551297",
   "extract_resume.go": "3e5fd4f59fd8f66acffd5da851509e6a271f0e65b727a8d498603c776e0f5b19",
   "extract_workersai.go": "4b7658d14d8b173080d7eaf04052b19cd5ec7d380343db957433e1864460e482",
+  "filelane.go": "db2580f5620ea8a6487355f99eaca1f37d0127cdc2745c961c5b532a6f974ad6",
   "folderindex.go": "ff69bf38178bfa5af4e659fb43827b72bd9669c259e048d97e5a3c8c6d0f9f29",
   "foldershape.go": "b1b237f5674674efdc9bdea849b63c571a014e64bec33af42fb7c4769fa7582b",
   "foldertree.go": "5542ad3c17e631986a43c9e9d500da02f15acc2259964fa1fd0150bad642408e",
@@ -195,6 +196,6 @@
   "upload.go": "a41bb459eac8f6c114be567a2d7c53bbdb11b0e31f0bda4b78776502664273cb",
   "vault.go": "91d61613d37da5c16b24e08c70d59cf4c9cde9375737573d65921949087f1465",
   "verify-60.sh": "323347b19a366d5bcf8ddb65c9800dde32027d0170675f90e0ea46d6d1fcadc4",
-  "wikishape.go": "1f0aa70eab1ffb0b9887a71c5428558c5238f0b42634f811570826182136d019"
+  "wikishape.go": "880cc30aaabe9878792e9776cc881f95ceedc72b64fe1c255aa7c057bd2be16f"
  }
 }

@@ -35,8 +35,8 @@ flow:
   - "prep >> ON_SUCCESS >> list_old_blocks"
   - "list_old_blocks >> ON_SUCCESS >> list_old_triplets"
   - "list_old_triplets >> ON_SUCCESS >> pick_stale"
-  - "pick_stale >> 對每個 dead_entry >> delete_entry"
-  - "pick_stale >> 對每個 dead_record >> delete_record"
+  - "pick_stale >> 對每個 dead_entry 並行 6 >> delete_entry"
+  - "pick_stale >> 對每個 dead_record 並行 6 >> delete_record"
   # `inkstone/InkStoneCo#140` comment 10651：常數格（source_uri/status/library/machine）
   # 一張卡只建一次。刻意排在 parse_card **之前**（不是之後）：graph-executor 的
   # FOREACH 找 `rel`/`block` 清單靠兩層 fallback——先看觸發節點自己的新鮮輸出，
@@ -61,8 +61,8 @@ flow:
   - "post_const_library >> ON_SUCCESS >> post_const_machine"
   - "post_const_machine >> ON_SUCCESS >> pool_constants"
   - "pool_constants >> ON_SUCCESS >> parse_card"
-  - "parse_card >> 對每個 block >> post_block"
-  - "parse_card >> 對每個 rel >> post_triplet"
+  - "parse_card >> 對每個 block 並行 6 >> post_block"
+  - "parse_card >> 對每個 rel 並行 6 >> post_triplet"
   # inkstone/arcrun-rag#13 c14501 B①：卡片解析成功後另開一條 ON_SUCCESS 分支（不影響
   # 上面兩條既有 FOREACH），內部呼叫同租戶 rag_cluster_auto（use_type=wiki）做分群、
   # 寫進 cluster_membership——不新開 Gitea webhook，觸發點就在同一個實例內。

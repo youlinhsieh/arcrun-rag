@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { checkCopy, extractHints, APPROVED_EXITS, OFFSITE_EXIT, PHANTOM_INSTRUCTION,
   // inkstone/Arcrun#196 comment 6144：警告收件人閘（出貨 preflight 跑的是同一份）
   checkWarningAudience, WARNING_AUDIENCE_ALLOWLIST } from './copy-rules.mjs';
@@ -50,6 +51,10 @@ import worker, {
   // inkstone/Arcrun#196 comment 11733：金鑰輪換剛換完的暫時性 401 重試＋verify 不准假綠
   seedCredentialWithRetry,
   verifyStepVerdict,
+  // inkstone/Arcrun#246 c18505：常駐最小權限 CF_SECRETS_API_TOKEN
+  ensureInstanceSecretsToken,
+  SECRETS_TOKEN_PREFIX,
+  OAUTH_TOKEN_MINT_SCOPE,
   // inkstone/Arcrun#196 comment 6144：警告的收件人（用戶／我們）分流
   userFacingWarnings,
   internalOnlyWarnings,
@@ -5184,6 +5189,123 @@ test('#293 resolveWithStaleFallback：擋下原因不含 RES-NO-WORKERS ⇒ 不�
   const out = await resolveWithStaleFallback(async () => ({ blocked: true, blockers: ['RES-READ-FAILED/x'] }), 'update');
   assert.equal(out.mode, 'update');
   assert.equal(out.attempts.length, 1);
+});
+
+
+// ── inkstone/Arcrun#246 c18505：安裝／更新時種常駐、最小權限的 CF_SECRETS_API_TOKEN ──
+const SECRET_VALUE = 'cfat_FAKE_VALUE_FOR_TEST_ONLY';
+
+function installFetchSecretsToken({ existing = [], verifyOk = true, createOk = true } = {}) {
+  const log = [];
+  const calls = installFetch((url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    const auth = (init.headers && (init.headers.authorization || init.headers.Authorization)) || '';
+    log.push({ url, method, auth, body: init.body });
+    if (/\/tokens\/permission_groups$/.test(url)) {
+      return cfOk([{ id: 'grp-scripts-write', name: 'Workers Scripts Write' }, { id: 'other', name: 'D1 Write' }]);
+    }
+    if (/\/tokens\?per_page/.test(url) && method === 'GET') return cfOk(existing);
+    if (/\/tokens$/.test(url) && method === 'POST') {
+      if (!createOk) return { status: 403, json: { success: false, errors: [{ code: 9109, message: 'Unauthorized' }] } };
+      return cfOk({ id: 'tok-new', value: SECRET_VALUE });
+    }
+    if (/\/tokens\/[^/?]+$/.test(url) && method === 'DELETE') return cfOk({ id: 'x' });
+    if (/\/workers\/scripts\/[^/]+\/secrets$/.test(url) && method === 'GET') {
+      return verifyOk ? cfOk([]) : { status: 403, json: { success: false, errors: [{ code: 10000, message: 'Authentication error' }] } };
+    }
+    if (/\/workers\/scripts\/[^/]+\/secrets$/.test(url) && method === 'PUT') return cfOk({});
+    return { status: 404, json: {} };
+  });
+  return { calls, log };
+}
+
+test('#246 常駐 token：只要 Workers Scripts Write／限本帳號；驗過才寫 secret；再刪同前綴的舊 token', async () => {
+  const { log } = installFetchSecretsToken({ existing: [
+    { id: 'tok-old-1', name: `${SECRETS_TOKEN_PREFIX}-20260901000000` },
+    { id: 'tok-unrelated', name: 'someone-elses-token' },
+  ] });
+  let out;
+  try { out = await ensureInstanceSecretsToken('oauth-tok', 'acct-1', { sleep: async () => {} }); } finally { restoreFetch(); }
+
+  const create = log.find((c) => c.method === 'POST' && /\/tokens$/.test(c.url));
+  const body = JSON.parse(create.body);
+  assert.equal(body.policies.length, 1, '只有一條 policy');
+  assert.deepEqual(body.policies[0].permission_groups, [{ id: 'grp-scripts-write' }], '只有 Workers Scripts Write（以名稱查到的 id 為準）');
+  assert.deepEqual(body.policies[0].resources, { 'com.cloudflare.api.account.acct-1': '*' }, '只限這個帳號');
+  assert.ok(body.name.startsWith(SECRETS_TOKEN_PREFIX));
+
+  const iVerify = log.findIndex((c) => c.method === 'GET' && /\/secrets$/.test(c.url));
+  const iPut = log.findIndex((c) => c.method === 'PUT' && /scripts\/arcrun-cypher-executor\/secrets$/.test(c.url));
+  const iDel = log.findIndex((c) => c.method === 'DELETE');
+  assert.ok(iVerify >= 0 && iPut > iVerify && iDel > iPut, '順序：新 token 驗過 → 寫 secret → 才刪舊的');
+  assert.equal(log[iVerify].auth, `Bearer ${SECRET_VALUE}`, '用新 token 自己去驗');
+  assert.deepEqual(JSON.parse(log[iPut].body), { name: 'CF_SECRETS_API_TOKEN', text: SECRET_VALUE, type: 'secret_text' });
+
+  const dels = log.filter((c) => c.method === 'DELETE').map((c) => c.url);
+  assert.equal(dels.length, 1, '只刪同前綴的舊 token，別人的不碰');
+  assert.match(dels[0], /\/tokens\/tok-old-1$/);
+  assert.deepEqual(out, { tokenId: 'tok-new', retired: 1, retireFailed: 0 });
+  assert.ok(!JSON.stringify(out).includes(SECRET_VALUE), '🔴 回傳值不含 token 值');
+});
+
+test('#246 常駐 token：新 token 驗證不過 ⇒ 刪掉剛建的、不碰 secret、不刪舊的，且錯誤訊息不含值', async () => {
+  const { log } = installFetchSecretsToken({ existing: [{ id: 'tok-old-1', name: `${SECRETS_TOKEN_PREFIX}-x` }], verifyOk: false });
+  let caught;
+  try { await ensureInstanceSecretsToken('oauth-tok', 'acct-1', { sleep: async () => {} }); } catch (e) { caught = e; } finally { restoreFetch(); }
+  assert.ok(caught, '要丟出，不能吞掉');
+  assert.ok(!String(caught.message).includes(SECRET_VALUE), '🔴 錯誤訊息不含 token 值');
+  assert.equal(log.filter((c) => c.method === 'PUT').length, 0, '沒驗過就不能覆蓋 cypher 身上現有的 secret');
+  const dels = log.filter((c) => c.method === 'DELETE').map((c) => c.url);
+  assert.deepEqual(dels.map((u) => u.split('/').pop()), ['tok-new'], '只清掉剛建的那把，舊的原封不動');
+});
+
+test('#246 常駐 token：建 token 被拒（非帳號擁有者／scope 沒開）⇒ 丟出、不寫 secret、不刪任何東西', async () => {
+  const { log } = installFetchSecretsToken({ existing: [{ id: 'tok-old-1', name: `${SECRETS_TOKEN_PREFIX}-x` }], createOk: false });
+  try {
+    await assert.rejects(() => ensureInstanceSecretsToken('oauth-tok', 'acct-1', { sleep: async () => {} }));
+  } finally { restoreFetch(); }
+  assert.equal(log.filter((c) => c.method === 'PUT' || c.method === 'DELETE').length, 0);
+});
+
+test('#246 安裝授權多要「建 token」scope；改密碼授權（grant）不多要', () => {
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.equal(OAUTH_TOKEN_MINT_SCOPE, 'account-api-tokens.write');
+  const grantStart = src.slice(src.indexOf('grant: { api: t.api, ui: t.ui.origin }'));
+  assert.match(grantStart.slice(0, 1500), /set\('scope', GRANT_SCOPES\)/, 'grant 只用基礎五項');
+  assert.match(src, /const GRANT_SCOPES = OAUTH_BASE_SCOPES\.join/);
+  assert.ok(!/OAUTH_BASE_SCOPES\s*=\s*\[[^\]]*account-api-tokens/.test(src), '基礎五項不含 token scope');
+});
+
+test('#246 常駐 token 沒種成 ⇒ 警告卡給用戶（有出路），且 runInstall 呼叫點在金鑰同步之後', () => {
+  const cards = installWarnings({ secretsTokenError: '建 token 被拒' });
+  const c = cards.find((x) => /再授權一次 Cloudflare/.test(x.title));
+  assert.ok(c, '要有那張卡');
+  assert.equal(c.audience, 'user');
+  assert.ok(!installWarnings({ secretsTokenSeeded: true }).some((x) => /再授權一次/.test(x.title)), '種成了就不示警');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.ok(src.indexOf('await ensureInstanceSecretsToken(token, accountId)') > src.indexOf("progress.result.secretsSynced = true"),
+    '呼叫點要在 secretsSynced 之後（cypher 部署完才寫得進 secret）');
+});
+
+test('#246 OAuth client 還沒登記 token scope（invalid_scope）⇒ 退回基礎五項重走一次，不讓安裝／更新全斷；只退一次', async () => {
+  const kv = makeKV();
+  const env = { INSTALLER_KV: kv };
+  await kv.put('state:S1', JSON.stringify({ verifier: 'v1', sid: 'SID', inviteEmail: 'a@b.c', inviteVerified: false }));
+  const req = new Request('https://inst.example/auth/callback?error=invalid_scope&state=S1', { headers: { cookie: 'arcrun_sid=SID' } });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 302);
+  const loc = new URL(res.headers.get('location'));
+  assert.equal(loc.origin + loc.pathname, 'https://dash.cloudflare.com/oauth2/auth');
+  assert.equal(loc.searchParams.get('scope'), 'workers-scripts.write d1.write vectorize.write account-settings.read offline_access');
+  const st2 = await kv.get(`state:${loc.searchParams.get('state')}`, 'json');
+  assert.equal(st2.baseScopesOnly, true);
+  assert.equal(st2.sid, 'SID', '同一個 session，callback 的 cookie 比對才過');
+  assert.equal(await kv.get('state:S1', 'json'), null, '舊 state 用完即刪');
+
+  // 第二次還是 invalid_scope（不會迴圈）⇒ 走原本的錯誤頁
+  const req2 = new Request(`https://inst.example/auth/callback?error=invalid_scope&state=${loc.searchParams.get('state')}`, { headers: { cookie: 'arcrun_sid=SID' } });
+  const res2 = await worker.fetch(req2, env);
+  assert.match(res2.headers.get('location'), /\?error=token$/);
 });
 
 // ── releaseOf：退路值不得進快取（1.4.92 prod verify 實撞）──────────────────

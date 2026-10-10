@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -612,12 +613,24 @@ func writeWikiFile(absRoot, dest string, content []byte) error {
 // 回傳本次產出的卡（相對監看根、文件卡在第一個）。
 // ex.NoConcept 為真（或概念數 0）時不產卡，改走「標空」路徑（回傳空清單）。
 func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin SourceOrigin, now time.Time) ([]string, error) {
+	wikiDocMu.Lock()
+	defer wikiDocMu.Unlock()
+	return buildWikiDocLocked(absRoot, relPath, srcText, ex, origin, now)
+}
+
+// wikiDocMu＝`.wiki/` manifest 與各層 00-INDEX 的讀—改—寫一律串行（inkstone/Arcrun#297）。
+// 同一個資料夾內多份檔同時萃取時，每一份落卡都是「讀 manifest → 算名字 → 寫卡 → 重算索引 → 存 manifest」，
+// 沒有這把鎖，兩份檔會各自讀到同一份舊 manifest、後存的蓋掉先存的（卡名消歧也會失準）。
+// 只鎖本機落卡這一小段（毫秒級）；等雲端的那幾發在鎖外。
+var wikiDocMu sync.Mutex
+
+func buildWikiDocLocked(absRoot, relPath, srcText string, ex *DocExtract, origin SourceOrigin, now time.Time) ([]string, error) {
 	if ex == nil {
 		return nil, fmt.Errorf("BuildWikiDoc: 沒有萃取結果")
 	}
 	if ex.NoConcept || len(ex.Concepts) == 0 {
 		reason := firstNonEmpty(ex.Reason, "模型未能整理出可獨立成立的概念")
-		return nil, MarkDocNoConcept(absRoot, relPath, reason, now)
+		return nil, markDocNoConceptLocked(absRoot, relPath, reason, now)
 	}
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
@@ -694,7 +707,7 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin Sourc
 		}
 	}
 	if len(conceptNames) == 0 {
-		return nil, MarkDocNoConcept(absRoot, relPath, firstNonEmpty(ex.Reason, "概念名全數無效"), now)
+		return nil, markDocNoConceptLocked(absRoot, relPath, firstNonEmpty(ex.Reason, "概念名全數無效"), now)
 	}
 
 	created := todayOf(now)
@@ -803,6 +816,12 @@ func BuildWikiDoc(absRoot, relPath, srcText string, ex *DocExtract, origin Sourc
 // MarkDocNoConcept 記錄「這份文件沒有可萃取概念」——不產卡，但 00-INDEX 一定列它
 // （使用者要能分辨「沒產出」和「被漏掉」；規範差距 #10）。
 func MarkDocNoConcept(absRoot, relPath, reason string, now time.Time) error {
+	wikiDocMu.Lock()
+	defer wikiDocMu.Unlock()
+	return markDocNoConceptLocked(absRoot, relPath, reason, now)
+}
+
+func markDocNoConceptLocked(absRoot, relPath, reason string, now time.Time) error {
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
 	m := loadWikiManifest(absRoot)
@@ -837,6 +856,8 @@ func MarkDocNoConcept(absRoot, relPath, reason string, now time.Time) error {
 // 這筆記錄一起刪掉）之前，要先問到「這份文件上雲的概念卡叫什麼名字」才送得出下架
 // 請求（arcrun-rag#213：續讀機制的概念卡各自有自己的 page_name，不能只下架 hub）。
 func WikiDocCardRels(absRoot, relPath string) []string {
+	wikiDocMu.Lock()
+	defer wikiDocMu.Unlock()
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
 	m := loadWikiManifest(absRoot)
@@ -849,6 +870,8 @@ func WikiDocCardRels(absRoot, relPath string) []string {
 
 // RemoveWikiDoc 原稿消失時，收走它的卡並把它從索引與 manifest 移除。
 func RemoveWikiDoc(absRoot, relPath string) error {
+	wikiDocMu.Lock()
+	defer wikiDocMu.Unlock()
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
 	m := loadWikiManifest(absRoot)

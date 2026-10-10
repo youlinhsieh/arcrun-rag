@@ -40,13 +40,23 @@ const CF_API = 'https://api.cloudflare.com/client/v4';
 //    bundle 還沒換版前，已經裝過帶 KV 的舊實例走「更新」流程時，`resolveResourcesByRule`
 //    仍會替既有 kv_namespace binding 跑 `listKvNamespaces`/`createKvNamespace`——
 //    那條路徑在拿掉這個 scope 後會 403，**先備妥在分支上，等 Arcrun#98 出 bundle 才實跑**。
-const OAUTH_SCOPES = [
+const OAUTH_BASE_SCOPES = [
   'workers-scripts.write',
   'd1.write',
   'vectorize.write',
   'account-settings.read',
   'offline_access',
-].join(' ');
+];
+// inkstone/Arcrun#246 c18505（leo 2026-10-10 取消 #238 裁決 B：「不要任何補授權」）：
+//   安裝／更新時替這台實例建一把只有 Workers Scripts Write 的 Account API Token，
+//   種成 cypher 的 `CF_SECRETS_API_TOKEN`（見 ensureInstanceSecretsToken）——
+//   建 token 需要這個 scope。⚠️ 它必須先登記在 OAuth client（uncle6 後台）上，
+//   否則 Cloudflare 授權頁會對**整個**授權請求回 invalid_scope（連帶新裝也斷）。
+export const OAUTH_TOKEN_MINT_SCOPE = 'account-api-tokens.write';
+const OAUTH_SCOPES = [...OAUTH_BASE_SCOPES, OAUTH_TOKEN_MINT_SCOPE].join(' ');
+// 改密碼授權（#238 grant）只拿來證明「這個帳號擁有那台實例」並寫一次 Secrets，
+// 不需要、也不該多要「建 API token」的權限。
+const GRANT_SCOPES = OAUTH_BASE_SCOPES.join(' ');
 
 const SESSION_COOKIE = 'arcrun_sid';
 const STATE_TTL = 600;          // OAuth state 10 分鐘
@@ -282,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@e6544ad5bcabed7e464f5cb51ba0d85f4f44257b';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@c48f26e9508e1dbc00e93f29b2649d8562020f4b';
 const BUNDLE_BUILT = '2026-10-09'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2328,6 +2338,117 @@ async function putWorkerSecretDirect(token, accountId, scriptName, name, value) 
 }
 
 /**
+ * inkstone/Arcrun#246 c18505：替實例種一把**常駐、最小權限**的 `CF_SECRETS_API_TOKEN`。
+ *
+ * 為什麼要有（leo 2026-10-10：「不要任何補授權」）：金鑰與帳密只准住 Workers Secrets
+ * （Arcrun#98 c11136），寫它們要 CF 寫入憑證；安裝器過去從不種，所以學員新裝的實例
+ * 改密碼、在 Portal 新增／改／刪金鑰都要回頭重新授權 Cloudflare。
+ *
+ * 做法：用這次 OAuth 拿到的授權，建一把 Account API Token——**只有 Workers Scripts Write、
+ * 只限這個帳號**——寫成 cypher 的 Workers Secret。cypher 讀取端早就認這個名字。
+ * 不採存 refresh token：CF 的 refresh 是 rotation，並發換發會作廢，且權限是整包五項。
+ *
+ * 輪替：token 名稱帶固定前綴。新的建好、**驗過能用**、寫進 secret 之後，才刪同前綴的舊 token
+ * （用名稱前綴列出，不另外存 token id，不新增任何儲存位置）⇒ 每次更新只留一把。
+ * 任何一步失敗都不動舊的（舊 token 仍在 cypher 身上就仍然可用）。
+ *
+ * 紅線：token 值只在這個函式的區域變數與那一次 PUT 的 body 裡；不寫 log、不進回傳值、
+ * 不進 progress／KV／D1，錯誤訊息只含 CF 的錯誤碼，絕不含值。
+ *
+ * @param {string} token       OAuth access token（要有 account-api-tokens.write）
+ * @param {string} accountId
+ * @param {object} [opts]
+ * @param {string}   [opts.targetScript='arcrun-cypher-executor']
+ * @param {Function} [opts.sleep]  測試用
+ * @returns {Promise<{tokenId:string, retired:number, retireFailed:number}>}  不含 token 值
+ */
+export const SECRETS_TOKEN_PREFIX = 'arcrun-instance-secrets';
+// 最後防線：permission_groups 查不到時用。名稱查得到就以查到的為準（見 findWorkersScriptsWriteGroup）。
+const WORKERS_SCRIPTS_WRITE_GROUP_FALLBACK = 'e086da7e2179491d91ee5f35b3ca210a';
+
+async function findWorkersScriptsWriteGroup(token, accountId) {
+  try {
+    const groups = await cfFetch(token, `/accounts/${accountId}/tokens/permission_groups`);
+    const hit = Array.isArray(groups) && groups.find((g) => g && g.name === 'Workers Scripts Write');
+    if (hit && hit.id) return hit.id;
+  } catch { /* 查不到就用備援；建 token 若真的帶錯 id，CF 會明確拒絕，不會悄悄建出錯權限的 token */ }
+  return WORKERS_SCRIPTS_WRITE_GROUP_FALLBACK;
+}
+
+export async function ensureInstanceSecretsToken(token, accountId, opts = {}) {
+  const targetScript = opts.targetScript || 'arcrun-cypher-executor';
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+
+  // ① 先記下現有的（要在建新的之前列，之後才分得出誰是舊的）
+  let oldIds = [];
+  let listError = null;
+  try {
+    const list = await cfFetch(token, `/accounts/${accountId}/tokens?per_page=50`);
+    oldIds = (Array.isArray(list) ? list : [])
+      .filter((t) => t && typeof t.name === 'string' && t.name.startsWith(SECRETS_TOKEN_PREFIX) && t.id)
+      .map((t) => t.id);
+  } catch (e) {
+    listError = String((e && e.message) || e);   // 列不出來不擋建新的，只是這輪清不掉舊的
+  }
+
+  // ② 建新的
+  const groupId = await findWorkersScriptsWriteGroup(token, accountId);
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const created = await cfFetch(token, `/accounts/${accountId}/tokens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: `${SECRETS_TOKEN_PREFIX}-${stamp}`,
+      policies: [{
+        effect: 'allow',
+        permission_groups: [{ id: groupId }],
+        resources: { [`com.cloudflare.api.account.${accountId}`]: '*' },
+      }],
+    }),
+  });
+  const newId = created && created.id;
+  const value = created && created.value;
+  if (!newId || !value) {
+    throw new Error('Cloudflare 建 token 的回應沒有 id／value');
+  }
+
+  // ③ 驗新 token 真的能寫這顆 worker 的 secrets（剛建好可能要幾秒才生效，重試）。
+  //    驗不過就把剛建的刪掉、不碰舊的。
+  let verified = false;
+  let verifyErr = null;
+  for (let i = 0; i < 4 && !verified; i++) {
+    try {
+      await cfFetch(value, `/accounts/${accountId}/workers/scripts/${targetScript}/secrets`);
+      verified = true;
+    } catch (e) {
+      verifyErr = e;
+      await sleep(1500 * (i + 1));
+    }
+  }
+  if (!verified) {
+    try { await cfFetch(token, `/accounts/${accountId}/tokens/${newId}`, { method: 'DELETE' }); } catch { /* 刪不掉也不影響舊的 */ }
+    throw new Error(`新建的 token 驗證沒過（${String((verifyErr && verifyErr.cfMessage) || (verifyErr && verifyErr.message) || verifyErr).slice(0, 200)}）`);
+  }
+
+  // ④ 寫成 secret（值不落地：只進這次 PUT 的 body）
+  await putWorkerSecretDirect(token, accountId, targetScript, 'CF_SECRETS_API_TOKEN', value);
+
+  // ⑤ 新的已就位，才刪舊的
+  let retired = 0;
+  let retireFailed = 0;
+  for (const id of oldIds) {
+    if (id === newId) continue;
+    try {
+      await cfFetch(token, `/accounts/${accountId}/tokens/${id}`, { method: 'DELETE' });
+      retired++;
+    } catch { retireFailed++; }
+  }
+  const out = { tokenId: newId, retired, retireFailed };
+  if (listError) out.listError = listError;
+  return out;
+}
+
+/**
  * 兩步，**順序不可顛倒**（契約見 inkstone/Arcrun#196 comment 5973）：
  *   ① POST <cypherBase>/credentials/directory  → 只寫目錄、不收值，回 secret_ref + secret_script
  *   ② putWorkerSecretDirect(…, secret_script, secret_ref, 明文)  → 值那一半，一字沒改
@@ -4039,6 +4160,19 @@ async function runInstall(env, sid, progress, force) {
       }
     }
 
+    // inkstone/Arcrun#246 c18505：種常駐的 `CF_SECRETS_API_TOKEN`（最小權限 Account API Token）。
+    // 位置＝上面金鑰同步**之後**、每一輪無條件跑：cypher 被重新部署時 Workers Secret 會掉
+    // （09-26 實錄「重裝後消失」），所以每次都要重種；也因此每次更新會輪替一把、刪舊的。
+    // 失敗不擋安裝（改密碼仍可走 #238 的重新授權備援），但記進結果、畫面看得到。
+    try {
+      const m = await ensureInstanceSecretsToken(token, accountId);
+      progress.result.secretsTokenSeeded = true;
+      progress.result.secretsToken = m;          // 只含 token id／輪替數，不含值
+    } catch (e) {
+      progress.result.secretsTokenSeeded = false;
+      progress.result.secretsTokenError = String((e && e.message) || e).slice(0, 400);
+    }
+
     // inkstone/arcrun-rag#212：cron trigger 同步（`wrangler.toml` 的 `[triggers]` 只有
     // `wrangler deploy` 讀得到，而用戶走的是 script API ⇒ 排程從來沒被設上去過）。
     //
@@ -5433,6 +5567,34 @@ async function handleAuthCallback(request, env, url) {
   const oauthError = url.searchParams.get('error');
 
   if (oauthError) {
+    // inkstone/Arcrun#246：OAuth client 若還沒登記「建 API token」那個 scope，Cloudflare 會對**整個**
+    // 授權請求回 invalid_scope（2026-10-10 在 youlin stage 實打：「The OAuth 2.0 Client is not allowed
+    // to request scope 'account-api-tokens.write'」）。不能因此讓所有安裝／更新都斷——退回只要
+    // 基礎五項重走一次授權（只退一次，不會迴圈）；這次安裝沒有常駐 token，完成頁會示警。
+    if (oauthError === 'invalid_scope' && state) {
+      const prev = await env.INSTALLER_KV.get(`state:${state}`, 'json');
+      const cookieSid = getCookie(request, SESSION_COOKIE);
+      if (prev && prev.verifier && !prev.baseScopesOnly && !prev.grant && cookieSid && cookieSid === prev.sid) {
+        await env.INSTALLER_KV.delete(`state:${state}`);
+        const verifier = randomB64(48);
+        const challenge = await pkceChallenge(verifier);
+        const state2 = randomB64(24);
+        await env.INSTALLER_KV.put(
+          `state:${state2}`,
+          JSON.stringify({ ...prev, verifier, baseScopesOnly: true, createdAt: Date.now() }),
+          { expirationTtl: STATE_TTL }
+        );
+        const authUrl = new URL(OAUTH_AUTH_URL);
+        authUrl.searchParams.set('response_type', 'code');
+        authUrl.searchParams.set('client_id', OAUTH_CLIENT_ID);
+        authUrl.searchParams.set('redirect_uri', `${url.origin}/auth/callback`);
+        authUrl.searchParams.set('scope', GRANT_SCOPES);
+        authUrl.searchParams.set('state', state2);
+        authUrl.searchParams.set('code_challenge', challenge);
+        authUrl.searchParams.set('code_challenge_method', 'S256');
+        return new Response(null, { status: 302, headers: { location: authUrl.toString(), 'cache-control': 'no-store' } });
+      }
+    }
     return Response.redirect(
       `${url.origin}/?error=${oauthError === 'access_denied' ? 'denied' : 'token'}`,
       302
@@ -5754,6 +5916,17 @@ function installWarnings(result) {
       audience: 'user',
     });
   }
+  if (r.secretsTokenError) {
+    // inkstone/Arcrun#246：常駐寫入憑證沒種成 ⇒ 改密碼、Portal 新增／改／刪金鑰
+    // 會回頭要求重新授權 Cloudflare（#238 備援仍可用，所以是「麻煩」不是「壞掉」）。
+    // 用戶有出路：按「重新安裝」再跑一次；若他不是帳號擁有者／管理員，要請擁有者來裝。
+    out.push({
+      title: '之後改密碼或新增金鑰，需要再授權一次 Cloudflare',
+      body: '功能都能用，只是那幾個動作會多一步',
+      detail: String(r.secretsTokenError),
+      audience: 'user',
+    });
+  }
   if (r.credentialSeedError) {
     // 金鑰沒進 credential 中心 ⇒ 退回舊路（workflow 帶明文），能動但違反 D36。
     //
@@ -5890,7 +6063,7 @@ async function handleGrantStart(request, env, url) {
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set('client_id', OAUTH_CLIENT_ID);
   authUrl.searchParams.set('redirect_uri', `${url.origin}/auth/callback`);
-  authUrl.searchParams.set('scope', OAUTH_SCOPES);
+  authUrl.searchParams.set('scope', GRANT_SCOPES);
   authUrl.searchParams.set('state', state);
   authUrl.searchParams.set('code_challenge', challenge);
   authUrl.searchParams.set('code_challenge_method', 'S256');

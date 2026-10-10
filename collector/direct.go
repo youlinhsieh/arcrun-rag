@@ -95,6 +95,10 @@ type DirectConfig struct {
 	// removed 事件，空/0＝DefaultMaxEventsPerRun。存在理由：巨量積壓（實據 27,164 檔）
 	// 不該一輪湧完——搭配節流間隔＋新檔優先排序，讓積壓慢慢消化，不擋今天剛寫的新檔。
 	MaxEventsPerRun int `json:"max_events_per_run,omitempty"`
+	// FileConcurrency（inkstone/Arcrun#297）：同一個帳號、同一個資料夾內同時處理幾份檔，
+	// 空/0＝defaultFileConcurrency（4），硬上限 hardMaxFileConcurrency（8）；省電模式固定 1。
+	// 並行數會依雲端反應自動收斂，見 filelane.go。
+	FileConcurrency int `json:"file_concurrency,omitempty"`
 
 	// ForceSync＝這一輪是使用者按「立刻同步」觸發的（t195）。
 	// 為真時忽略失敗退避與次數上限，一律重送——**人明確要求時不該被機器的退避擋住**。
@@ -2024,466 +2028,549 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	}
 	orderedEvents = append(readyEvents, visibleWaiting...)
 
-	for _, ev := range orderedEvents {
-		switch ev.Type {
-		case "added", "modified", "renamed":
-			// renamed 在 direct 模式視同 added：內容未變但為求 kbdb 有這頁名的卡，重送一次萃取
-			//（頁名可能改變＝要新頁名的卡）。新路徑這邊的冪等由 kbdb 端承擔（同頁名覆蓋語意）；
-			// 舊路徑那邊不會自動消失——上面已經把 ev.OldPath 排進 m.PendingTakedowns，
-			// 這裡送完新卡之後、本函式結尾會補打下架（InkStoneCo#44 ⑩）。
-			res := DirectResult{Type: ev.Type, Path: ev.Path, At: directNow().Format(time.RFC3339)}
-			// 2026-08-07 pacing task 2：帳號還在額度冷卻中 → 這輪連試都不試。
-			// 這不是這個檔的問題（不記 FailCount/退避——那是「這個檔」的病歷，
-			// 額度用完是「整個帳號」的狀態，混在一起會讓退避階梯失真）。
-			// 放在 ShouldRetry 之前：冷卻是更高層級的條件，沒必要先算退避訊息又蓋掉。
-			if qs.inCooldown(runNow) {
-				res.Status = "skipped"
-				res.Error = qs.noticeNow(runNow).Combined()
-				results = append(results, res)
-				continue
+	// 🔴 inkstone/Arcrun#297（leo 2026-10-10「先搞定整個萃到上傳流程」）：同一個帳號、同一個資料夾內
+	// 多份檔**同時**處理。以前一份檔做完才換下一份（萃取一發＋收卡一發，每份 30～60 秒），
+	// geek 9,000+ 檔實測穩定在每小時約 100 張，D1 已不是瓶頸（c18564）；瓶頸是這裡逐檔等。
+	//
+	// 做法：只有「等雲端」的那幾發（萃取、送出收卡、直送）放掉狀態鎖在途；其餘所有碰
+	// manifest／額度狀態／結果清單／畫面進度的事都在 stateMu 底下，所以
+	// ① 每份檔的判斷順序與舊制逐行相同（額度冷卻、帳號沒回應、路在退避、逐檔退避……一道不少）；
+	// ② 這些閘看的是共用狀態——前一份檔撞牆，後面排隊的檔進門時就會看到（不會一起去撞）；
+	// ③ 同時在途的份數有上限，並由 fileLane 依雲端反應自動收斂（見 filelane.go）。
+	// 每份檔把自己的結果放進 perEvent[idx]，最後按原本的事件順序併回 results（輸出順序不隨並行改變）。
+	var stateMu sync.Mutex // 守：m、qs、results、exit、saveManifest、liveReport
+	var paceGate sync.Mutex
+	laneMax := cfg.effectiveFileConcurrency(dryRun)
+	laneHost := instanceHostOf(cfg.CypherURL)
+	lane := newFileLane(laneMax, laneStartFor(laneHost, laneMax, directNow()))
+	perEvent := make([][]DirectResult, len(orderedEvents))
+
+	handleContent := func(idx int, ev Event) {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		var out []DirectResult
+		defer func() { perEvent[idx] = out }()
+
+		// renamed 在 direct 模式視同 added：內容未變但為求 kbdb 有這頁名的卡，重送一次萃取
+		//（頁名可能改變＝要新頁名的卡）。新路徑這邊的冪等由 kbdb 端承擔（同頁名覆蓋語意）；
+		// 舊路徑那邊不會自動消失——上面已經把 ev.OldPath 排進 m.PendingTakedowns，
+		// 這裡送完新卡之後、本函式結尾會補打下架（InkStoneCo#44 ⑩）。
+		res := DirectResult{Type: ev.Type, Path: ev.Path, At: directNow().Format(time.RFC3339)}
+		// 2026-08-07 pacing task 2：帳號還在額度冷卻中 → 這輪連試都不試。
+		// 這不是這個檔的問題（不記 FailCount/退避——那是「這個檔」的病歷，
+		// 額度用完是「整個帳號」的狀態，混在一起會讓退避階梯失真）。
+		// 放在 ShouldRetry 之前：冷卻是更高層級的條件，沒必要先算退避訊息又蓋掉。
+		if qs.inCooldown(runNow) {
+			res.Status = "skipped"
+			res.Error = qs.noticeNow(runNow).Combined()
+			out = append(out, res)
+			return
+		}
+		// 🔴 #153：這個**帳號**這一輪已經被判定沒有回應 ⇒ 連試都不試。
+		// 與上面的額度冷卻同一層、同一個理由：這不是這個檔的問題，
+		// 記進它的病歷（FailCount／退避階梯）會讓一次雲端沒回應，
+		// 變成一整批檔案「已放棄自動重試」——那是把別人的停機算在使用者頭上。
+		// 沒有這道閘的話，一個沒有回應的帳號會讓這一輪繼續逐檔去撞，
+		// 每撞一次就是一個 Budget，25 個檔就是幾十分鐘。
+		if note := cfg.unreachableNote(); note != "" {
+			res.Status = "skipped"
+			res.Error = note
+			out = append(out, res)
+			return
+		}
+		// 🔴 `inkstone/arcrun-rag#121`：這個檔要送去的那條雲端路正在退避 ⇒ 連萃取都不做。
+		// 與上面兩道閘同一層、同一個理由：路壞了不是這個檔的錯，不記 FailCount；
+		// 而且先擋在萃取之前——送不出去的卡，萃了只是白燒一份 AI 額度。
+		{
+			routeURL := cfg.triggerURL(cfg.IngestWF)
+			if cfg.Extractor != "" {
+				routeURL = cfg.triggerURL(cfg.CardIngestWF)
 			}
-			// 🔴 #153：這個**帳號**這一輪已經被判定沒有回應 ⇒ 連試都不試。
-			// 與上面的額度冷卻同一層、同一個理由：這不是這個檔的問題，
-			// 記進它的病歷（FailCount／退避階梯）會讓一次雲端沒回應，
-			// 變成一整批檔案「已放棄自動重試」——那是把別人的停機算在使用者頭上。
-			// 沒有這道閘的話，一個沒有回應的帳號會讓這一輪繼續逐檔去撞，
-			// 每撞一次就是一個 Budget，25 個檔就是幾十分鐘。
-			if note := cfg.unreachableNote(); note != "" {
+			if note := cfg.routeNote(routeURL); note != "" {
 				res.Status = "skipped"
 				res.Error = note
-				results = append(results, res)
-				continue
+				out = append(out, res)
+				return
 			}
-			// 🔴 `inkstone/arcrun-rag#121`：這個檔要送去的那條雲端路正在退避 ⇒ 連萃取都不做。
-			// 與上面兩道閘同一層、同一個理由：路壞了不是這個檔的錯，不記 FailCount；
-			// 而且先擋在萃取之前——送不出去的卡，萃了只是白燒一份 AI 額度。
-			{
-				routeURL := cfg.triggerURL(cfg.IngestWF)
-				if cfg.Extractor != "" {
-					routeURL = cfg.triggerURL(cfg.CardIngestWF)
-				}
-				if note := cfg.routeNote(routeURL); note != "" {
+			// 萃取本身也是一條路（workers-ai 打的正是這台知識庫的 /portal/daemon/extract），
+			// 2026-09-13 真機上打最多的就是它——同一道閘。
+			if cfg.Extractor == "workers-ai" {
+				if note := cfg.routeNote(workersAIExtractURL(cfg.CypherURL)); note != "" {
 					res.Status = "skipped"
 					res.Error = note
-					results = append(results, res)
-					continue
-				}
-				// 萃取本身也是一條路（workers-ai 打的正是這台知識庫的 /portal/daemon/extract），
-				// 2026-09-13 真機上打最多的就是它——同一道閘。
-				if cfg.Extractor == "workers-ai" {
-					if note := cfg.routeNote(workersAIExtractURL(cfg.CypherURL)); note != "" {
-						res.Status = "skipped"
-						res.Error = note
-						results = append(results, res)
-						continue
-					}
+					out = append(out, res)
+					return
 				}
 			}
-			// 🔴 #201：從沒送上去過的**空白**純文字檔（Logseq 自動開的空日記最常見）⇒ 不送。
-			// 舊版照送，雲端回 400「page_name 與 text 必填」，這個檔被記成失敗、記滿 8 次永久暫停，
-			// 資料夾於是永遠掛著一個 ⚠。leo 的 KB 有 12 份就是這樣（全是 0 位元組的日記）。
-			// 記成「已處理、沒有卡上雲」：之後寫了內容，雜湊一變就會照常送。
-			// 🔴 放在逐檔退避（ShouldRetry）**之前**：那批已經被舊版記滿 8 次的空檔，
-			//   也要在這裡被重新判成「空白略過」，不然它們會永遠掛著舊的暫停紀錄
-			//   （0.18.54 在 leo 的 Mac 上第一輪實撞：6 份還顯示「連續失敗 8 次｜HTTP 400」）。
-			// 已經送上去過、後來才被清空的檔不走這裡（那是「要不要下架」的題目，不在這一刀）。
-			if !dryRun && cfg.Extractor != "" && IsPlainText(ev.Path) {
-				if e := m.Entries[ev.Path]; e != nil && e.IngestedHash == "" && e.Size <= emptyProbeMaxBytes {
-					if raw, rerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(ev.Path))); rerr == nil && strings.TrimSpace(string(raw)) == "" {
-						m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
-						m.MarkNoCloudCard(ev.Path)
-						saveManifest()
-						res.Status = "skipped"
-						res.Error = "空白檔案，沒有內容可以整理（寫了內容之後會自動送）"
-						results = append(results, res)
-						continue
-					}
+		}
+		// 🔴 #201：從沒送上去過的**空白**純文字檔（Logseq 自動開的空日記最常見）⇒ 不送。
+		// 舊版照送，雲端回 400「page_name 與 text 必填」，這個檔被記成失敗、記滿 8 次永久暫停，
+		// 資料夾於是永遠掛著一個 ⚠。leo 的 KB 有 12 份就是這樣（全是 0 位元組的日記）。
+		// 記成「已處理、沒有卡上雲」：之後寫了內容，雜湊一變就會照常送。
+		// 🔴 放在逐檔退避（ShouldRetry）**之前**：那批已經被舊版記滿 8 次的空檔，
+		//   也要在這裡被重新判成「空白略過」，不然它們會永遠掛著舊的暫停紀錄
+		//   （0.18.54 在 leo 的 Mac 上第一輪實撞：6 份還顯示「連續失敗 8 次｜HTTP 400」）。
+		// 已經送上去過、後來才被清空的檔不走這裡（那是「要不要下架」的題目，不在這一刀）。
+		if !dryRun && cfg.Extractor != "" && IsPlainText(ev.Path) {
+			if e := m.Entries[ev.Path]; e != nil && e.IngestedHash == "" && e.Size <= emptyProbeMaxBytes {
+				if raw, rerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(ev.Path))); rerr == nil && strings.TrimSpace(string(raw)) == "" {
+					m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+					m.MarkNoCloudCard(ev.Path)
+					saveManifest()
+					res.Status = "skipped"
+					res.Error = "空白檔案，沒有內容可以整理（寫了內容之後會自動送）"
+					out = append(out, res)
+					return
 				}
 			}
-			// 🔴 t195 止血點：這個檔剛失敗過且還在退避窗口內 → 這輪跳過。
-			//   沒有這道閘時的實測災情：`小果被AFTEE詐貸.pdf` 因雲端 401 失敗，
-			//   每輪重掃又被當成新檔 ⇒ **1387 輪、跨 11 小時**，且它排在佇列前面，
-			//   **整個資料夾的同步被一個壞檔拖住**（leo：「原先萃檔案速度也快，
-			//   現在也花了十幾分才萃完」——萃取沒變慢，慢的是重試）。
-			//   退避階梯 1m→5m→15m→1h→6h；連續失敗 8 次後暫停自動重試。
-			//   使用者改檔（hash 變）或按「立刻同步」時仍會重試，不會永久卡死。
-			if !m.ShouldRetry(ev.Path, now, cfg.ForceSync) {
+		}
+		// 🔴 t195 止血點：這個檔剛失敗過且還在退避窗口內 → 這輪跳過。
+		//   沒有這道閘時的實測災情：`小果被AFTEE詐貸.pdf` 因雲端 401 失敗，
+		//   每輪重掃又被當成新檔 ⇒ **1387 輪、跨 11 小時**，且它排在佇列前面，
+		//   **整個資料夾的同步被一個壞檔拖住**（leo：「原先萃檔案速度也快，
+		//   現在也花了十幾分才萃完」——萃取沒變慢，慢的是重試）。
+		//   退避階梯 1m→5m→15m→1h→6h；連續失敗 8 次後暫停自動重試。
+		//   使用者改檔（hash 變）或按「立刻同步」時仍會重試，不會永久卡死。
+		if !m.ShouldRetry(ev.Path, now, cfg.ForceSync) {
+			res.Status = "skipped"
+			res.Error = retrySkipReason(m, ev.Path, now)
+			if e := m.Entries[ev.Path]; e != nil && e.LastFailAt > 0 {
+				res.LastFailAt = time.Unix(e.LastFailAt, 0).Format(time.RFC3339) // #201：那次失敗真正的時間
+			}
+			out = append(out, res)
+			return
+		}
+		full := filepath.Join(absRoot, filepath.FromSlash(ev.Path))
+		content, rerr := os.ReadFile(full)
+		if rerr != nil {
+			res.Status, res.Error = "failed", "讀檔失敗："+rerr.Error()
+			m.MarkFailed(ev.Path, now, res.Error) // t195：讀不到的檔也退避（權限／被鎖／壞掉的外接碟）
+			saveManifest()
+			liveReport("failed") // #200
+			out = append(out, res)
+			exit = 1
+			return
+		}
+		if dryRun {
+			res.Status = "planned"
+			out = append(out, res)
+			return
+		}
+		// 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下。
+		// 🔴 inkstone/Arcrun#297：多份檔同時處理時，節流改成「啟動間隔」——
+		// 一次只放一份檔通過這道閘睡完間隔，所以兩份檔的啟動之間至少隔 directPaceInterval，
+		// 與舊制逐檔睡一次的總請求節奏相同；睡的時候不握狀態鎖（別份檔的收尾不被它擋住）。
+		stateMu.Unlock()
+		paceGate.Lock()
+		paceFor(cfg)
+		paceGate.Unlock()
+		stateMu.Lock()
+		if cfg.Extractor != "" {
+			// 四步定稿：本地萃卡 → 每張卡 POST rag_ingest_card（原文不出機）
+			// 🔴 `inkstone/Arcrun#167`：卡片的「### 出處」要寫得出「哪台機器 ／
+			//    哪個庫 ／ 庫內什麼路徑」，所以萃卡前先把這三件備好交給塑形層。
+			//    三件與下面 cardBody 送雲端的 machine/library/path 是**同一組值**
+			//    ——卡上寫的與雲端存的從此對得起來（不再各說各話）。
+			cardOrigin := SourceOrigin{
+				MachineLabel: cfg.machineIdentity().Label,
+				Library:      cfg.libraryFor(absRoot),
+				LibraryPath:  ev.Path,
+			}
+			var cards []string
+			var xerr error
+			switch cfg.Extractor {
+			case "workers-ai":
+				// t181（leo 08-04 最優先）：走自己雲端實例的 Workers AI ⇒ **免金鑰**。
+				// 用戶不必去 Google 申請、也不受 Google 帳號被 flag 影響。
+				// 🔴 t182：雲端還沒更新時**不在這裡默默退回別條路**。
+				// leo 08-04 指定的設計是「掃一次、把狀態講出來」：
+				//   「沒裝好就顯示 workers AI 還沒通，一旦通了就顯示可用」
+				// ⇒ 探測在 RunDirectOnce（ProbeWorkersAI），結果寫進 status.json，
+				//   托盤那行「狀態：」直接告訴用戶該做什麼。
+				// 靜默退回會讓用戶**永遠不知道自己的雲端還沒更新**——正是要避免的黑箱。
+				// #153：萃取也是一發會等很久的網路呼叫，而 workers-ai 打的正是
+				// **使用者自己的那台雲端實例**——跟上面那些收口是同一台。
+				// 它有自己的 client timeout，但沒有人在數「這個帳號已經連續幾發
+				// 等不到回覆」⇒ 漏掉這一格的話，單輪上限 25 個檔會變成 25 次
+				// 各自的等待，同一輪照樣走不完。
+				//
+				xgate := cfg.openGate(stepExtractDoc)
+				// #121：先前失敗過的檔再失敗，不算「路壞了」；#201：斷網那種不算前科
+				ownFail := m.HasOwnFailure(ev.Path) // 先讀（要握鎖），再放鎖去等雲端
+				stateMu.Unlock()                    // 🔴 #297：等雲端（秒到分鐘級）時不握鎖，別份檔才能同時在途
+				cards, xerr = extractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin,
+					ownFail)
+				stateMu.Lock()
+				xgate.release()
+				if xerr == nil {
+					xgate.ok()
+				}
+				xerr = xgate.record(xerr) // 只有「等到超時」會被記帳，其餘錯誤原樣往下走
+			default:
+				// RunDirectOnce 開頭已把舊值正規化成 workers-ai；走到這裡代表 config 有沒見過的值
+				// ——誠實報錯，不要靜默跳過（禁假綠）。
+				xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai）", cfg.Extractor)
+			}
+			// arcrun-rag#213：續讀機制的「還沒讀完」不是失敗——是有進度的成功。
+			// 從 xerr 認出這個訊號，改走下面的上傳＋partial 收尾，
+			// 不進入失敗／斷網那兩條會記退避或蓋錯章的路。
+			var inProgress *extractInProgress
+			if xerr != nil {
+				if pe, isPartial := asExtractInProgress(xerr); isPartial {
+					inProgress = pe
+					cards = pe.Cards
+					xerr = nil
+				}
+			}
+			if xerr != nil && isLocalNetworkErr(xerr) {
+				// 🔴 #201：這台電腦根本沒連出去（DNS 查不到／網路不通）⇒ 不是這個檔的失敗。
+				// 舊版照樣 MarkFailed ⇒ Mac 睡醒那幾秒就能把一批檔記滿 8 次、永久暫停。
 				res.Status = "skipped"
-				res.Error = retrySkipReason(m, ev.Path, now)
-				if e := m.Entries[ev.Path]; e != nil && e.LastFailAt > 0 {
-					res.LastFailAt = time.Unix(e.LastFailAt, 0).Format(time.RFC3339) // #201：那次失敗真正的時間
-				}
-				results = append(results, res)
-				continue
+				res.Error = networkDownNote(cfg, xerr)
+				m.MarkNetworkUnavailable(ev.Path, now, "本地萃取失敗："+xerr.Error())
+				saveManifest()
+				out = append(out, res)
+				return
 			}
-			full := filepath.Join(absRoot, filepath.FromSlash(ev.Path))
-			content, rerr := os.ReadFile(full)
-			if rerr != nil {
-				res.Status, res.Error = "failed", "讀檔失敗："+rerr.Error()
-				m.MarkFailed(ev.Path, now, res.Error) // t195：讀不到的檔也退避（權限／被鎖／壞掉的外接碟）
+			if xerr != nil && (isQuotaExhausted(xerr.Error()) || isStallError(xerr) || strings.Contains(xerr.Error(), "429")) {
+				lane.pressure() // #297：撞額度／等到超時／被限速 ⇒ 並行數減半（撞限就退，不打爆）
+			}
+			if xerr != nil {
+				// 2026-08-07 task 2：Workers AI 每日免費額度用完是**已知的上游狀況**
+				// （wiki mistakes.md 2026-08-06），不是 bug——不能讓使用者看到裸露的
+				// 「4006」「HTTP 502」，要換成三句話（成就／出口／保證），且不能再
+				// 每輪繼續撞同一面牆（qs.markHit 設定帳號層級的冷卻，下一個事件、
+				// 下一輪都會被上面的 qs.inCooldown 擋下，不再嘗試萃取）。
+				if isQuotaExhausted(xerr.Error()) {
+					qs.markHit(runNow, xerr.Error())
+					res.Status, res.Error = "failed", qs.noticeNow(runNow).Combined()
+				} else {
+					res.Status, res.Error = "failed", "本地萃取失敗："+xerr.Error()
+				}
+				// t195：萃取階段失敗同樣要記退避。**這條路徑比上傳更早**，
+				// 漏記的話（連不上知識庫、金鑰壞、模型錯）照樣每輪重撞。
+				m.MarkFailed(ev.Path, now, res.Error)
 				saveManifest()
 				liveReport("failed") // #200
-				results = append(results, res)
+				out = append(out, res)
 				exit = 1
-				continue
+				return
 			}
-			if dryRun {
-				res.Status = "planned"
-				results = append(results, res)
-				continue
+			ok := true
+			routeSkipped := false // #121：卡是被「路在退避」擋下的（沒打出去）
+			// InkStoneCo#44 ④（2026-08-15）：一份文件產「文件卡＋N 張概念卡」
+			// （cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert，
+			// 所有卡若共用同一個 page_name 會互相蓋寫同一頁 ⇒ **本環預設只送文件卡**
+			// （雲端行為與改版前一致）；概念卡先只落本機，上雲＝第⑤環
+			// （Arcrun#129/#130，本票不動那個全域決定）。
+			//
+			// 🔴 arcrun-rag#213 開的窄門：**走過續讀機制的大檔**（docWentThroughResumable）
+			// 例外——它的價值就在那 N 張分次整理出的概念卡本身（查表型手冊裝不進單一張
+			// 摘要卡），不送等於白做。概念卡各自用自己的 page_name（跟卡片檔名走，
+			// 不是原稿檔名），彼此不會互相蓋寫；下架時（見本函式的 "removed" 分支）
+			// 要照樣逐一下架，不能只下架 hub。
+			multiCard := docWentThroughResumable(absRoot, ev.Path)
+			// cards 為空＝該檔被判「無可萃取概念」（00-INDEX 已標「空」），不送雲端。
+			for cardIdx, cardRel := range cards {
+				cardData, cerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)))
+				if cerr != nil {
+					res.Status, res.Error = "failed", "讀卡片失敗："+cerr.Error()
+					ok = false
+					break
+				}
+				// B2 品質檢查（草案 §3 第一層）：萃完、POST 前跑。原稿在手＝H6 可做。
+				// 硬缺（H1/H2/H5）＝拒收、不 POST、標 failed（manifest 不回寫＝下輪重萃自癒）；
+				// 軟項（H3/H4/H6）＝照送但帶 quality:low＋quality_warnings（裁決 T4-C）。
+				lr := LintCard(string(cardData), LintOptions{Source: string(content)})
+				if lr.Blocks(cfg.LintStrict) {
+					res.Status = "rejected"
+					res.Error = "品質未過（不送）：" + strings.Join(append(lr.HardMessages(), lr.SoftMessages()...), "；")
+					ok = false
+					break
+				}
+				// path 帶「原檔路徑」不是卡片路徑（07-24 真機第五枚坑）：
+				// source_uri=kb://<path> 是 takedown 的比對鍵，也是 B4 溯源該指的原文——
+				// 帶卡片路徑會讓「刪原檔→下架」永遠 0 命中。
+				// 🔴 arcrun-rag#60 第二輪：page_name 必須跟著**原稿**走，不是跟著卡片檔名走。
+				//   卡片檔名這一輪加了 `arcrun-` 前綴（machinemark.go），若這裡繼續用
+				//   pageNameOf(cardRel)，雲端頁名會變成 `arcrun-<原頁名>`，而下架分支用的是
+				//   pageNameOf(ev.Path)（原稿頁名，不帶前綴）⇒ 兩邊從此對不上，
+				//   「刪原檔→下架」永遠 0 命中，跟 07-24 那枚 source_uri 的坑同一個形狀。
+				//   改成原稿頁名後，**雲端看到的頁名與改版前完全相同**（本次只動本機檔名）。
+				if cardIdx > 0 && !multiCard {
+					continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
+				}
+				// machine／machine_label（`inkstone/mira#6`）：與 library 同一個位置、
+				// 同一個理由——library 分得開「同一台機器的兩個資料夾」，machine 分得開
+				// 「兩台機器的同一個相對路徑」。少送這一維，雲端就只能把兩台的同名檔
+				// 當成同一份（先到的被後到的蓋掉，而且是無聲的）。
+				mach := cfg.machineIdentity()
+				// pageName：hub（cardIdx==0）跟著原稿走，跟改版前完全相同；
+				// 續讀機制的概念卡（cardIdx>0）各自用自己的卡名，不能共用 hub 的
+				// page_name（會互相蓋寫同一頁，見上面 multiCard 的說明）。
+				pageName := pageNameOf(ev.Path)
+				if cardIdx > 0 {
+					pageName = pageNameOf(cardRel)
+				}
+				cardBody := map[string]any{
+					"page_name":     pageName,
+					"path":          ev.Path,
+					"card_content":  string(cardData),
+					"library":       cfg.libraryFor(absRoot),
+					"machine":       mach.ID,
+					"machine_label": mach.Label,
+				}
+				if warns := lr.SoftMessages(); len(warns) > 0 {
+					cardBody["quality"] = "low"
+					cardBody["quality_warnings"] = warns
+				}
+				// #121：這個檔先前失敗過 ⇒ 這一發再失敗不算「路壞了」（見 routebackoff.go 檔頭）。
+				ownFailPost := m.HasOwnFailure(ev.Path)
+				stateMu.Unlock() // #297：同上，等雲端時不握鎖
+				status, _, perr := cfg.postJSONAs(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody,
+					ownFailPost)
+				stateMu.Lock()
+				res.HTTPStatus = status
+				if status == http.StatusTooManyRequests || (perr != nil && (isRouteBackoff(perr) || isStallError(perr))) {
+					lane.pressure() // #297：雲端喊慢／路在退避／等到超時 ⇒ 並行數減半
+				}
+				if perr != nil {
+					res.Status, res.Error = "failed", perr.Error()
+					res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
+					if isRouteBackoff(perr) {
+						res.Status = "skipped" // #121：沒打出去，不是這個檔的失敗
+						routeSkipped = true
+					} else if isLocalNetworkErr(perr) {
+						res.Status = "skipped" // #201：這台電腦沒連出去，不是這個檔的失敗
+						res.Error = networkDownNote(cfg, perr)
+						m.MarkNetworkUnavailable(ev.Path, now, perr.Error())
+						routeSkipped = true
+					}
+					ok = false
+					break
+				}
 			}
-			paceFor(cfg) // 2026-08-07：每次要觸發雲端（萃取／POST）之前先節流一下
-			if cfg.Extractor != "" {
-				// 四步定稿：本地萃卡 → 每張卡 POST rag_ingest_card（原文不出機）
-				// 🔴 `inkstone/Arcrun#167`：卡片的「### 出處」要寫得出「哪台機器 ／
-				//    哪個庫 ／ 庫內什麼路徑」，所以萃卡前先把這三件備好交給塑形層。
-				//    三件與下面 cardBody 送雲端的 machine/library/path 是**同一組值**
-				//    ——卡上寫的與雲端存的從此對得起來（不再各說各話）。
-				cardOrigin := SourceOrigin{
-					MachineLabel: cfg.machineIdentity().Label,
-					Library:      cfg.libraryFor(absRoot),
-					LibraryPath:  ev.Path,
+			if ok && inProgress != nil {
+				// arcrun-rag#213：這一輪的卡（含這一輪之前累積的）已經送上雲了，
+				// 但這份大檔還沒讀完。**不蓋 IngestedHash 的章**——manifest.go
+				// 檔頭那句「IngestedHash == "" 自然補一發 added 事件」就是這裡
+				// 要靠的續傳機制：下一輪 Scan() 對這個檔的內容雜湊沒變、章也還沒蓋，
+				// 自然會再產生一次事件，接著從書籤記的地方讀下去。也**不算失敗**：
+				// 不記退避、不進 8 次暫停的病歷（那正是 #195 要救的那種災情，
+				// 讀不完是已知的量體問題，不是壞掉）。
+				res.Status = "partial"
+				res.Error = inProgress.Error()
+				if inProgress.QuotaHit {
+					lane.pressure() // #297
+					// 帳號層級冷卻照舊觸發：這輪撞了額度，其他檔這輪也別再撞。
+					qs.markHit(runNow, inProgress.RawQuotaErr)
 				}
-				var cards []string
-				var xerr error
-				switch cfg.Extractor {
-				case "workers-ai":
-					// t181（leo 08-04 最優先）：走自己雲端實例的 Workers AI ⇒ **免金鑰**。
-					// 用戶不必去 Google 申請、也不受 Google 帳號被 flag 影響。
-					// 🔴 t182：雲端還沒更新時**不在這裡默默退回別條路**。
-					// leo 08-04 指定的設計是「掃一次、把狀態講出來」：
-					//   「沒裝好就顯示 workers AI 還沒通，一旦通了就顯示可用」
-					// ⇒ 探測在 RunDirectOnce（ProbeWorkersAI），結果寫進 status.json，
-					//   托盤那行「狀態：」直接告訴用戶該做什麼。
-					// 靜默退回會讓用戶**永遠不知道自己的雲端還沒更新**——正是要避免的黑箱。
-					// #153：萃取也是一發會等很久的網路呼叫，而 workers-ai 打的正是
-					// **使用者自己的那台雲端實例**——跟上面那些收口是同一台。
-					// 它有自己的 client timeout，但沒有人在數「這個帳號已經連續幾發
-					// 等不到回覆」⇒ 漏掉這一格的話，單輪上限 25 個檔會變成 25 次
-					// 各自的等待，同一輪照樣走不完。
-					//
-					xgate := cfg.openGate(stepExtractDoc)
-					// #121：先前失敗過的檔再失敗，不算「路壞了」；#201：斷網那種不算前科
-					cards, xerr = extractWithWorkersAI(cfg.CypherURL, cfg.APIKey, absRoot, ev.Path, cardOrigin,
-						m.HasOwnFailure(ev.Path))
-					xgate.release()
-					if xerr == nil {
-						xgate.ok()
-					}
-					xerr = xgate.record(xerr) // 只有「等到超時」會被記帳，其餘錯誤原樣往下走
-				default:
-					// RunDirectOnce 開頭已把舊值正規化成 workers-ai；走到這裡代表 config 有沒見過的值
-					// ——誠實報錯，不要靜默跳過（禁假綠）。
-					xerr = fmt.Errorf("不支援的萃取方式 %q（支援：workers-ai）", cfg.Extractor)
-				}
-				// arcrun-rag#213：續讀機制的「還沒讀完」不是失敗——是有進度的成功。
-				// 從 xerr 認出這個訊號，改走下面的上傳＋partial 收尾，
-				// 不進入失敗／斷網那兩條會記退避或蓋錯章的路。
-				var inProgress *extractInProgress
-				if xerr != nil {
-					if pe, isPartial := asExtractInProgress(xerr); isPartial {
-						inProgress = pe
-						cards = pe.Cards
-						xerr = nil
-					}
-				}
-				if xerr != nil && isLocalNetworkErr(xerr) {
-					// 🔴 #201：這台電腦根本沒連出去（DNS 查不到／網路不通）⇒ 不是這個檔的失敗。
-					// 舊版照樣 MarkFailed ⇒ Mac 睡醒那幾秒就能把一批檔記滿 8 次、永久暫停。
-					res.Status = "skipped"
-					res.Error = networkDownNote(cfg, xerr)
-					m.MarkNetworkUnavailable(ev.Path, now, "本地萃取失敗："+xerr.Error())
-					saveManifest()
-					results = append(results, res)
-					continue
-				}
-				if xerr != nil {
-					// 2026-08-07 task 2：Workers AI 每日免費額度用完是**已知的上游狀況**
-					// （wiki mistakes.md 2026-08-06），不是 bug——不能讓使用者看到裸露的
-					// 「4006」「HTTP 502」，要換成三句話（成就／出口／保證），且不能再
-					// 每輪繼續撞同一面牆（qs.markHit 設定帳號層級的冷卻，下一個事件、
-					// 下一輪都會被上面的 qs.inCooldown 擋下，不再嘗試萃取）。
-					if isQuotaExhausted(xerr.Error()) {
-						qs.markHit(runNow, xerr.Error())
-						res.Status, res.Error = "failed", qs.noticeNow(runNow).Combined()
-					} else {
-						res.Status, res.Error = "failed", "本地萃取失敗："+xerr.Error()
-					}
-					// t195：萃取階段失敗同樣要記退避。**這條路徑比上傳更早**，
-					// 漏記的話（連不上知識庫、金鑰壞、模型錯）照樣每輪重撞。
-					m.MarkFailed(ev.Path, now, res.Error)
-					saveManifest()
-					liveReport("failed") // #200
-					results = append(results, res)
-					exit = 1
-					continue
-				}
-				ok := true
-				routeSkipped := false // #121：卡是被「路在退避」擋下的（沒打出去）
-				// InkStoneCo#44 ④（2026-08-15）：一份文件產「文件卡＋N 張概念卡」
-				// （cards[0]＝文件卡）。雲端 rag_ingest_card 以 page_name upsert，
-				// 所有卡若共用同一個 page_name 會互相蓋寫同一頁 ⇒ **本環預設只送文件卡**
-				// （雲端行為與改版前一致）；概念卡先只落本機，上雲＝第⑤環
-				// （Arcrun#129/#130，本票不動那個全域決定）。
-				//
-				// 🔴 arcrun-rag#213 開的窄門：**走過續讀機制的大檔**（docWentThroughResumable）
-				// 例外——它的價值就在那 N 張分次整理出的概念卡本身（查表型手冊裝不進單一張
-				// 摘要卡），不送等於白做。概念卡各自用自己的 page_name（跟卡片檔名走，
-				// 不是原稿檔名），彼此不會互相蓋寫；下架時（見本函式的 "removed" 分支）
-				// 要照樣逐一下架，不能只下架 hub。
-				multiCard := docWentThroughResumable(absRoot, ev.Path)
-				// cards 為空＝該檔被判「無可萃取概念」（00-INDEX 已標「空」），不送雲端。
-				for cardIdx, cardRel := range cards {
-					cardData, cerr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)))
-					if cerr != nil {
-						res.Status, res.Error = "failed", "讀卡片失敗："+cerr.Error()
-						ok = false
-						break
-					}
-					// B2 品質檢查（草案 §3 第一層）：萃完、POST 前跑。原稿在手＝H6 可做。
-					// 硬缺（H1/H2/H5）＝拒收、不 POST、標 failed（manifest 不回寫＝下輪重萃自癒）；
-					// 軟項（H3/H4/H6）＝照送但帶 quality:low＋quality_warnings（裁決 T4-C）。
-					lr := LintCard(string(cardData), LintOptions{Source: string(content)})
-					if lr.Blocks(cfg.LintStrict) {
-						res.Status = "rejected"
-						res.Error = "品質未過（不送）：" + strings.Join(append(lr.HardMessages(), lr.SoftMessages()...), "；")
-						ok = false
-						break
-					}
-					// path 帶「原檔路徑」不是卡片路徑（07-24 真機第五枚坑）：
-					// source_uri=kb://<path> 是 takedown 的比對鍵，也是 B4 溯源該指的原文——
-					// 帶卡片路徑會讓「刪原檔→下架」永遠 0 命中。
-					// 🔴 arcrun-rag#60 第二輪：page_name 必須跟著**原稿**走，不是跟著卡片檔名走。
-					//   卡片檔名這一輪加了 `arcrun-` 前綴（machinemark.go），若這裡繼續用
-					//   pageNameOf(cardRel)，雲端頁名會變成 `arcrun-<原頁名>`，而下架分支用的是
-					//   pageNameOf(ev.Path)（原稿頁名，不帶前綴）⇒ 兩邊從此對不上，
-					//   「刪原檔→下架」永遠 0 命中，跟 07-24 那枚 source_uri 的坑同一個形狀。
-					//   改成原稿頁名後，**雲端看到的頁名與改版前完全相同**（本次只動本機檔名）。
-					if cardIdx > 0 && !multiCard {
-						continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
-					}
-					// machine／machine_label（`inkstone/mira#6`）：與 library 同一個位置、
-					// 同一個理由——library 分得開「同一台機器的兩個資料夾」，machine 分得開
-					// 「兩台機器的同一個相對路徑」。少送這一維，雲端就只能把兩台的同名檔
-					// 當成同一份（先到的被後到的蓋掉，而且是無聲的）。
-					mach := cfg.machineIdentity()
-					// pageName：hub（cardIdx==0）跟著原稿走，跟改版前完全相同；
-					// 續讀機制的概念卡（cardIdx>0）各自用自己的卡名，不能共用 hub 的
-					// page_name（會互相蓋寫同一頁，見上面 multiCard 的說明）。
-					pageName := pageNameOf(ev.Path)
-					if cardIdx > 0 {
-						pageName = pageNameOf(cardRel)
-					}
-					cardBody := map[string]any{
-						"page_name":     pageName,
-						"path":          ev.Path,
-						"card_content":  string(cardData),
-						"library":       cfg.libraryFor(absRoot),
-						"machine":       mach.ID,
-						"machine_label": mach.Label,
-					}
-					if warns := lr.SoftMessages(); len(warns) > 0 {
-						cardBody["quality"] = "low"
-						cardBody["quality_warnings"] = warns
-					}
-					// #121：這個檔先前失敗過 ⇒ 這一發再失敗不算「路壞了」（見 routebackoff.go 檔頭）。
-					status, _, perr := cfg.postJSONAs(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody,
-						m.HasOwnFailure(ev.Path))
-					res.HTTPStatus = status
-					if perr != nil {
-						res.Status, res.Error = "failed", perr.Error()
-						res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
-						if isRouteBackoff(perr) {
-							res.Status = "skipped" // #121：沒打出去，不是這個檔的失敗
-							routeSkipped = true
-						} else if isLocalNetworkErr(perr) {
-							res.Status = "skipped" // #201：這台電腦沒連出去，不是這個檔的失敗
-							res.Error = networkDownNote(cfg, perr)
-							m.MarkNetworkUnavailable(ev.Path, now, perr.Error())
-							routeSkipped = true
-						}
-						ok = false
-						break
-					}
-				}
-				if ok && inProgress != nil {
-					// arcrun-rag#213：這一輪的卡（含這一輪之前累積的）已經送上雲了，
-					// 但這份大檔還沒讀完。**不蓋 IngestedHash 的章**——manifest.go
-					// 檔頭那句「IngestedHash == "" 自然補一發 added 事件」就是這裡
-					// 要靠的續傳機制：下一輪 Scan() 對這個檔的內容雜湊沒變、章也還沒蓋，
-					// 自然會再產生一次事件，接著從書籤記的地方讀下去。也**不算失敗**：
-					// 不記退避、不進 8 次暫停的病歷（那正是 #195 要救的那種災情，
-					// 讀不完是已知的量體問題，不是壞掉）。
-					res.Status = "partial"
-					res.Error = inProgress.Error()
-					if inProgress.QuotaHit {
-						// 帳號層級冷卻照舊觸發：這輪撞了額度，其他檔這輪也別再撞。
-						qs.markHit(runNow, inProgress.RawQuotaErr)
-					}
-				} else if ok {
-					res.Status = "ingested"
-					// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
-					m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
-					// 🔴 #140：`cards` 為空＝該檔被判「無可萃取概念」，這一輪**一張卡都沒上雲**。
-					//   不記下來的話，雲端對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、
-					//   永遠停不下來，而且每次都燒一份 AI 額度。
-					if len(cards) == 0 {
-						m.MarkNoCloudCard(ev.Path)
-					}
-					qs.DailyCount++ // 2026-08-07：今天的成就數（額度訊息「今天已經幫你整理了 N 份」用）
-				} else if routeSkipped {
-					// #121：這一發根本沒打出去 ⇒ 不記病歷（同額度冷卻／帳號沒回應的處理）。
-				} else {
-					// t195：記下失敗並排定退避，否則下輪又把它當新檔重試
-					//（實撞：1387 輪 × 11 小時全在撞同一面 401 的牆，還拖住整個佇列）。
-					m.MarkFailed(ev.Path, now, res.Error)
-					exit = 1
-				}
-				saveManifest()
-				liveReport(res.Status) // #200：送上去的那一刻，畫面上的分子就要跟著動
-				results = append(results, res)
-				continue
-			}
-			// t108 防禦閘：extractor 未設定時，非 .md/.txt 檔禁止直送原文（原文外洩保險絲）。
-			// 讓同類 bug 永遠不再變成內容外洩，而是明確的 failed 狀態。
-			if ext := strings.ToLower(filepath.Ext(ev.Path)); ext != ".md" && ext != ".txt" {
-				res.Status = "failed"
-				res.Error = "萃取器未設定，已跳過（不直送原文）"
-				results = append(results, res)
-				exit = 1
-				continue
-			}
-			// 舊的「原文直送雲端萃取」路（rag_ingest_direct）。它與收卡路送同一組欄位，
-			// 免得日後有人比對兩條路時看到「一條有 machine 一條沒有」而以為是 bug。
-			// ⚠️ 雲端這支 workflow 本輪**沒有跟著改**（youlin stage 上根本沒部署它，
-			// 現役是 rag_ingest_card）——它會忽略這兩個欄位，行為與從前一字不差。
-			machDirect := cfg.machineIdentity()
-			status, _, perr := cfg.postJSON(stepIngestDoc, cfg.triggerURL(cfg.IngestWF), map[string]any{
-				"page_name":     pageNameOf(ev.Path),
-				"path":          ev.Path,
-				"content":       string(content),
-				"library":       cfg.libraryFor(absRoot),
-				"machine":       machDirect.ID,
-				"machine_label": machDirect.Label,
-			})
-			res.HTTPStatus = status
-			if perr != nil {
-				res.Status, res.Error = "failed", perr.Error()
-				res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
-				exit = 1
-			} else {
+			} else if ok {
 				res.Status = "ingested"
-				m.MarkIngested(ev.Path, ev.SourceHash, now) // 2xx 才回寫（下輪不重送）
-				qs.DailyCount++
+				lane.good() // #297：連續成功 ⇒ 並行數慢慢爬回上限
+				// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
+				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+				// 🔴 #140：`cards` 為空＝該檔被判「無可萃取概念」，這一輪**一張卡都沒上雲**。
+				//   不記下來的話，雲端對帳每天都會查到「雲端沒有它」⇒ 每天重萃一次、
+				//   永遠停不下來，而且每次都燒一份 AI 額度。
+				if len(cards) == 0 {
+					m.MarkNoCloudCard(ev.Path)
+				}
+				qs.DailyCount++ // 2026-08-07：今天的成就數（額度訊息「今天已經幫你整理了 N 份」用）
+			} else if routeSkipped {
+				// #121：這一發根本沒打出去 ⇒ 不記病歷（同額度冷卻／帳號沒回應的處理）。
+			} else {
+				// t195：記下失敗並排定退避，否則下輪又把它當新檔重試
+				//（實撞：1387 輪 × 11 小時全在撞同一面 401 的牆，還拖住整個佇列）。
+				m.MarkFailed(ev.Path, now, res.Error)
+				exit = 1
 			}
 			saveManifest()
-			liveReport(res.Status) // #200
-			results = append(results, res)
+			liveReport(res.Status) // #200：送上去的那一刻，畫面上的分子就要跟著動
+			out = append(out, res)
+			return
+		}
+		// t108 防禦閘：extractor 未設定時，非 .md/.txt 檔禁止直送原文（原文外洩保險絲）。
+		// 讓同類 bug 永遠不再變成內容外洩，而是明確的 failed 狀態。
+		if ext := strings.ToLower(filepath.Ext(ev.Path)); ext != ".md" && ext != ".txt" {
+			res.Status = "failed"
+			res.Error = "萃取器未設定，已跳過（不直送原文）"
+			out = append(out, res)
+			exit = 1
+			return
+		}
+		// 舊的「原文直送雲端萃取」路（rag_ingest_direct）。它與收卡路送同一組欄位，
+		// 免得日後有人比對兩條路時看到「一條有 machine 一條沒有」而以為是 bug。
+		// ⚠️ 雲端這支 workflow 本輪**沒有跟著改**（youlin stage 上根本沒部署它，
+		// 現役是 rag_ingest_card）——它會忽略這兩個欄位，行為與從前一字不差。
+		machDirect := cfg.machineIdentity()
+		stateMu.Unlock() // #297：等雲端時不握鎖
+		status, _, perr := cfg.postJSON(stepIngestDoc, cfg.triggerURL(cfg.IngestWF), map[string]any{
+			"page_name":     pageNameOf(ev.Path),
+			"path":          ev.Path,
+			"content":       string(content),
+			"library":       cfg.libraryFor(absRoot),
+			"machine":       machDirect.ID,
+			"machine_label": machDirect.Label,
+		})
+		stateMu.Lock()
+		res.HTTPStatus = status
+		if perr != nil {
+			res.Status, res.Error = "failed", perr.Error()
+			res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
+			exit = 1
+		} else {
+			res.Status = "ingested"
+			m.MarkIngested(ev.Path, ev.SourceHash, now) // 2xx 才回寫（下輪不重送）
+			qs.DailyCount++
+		}
+		saveManifest()
+		liveReport(res.Status) // #200
+		out = append(out, res)
 
-		case "removed":
-			res := DirectResult{Type: ev.Type, Path: ev.Path}
-			if dryRun {
-				res.Status = "planned"
-				results = append(results, res)
-				continue
-			}
-			// #121：下架那條路正在退避 ⇒ 這輪不打，維持「暫時放回」，下一輪自然重試。
-			if note := cfg.routeNote(cfg.triggerURL(cfg.RemovedWF)); note != "" {
-				res.Status, res.Error = "skipped", note
-				results = append(results, res)
-				continue
-			}
-			paceFor(cfg) // 2026-08-07：下架一樣是觸發雲端 workflow，同樣節流
-			// arcrun-rag#213：走過續讀機制的大檔，概念卡各自有自己的 page_name
-			// 上雲（見上面 ingest 分支的 multiCard）——下架也要逐一補上，不然
-			// hub 沒了、概念卡卻永遠留在雲端（孤兒）。**要在 RemoveWikiDoc 清掉
-			// manifest 紀錄之前**先問到卡名單，晚了就問不到了。
-			var extraTakedownPageNames []string
-			if docWentThroughResumable(absRoot, ev.Path) {
-				for i, rel := range WikiDocCardRels(absRoot, ev.Path) {
-					if i == 0 {
-						continue // hub 用下面既有的那一發（page_name 跟原稿走）
-					}
-					extraTakedownPageNames = append(extraTakedownPageNames, pageNameOf(rel))
+	}
+
+	handleRemoved := func(idx int, ev Event) {
+		var out []DirectResult
+		defer func() { perEvent[idx] = out }()
+
+		res := DirectResult{Type: ev.Type, Path: ev.Path}
+		if dryRun {
+			res.Status = "planned"
+			out = append(out, res)
+			return
+		}
+		// #121：下架那條路正在退避 ⇒ 這輪不打，維持「暫時放回」，下一輪自然重試。
+		if note := cfg.routeNote(cfg.triggerURL(cfg.RemovedWF)); note != "" {
+			res.Status, res.Error = "skipped", note
+			out = append(out, res)
+			return
+		}
+		paceFor(cfg) // 2026-08-07：下架一樣是觸發雲端 workflow，同樣節流
+		// arcrun-rag#213：走過續讀機制的大檔，概念卡各自有自己的 page_name
+		// 上雲（見上面 ingest 分支的 multiCard）——下架也要逐一補上，不然
+		// hub 沒了、概念卡卻永遠留在雲端（孤兒）。**要在 RemoveWikiDoc 清掉
+		// manifest 紀錄之前**先問到卡名單，晚了就問不到了。
+		var extraTakedownPageNames []string
+		if docWentThroughResumable(absRoot, ev.Path) {
+			for i, rel := range WikiDocCardRels(absRoot, ev.Path) {
+				if i == 0 {
+					continue // hub 用下面既有的那一發（page_name 跟原稿走）
 				}
+				extraTakedownPageNames = append(extraTakedownPageNames, pageNameOf(rel))
 			}
-			// 下架＝POST {page_name, path} 進 rag_takedown_direct（按 page_name 讀 kbdb blocks
-			// 標 deprecated，不碰 R2；獨立於 rag_ingest 的 __CARDS_PREFIX__ 閘——direct 模式檔在
-			// 資料夾根，會被 rag_ingest 的前綴閘擋掉，故自帶不含前綴閘的下架 workflow）。
-			// machine（`inkstone/mira#6`）：這條分支歷來只送 {page_name, path}
-			// （library 是 arcrun-rag#46 只補在 drainPendingTakedowns 那條路上的）。
-			// 這裡只補 machine、**不順手補 library**：machine 已足以擋住「A 機器刪檔
-			// 連坐殺掉 B 機器同名檔」，而多補一維會改變既有的撤除命中範圍——
-			// 那是另一件事，要另外驗（本輪不驗的不做）。
-			machRm := cfg.machineIdentity()
-			status, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
-				"page_name":     pageNameOf(ev.Path),
-				"path":          ev.Path,
-				"machine":       machRm.ID,
-				"machine_label": machRm.Label,
-			})
-			res.HTTPStatus = status
-			if perr != nil {
-				res.Status, res.Error = "failed", perr.Error()
-				res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
-				exit = 1
-				// 2026-08-07：下架失敗——保持上面「暫時放回」的狀態，不刪、不存檔。
-				// 下一輪 Scan() 會重新偵測到這個檔仍然不見了，自然重新補發 removed 事件。
-			} else {
-				res.Status = "removed"
-				// 2026-08-07 task 3：下架真的成功了，這時才正式從 manifest 拿掉並存檔
-				// （不是 Scan() rebuild 時就拿掉——那時只是「偵測到不見了」，不是「已下架」）。
-				delete(m.Entries, ev.Path)
-				saveManifest()
-				liveReport("removed") // #200
-				// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡，保持本地與雲端一致。
-				// arcrun-rag#60：清除路徑必須跟落卡路徑**同一個函式**算出來（cardRelFor）——
-				// 目錄或檔名任一邊不同步就清不到卡、留下孤兒檔。第一輪對齊了目錄，
-				// 第二輪加了檔名前綴，所以連「拼檔名」這件事也一起收進 cardRelFor。
-				// 存在才刪；刪失敗只記 warning 不擋（下架本體已成功）。
-				if cfg.Extractor != "" {
-					cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageNameOf(ev.Path))))
-					if _, serr := os.Stat(cardAbs); serr == nil {
-						if rerr := os.Remove(cardAbs); rerr != nil {
-							results = append(results, DirectResult{
-								Type: "warning", Path: cardAbs, Status: "skipped",
-								Error: "本地卡刪除失敗（不擋下架）：" + rerr.Error(),
-							})
-						}
-					}
-					// InkStoneCo#44 ④：新制 `.wiki/` 的卡（文件卡＋概念卡）＋索引＋manifest
-					// 一起收走——鍵同樣是原稿路徑，與上面的舊制清理並存（過渡期兩制都可能有卡）。
-					if werr := RemoveWikiDoc(absRoot, ev.Path); werr != nil {
-						results = append(results, DirectResult{
-							Type: "warning", Path: ev.Path, Status: "skipped",
-							Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
+		}
+		// 下架＝POST {page_name, path} 進 rag_takedown_direct（按 page_name 讀 kbdb blocks
+		// 標 deprecated，不碰 R2；獨立於 rag_ingest 的 __CARDS_PREFIX__ 閘——direct 模式檔在
+		// 資料夾根，會被 rag_ingest 的前綴閘擋掉，故自帶不含前綴閘的下架 workflow）。
+		// machine（`inkstone/mira#6`）：這條分支歷來只送 {page_name, path}
+		// （library 是 arcrun-rag#46 只補在 drainPendingTakedowns 那條路上的）。
+		// 這裡只補 machine、**不順手補 library**：machine 已足以擋住「A 機器刪檔
+		// 連坐殺掉 B 機器同名檔」，而多補一維會改變既有的撤除命中範圍——
+		// 那是另一件事，要另外驗（本輪不驗的不做）。
+		machRm := cfg.machineIdentity()
+		status, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
+			"page_name":     pageNameOf(ev.Path),
+			"path":          ev.Path,
+			"machine":       machRm.ID,
+			"machine_label": machRm.Label,
+		})
+		res.HTTPStatus = status
+		if perr != nil {
+			res.Status, res.Error = "failed", perr.Error()
+			res.Detail = upstreamDetail(perr) // 證據留給檢修孔，不畫給使用者（#179 c6867）
+			exit = 1
+			// 2026-08-07：下架失敗——保持上面「暫時放回」的狀態，不刪、不存檔。
+			// 下一輪 Scan() 會重新偵測到這個檔仍然不見了，自然重新補發 removed 事件。
+		} else {
+			res.Status = "removed"
+			// 2026-08-07 task 3：下架真的成功了，這時才正式從 manifest 拿掉並存檔
+			// （不是 Scan() rebuild 時就拿掉——那時只是「偵測到不見了」，不是「已下架」）。
+			delete(m.Entries, ev.Path)
+			saveManifest()
+			liveReport("removed") // #200
+			// t15：extractor 模式雲端下架成功後，同步清掉本地萃出的卡，保持本地與雲端一致。
+			// arcrun-rag#60：清除路徑必須跟落卡路徑**同一個函式**算出來（cardRelFor）——
+			// 目錄或檔名任一邊不同步就清不到卡、留下孤兒檔。第一輪對齊了目錄，
+			// 第二輪加了檔名前綴，所以連「拼檔名」這件事也一起收進 cardRelFor。
+			// 存在才刪；刪失敗只記 warning 不擋（下架本體已成功）。
+			if cfg.Extractor != "" {
+				cardAbs := filepath.Join(absRoot, filepath.FromSlash(cardRelFor(absRoot, pageNameOf(ev.Path))))
+				if _, serr := os.Stat(cardAbs); serr == nil {
+					if rerr := os.Remove(cardAbs); rerr != nil {
+						out = append(out, DirectResult{
+							Type: "warning", Path: cardAbs, Status: "skipped",
+							Error: "本地卡刪除失敗（不擋下架）：" + rerr.Error(),
 						})
 					}
-					// arcrun-rag#213：續讀機制的書籤（走過哪一版、讀到第幾段）也要
-					// 跟著收——原稿都不見了，書籤留著只會誤導下次判斷。
-					ClearExtractProgress(absRoot, ev.Path)
-					// 逐一下架續讀機制產出的概念卡（上面湊出來的 page_name 清單）。
-					// 最佳努力：任何一張失敗都只記 warning，不擋 hub 已經成功的下架。
-					for _, pn := range extraTakedownPageNames {
-						paceFor(cfg)
-						_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
-							"page_name":     pn,
-							"path":          ev.Path,
-							"machine":       machRm.ID,
-							"machine_label": machRm.Label,
+				}
+				// InkStoneCo#44 ④：新制 `.wiki/` 的卡（文件卡＋概念卡）＋索引＋manifest
+				// 一起收走——鍵同樣是原稿路徑，與上面的舊制清理並存（過渡期兩制都可能有卡）。
+				if werr := RemoveWikiDoc(absRoot, ev.Path); werr != nil {
+					out = append(out, DirectResult{
+						Type: "warning", Path: ev.Path, Status: "skipped",
+						Error: "wiki 卡收走失敗（不擋下架）：" + werr.Error(),
+					})
+				}
+				// arcrun-rag#213：續讀機制的書籤（走過哪一版、讀到第幾段）也要
+				// 跟著收——原稿都不見了，書籤留著只會誤導下次判斷。
+				ClearExtractProgress(absRoot, ev.Path)
+				// 逐一下架續讀機制產出的概念卡（上面湊出來的 page_name 清單）。
+				// 最佳努力：任何一張失敗都只記 warning，不擋 hub 已經成功的下架。
+				for _, pn := range extraTakedownPageNames {
+					paceFor(cfg)
+					_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
+						"page_name":     pn,
+						"path":          ev.Path,
+						"machine":       machRm.ID,
+						"machine_label": machRm.Label,
+					})
+					if perr != nil {
+						out = append(out, DirectResult{
+							Type: "warning", Path: pn, Status: "skipped",
+							Error: "概念卡下架失敗（不擋 hub 下架）：" + perr.Error(),
 						})
-						if perr != nil {
-							results = append(results, DirectResult{
-								Type: "warning", Path: pn, Status: "skipped",
-								Error: "概念卡下架失敗（不擋 hub 下架）：" + perr.Error(),
-							})
-						}
 					}
 				}
 			}
-			results = append(results, res)
+		}
+		out = append(out, res)
+	}
+
+	// 內容事件：丟給工人池並行；下架事件：等內容事件都收工後逐一處理（下架不急，見 sortEventsNewestFirst）。
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < lane.max; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				lane.enter()
+				handleContent(idx, orderedEvents[idx])
+				lane.leave()
+			}
+		}()
+	}
+	for idx, ev := range orderedEvents {
+		switch ev.Type {
+		case "added", "modified", "renamed":
+			jobs <- idx
 		}
 	}
+	close(jobs)
+	wg.Wait()
+	for idx, ev := range orderedEvents {
+		if ev.Type == "removed" {
+			handleRemoved(idx, ev)
+		}
+	}
+	if !dryRun && laneMax > 1 {
+		rememberLane(laneHost, lane.current(), directNow())
+	}
+	for _, o := range perEvent {
+		results = append(results, o...)
+	}
+
 
 	// InkStoneCo#44 ⑩：補打「改名／搬移後還沒下架成功」的舊路徑——包含本輪剛
 	// 上面排進去的，以及之前輪次失敗留下的（同一個待辦清單,一次處理完)。

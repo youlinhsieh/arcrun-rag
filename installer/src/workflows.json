@@ -287,8 +287,8 @@
       "prep >> ON_SUCCESS >> list_old_blocks",
       "list_old_blocks >> ON_SUCCESS >> list_old_triplets",
       "list_old_triplets >> ON_SUCCESS >> pick_stale",
-      "pick_stale >> 對每個 dead_entry >> delete_entry",
-      "pick_stale >> 對每個 dead_record >> delete_record",
+      "pick_stale >> 對每個 dead_entry 並行 6 >> delete_entry",
+      "pick_stale >> 對每個 dead_record 並行 6 >> delete_record",
       "pick_stale >> ON_TRUE >> skip_unchanged",
       "pick_stale >> ON_FALSE >> post_const_source_uri",
       "post_const_source_uri >> ON_SUCCESS >> post_const_status",
@@ -296,8 +296,8 @@
       "post_const_library >> ON_SUCCESS >> post_const_machine",
       "post_const_machine >> ON_SUCCESS >> pool_constants",
       "pool_constants >> ON_SUCCESS >> parse_card",
-      "parse_card >> 對每個 block >> post_block",
-      "parse_card >> 對每個 rel >> post_triplet",
+      "parse_card >> 對每個 block 並行 6 >> post_block",
+      "parse_card >> 對每個 rel 並行 6 >> post_triplet",
       "parse_card >> ON_SUCCESS >> prep_cluster_wiki",
       "prep_cluster_wiki >> ON_SUCCESS >> trigger_wiki_cluster",
       "parse_card >> ON_SUCCESS >> prep_entity_concept",
@@ -780,13 +780,15 @@
           "from": "pick_stale",
           "to": "delete_entry",
           "type": "FOREACH",
-          "iterator": "dead_entry"
+          "iterator": "dead_entry",
+          "concurrency": 6
         },
         {
           "from": "pick_stale",
           "to": "delete_record",
           "type": "FOREACH",
-          "iterator": "dead_record"
+          "iterator": "dead_record",
+          "concurrency": 6
         },
         {
           "from": "pick_stale",
@@ -827,13 +829,15 @@
           "from": "parse_card",
           "to": "post_block",
           "type": "FOREACH",
-          "iterator": "block"
+          "iterator": "block",
+          "concurrency": 6
         },
         {
           "from": "parse_card",
           "to": "post_triplet",
           "type": "FOREACH",
-          "iterator": "rel"
+          "iterator": "rel",
+          "concurrency": 6
         },
         {
           "from": "parse_card",
