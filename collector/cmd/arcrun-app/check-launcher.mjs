@@ -132,10 +132,11 @@ const check = (cond, m) => (cond ? ok(m) : ng(m));
 fs.mkdirSync(shots, { recursive: true });
 const browser = await chromium.launch();
 
-async function open(scenario, theme = 'light') {
-  const ctx = await browser.newContext({ viewport: { width: 1100, height: 760 } });
+async function open(scenario, theme = 'light', scheme = undefined) {
+  const ctx = await browser.newContext({ viewport: { width: 1100, height: 760 }, ...(scheme ? { colorScheme: scheme } : {}) });
   const page = await ctx.newPage();
-  await page.addInitScript(`try{localStorage.setItem('arcrun_app_theme','${theme}')}catch(e){}`);
+  // theme=null ＝ 模擬「從沒存過設定」的新用戶（#259）
+  if (theme) await page.addInitScript(`try{localStorage.setItem('arcrun_app_theme','${theme}')}catch(e){}`);
   await page.addInitScript(mock(scenario));
   const errs = [];
   page.on('pageerror', (e) => errs.push(String(e)));
@@ -303,6 +304,49 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
   check(errs.length === 0, `逛完全部頁面沒有 JS 例外${errs.length ? '（' + errs[0] + '）' : ''}`);
   await page.screenshot({ path: `${shots}/09-existing-update.png` });
   await ctx.close();
+}
+
+// ⑩ 佈景主題：預設跟著 OS、手動則固定（inkstone/arcrun-rag#259）
+{
+  const dt = (page) => page.getAttribute('html', 'data-theme');
+  const stored = (page) => page.evaluate(() => localStorage.getItem('arcrun_app_theme'));
+  // 新用戶（沒存過）：OS 深 → 深；OS 淺 → 淺
+  for (const [scheme, want] of [['dark', 'dark'], ['light', 'light']]) {
+    const { ctx, page } = await open('ok', null, scheme);
+    check(await dt(page) === want, `沒存過設定、OS ${scheme} → 畫面 ${want}`);
+    check((await page.textContent('#themeBtn')).includes('自動'), '按鈕顯示「自動」');
+    // 跟著系統：執行中切 OS 外觀即時換
+    const other = scheme === 'dark' ? 'light' : 'dark';
+    await page.emulateMedia({ colorScheme: other });
+    await page.waitForTimeout(150);
+    check(await dt(page) === other, `自動模式下 OS 切到 ${other} → 畫面即時跟著 ${other}`);
+    await page.screenshot({ path: `${shots}/10-theme-auto-${scheme}-to-${other}.png` });
+    await ctx.close();
+  }
+  // 手動：自動 → 淺色 → 深色 → 自動；固定時 OS 變動不理它，重載後仍固定
+  {
+    const { ctx, page } = await open('ok', null, 'dark');
+    await page.click('#themeBtn');
+    check(await dt(page) === 'light' && await stored(page) === 'light', '點一下 → 手動淺色（OS 深色也不理）');
+    await page.emulateMedia({ colorScheme: 'light' }); await page.emulateMedia({ colorScheme: 'dark' });
+    await page.waitForTimeout(150);
+    check(await dt(page) === 'light', '手動淺色後切 OS 外觀，畫面不變');
+    await page.reload(); await page.waitForTimeout(300);
+    check(await dt(page) === 'light', '重開後仍是手動淺色');
+    await page.click('#themeBtn');
+    check(await dt(page) === 'dark' && await stored(page) === 'dark', '再點 → 手動深色');
+    await page.emulateMedia({ colorScheme: 'light' }); await page.waitForTimeout(150);
+    check(await dt(page) === 'dark', '手動深色後 OS 變淺，畫面不變');
+    await page.click('#themeBtn');
+    check(await stored(page) === null && await dt(page) === 'light' && (await page.textContent('#themeBtn')).includes('自動'), '再點 → 回到自動（清除儲存，跟 OS 現值）');
+    await ctx.close();
+  }
+  // 舊用戶：已存 light／dark 者升版後照舊，不被改成跟系統
+  for (const saved of ['light', 'dark']) {
+    const { ctx, page } = await open('ok', saved, saved === 'light' ? 'dark' : 'light');
+    check(await dt(page) === saved && await stored(page) === saved, `舊用戶存過 ${saved}（OS 相反）→ 仍是 ${saved}`);
+    await ctx.close();
+  }
 }
 
 await browser.close();

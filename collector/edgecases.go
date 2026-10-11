@@ -51,6 +51,7 @@ var EdgeCases = []EdgeCase{
 	{ID: "chunk-cliff", Detector: "candidateRecordLabels"},
 	{ID: "thin-card", Detector: ""},
 	{ID: "json-loose", Detector: "parseWikiExtractJSON"},
+	{ID: "entities-as-strings", Detector: "normalizeObjectFields"},
 	{ID: "concept-name-case", Detector: "BuildWikiDoc"},
 	{ID: "card-collision", Detector: "isCardCollisionText"},
 	{ID: "format-dup", Detector: "FormatDupOf"},

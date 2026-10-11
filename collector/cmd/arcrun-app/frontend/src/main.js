@@ -16,16 +16,35 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// 主題：**與 portal 同一套規則**——預設淺色，使用者切換後存 localStorage
-// （leo 問「它有淺色佈景？」⇒ 是，portal 預設就是淺色）
+// 主題三態（inkstone/arcrun-rag#259）：system（預設，跟 OS 即時切換）／light／dark（手動固定，無視 OS）。
+// 🔴 舊用戶已存的 light／dark 照舊視為手動選擇，不被改成跟系統；沒存過 ＝ system。
+// data-theme 永遠只放解析後的 light／dark（CSS 全靠它）；使用者的選擇（含 system）存 localStorage。
 const THEME_KEY = 'arcrun_app_theme';
-function applyTheme(t) {
-  document.documentElement.setAttribute('data-theme', t);
-  try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
+const THEME_LABEL = { system: '◐ 自動', light: '☀ 淺色', dark: '☾ 深色' };
+const osDark = (() => { try { return window.matchMedia('(prefers-color-scheme: dark)'); } catch (e) { return null; } })();
+function readThemePref() {
+  try { const v = localStorage.getItem(THEME_KEY); return v === 'dark' || v === 'light' ? v : 'system'; }
+  catch (e) { return 'system'; }
 }
-applyTheme((() => { try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch (e) { return 'light'; } })());
-$('themeBtn').onclick = () =>
-  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+let themePref = readThemePref();
+function paintTheme() {
+  const resolved = themePref === 'system' ? (osDark && osDark.matches ? 'dark' : 'light') : themePref;
+  document.documentElement.setAttribute('data-theme', resolved);
+  const b = $('themeBtn');
+  if (b) { b.textContent = THEME_LABEL[themePref]; b.dataset.pref = themePref; }
+}
+function setThemePref(p) {
+  themePref = p;
+  try { if (p === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, p); } catch (e) {}
+  paintTheme();
+}
+paintTheme();
+// OS 外觀一變，若目前是「自動」就即時跟著換（手動固定時不理它）
+if (osDark) {
+  const onOs = () => { if (themePref === 'system') paintTheme(); };
+  if (osDark.addEventListener) osDark.addEventListener('change', onOs); else if (osDark.addListener) osDark.addListener(onOs);
+}
+$('themeBtn').onclick = () => setThemePref({ system: 'light', light: 'dark', dark: 'system' }[themePref]);
 
 // 側邊欄外殼的幾個固定入口（回首頁／版本與更新／求救），只綁一次：
 // 不是 renderPage() 換出來的內容，不能放進 wire()（那裡每次換頁都會重跑）。

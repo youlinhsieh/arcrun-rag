@@ -43,9 +43,21 @@ config:
   prep:
     component: "__CODE_URL__"
     code: |
+      // 🔴 inkstone/arcrun-rag#237（2026-10-05 實撞）：這支做的是**不可逆真刪**，
+      //   必要輸入缺失、或仍帶著「沒被代換的佔位符」時，必須在刪任何東西**之前**就停。
+      //   實撞：沒帶 path 觸發 ⇒ 引擎不代換、`{{input.path}}` 以字面字串進來，
+      //   它不是 falsy（舊的 `input.path || 預設` 不接手），一路查到 `kb://{{input.path}}`
+      //   並真刪命中的 record。⇒ 兩道：① page_name／path 都必填（不再默默補預設）
+      //   ② 值裡只要還有 `{{…}}` 就當作沒代換、拒絕。
+      //   daemon 一直都會送 path（collector/direct.go），正常觸發行為不變。
+      //   library／machine 是選填的收窄條件，不在此列（缺了只會殺得更少、不會殺錯）。
+      function unresolved(v) { return /\{\{[^}]*\}\}/.test(v); }
       const page = String(input.page_name == null ? '' : input.page_name).trim();
-      if (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name' };
-      const path = String(input.path || (page + '.md'));
+      if (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name，什麼都沒刪' };
+      const path = String(input.path == null ? '' : input.path).trim();
+      if (!path) return { success: false, error: 'rag_takedown_direct 缺 path（原檔路徑），什麼都沒刪' };
+      if (unresolved(page)) return { success: false, error: 'rag_takedown_direct 的 page_name 仍是未代換的佔位符（' + page + '），什麼都沒刪' };
+      if (unresolved(path)) return { success: false, error: 'rag_takedown_direct 的 path 仍是未代換的佔位符（' + path + '），什麼都沒刪' };
       // library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。
       const library = String(input.library == null ? '' : input.library).trim();
       // machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，
@@ -56,7 +68,7 @@ config:
       // CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。
       const srcUri = 'kb://' + path;
       return { success: true, page_name: page, page_enc: encodeURIComponent(page),
-               path: path, source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
+               path: path, path_enc: encodeURIComponent(path), source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
                library: library, machine: machine };
     input:
       page_name: "{{input.page_name}}"
@@ -70,7 +82,7 @@ config:
   list_dead_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"

@@ -61,6 +61,9 @@ type ManifestEntry struct {
 	// 之後就是這張卡真的太大。只看錯誤原文分不出是哪一種——要知道**當時打的是哪一版雲端**，
 	// 才能做到「舊雲端造成的暫停，雲端更新後自己再試一次；新雲端上還撞牆就照舊暫停，不反覆燒額度」。
 	FailCloudVersion string `json:"fail_cloud_version,omitempty"`
+	// FailDaemonVersion＝最後一次失敗時，小幫手自己的版本（""＝記下來之前的舊病歷）。
+	// 巡邏（#256 c18940）：小幫手換版＝可能多了新武器（新的轉檔、新的解析容忍）⇒ 該版沒試過的失敗再試一次。
+	FailDaemonVersion string `json:"fail_daemon_version,omitempty"`
 	// FailLintRev＝最後一次失敗時，本機品質閘的規則版本（0＝記下來之前的舊版）。
 	// 為什麼要記（inkstone/arcrun-rag#240 c18236）：品質閘的「疑似信用卡號」曾把頁碼誤判成卡號，
 	// error_codes 91 份正常的卡因此連續失敗 8 次、停止自動重試。規則修好後，
@@ -114,6 +117,8 @@ type Manifest struct {
 	// CloudVersion＝這一輪這個帳號的雲端版本（執行期由呼叫端填，不寫進檔案）。
 	// MarkFailed 把它記進病歷、ShouldRetry 拿它判斷「雲端是不是已經修好那面牆」（#196）。
 	CloudVersion string `json:"-"`
+	// DaemonVersion＝這一輪小幫手自己的版本（執行期填，不寫進檔案）；""／dev＝不知道。
+	DaemonVersion string `json:"-"`
 	// FolderCardHashes＝每個子資料夾索引卡的內容雜湊（鍵＝相對監看根的目錄路徑）。
 	// 冪等用：內容沒變就不重送（同 InventoryHash 的角色，只是一層變多層）。
 	// 資料夾消失時由 syncFolderCards 清掉對應的鍵，不讓這張表無限長大。
@@ -310,6 +315,7 @@ func (m *Manifest) MarkFailed(path string, at int64, reason string) bool {
 	e.FailCount++
 	e.LastFailAt = at
 	e.FailCloudVersion = m.CloudVersion // #196：記下這次撞的是哪一版雲端
+	e.FailDaemonVersion = m.DaemonVersion // #256：記下這次是哪一版小幫手試的
 	e.FailLintRev = lintGateRevision    // #240：記下這次是哪一版品質閘判的
 	if strings.TrimSpace(reason) != "" {
 		e.LastError = reason // 存真因；退避訊息由呼叫端另外組，不覆蓋這裡
@@ -382,6 +388,12 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 	if e.FailCount == 0 {
 		return true
 	}
+	// #256 c18930／c18940 巡邏：每筆失敗都記得「當時是哪一版雲端、哪一版小幫手試的」。
+	// 現在的版本跟當時不同，而這類失敗有可能被新版補上缺的能力 ⇒ 不等退避、不等按鈕，下一輪就再試一次。
+	// 再失敗時 MarkFailed 會記下新版本，之後照退避（版本沒變＝能力沒變＝不燒額度）。
+	if m.patrolRetryDue(e) {
+		return true
+	}
 	if e.FailCount >= MaxFailBeforeSkip {
 		// #201：「雲端當時還是舊版、沒有 AI」不是這個檔的病——雲端更新之後要自己再試。
 		// 退避窗口照舊（最長 6 小時一次），雲端還沒更新的話頂多每 6 小時白問一發。
@@ -406,6 +418,48 @@ func (m *Manifest) ShouldRetry(path string, now int64, force bool) bool {
 		return (isOldCloudText(e.LastError) || m.subrequestWallFixedSince(e)) && now >= e.NextRetry
 	}
 	return now >= e.NextRetry
+}
+
+// patrolRetryDue＝這筆失敗當時缺的能力，可能已被「換版」補上（巡邏的判準，版本不明一律不放行）。
+//
+//	失敗種類              可能補上它的變化
+//	雲端端（回應太大、雲端沒寫進、暫時性、額度、舊雲端） 雲端版本
+//	沒有文字層（讀圖）、舊的「太大了」                  雲端版本或小幫手版本
+//	萃取 JSON 解析失敗、轉檔失敗                        小幫手版本
+//
+// 不含：子請求牆（#196 自有判準）、品質閘（lint 規則版號）、撞名（機器自己消歧）。
+func (m *Manifest) patrolRetryDue(e *ManifestEntry) bool {
+	cloudChanged := m.CloudVersion != "" && e.FailCloudVersion != m.CloudVersion
+	daemonChanged := m.DaemonVersion != "" && m.DaemonVersion != "dev" && e.FailDaemonVersion != m.DaemonVersion
+	msg := e.LastError
+	switch {
+	case msg == "":
+		return false
+	case isCloudSideFailureText(msg):
+		return cloudChanged
+	case isNoTextText(msg) || isLegacyTooBigText(msg):
+		return cloudChanged || daemonChanged
+	case strings.Contains(msg, "萃取 JSON 解析失敗") || strings.Contains(msg, "轉檔失敗"):
+		return daemonChanged
+	}
+	return false
+}
+
+// isCloudSideFailureText＝病歷出在雲端那一側（升級雲端有機會修好），不是這個檔本身或本機規則的病。
+// 不含：子請求牆（有自己的 1.4.64 判準 subrequestWallFixedSince）、品質閘、轉檔、沒有可抽取、卡片撞名這類「換雲端也一樣」的。
+func isCloudSideFailureText(msg string) bool {
+	if msg == "" || isSubrequestLimitText(msg) {
+		return false
+	}
+	if isTransientCloudText(msg) || isD1QuotaText(msg) || isOldCloudText(msg) {
+		return true
+	}
+	for _, mark := range []string{"回應太大", "雲端沒有把這一份寫進", "雲端收下了，但", "雲端萃取失敗", "HTTP 5"} {
+		if strings.Contains(msg, mark) {
+			return true
+		}
+	}
+	return false
 }
 
 // subrequestFixedRelease＝雲端第一個帶「每次呼叫附帶子請求改成常數」修正的版本

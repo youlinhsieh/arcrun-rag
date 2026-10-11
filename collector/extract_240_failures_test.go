@@ -196,3 +196,34 @@ func TestShouldRetry_QuotaPauseRetriesAfterWindow(t *testing.T) {
 		t.Fatal("額度用完的暫停，窗口過後應再試（隔天重置）")
 	}
 }
+
+// inkstone/arcrun-rag#256：entities 回成字串陣列（geek 錯誤碼庫 3 份掛在這）整份判失敗。
+func TestParseWikiExtractJSON_EntitiesAsStringsTolerated(t *testing.T) {
+	in := `{"gloss":"g","tags":["錯誤碼"],"summary":"s","points":["p"],"no_concept":"false","reason":null,` +
+		`"entities":["錯誤碼",{"name":"NC-12","type":"代碼","desc":"d"},7,true],` +
+		`"concepts":[{"name":"授權","gloss":["a","b"],"summary":"s","points":["p"],` +
+		`"entities":["錯誤碼"],"facts":[["NC-12","屬於",3],"壞列"],"relations":{"to":"別的","pred":"相關"}},` +
+		`{"name":"B","gloss":"g","summary":"s","points":[],"entities":"單獨一個","relations":["只有字串"]}]}`
+	ex, err := parseWikiExtractJSON(in)
+	if err != nil {
+		t.Fatalf("字串形式的 entity 應被容忍：%v", err)
+	}
+	if len(ex.Entities) != 2 || ex.Entities[0].Name != "錯誤碼" || ex.Entities[0].Type != "" || ex.Entities[1].Type != "代碼" {
+		t.Fatalf("文件層 entities=%+v", ex.Entities)
+	}
+	c := ex.Concepts[0]
+	if len(c.Entities) != 1 || c.Entities[0].Name != "錯誤碼" || c.Gloss != "a；b" {
+		t.Fatalf("概念 entities/gloss=%+v", c)
+	}
+	if len(c.Facts) != 1 || c.Facts[0][2] != "3" || len(c.Relations) != 1 || c.Relations[0].To != "別的" {
+		t.Fatalf("facts/relations=%+v", c)
+	}
+	d := ex.Concepts[1]
+	if len(d.Entities) != 1 || d.Entities[0].Name != "單獨一個" || len(d.Relations) != 0 {
+		t.Fatalf("單一字串 entities / 字串 relations：%+v", d)
+	}
+	// 沒型別的實體仍能組成卡（顯示「未分類」），不得炸
+	if _, err := parseWikiExtractJSON(`{"entities":[`); err == nil {
+		t.Fatal("真壞的 JSON 仍應報錯")
+	}
+}

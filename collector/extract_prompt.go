@@ -161,10 +161,12 @@ func normalizeStringListFields(raw []byte) ([]byte, bool) {
 		}
 	}
 	fix(m)
+	normalizeObjectFields(m)
 	if cs, ok := m["concepts"].([]any); ok {
 		for _, c := range cs {
 			if co, ok := c.(map[string]any); ok {
 				fix(co)
+				normalizeObjectFields(co)
 			}
 		}
 	}
@@ -179,4 +181,112 @@ func cleanLegacyCard(text, pageName string) string {
 		return strings.TrimSpace(text[i:]) + "\n"
 	}
 	return strings.TrimSpace(text) + "\n"
+}
+
+// looseString 把模型塞進「該是字串」欄位的值收成字串：字串原樣、數字轉字串、
+// 字串清單用「；」相接；bool／null／物件算沒有（空字串）。
+func looseString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case []any:
+		var parts []string
+		for _, e := range t {
+			if s := looseString(e); strings.TrimSpace(s) != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, "；")
+	}
+	return ""
+}
+
+// looseObjects 把「該是物件清單」的欄位收成物件清單。字串項（模型只給名字）依 fromString
+// 轉成只有一個欄位的物件；單一物件包成一項；其他（bool／數字／null）丟掉。
+func looseObjects(v any, fromString func(string) map[string]any, strFields []string) []any {
+	var items []any
+	switch t := v.(type) {
+	case []any:
+		items = t
+	case map[string]any, string:
+		items = []any{t}
+	}
+	out := []any{}
+	for _, it := range items {
+		switch x := it.(type) {
+		case string:
+			if strings.TrimSpace(x) == "" {
+				continue
+			}
+			out = append(out, fromString(x))
+		case map[string]any:
+			for _, k := range strFields {
+				if val, ok := x[k]; ok {
+					x[k] = looseString(val)
+				}
+			}
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// normalizeObjectFields 容忍結構性的小偏差（inkstone/arcrun-rag#256）：
+// entities 回成字串陣列（只有名字）、relations 回成單一物件、facts 夾了字串／數字、
+// 純文字欄位回成數字或清單、no_concept 回成字串。真正不是 JSON 才由呼叫端報錯。
+func normalizeObjectFields(o map[string]any) {
+	for _, k := range []string{"gloss", "summary", "reason", "name"} {
+		if v, ok := o[k]; ok {
+			o[k] = looseString(v)
+		}
+	}
+	if v, ok := o["no_concept"]; ok {
+		switch t := v.(type) {
+		case string:
+			o["no_concept"] = strings.EqualFold(strings.TrimSpace(t), "true")
+		case float64:
+			o["no_concept"] = t != 0
+		case bool:
+		default:
+			o["no_concept"] = false
+		}
+	}
+	if v, ok := o["entities"]; ok {
+		o["entities"] = looseObjects(v, func(s string) map[string]any {
+			return map[string]any{"name": s}
+		}, []string{"name", "type", "desc"})
+	}
+	if v, ok := o["relations"]; ok {
+		o["relations"] = looseObjects(v, func(s string) map[string]any { return nil }, []string{"to", "pred"})
+		// 只給一個字串的關係沒有可用資訊（缺 to 或 pred），丟掉
+		kept := []any{}
+		for _, r := range o["relations"].([]any) {
+			if m, ok := r.(map[string]any); ok && m != nil {
+				kept = append(kept, m)
+			}
+		}
+		o["relations"] = kept
+	}
+	if v, ok := o["facts"]; ok {
+		var rows []any
+		switch t := v.(type) {
+		case []any:
+			rows = t
+		}
+		out := []any{}
+		for _, r := range rows {
+			arr, ok := r.([]any)
+			if !ok {
+				continue // 不是 [主,述,受] 的列（例如單一字串）無從拆，丟掉
+			}
+			row := []any{}
+			for _, c := range arr {
+				row = append(row, looseString(c))
+			}
+			out = append(out, row)
+		}
+		o["facts"] = out
+	}
 }

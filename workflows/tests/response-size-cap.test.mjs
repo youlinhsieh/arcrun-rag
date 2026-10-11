@@ -37,7 +37,7 @@ const HTTP_REQUEST_BUFFER_BYTES = 65536;
 const MAX_UNSCOPED_LIMIT = 100;
 
 // 「有把範圍縮到這一份」的參數。任何一個出現就算 scoped。
-const SCOPE_PARAMS = ['page_name=', 'source=', 'source_prefix=', 'page_name_prefix=', 'library=', 'q='];
+const SCOPE_PARAMS = ['page_name=', 'source=', 'source_prefix=', 'origin_path=', 'page_name_prefix=', 'library=', 'q='];
 
 let pass = 0, fail = 0;
 const t = (label, cond, extra = '') => {

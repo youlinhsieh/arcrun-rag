@@ -132,3 +132,66 @@ func TestShouldRetry_CardNumberFalsePositiveRequeuedOnce(t *testing.T) {
 		t.Fatal("非信用卡號誤判的暫停不該被重排")
 	}
 }
+
+// #256 c18930：舊雲端上記下的「雲端端」失敗，雲端版本一變下一輪立刻重送（不等退避）。
+func TestShouldRetry_CloudSideFailureRetriesWhenCloudVersionChanges(t *testing.T) {
+	mk := func(lastErr, failVer, nowVer string, count int) *Manifest {
+		m := newRetryTestManifest("00-INDEX.md")
+		m.CloudVersion = nowVer
+		e := m.Entries["00-INDEX.md"]
+		e.FailCount, e.NextRetry, e.LastError, e.FailCloudVersion = count, 1<<40, lastErr, failVer
+		return m
+	}
+	big := "本地萃取失敗：雲端萃取失敗（HTTP 502）：回應太大（超過 64 KB）"
+	if !mk(big, "1.4.95", "1.4.97", 7).ShouldRetry("00-INDEX.md", 1000, false) {
+		t.Fatal("舊雲端記的回應太大，雲端升級後應立刻重送")
+	}
+	if !mk(big, "", "1.4.97", 8).ShouldRetry("00-INDEX.md", 1000, false) {
+		t.Fatal("沒記雲端版本的舊病歷（撞滿 8 次）升級後也應重送")
+	}
+	if mk(big, "1.4.97", "1.4.97", 7).ShouldRetry("00-INDEX.md", 1000, false) {
+		t.Fatal("同一版雲端上又撞到，應照退避，不反覆重送")
+	}
+	if mk(big, "1.4.95", "", 7).ShouldRetry("00-INDEX.md", 1000, false) {
+		t.Fatal("這一輪不知道雲端版本，不能放行")
+	}
+	if mk("品質未過：疑似信用卡號", "1.4.95", "1.4.97", 7).ShouldRetry("00-INDEX.md", 1000, false) {
+		t.Fatal("本機規則的病不因雲端升級而重送")
+	}
+}
+
+// #256 c18940 巡邏：三種情況——多了新武器 ⇒ 重試；什麼都沒變 ⇒ 不重試。
+func TestPatrol_RetriesOnlyWhenAWeaponChanged(t *testing.T) {
+	mk := func(lastErr, failCloud, failDaemon, nowCloud, nowDaemon string) bool {
+		m := newRetryTestManifest("a")
+		m.CloudVersion, m.DaemonVersion = nowCloud, nowDaemon
+		e := m.Entries["a"]
+		e.FailCount, e.NextRetry, e.LastError = 7, 1<<40, lastErr
+		e.FailCloudVersion, e.FailDaemonVersion = failCloud, failDaemon
+		return m.ShouldRetry("a", 1000, false)
+	}
+	scan := "本地萃取失敗：沒有可抽取的文字"
+	if !mk(scan, "1.4.97", "0.18.95", "1.4.98", "0.18.95") {
+		t.Fatal("雲端多了讀圖（版本變）⇒ 掃描檔該重試")
+	}
+	if !mk(scan, "1.4.97", "0.18.95", "1.4.97", "0.18.96") {
+		t.Fatal("小幫手換版 ⇒ 掃描檔該重試")
+	}
+	big := "雲端沒有把這一份寫進你的知識庫：回應太大（超過 64 KB）"
+	if !mk(big, "1.4.95", "0.18.95", "1.4.97", "0.18.95") {
+		t.Fatal("雲端修了 64KB ⇒ 00-INDEX 該重試")
+	}
+	if mk(big, "1.4.97", "0.18.95", "1.4.97", "0.18.95") || mk(scan, "1.4.97", "0.18.95", "1.4.97", "0.18.95") {
+		t.Fatal("什麼都沒變 ⇒ 不重試")
+	}
+	if mk(big, "1.4.97", "0.18.95", "1.4.97", "0.18.96") {
+		t.Fatal("雲端端失敗不因小幫手換版重試")
+	}
+	js := "本地萃取失敗：萃取 JSON 解析失敗：cannot unmarshal"
+	if !mk(js, "1.4.97", "0.18.95", "1.4.97", "0.18.96") || mk(js, "1.4.97", "0.18.95", "1.4.98", "0.18.95") {
+		t.Fatal("JSON 解析失敗只看小幫手版本")
+	}
+	if mk(js, "1.4.97", "", "1.4.97", "dev") {
+		t.Fatal("版本不明不放行")
+	}
+}

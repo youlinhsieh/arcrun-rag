@@ -1750,6 +1750,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		return append(results, DirectResult{Status: "failed", Error: err.Error()}), 1, nil, rootProgress{}
 	}
 	m.CloudVersion = cfg.CloudVersion // #196
+	m.DaemonVersion = version         // #256：巡邏要比對小幫手自己的版本
 	// 2026-08-07 task 3（斷點續傳）：每個事件處理完就立刻存檔，不要等整輪跑完。
 	// 舊行為＝整個 for 迴圈跑完才 Save 一次——process 在跑到一半被殺掉（重開機、
 	// 換版、當機）時，**已經成功的那些也會遺失**，下次重開等於從頭來過，
@@ -2365,7 +2366,14 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// B2 品質檢查（草案 §3 第一層）：萃完、POST 前跑。原稿在手＝H6 可做。
 				// 硬缺（H1/H2/H5）＝拒收、不 POST、標 failed（manifest 不回寫＝下輪重萃自癒）；
 				// 軟項（H3/H4/H6）＝照送但帶 quality:low＋quality_warnings（裁決 T4-C）。
-				lr := LintCard(string(cardData), LintOptions{Source: string(content)})
+				// #251 c18987：個人證號（身分證／卡號）機器自己改寫成描述，不當成失敗；金鑰類照舊硬擋。
+				if red, nred := redactPersonalIDs(string(cardData)); nred > 0 {
+					if werr := os.WriteFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)), []byte(red), 0o644); werr == nil {
+						cardData = []byte(red)
+					}
+				}
+				// 比對用的原文＝萃取時看到的文字（轉檔文字＋讀圖結果），不是檔案位元組。
+				lr := LintCard(string(cardData), LintOptions{Source: lintSourceText(absRoot, ev.Path, content)})
 				if lr.Blocks(cfg.LintStrict) {
 					res.Status = "rejected"
 					res.Error = "品質未過（不送）：" + strings.Join(append(lr.HardMessages(), lr.SoftMessages()...), "；")
@@ -2783,7 +2791,7 @@ func runDirect(args []string) int {
 	// claude 執行檔，cfg.ClaudeBin 不會被改寫，故沒有東西需要回寫。
 	// （留著空轉的回寫邏輯會讓未來的人以為 claude 路還活著＝錯誤的環境信號。）
 
-	runOne := func() int {
+	runOne := func(force bool) int {
 		// 🔴 t191（leo 08-04，issue #17）：「按『立刻同步』後**很快就回到「看守中」**，
 		//    看起來好像就做完了，這時使用者一看沒做完啊，就覺得是 bug」。
 		//
@@ -2801,7 +2809,7 @@ func runDirect(args []string) int {
 			Phase string `json:"phase"`
 		}{time.Now().Format(time.RFC3339), "start"})
 
-		results, exit, _ := RunDirectOnce(cfg, *dryRun)
+		results, exit, _ := RunDirectOnce(roundConfig(cfg, force), *dryRun)
 		printJSONLine(struct {
 			At      string         `json:"at"`
 			Phase   string         `json:"phase"`
@@ -2826,7 +2834,7 @@ func runDirect(args []string) int {
 	//	因為 leo 自己的 repo 裡 template 本來就不是隱藏的。判準是**路徑身分**，見 scan.go。
 
 	if *once {
-		return runOne()
+		return runOne(false)
 	}
 	// 常駐輪詢：純 stdlib，跨平台。首輪立即跑。
 	// t98：每 1 秒檢查一次訊號檔（SyncNowSignalPath），命中即立刻跑一輪並刪檔；
@@ -2848,7 +2856,7 @@ func runDirect(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "collector direct daemon 啟動：監看 %s → %s（每 %ds 掃一輪）\n",
 		strings.Join(cfg.Folders(), "、"), strings.Join(dests, "、"), cfg.PollSec)
-	runOne()
+	runOne(false)
 
 	signalPath := SyncNowSignalPath(cfg.Manifest)
 	pollInterval := time.Duration(cfg.PollSec) * time.Second
@@ -2857,15 +2865,23 @@ func runDirect(args []string) int {
 	for {
 		time.Sleep(checkInterval)
 		if consumeSyncNowSignal(signalPath) {
-			runOne()
+			runOne(true) // #256：按「立刻同步」＝這一輪忽略退避與次數上限（以前沒人把 ForceSync 設成 true）
 			lastRun = time.Now()
 			continue
 		}
 		if time.Since(lastRun) >= pollInterval {
-			runOne()
+			runOne(false)
 			lastRun = time.Now()
 		}
 	}
+}
+
+// roundConfig 回傳這一輪用的設定副本：使用者按「立刻同步」的那一輪 ForceSync=true，其餘輪為 false。
+// 不改動常駐的 cfg，避免「按過一次之後每輪都強制重送」。（inkstone/arcrun-rag#256 c18935）
+func roundConfig(cfg *DirectConfig, force bool) *DirectConfig {
+	c := *cfg
+	c.ForceSync = force
+	return &c
 }
 
 // consumeSyncNowSignal 檢查訊號檔是否存在：存在則刪除並回 true（呼叫端立刻跑一輪同步）；

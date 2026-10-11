@@ -99,12 +99,26 @@ func feedbackRecord(now time.Time) {
 
 // feedbackInstanceLabel：回報裡「實例」欄放什麼。只放顯示名或網址主機名，
 // 🔴 不放 namespace（self-hosted 下 namespace 就是 API key）。
-func feedbackInstanceLabel() string {
+//
+// 🔴 inkstone/arcrun-rag#255：以前一律取 Accounts[0]，多帳號時（leo21c 的回報被標成 geek6688、
+// #250 的 youlin 也被標成 geek6688）收件的人會查錯實例。現在由「回報是針對哪台知識庫」的呼叫端
+// 帶 host 進來（forHost）；沒帶（純手打回報、不屬於任何一台）才退回第一個帳號。
+func feedbackInstanceLabel() string { return feedbackInstanceLabelFor("") }
+
+func feedbackInstanceLabelFor(forHost string) string {
 	cfg, err := loadCfg()
 	if err != nil || len(cfg.Accounts) == 0 {
 		return "（尚未連上知識庫）"
 	}
 	acc := cfg.Accounts[0]
+	if h := strings.TrimSpace(forHost); h != "" {
+		for _, a := range cfg.Accounts {
+			if shortHost(a.CypherURL) == h {
+				acc = a
+				break
+			}
+		}
+	}
 	if n := strings.TrimSpace(acc.InstanceName); n != "" {
 		return n
 	}
@@ -118,6 +132,11 @@ func feedbackInstanceLabel() string {
 // attachDiagnostics=true 時順便把匯出診斷檔同一份資料（只有統計數字，不含使用者
 // 任何文件內容）一起帶上，不必使用者自己另外匯出、另外找地方附加。
 func (a *App) SubmitFeedback(text string, attachDiagnostics bool) error {
+	return a.submitFeedbackFor(text, attachDiagnostics, "")
+}
+
+// submitFeedbackFor：forHost＝這則回報針對的知識庫主機（空＝不屬於任何一台）。
+func (a *App) submitFeedbackFor(text string, attachDiagnostics bool, forHost string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("請先寫下你遇到的狀況再送出")
@@ -130,7 +149,7 @@ func (a *App) SubmitFeedback(text string, attachDiagnostics bool) error {
 	payload := feedbackPayload{
 		Text:     text,
 		Version:  version,
-		Instance: feedbackInstanceLabel(),
+		Instance: feedbackInstanceLabelFor(forHost),
 		OS:       runtime.GOOS,
 	}
 	if attachDiagnostics {

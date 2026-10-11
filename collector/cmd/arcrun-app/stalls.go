@@ -148,7 +148,7 @@ func (a *App) ReportStall(fingerprint string) error {
 	if _, done := loadStallReports()[fingerprint]; done {
 		return nil // 已回報過：不洗版、不開第二張票
 	}
-	if err := a.SubmitFeedback(stallReportText(*hit), true); err != nil {
+	if err := a.submitFeedbackFor(stallReportText(*hit), true, hit.Host); err != nil {
 		return err // 沒送出去就不標已回報，用戶可再按
 	}
 	if err := markStallReported(fingerprint, hit.Count); err != nil {
@@ -189,7 +189,7 @@ func (a *App) ReportProblem(accIdx int, folder string) error {
 	}
 	out := activityOf(activityIn{P: p, Known: true, Alive: collectorAlive(), SentHour: sent})
 	names, raw := collector.StuckSamples(cfg.Manifest, acc.CypherURL, roots)
-	if err := a.SubmitFeedback(problemReportText(accountName(acc), host, folder, p, out, names, raw), true); err != nil {
+	if err := a.submitFeedbackFor(problemReportText(accountName(acc), host, folder, p, out, names, raw), true, host); err != nil {
 		return err
 	}
 	_ = markStallReported(key, out.N)
@@ -216,7 +216,7 @@ func (a *App) ReportFileProblem(accIdx int, root, rel string) error {
 		text += "- 錯誤原文：" + redactLocalPaths(raw) + "\n"
 	}
 	text += fmt.Sprintf("- 小幫手版本：%s\n\n（此回報由小幫手自動產生，不含任何文件內容。）", version)
-	if err := a.SubmitFeedback(text, true); err != nil {
+	if err := a.submitFeedbackFor(text, true, host); err != nil {
 		return err
 	}
 	return markStallReported(key, 1)

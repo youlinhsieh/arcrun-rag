@@ -119,3 +119,21 @@ func TestSyncNowSignalPathConsistency(t *testing.T) {
 			manifest, collectorPath, wantPath)
 	}
 }
+
+// #256 c18935：按「立刻同步」那一輪 ForceSync 必須為 true（以前整個 daemon 沒人設，退避中的檔照樣跳過）。
+func TestRoundConfig_ForceOnlyForSyncNowRound(t *testing.T) {
+	cfg := &DirectConfig{}
+	if !roundConfig(cfg, true).ForceSync {
+		t.Fatal("立刻同步那一輪應 ForceSync")
+	}
+	if cfg.ForceSync || roundConfig(cfg, false).ForceSync {
+		t.Fatal("一般輪詢不得強制重送，也不得改動常駐設定")
+	}
+	// 接上 ShouldRetry：退避中的檔，force 一輪放行、一般輪不放行
+	m := newRetryTestManifest("a.md")
+	e := m.Entries["a.md"]
+	e.FailCount, e.NextRetry, e.LastError = 7, 1<<40, "品質未過"
+	if m.ShouldRetry("a.md", 1000, roundConfig(cfg, false).ForceSync) || !m.ShouldRetry("a.md", 1000, roundConfig(cfg, true).ForceSync) {
+		t.Fatal("force 一輪放行退避中的檔、一般輪不放行")
+	}
+}

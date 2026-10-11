@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -220,5 +221,41 @@ func TestSubmitFeedback_FailuresDoNotCountTowardLimit(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), "太多") {
 			t.Fatalf("失敗不該計入上限（第 %d 次）：%v", i+1, err)
 		}
+	}
+}
+
+// inkstone/arcrun-rag#255：多帳號時，回報的「實例」要標成回報所針對的那台，不是永遠第一台。
+func TestSubmitFeedback_InstanceIsTheAccountReportedAbout(t *testing.T) {
+	tempHome(t)
+	inbox := &feedbackFakeServer{respBody: feedbackOK}
+	inboxSrv := newFeedbackFakeServer(inbox)
+	defer inboxSrv.Close()
+	t.Setenv("ARCRUN_FEEDBACK_INBOX", inboxSrv.URL+"/x")
+	cfg := map[string]any{
+		"manifest": filepath.Join(appDir(), "manifest.json"),
+		"accounts": []accountCfg{
+			{InstanceName: "geek6688", CypherURL: "https://arcrun-cypher-executor.arcrun-fc9490d5.workers.dev", Namespace: "n1"},
+			{InstanceName: "youlin.hsieh.dev", CypherURL: "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev", Namespace: "n2"},
+			{InstanceName: "leo21c", CypherURL: "https://arcrun-cypher-executor.leo21c.workers.dev", Namespace: "n3"},
+		},
+	}
+	b, _ := json.Marshal(cfg)
+	_ = os.MkdirAll(appDir(), 0o755)
+	if err := os.WriteFile(configPath(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]string{
+		"arcrun-cypher-executor.leo21c.workers.dev":          "leo21c",
+		"arcrun-cypher-executor.arcrun-yuga3bse.workers.dev": "youlin.hsieh.dev",
+		"arcrun-cypher-executor.arcrun-fc9490d5.workers.dev": "geek6688",
+		"": "geek6688", // 不屬於任何一台＝第一個帳號
+	} {
+		if err := (&App{}).submitFeedbackFor("測試", false, host); err != nil {
+			t.Fatalf("host=%q: %v", host, err)
+		}
+		if got := inbox.gotBody["instance"]; got != want {
+			t.Errorf("host=%q: instance=%v, want %s", host, got, want)
+		}
+		_ = os.Remove(feedbackSentPath()) // 不讓每小時上限擋掉下一輪
 	}
 }
