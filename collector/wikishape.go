@@ -79,6 +79,9 @@ type DocExtract struct {
 	// Unreadable＝這份原稿「讀不到」的部分（圖片表等），由轉檔層機械產生（不是 LLM 說的），
 	// 文件卡會原樣寫成「## 讀不到的內容」段（inkstone/arcrun-rag#253）。
 	Unreadable []string `json:"-"`
+	// Verbatim＝逐字照原稿存的段落（PDF 文字層裡的表格，convert_pdf_table.go），由轉檔層機械產生、
+	// 不經 LLM。文件卡會寫成「## 原文表格」段（inkstone/arcrun-rag#253）。
+	Verbatim []VerbatimSection `json:"-"`
 }
 
 // ── manifest（`<監看根>/.wiki/manifest.json`；doc_id ↔ 現在路徑 ↔ 雜湊）──
@@ -476,7 +479,12 @@ func renderSourceLine(b *strings.Builder, o SourceOrigin, cardName string) {
 }
 
 // renderDocCard 文件卡（＝這份文件的 hub）：重點是判斷句、行內連到概念卡。
-func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin SourceOrigin) string {
+//
+// 內文知識關係（inkstone/arcrun-rag#278）：概念卡的 facts 在 direct.go 預設只落本機、不上雲，
+// 而雲端只收到這張文件卡 ⇒ 文件卡自己的「內文知識關係」若留空，Graph search 就沒有內容關係可走
+// （CompactB-3020 的 kbdb_graph_neighbors 只有結構邊）。所以這裡把各概念的 facts 彙整落進來
+// （去重、同一套清理）。概念卡仍保留自己的那份——本機閱讀不變。
+func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin SourceOrigin, concepts []WikiConcept) string {
 	allowed := map[string]bool{"00-INDEX": true, d.Card: true}
 	for _, c := range conceptNames {
 		allowed[c] = true
@@ -515,6 +523,30 @@ func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin Sou
 		b.WriteString("\n")
 	}
 
+	writeVerbatimGroup := func(group, heading, intro string) {
+		var n int
+		for _, v := range ex.Verbatim {
+			if v.Group == group {
+				n++
+			}
+		}
+		if n == 0 {
+			return
+		}
+		b.WriteString("## " + heading + "\n")
+		b.WriteString(intro + "\n\n")
+		for _, v := range ex.Verbatim {
+			if v.Group != group {
+				continue
+			}
+			b.WriteString("### " + v.Title + "\n")
+			b.WriteString(v.Body + "\n\n")
+		}
+	}
+	writeVerbatimGroup("", verbatimTablesHeading, "以下是原檔文字層裡的表格，一列一行、儲存格用「｜」隔開，文字照原稿、沒有經過 AI 改寫；引用數值請照這裡的原字串並附頁碼。")
+	writeVerbatimGroup(listsGroup, verbatimListsHeading, "以下是原檔文字層裡的條列段落（標準配備、選配、隨機文件等），一項一行，文字照原稿、沒有經過 AI 改寫；列配置清單時請照這裡的原字串並附頁碼。")
+	writeVerbatimGroup(imageReadGroup, verbatimImageReadHeading, "以下是原檔圖片頁經機器辨識出的文字，逐頁照辨識結果放、沒有經過 AI 改寫；這是機器辨識不是原稿字串，型號與數字引用時請說明來自圖片辨識並對原檔。")
+
 	ents := ex.Entities
 	if len(ents) == 0 { // 文件卡的實體：借用各概念的第一個實體
 		for _, c := range ex.Concepts {
@@ -529,12 +561,39 @@ func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin Sou
 
 	b.WriteString("## 關聯\n")
 	b.WriteString("### 內文知識關係\n")
+	for _, line := range factLines(concepts) {
+		b.WriteString(line + "\n")
+	}
 	b.WriteString("### 卡片關係\n")
 	for _, c := range conceptNames {
 		b.WriteString("- [[" + d.Card + "]]" + triSep + "整理出" + triSep + "[[" + c + "]]\n")
 	}
 	renderSourceLine(&b, origin, d.Card)
 	return b.String()
+}
+
+// factLines 把概念的 facts 變成「- 主 >> 述 >> 受」行：同一套清理、整份去重、保持出現順序。
+func factLines(concepts []WikiConcept) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, c := range concepts {
+		for _, f := range c.Facts {
+			if len(f) != 3 {
+				continue
+			}
+			s, p, o := sanitizeTriplePart(f[0]), sanitizeTriplePart(f[1]), sanitizeTriplePart(f[2])
+			if s == "" || p == "" || o == "" {
+				continue
+			}
+			line := "- " + s + triSep + p + triSep + o
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // renderConceptCard 原子概念卡。extraRels＝機械補上的反向邊（雙向連結保證）。
@@ -565,15 +624,8 @@ func renderConceptCard(c WikiConcept, cardName, docCard string, origin SourceOri
 
 	b.WriteString("## 關聯\n")
 	b.WriteString("### 內文知識關係\n")
-	for _, f := range c.Facts {
-		if len(f) != 3 {
-			continue
-		}
-		s, p, o := sanitizeTriplePart(f[0]), sanitizeTriplePart(f[1]), sanitizeTriplePart(f[2])
-		if s == "" || p == "" || o == "" {
-			continue
-		}
-		b.WriteString("- " + s + triSep + p + triSep + o + "\n")
+	for _, line := range factLines([]WikiConcept{c}) {
+		b.WriteString(line + "\n")
 	}
 	b.WriteString("### 卡片關係\n")
 	b.WriteString("- [[" + cardName + "]]" + triSep + "出自" + triSep + "[[" + docCard + "]]\n")
@@ -827,7 +879,7 @@ func buildWikiDocLocked(absRoot, relPath, srcText string, ex *DocExtract, origin
 		return r, writeWikiFile(absRoot, destAbs, []byte(content))
 	}
 
-	docRel, err := writeCard(docCard, renderDocCard(&entry, ex, conceptNames, origin))
+	docRel, err := writeCard(docCard, renderDocCard(&entry, ex, conceptNames, origin, concepts))
 	if err != nil {
 		return nil, err
 	}
@@ -1008,38 +1060,60 @@ func writeNodeIndex(absRoot, node string, m *wikiManifest) error {
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
 	kids, kidCount := childNodesOf(node, m)
 
-	var b strings.Builder
-	b.WriteString("# 00-INDEX\n\n")
+	var pre strings.Builder
 	if len(kids) > 0 {
-		b.WriteString("## 子節點\n")
+		pre.WriteString("## 子節點\n")
 		for _, k := range kids {
-			b.WriteString("- 📁 `" + k + "/` — 內含 " + itoa(kidCount[k]) + " 篇文件\n")
+			pre.WriteString("- 📁 `" + k + "/` — 內含 " + itoa(kidCount[k]) + " 篇文件\n")
 		}
-		b.WriteString("\n")
+		pre.WriteString("\n")
 	}
-	b.WriteString("## 文件\n")
-	if len(docs) == 0 {
-		b.WriteString("（本層沒有文件；見子節點。）\n")
-	}
+	entries := make([]idxEntry, 0, len(docs))
+	blurbs := blurbsFor(absRoot, node, docs)
 	for _, d := range docs {
+		var b strings.Builder
 		if d.Status == "no_concept" {
 			b.WriteString("- `" + d.Path + "` — 空：" + d.Reason + "\n")
-			continue
+		} else {
+			tags := make([]string, 0, len(d.Tags))
+			for _, t := range d.Tags {
+				tags = append(tags, "#"+t)
+			}
+			b.WriteString("- [[" + d.Card + "]] — " + blurbs[d.Path] + "（原稿 `" + d.Path + "`）\n")
+			b.WriteString("  " + strings.Join(tags, " ") + "　建 " + d.Created + "　更 " + d.Updated + "\n")
 		}
-		tags := make([]string, 0, len(d.Tags))
-		for _, t := range d.Tags {
-			tags = append(tags, "#"+t)
-		}
-		b.WriteString("- [[" + d.Card + "]] — " + d.Gloss + "（原稿 `" + d.Path + "`）\n")
-		b.WriteString("  " + strings.Join(tags, " ") + "　建 " + d.Created + "　更 " + d.Updated + "\n")
+		entries = append(entries, idxEntry{Key: pageNameOf(d.Path), Lines: b.String()})
 	}
-	b.WriteString("\n## 說明\n")
-	b.WriteString("本索引由 Arcrun RAG 自動維護（機械產生，改了會被覆寫）。\n")
-	b.WriteString("「空」表示該檔沒有可萃取的概念（例如純紀錄），不是被漏掉。\n")
-	b.WriteString("每張文件卡是那份原稿的 hub；概念卡從文件卡點進去。\n")
+	footer := "## 說明\n" +
+		"本索引由 Arcrun RAG 自動維護（機械產生，改了會被覆寫）。\n" +
+		"「空」表示該檔沒有可萃取的概念（例如純紀錄），不是被漏掉。\n" +
+		"每張文件卡是那份原稿的 hub；概念卡從文件卡點進去。\n"
+	cards := buildIdxCards(entries, idxOpts{
+		RootName: "00-INDEX", Preface: pre.String(), Footer: footer, NameJoiner: "-",
+		EmptyMsg: "（本層沒有文件；見子節點。）",
+	})
 
-	dest := filepath.Join(wikiDirFor(absRoot, node), "00-INDEX.md")
-	return writeWikiFile(absRoot, dest, []byte(b.String()))
+	dir := wikiDirFor(absRoot, node)
+	keep := map[string]bool{}
+	for _, c := range cards {
+		keep[c.Name+".md"] = true
+		if err := writeWikiFile(absRoot, filepath.Join(dir, c.Name+".md"), []byte(c.Content)); err != nil {
+			return err
+		}
+	}
+	// 清掉上一輪分層留下、這輪已不存在的子目錄卡（只動我們自己寫的：檔名 00-INDEX-* 且開頭是 "# 00-INDEX"）。
+	if ents, err := os.ReadDir(dir); err == nil {
+		for _, e := range ents {
+			n := e.Name()
+			if e.IsDir() || keep[n] || !strings.HasPrefix(n, "00-INDEX-") || !strings.HasSuffix(n, ".md") {
+				continue
+			}
+			if fileHasPrefix(filepath.Join(dir, n), "# 00-INDEX") {
+				_ = os.Remove(filepath.Join(dir, n))
+			}
+		}
+	}
+	return nil
 }
 
 // isOrphanOfThisDoc：檔案雖然沒記在 manifest，但內容的「### 出處」三元組寫的正是這份文件、這個卡名

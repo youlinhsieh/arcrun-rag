@@ -17,8 +17,12 @@
 #     -d '{"page_name":"加班規定","path":"加班規定.md","library":"hr_docs"}'
 #   library 選填（arcrun-rag#46）：帶了就只殺同一個庫的，避免兩個被監看資料夾裡
 #   同名同相對路徑的檔互相連坐；舊版 daemon 不帶，行為與從前一致。
-#   machine 選填（`inkstone/mira#6`）：同一條規則再上一層——帶了就只殺同一台機器的，
-#   避免「A 電腦刪掉 notes.md」把 B 電腦上還活著的 notes.md 一起殺掉。
+#   machine **必填**（`inkstone/mira#6` 引入、inkstone/arcrun-rag#273 改必填）：同一條規則再上一層——
+#   只殺同一台機器的，避免「A 電腦刪掉 notes.md」把 B 電腦上還活著的 notes.md 一起殺掉；
+#   沒帶就明確報錯（不再回成功卻什麼都沒刪）。
+#   🔴 守門一律 `throw`，不是 `return { success:false }`：引擎的 isFailure 只看節點輸出的最外層，
+#   code 零件把回傳值包成 `{success:true,data:{…}}`，內層 success:false 攔不住，ON_SUCCESS 照走
+#   （youlin 1.4.110 實測，InkStoneCo#235 c21544 後續）。
 #
 # 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
 
@@ -29,14 +33,20 @@ description: >
   （2026-08-05 由 deprecate 改真刪；2026-09-20 三元組那側改走 by-source，
   成本與租戶三元組總數脫鉤，見 list_triplets 註解。）（task 11）
 
+# 🔴 inkstone/arcrun-rag#270：兩段刪除原本是 FOREACH 逐條依序（無並行）——stage 實測
+#   100 條三元組＋10 block 要 317 秒，超過小幫手 300 秒上限；改版前存的大文件（148 條）
+#   下架一定逾時。改成「並行 6」（引擎上限 6，與 rag_ingest_card 的 delete_entry／
+#   delete_record 同一個寫法）。刪除彼此獨立（各自一個 id），並行不改語意。
 flow:
   - "input >> ON_SUCCESS >> prep"
   - "prep >> ON_SUCCESS >> list_dead_blocks"
   - "list_dead_blocks >> ON_SUCCESS >> build_deprecations"
-  - "build_deprecations >> 對每個 dead_entry >> deprecate_entry"
+  - "build_deprecations >> 對每個 dead_entry 並行 6 >> deprecate_entry"
   - "build_deprecations >> ON_SUCCESS >> list_triplets"
   - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
-  - "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+  - "pick_dead_triplets >> 對每個 dead_record 並行 6 >> deprecate_triplet"
+  - "deprecate_entry >> ON_FAIL >> accept_entry_gone"
+  - "deprecate_triplet >> ON_FAIL >> accept_triplet_gone"
 
 config:
   # CJK page_name 進 URL query 前先 encodeURIComponent（agent-memory §7 實撞教訓）。
@@ -50,31 +60,46 @@ config:
       //   並真刪命中的 record。⇒ 兩道：① page_name／path 都必填（不再默默補預設）
       //   ② 值裡只要還有 `{{…}}` 就當作沒代換、拒絕。
       //   daemon 一直都會送 path（collector/direct.go），正常觸發行為不變。
-      //   library／machine 是選填的收窄條件，不在此列（缺了只會殺得更少、不會殺錯）。
+      //   library 是選填的收窄條件（缺了只會殺得更少）；machine 見下方，#273 起必填。
       function unresolved(v) { return /\{\{[^}]*\}\}/.test(v); }
       const page = String(input.page_name == null ? '' : input.page_name).trim();
-      if (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name，什麼都沒刪' };
+      if (!page) throw new Error('rag_takedown_direct 缺 page_name，什麼都沒刪');
       const path = String(input.path == null ? '' : input.path).trim();
-      if (!path) return { success: false, error: 'rag_takedown_direct 缺 path（原檔路徑），什麼都沒刪' };
-      if (unresolved(page)) return { success: false, error: 'rag_takedown_direct 的 page_name 仍是未代換的佔位符（' + page + '），什麼都沒刪' };
-      if (unresolved(path)) return { success: false, error: 'rag_takedown_direct 的 path 仍是未代換的佔位符（' + path + '），什麼都沒刪' };
+      if (!path) throw new Error('rag_takedown_direct 缺 path（原檔路徑），什麼都沒刪');
+      if (unresolved(page)) throw new Error('rag_takedown_direct 的 page_name 仍是未代換的佔位符（' + page + '），什麼都沒刪');
+      if (unresolved(path)) throw new Error('rag_takedown_direct 的 path 仍是未代換的佔位符（' + path + '），什麼都沒刪');
       // library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。
       const library = String(input.library == null ? '' : input.library).trim();
       // machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，
       // 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。
       // 選填：舊版 daemon 不送，此時行為與從前一字不差。
       const machine = String(input.machine == null ? '' : input.machine).trim();
+      // 🔴 inkstone/arcrun-rag#273（2026-10-18 實撞，#269 c21346）：machine 不帶時引擎不代換，
+      //   `{{input.machine}}` 以字面字串進來，build_deprecations 拿它去比 meta.machine ⇒ 全部「別台機器」
+      //   ⇒ 一張都不殺（dead_count 0）、卻只刪了 triplet（triplet 那側不看 machine）：回成功，實際沒下架。
+      //   machine 因此改為**必填**（現行 daemon 一律會送，collector/direct.go drainPendingTakedowns）。
+      //   空的 machine 也不放行：空＝不收窄＝會連坐別台機器上同名同路徑的卡（inkstone/mira#6）。
+      if (!machine) throw new Error('rag_takedown_direct 缺 machine（機器身分，如 youlinhsieh@Leo-MBA），什麼都沒刪');
+      if (unresolved(machine)) throw new Error('rag_takedown_direct 的 machine 仍是未代換的佔位符（' + machine + '），什麼都沒刪');
       // src_uri_enc：list_triplets 要拿它去 KBDB by-source 查「這張卡自己的三元組」，
       // CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。
       const srcUri = 'kb://' + path;
+      // inkstone/arcrun-rag#255：概念卡／分段的三元組有自己的 source_uri（kb://路徑#t=<名字>，
+      // 見 rag_ingest_card 的 triplet_scope）。帶了 triplet_scope 就只下架那一批；沒帶＝與從前一樣
+      // （kb://路徑，也就是文件卡本人那一批，連同改版前所有卡共用這個 source_uri 時寫下的）。
+      const rawScope = input.triplet_scope;
+      const scope = (rawScope == null || unresolved(String(rawScope))) ? '' : String(rawScope).trim();
+      const tripSrcUri = scope ? (srcUri + '#t=' + scope) : srcUri;
       return { success: true, page_name: page, page_enc: encodeURIComponent(page),
                path: path, path_enc: encodeURIComponent(path), source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
+               trip_src_uri: tripSrcUri, trip_src_uri_enc: encodeURIComponent(tripSrcUri),
                library: library, machine: machine };
     input:
       page_name: "{{input.page_name}}"
       path: "{{input.path}}"
       library: "{{input.library}}"
       machine: "{{input.machine}}"
+      triplet_scope: "{{input.triplet_scope}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -191,7 +216,7 @@ config:
   list_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__"
+    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.trip_src_uri_enc}}&owner_id=__NAMESPACE__"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -240,3 +265,33 @@ config:
     url: "__KBDB_BASE__/records/{{dead_record.record_id}}"
     headers:
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # inkstone/arcrun-rag#270：並行刪除時 stage 實測 162 條裡有 68 條回 404「not found」
+  # （約 0.5 秒就回，成功的要 5 秒）——那筆已經不在了，而下架要的正是「不在」，
+  # 不該讓整支 workflow 變成 HTTP 500（小幫手會當失敗再退避重送）。
+  # 只認 404；其他錯（500、逾時、401）一律 throw 讓它照舊失敗——不把真的刪不掉也吞掉。
+  # 為什麼用 throw：code 零件正常 return 永遠是外層 success:true，只有 throw 才是失敗信封
+  # （見 rag-ingest-card 的 prep_cluster_wiki 註解，c15011）。
+  accept_entry_gone:
+    component: "__CODE_URL__"
+    input:
+      err2: "{{deprecate_entry.error}}"
+    code: |
+      const e = String(input.err2 == null ? '' : input.err2);
+      if (/\b404\b/.test(e)) return { success: true, already_gone: true };
+      throw new Error('deprecate_entry 失敗且不是 404：' + e);
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  accept_triplet_gone:
+    component: "__CODE_URL__"
+    input:
+      err2: "{{deprecate_triplet.error}}"
+    code: |
+      const e = String(input.err2 == null ? '' : input.err2);
+      if (/\b404\b/.test(e)) return { success: true, already_gone: true };
+      throw new Error('deprecate_triplet 失敗且不是 404：' + e);
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096

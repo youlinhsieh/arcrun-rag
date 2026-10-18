@@ -381,8 +381,8 @@ func (p *cleanupPlanner) wikiEntryIsOurs(dir string, e os.DirEntry) bool {
 		return fileHasExactBody(abs, wikiIgnoreBody)
 	case e.Name() == "manifest.json":
 		return isOurWikiManifest(abs)
-	case e.Name() == "00-INDEX.md":
-		return fileHasPrefix(abs, "# 00-INDEX")
+	case e.Name() == "00-INDEX.md" || (strings.HasPrefix(e.Name(), "00-INDEX-") && strings.HasSuffix(e.Name(), ".md")):
+		return fileHasPrefix(abs, "# 00-INDEX") // #264：分層目錄卡 00-INDEX-<前綴>.md
 	case p.cards[abs]:
 		return true // 帳本上有這張卡
 	case IsMarked(e.Name()):

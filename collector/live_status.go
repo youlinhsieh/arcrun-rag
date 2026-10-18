@@ -47,7 +47,7 @@ func (g *roundGuard) enterFolder(account, folder string) {
 	}
 	g.mu.Lock()
 	g.live.Account, g.live.Folder = account, folder
-	g.live.Step, g.live.StepSince, g.live.Waiting = "", "", nil
+	g.live.Step, g.live.File, g.live.StepSince, g.live.Waiting = "", "", "", nil
 	g.mu.Unlock()
 	g.persistLive(nil)
 }
@@ -60,6 +60,7 @@ func (g *roundGuard) stepStarted(step callStep, at time.Time) {
 	}
 	g.mu.Lock()
 	g.live.Step = step.Name
+	g.live.File = step.File
 	g.live.StepSince = at.Format(time.RFC3339)
 	g.live.Waiting = nil
 	g.mu.Unlock()

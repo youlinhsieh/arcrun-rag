@@ -160,7 +160,7 @@ func TestWaitingIsWrittenWhileStillWaiting(t *testing.T) {
 	g.enterFolder("kb.example", "/Users/someone/ISEP")
 
 	cfg := &DirectConfig{CypherURL: "https://kb.example", guard: g}
-	gate := cfg.openGate(stepFolderCard)
+	gate := cfg.openGate(stepFolderCard.on("sub/大檔.pdf"))
 
 	var st SyncStatus
 	deadline := time.Now().Add(3 * time.Second)
@@ -177,6 +177,9 @@ func TestWaitingIsWrittenWhileStillWaiting(t *testing.T) {
 	}
 	if st.InRound.Waiting.Step != stepFolderCard.Name {
 		t.Errorf("waiting.step 應為 %q，got %q", stepFolderCard.Name, st.InRound.Waiting.Step)
+	}
+	if st.InRound.Waiting.File != "sub/大檔.pdf" || st.InRound.File != "sub/大檔.pdf" {
+		t.Errorf("卡住時要講得出是哪份檔，got waiting.file=%q file=%q", st.InRound.Waiting.File, st.InRound.File)
 	}
 	if st.InRound.Folder != "/Users/someone/ISEP" || st.InRound.Account != "kb.example" {
 		t.Errorf("卡住時要講得出是哪個知識庫的哪個資料夾，got account=%q folder=%q",

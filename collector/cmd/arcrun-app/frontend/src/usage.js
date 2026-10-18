@@ -6,7 +6,8 @@
 //    唯一在這裡算的是「往前推」——兩次抓取之間，用雲端給的每分鐘速率讓數字跳動（抓到新值就校正）。
 // 🔴 三級精密度（leo 10-10）：
 //    高精度＝主表盤＋里程表（最吃緊那一項，會跳）；
-//    中精度＝三格（離爆多遠／要不要升級／剎車），各只有 ok／near／over 三種長相；
+//    中精度＝儀表旁兩顆小按鈕（錢＝費用說明或升級／剎車＝去設定），不再是一排三個大方塊（leo 10-11：
+//    「Form follows function，不要為了美觀亂加元素」）；離爆多遠只由圓弧說，不再重複一格；
 //    低精度＝只在出錯時亮（資料過舊、查不到）。
 //    位置固定：計費項永遠是同一個順序，用戶靠位置＋顏色判讀，不靠字。
 // 🔴 版面不放句子：全部是圖示＋數字，說明只在 title（hover ≤25 字，字數預算會擋）。
@@ -28,6 +29,10 @@ export const ITEM_ICON = {
   disk: svg('<rect x="3.5" y="7" width="17" height="10" rx="2"/><circle cx="17" cy="12" r="1"/><path d="M7 12h5"/>'),
   other: svg('<circle cx="12" cy="12" r="8"/><path d="M12 8v4M12 15.5v.1"/>'),
 };
+// 費用說明頁（docs-site/src/content/docs/use/cost.md）：這筆錢是 Cloudflare 收的、附 CF 帳單連結。
+// 免費帳號的「$」去既有的升級說明（quota 頁的怎麼升級四步），CF 的連結都放在說明裡，畫面不直接導去 CF。
+const DOC_COST = 'https://rag.arcrun.dev/docs/use/cost/';
+const DOC_UPGRADE = 'https://rag.arcrun.dev/docs/use/quota/#%E6%80%8E%E9%BA%BC%E5%8D%87%E7%B4%9A%E5%9B%9B%E6%AD%A5';
 const S = {
   // 三態（表針偏左／偏右＋驚嘆／錢幣／暫停）
   ok: svg('<path d="M4.5 17a8 8 0 1 1 15 0"/><path d="M12 15l-4-4"/><circle cx="12" cy="15" r="1.1"/>', 22),
@@ -43,15 +48,11 @@ const S = {
   brakeOn: svg('<circle cx="11" cy="12" r="7"/><circle cx="11" cy="12" r="2"/><path d="M18.5 8.5v7" stroke-width="3.2"/>', 22),
   brakeOff: svg('<circle cx="11" cy="12" r="7"/><circle cx="11" cy="12" r="2"/><path d="M18.5 8.5v7" opacity=".35"/><path d="M4 20 20 4"/>', 22),
   brakeNa: svg('<circle cx="11" cy="12" r="7" opacity=".4"/><circle cx="11" cy="12" r="2" opacity=".4"/>', 22),
-  bill: svg('<path d="M6 3.5h12v17l-3-2-3 2-3-2-3 2Z"/><path d="M9.5 8h5M9.5 11.5h5"/>', 22),
-  upAdvise: svg('<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/><path d="M5 20h14"/>', 22),
-  upNo: svg('<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5" opacity=".4"/><path d="m5 5 14 14"/>', 22),
   help: svg('<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5M12 16.5v.1"/>', 15),
   stale: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>', 15),
 };
 S.paid = svg('<path d="M12 12c-1.7-2.6-3.3-4-5-4a4 4 0 0 0 0 8c1.7 0 3.3-1.4 5-4Zm0 0c1.7 2.6 3.3 4 5 4a4 4 0 0 0 0-8c-1.7 0-3.3 1.4-5 4Z"/>', 16);
 
-const lvlIcon = (u) => (u.level === 'over' ? (u.plan === 'paid' ? S.overPaid : S.overFree) : (u.level === 'near' ? S.near : S.ok));
 const itemIcon = (k) => ITEM_ICON[k] || ITEM_ICON.other;
 const nameOf = (u, k) => ((u.items || []).find((x) => x.key === k) || {}).tipName || k;
 
@@ -72,27 +73,29 @@ function dial(u, top) {
 
 // 一個計費項一行：圖示｜用量/（超出量或線）｜$ 或 暫停｜歸零符號＋時間｜細進度條
 function row(it, plan) {
-  const bad = it.level === 'over';
-  const live = it.rate > 0 ? ` data-live="1" data-base="${it.used}" data-rate="${it.rate}" data-limit="${it.limit || 0}"` : '';
+  const live = ''; // #260：數字只反映雲端回報的真實用量，不往前推估（leo 10-11：沒在花就不准動）
   const second = it.limit > 0 ? fmt(it.limit) : '';
-  const sym = it.dollar ? `<span class="udollar" title="${esc(it.tipCost || '')}" aria-label="${esc(it.tipCost || '')}">$</span>`
-    : (it.pause ? `<span class="upause" title="${esc(it.tipName)}" aria-label="${esc(it.tipName)}">${S.overFree.replace('width="22" height="22"', 'width="15" height="15"')}</span>` : '<span class="usym"></span>');
+  // leo 10-11（#261 c19149）：超線就是要付費，金額只由上方「$ 金額」按鈕講；列上不再放 $，也不整列變色。
+  const sym = it.pause ? `<span class="upause" title="${esc(it.tipName)}" aria-label="${esc(it.tipName)}">${S.overFree.replace('width="22" height="22"', 'width="15" height="15"')}</span>` : '<span class="usym"></span>';
   const rst = it.reset ? `<span class="ureset" title="${esc(it.tipReset || '')}" aria-label="${esc(it.tipReset || '')}">${it.per === 'month' ? S.month : S.reset}<b>${esc(it.reset)}</b></span>` : '<span class="ureset"></span>';
-  const bar = it.limit > 0 ? `<span class="ubar ${esc(it.level)}${bad ? ' flow' : ''}"><i style="width:${Math.min(100, it.pct)}%"></i></span>` : '<span class="ubar"></span>';
+  // 進度條：額度內一個顏色、超出的部分另一個顏色（像 Cloudflare Workers AI 用量圖，低調）
+  const tot = Math.max(it.used, it.limit);
+  const inW = it.limit > 0 ? Math.min(it.used, it.limit) / tot * 100 : 0;
+  const bar = it.limit > 0 ? `<span class="ubar"><i class="in" style="width:${inW.toFixed(1)}%"></i>${it.used > it.limit ? `<i class="out" style="width:${(100 - inW).toFixed(1)}%"></i>` : ''}</span>` : '<span class="ubar"></span>';
   return `<div class="urow ${esc(it.level)}" data-ukey="${esc(it.key)}">
     <span class="uname" title="${esc(it.tipName)}" aria-label="${esc(it.tipName)}">${itemIcon(it.key)}</span>
-    <span class="unum" title="${esc(it.tipNum)}"><b class="uused${bad ? ' bad' : ''}"${live}>${fmt(it.used)}</b>${second ? `<span class="useg">/</span><span class="u2${bad ? ' bad' : ''}">${second}</span>` : ''}</span>
+    <span class="unum" title="${esc(it.tipNum)}"><b class="uused"${live}>${fmt(it.used)}</b>${second ? `<span class="useg">/</span><span class="u2">${second}</span>` : ''}</span>
     ${sym}${rst}${bar}
   </div>`;
 }
 
-export function usageDashboard(u) {
+export function usageDashboard(u, ctx = {}) {
   if (!u) {
     // 查不到：不編數字（舊版雲端沒有這支）。低精度燈：灰色問號。
     return `<div class="card udash unk"><div class="ulamp" title="查不到 Cloudflare 用量" aria-label="查不到 Cloudflare 用量">${S.help}</div></div>`;
   }
   const top = (u.items || []).find((x) => x.key === u.top);
-  const topLive = top && top.rate > 0 ? ` data-live-top="1"` : '';
+  const topLive = '';
   const planSym = u.plan === 'paid' ? S.paid : (u.plan === 'local' ? S.local : S.free);
   const planTip = u.plan === 'paid' ? '付費方案 超出才收費' : (u.plan === 'local' ? '地端 沒有帳單' : '免費方案 超出會暫停');
   const age = Date.now() - u.atMs;
@@ -100,27 +103,37 @@ export function usageDashboard(u) {
   const lamp = stale ? `<span class="ulamp warn" title="數字已過時 稍後更新" aria-label="數字已過時">${S.stale}</span>` : '';
 
   // 高精度：主表盤＋里程表（最吃緊那一項）
-  const money = top && top.dollar ? `<div class="umoney" data-cost-base="${top.cost}" data-cost-rate="${top.costRate || 0}" title="${esc(top.tipCost || '')}"><span class="udollar">$</span><b>${usd(top.cost)}</b></div>` : '';
   const odo = top ? `<div class="uodo ${esc(top.level)}"${topLive}>
       <span class="uico">${itemIcon(top.key)}</span>
-      <span class="uodov"><b class="uused ${top.level === 'over' ? 'bad' : ''}"${top.rate > 0 ? ` data-live="1" data-base="${top.used}" data-rate="${top.rate}" data-limit="${top.limit || 0}" data-odo="1"` : ''}>${fmt(top.used)}</b>${top.limit > 0 ? `<span class="useg">/</span><span class="u2 ${top.level === 'over' ? 'bad' : ''}">${fmt(top.limit)}</span>` : ''}</span>
-      ${top.dollar ? '<span class="udollar glow">$</span>' : (top.pause ? `<span class="upause">${S.overFree.replace('width="22" height="22"', 'width="18" height="18"')}</span>` : '')}
+      <span class="uodov"><b class="uused ${top.level === 'over' ? 'bad' : ''}">${fmt(top.used)}</b>${top.limit > 0 ? `<span class="useg">/</span><span class="u2 ${top.level === 'over' ? 'bad' : ''}">${fmt(top.limit)}</span>` : ''}</span>
+      ${top.dollar ? '' : (top.pause ? `<span class="upause">${S.overFree.replace('width="22" height="22"', 'width="18" height="18"')}</span>` : '')}
       ${top.reset ? `<span class="ureset" title="${esc(top.tipReset || '')}">${top.per === 'month' ? S.month : S.reset}<b>${esc(top.reset)}</b></span>` : ''}
       ${top.rate > 0 ? `<span class="urate" title="每分鐘增加">+${fmt(top.rate)}<small>/m</small></span>` : ''}
     </div>` : '<div class="uodo ok"><span class="uico">' + S.ok + '</span></div>';
 
-  // 中精度：三格
+  // 中精度：儀表旁兩顆小按鈕（leo 10-11 #261）。
+  //   · 錢：付費＝「$ 本月超線約多少」，點了去費用說明（那筆錢是 Cloudflare 收的）；
+  //         免費＝一個「$」，點了去升級說明。想付費的人找錢的符號按，所以升級入口就是這個 $，不另放一顆。
+  //   · 剎車：剎車的開關在知識庫網頁的設定（小幫手持的金鑰沒有改設定的權限），按了直接帶過去。
   const brakeIcon = u.brake === 'on' ? S.brakeOn : (u.brake === 'off' ? S.brakeOff : S.brakeNa);
+  const small = (h) => h.replace('width="22" height="22"', 'width="17" height="17"');
   const covers = (u.covers || []).map((k) => `<span class="cv" title="${esc(nameOf(u, k))}">${itemIcon(k).replace(/width="18" height="18"/, 'width="12" height="12"')}</span>`).join('');
-  const upg = u.upgrade === 'billing' ? `<button class="ucell upg billing" data-openurl="https://dash.cloudflare.com/?to=/:account/billing" title="${esc(u.upgradeTip)}" aria-label="${esc(u.upgradeTip)}">${S.bill}<b>$${usd(u.monthUsd)}</b></button>`
-    : (u.upgrade === 'advise' ? `<button class="ucell upg advise" data-openurl="https://dash.cloudflare.com/?to=/:account/workers/plans" title="${esc(u.upgradeTip)}" aria-label="${esc(u.upgradeTip)}">${S.upAdvise}<b>$5</b></button>`
-      : (u.upgrade === 'upgrade' ? `<button class="ucell upg" data-openurl="https://dash.cloudflare.com/?to=/:account/workers/plans" title="${esc(u.upgradeTip)}" aria-label="${esc(u.upgradeTip)}">${S.upNo}<b>$5</b></button>`
-        : `<span class="ucell upg na" title="地端沒有帳單" aria-label="地端沒有帳單">${S.upNo}</span>`));
-  const cells = `<div class="ucells">
-    <span class="ucell dist ${esc(u.level)}" title="${esc(u.tipTop)}" aria-label="${esc(u.tipTop)}">${lvlIcon(u)}${top ? `<span class="uico">${itemIcon(top.key)}</span><b>${top.pct}%</b>` : ''}</span>
-    ${upg}
-    <span class="ucell brk ${esc(u.brake)}" title="${esc(u.tipBrake)}" aria-label="${esc(u.tipBrake)}">${brakeIcon}${covers}</span>
-  </div>`;
+  const tip = (t) => `title="${esc(t)}" aria-label="${esc(t)}"`;
+  let pay = '';
+  if (u.upgrade === 'billing') {
+    // $ 後面的數字＝所有超線項目的估算費用加總（leo c19149：超過的都會算在上面那個 $，清單各列沒有 $）
+    const over = (u.items || []).filter((x) => x.dollar);
+    const sumCost = over.reduce((a, x) => a + (x.cost || 0), 0);
+    const sumRate = over.reduce((a, x) => a + (x.costRate || 0), 0);
+    const live = '';
+    pay = `<button class="uact pay${live}" data-openurl="${DOC_COST}" ${tip(u.upgradeTip)}><span class="udollar">$</span>${over.length ? `<b>${usd(sumCost)}</b>` : ''}</button>`;
+  } else if (u.upgrade === 'advise' || u.upgrade === 'upgrade') {
+    pay = `<button class="uact pay ${u.upgrade === 'advise' ? 'advise' : ''}" data-openurl="${DOC_UPGRADE}" ${tip(u.upgradeTip)}><span class="udollar">$</span></button>`;
+  }
+  const brk = u.brake === 'on' || u.brake === 'off'
+    ? `<button class="uact brk ${esc(u.brake)}"${ctx.brakeUrl ? ` data-openurl="${esc(ctx.brakeUrl)}"` : ''} ${tip(u.tipBrake)}>${small(brakeIcon)}${covers}</button>`
+    : `<span class="uact brk na" ${tip(u.tipBrake)}>${small(brakeIcon)}</span>`;
+  const acts = `<div class="uacts">${pay}${brk}</div>`;
 
   const head = `<div class="uhead">
       <span class="ucloud" title="用量來自你自己的 Cloudflare 帳號" aria-label="用量來自你自己的 Cloudflare 帳號">${S.cloud}</span>
@@ -131,8 +144,7 @@ export function usageDashboard(u) {
 
   return `<div class="card udash ${esc(u.level)}" data-at="${u.atMs}">
     ${head}
-    <div class="uhigh">${dial(u, top)}<div class="uright">${odo}${money}</div></div>
-    ${cells}
+    <div class="uhigh">${dial(u, top)}<div class="uright">${odo}${acts}</div></div>
     <div class="urows">${(u.items || []).map((it) => row(it, u.plan)).join('')}</div>
   </div>`;
 }
@@ -143,6 +155,8 @@ export function usageDashboard(u) {
 const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 let timer = 0;
 export function startUsageTicker() {
+  return; // #260：停用往前推估。里程表只准反映雲端回報的真實用量（leo 10-11：閒置五分鐘數字不動）
+  // eslint-disable-next-line no-unreachable
   if (timer || reduce) return;
   timer = setInterval(() => {
     const root = document.querySelector('.udash[data-at]');

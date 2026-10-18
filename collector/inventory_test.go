@@ -30,6 +30,7 @@ func splitInventory(results []DirectResult) (inv, rest []DirectResult) {
 		switch r.Type {
 		case "inventory":
 			inv = append(inv, r)
+		case "index": // #264：分層目錄卡，同樣不是檔案事件
 		case "folder_tree":
 			// 樹不算總覽卡（回傳值只有兩個，刻意不擴成三個——呼叫端在意的是
 			// 「哪些是檔案事件」，樹跟總覽卡一樣都屬於「不是檔案事件」那一堆）。
@@ -167,8 +168,8 @@ func TestDirectInventory_先於萃取且冪等(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit=%d results=%+v", exit, results)
 	}
-	if len(order) != 2 {
-		t.Fatalf("應恰好兩個 POST（總覽卡＋內容卡），got %v", order)
+	if len(order) != 3 || order[2] != "00-INDEX" { // #264：內容卡送完後，目錄卡同一輪跟上
+		t.Fatalf("應恰好三個 POST（總覽卡＋內容卡＋目錄卡），got %v", order)
 	}
 	if !strings.HasPrefix(order[0], "資料夾總覽：") {
 		t.Fatalf("總覽卡必須先送（結構先行），實際順序：%v", order)
@@ -182,7 +183,7 @@ func TestDirectInventory_先於萃取且冪等(t *testing.T) {
 	}
 	// 第二輪：什麼都沒變 → 總覽不重送、也沒有檔案事件
 	results2, _, _ := RunDirectOnce(cfg, false)
-	if len(results2) != 0 || len(order) != 2 {
+	if len(results2) != 0 || len(order) != 3 {
 		t.Fatalf("無變動輪不該重送：results2=%+v order=%v", results2, order)
 	}
 	// 新增一個檔 → 總覽跟著更新（清單多一筆）＋新檔照常萃取。
@@ -193,7 +194,7 @@ func TestDirectInventory_先於萃取且冪等(t *testing.T) {
 	if _, exit3, _ := RunDirectOnce(cfg, false); exit3 != 0 {
 		t.Fatal("第三輪失敗")
 	}
-	if len(order) != 4 || !strings.HasPrefix(order[2], "資料夾總覽：") {
+	if len(order) != 6 || !strings.HasPrefix(order[3], "資料夾總覽：") { // #264：每輪多一張目錄卡
 		t.Fatalf("變動後總覽應更新且仍先送：%v", order)
 	}
 }

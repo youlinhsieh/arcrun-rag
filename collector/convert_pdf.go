@@ -24,6 +24,8 @@
 package collector
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -104,7 +106,9 @@ func extractPDFDetailed(data []byte) (string, *PDFReadReport, error) {
 			continue
 		}
 		info.Text = txt.Text
-		info.BigImages = countBigImages(inst, pg)
+		info.ImageSigs = bigImageSigs(inst, pg)
+		info.BigImages = len(info.ImageSigs)
+		info.Tables = pageTextTables(inst, pg, i+1)
 		pages = append(pages, info)
 	}
 
@@ -113,26 +117,60 @@ func extractPDFDetailed(data []byte) (string, *PDFReadReport, error) {
 	return renderPDFPages(pages), buildPDFReport(pages), nil
 }
 
-// countBigImages 數一頁上「大圖」的個數（面積超過頁面 bigImageFrac）。
-// 量測失敗一律當 0——這是加值的盤點，不能因此讓整頁讀不了。
-func countBigImages(inst pdfium.Pdfium, pg requests.Page) int {
+// pageTextTables 還原一頁文字層裡的表（convert_pdf_table.go）。失敗一律當沒有——這是加值，不能讓整頁讀不了。
+func pageTextTables(inst pdfium.Pdfium, pg requests.Page, pageNo int) []PDFTextTable {
+	r, err := inst.GetPageTextStructured(&requests.GetPageTextStructured{
+		Page: pg, Mode: requests.GetPageTextStructuredModeChars, CollectFontInformation: true,
+	})
+	if err != nil || r == nil || len(r.Chars) < 12 {
+		return nil
+	}
+	// 頁面範圍：落在頁外的字（隱藏文字、被裁掉的圖層）看不到，也不屬於任何表（inkstone/arcrun-rag#274）。
+	pageW, pageH := 0.0, 0.0
+	if w, werr := inst.FPDF_GetPageWidthF(&requests.FPDF_GetPageWidthF{Page: pg}); werr == nil {
+		pageW = float64(w.PageWidth)
+	}
+	if h, herr := inst.FPDF_GetPageHeightF(&requests.FPDF_GetPageHeightF{Page: pg}); herr == nil {
+		pageH = float64(h.PageHeight)
+	}
+	rects := make([]pdfTextRect, 0, len(r.Chars))
+	for _, x := range r.Chars {
+		if pageW > 0 && pageH > 0 && offPage(x.PointPosition.Left, x.PointPosition.Right, x.PointPosition.Top, x.PointPosition.Bottom, pageW, pageH) {
+			continue
+		}
+		size := 0.0
+		if x.FontInformation != nil {
+			size = x.FontInformation.Size
+		}
+		rects = append(rects, pdfTextRect{
+			Text: x.Text, Left: x.PointPosition.Left, Right: x.PointPosition.Right,
+			Top: x.PointPosition.Top, Bottom: x.PointPosition.Bottom, Size: size,
+		})
+	}
+	return detectTextTables(pageNo, rects)
+}
+
+// bigImageSigs 回傳一頁上每張「大圖」（面積超過頁面 bigImageFrac）的內容指紋。
+// 指紋讀不到時給空字串（仍算一張大圖，只是不參與「重複出現＝底圖」的判斷）。
+// 量測失敗一律當沒有——這是加值的盤點，不能因此讓整頁讀不了。
+func bigImageSigs(inst pdfium.Pdfium, pg requests.Page) []string {
 	w, err := inst.FPDF_GetPageWidthF(&requests.FPDF_GetPageWidthF{Page: pg})
 	if err != nil {
-		return 0
+		return nil
 	}
 	h, err := inst.FPDF_GetPageHeightF(&requests.FPDF_GetPageHeightF{Page: pg})
 	if err != nil {
-		return 0
+		return nil
 	}
 	area := float64(w.PageWidth) * float64(h.PageHeight)
 	if area <= 0 {
-		return 0
+		return nil
 	}
 	cnt, err := inst.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{Page: pg})
 	if err != nil {
-		return 0
+		return nil
 	}
-	n := 0
+	var sigs []string
 	for k := 0; k < cnt.Count; k++ {
 		o, err := inst.FPDFPage_GetObject(&requests.FPDFPage_GetObject{Page: pg, Index: k})
 		if err != nil {
@@ -147,8 +185,13 @@ func countBigImages(inst pdfium.Pdfium, pg requests.Page) int {
 			continue
 		}
 		if float64(b.Right-b.Left)*float64(b.Top-b.Bottom) > bigImageFrac*area {
-			n++
+			sig := ""
+			if raw, rerr := inst.FPDFImageObj_GetImageDataRaw(&requests.FPDFImageObj_GetImageDataRaw{ImageObject: o.PageObject}); rerr == nil && len(raw.Data) > 0 {
+				h := sha256.Sum256(raw.Data)
+				sig = hex.EncodeToString(h[:12])
+			}
+			sigs = append(sigs, sig)
 		}
 	}
-	return n
+	return sigs
 }

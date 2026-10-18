@@ -113,8 +113,8 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@d50334aeabbfaf46d227475b3447e7c1d6605d75"
-BUNDLE_BUILT = "2026-10-10"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@aa763acd963d468a5da5ece746986ef61e26ba26"
+BUNDLE_BUILT = "2026-10-11"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
 # LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
@@ -269,10 +269,20 @@ class_name = "InstallerStore"
 # 前綴 0 筆——這顆是 09-25 才重建的、還沒有人真的走完部署，沒有東西可搬，
 # 接了也只是白多一顆沒用到的 binding。prod／staging 才需要那段過渡。
 
+# inkstone/arcrun-rag#266：stage 的桌面安裝檔與「最新版」指標（manifest.json）放這顆 R2，
+# 由本 worker 的 `/dist/*` 自己服務（worker.js distHandle）——不再住在 git 歷史、
+# 不再靠 git.uncle6.me 的網址，Gitea 搬家不會讓 stage 下載斷掉。
+# bucket 由出貨線的登錄簿（ship.targets.json → targets.stage.dist）宣告並上傳；
+# 只有這個環境綁（prod／uncle6 staging 的下載路徑不變，GitHub raw／Gitea raw）。
+[[env.youlin-stage.r2_buckets]]
+binding = "DIST"
+bucket_name = "arcrun-stage-dist"
+
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/f7e3f8a"
-BUNDLE_BUILT = "2026-10-11"
+DIST_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/1a85f47"
+BUNDLE_BUILT = "2026-10-18"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。
 # 現在指向同一批本票新部署、住在 youlin 帳號的 landing／docs stage worker。

@@ -158,11 +158,45 @@
           "",
           "waitMs 只有 3 秒：Gitea raw 沒有邊緣快取要散，不必陪 prod 等 20 秒。"
         ],
-        "movingPointer": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
-        "refreshUrl": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main/manifest.json",
+        "_movingPointer": [
+          "🔴 2026-10-11（inkstone/arcrun-rag#266）：指標從 Gitea raw 搬到 R2（`dist.publicBase`/manifest.json）。",
+          "git 裡那份 manifest.json 仍照舊推（回退保險），但安裝器與這一站讀的是 R2 這份——",
+          "Gitea 搬家／封存不影響 stage 送達。R2 沒有邊緣快取要散（worker 直讀 binding），waitMs 維持 3 秒。"
+        ],
+        "movingPointer": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/manifest.json",
+        "refreshUrl": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/manifest.json",
         "refreshKind": "強制重讀",
         "waitMs": 3000,
         "maxTries": 4
+      },
+      "dist": {
+        "_": [
+          "stage 的桌面安裝檔與「最新版」指標改放 R2（inkstone/arcrun-rag#266，母票 inkstone/InkStoneCo#232）。",
+          "",
+          "為什麼：安裝檔當 git 檔存，本機 .git 已 1.5 GB，推 84 MB 撞 Cloudflare 代理 100 秒上限連四次 524（#265）；",
+          "而且下載與指標都在 git.uncle6.me 上，Gitea 搬家＝stage 下載斷掉。",
+          "",
+          "怎麼運作（實作在 installer/scripts/stage-dist.mjs；只有宣告了 dist 的目標生效，prod 沒有，行為不變）：",
+          "  · 安裝檔仍由 daemon-sync 搬進 bundle 工作區（讀磁碟的站不必改），但 .git/info/exclude 擋掉 ⇒ 不進 commit、不進 push",
+          "  · push 站推完 git 後，把安裝檔（daemon/<檔名>）與 manifest.json（指標）放進 R2——安裝檔先、指標最後",
+          "  · 安裝器 worker（youlin-stage）綁這顆 R2（binding DIST），自己服務 /dist/*，並從 R2 指標算下載網址",
+          "    ⇒ 不新增網域、不碰 DNS",
+          "",
+          "舊版網址怎麼處理：",
+          "  · 本變更以前已經進 git 的舊安裝檔（Gitea raw 上的 daemon/*）**不刪**（紅線：bundle 歷史是回退保險），",
+          "    照常可讀，直到 Gitea 轉唯讀封存（inkstone/gitea-ops#5）——封存後舊網址仍可讀（唯讀），不會 404。",
+          "  · 本變更之後的新版只在 R2。要回退＝把 pointer 換回去：移掉 dist 宣告、movingPointer 指回 Gitea raw、",
+          "    wrangler.toml 拿掉 DIST 綁定；舊歷史還在，可回。",
+          "  · 切換前部署的 stage 安裝器 worker 讀的是釘死的 Gitea commit（BUNDLE_BASE），在 worker 重新部署前照舊可用。",
+          "",
+          "沒包含（另記）：零件包本體（wasm／js，體積小）仍在 bundle repo，隨 gitea-ops#4 的 git 搬家一起走；",
+          "版本發佈紀錄（Gitea release）仍是內部簽收鏈（票→PR→commit→version）的一環，隨 Gitea→AHub 搬，",
+          "但已不再掛安裝檔本體，內文改連 R2 下載網址（見 releaseRecord.attachAssets）。"
+        ],
+        "kind": "r2",
+        "bucket": "arcrun-stage-dist",
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
       },
       "releaseRecord": {
         "_": [
@@ -196,6 +230,11 @@
           "  ⇒ 「發到哪個 repo」是**版本線**的屬性，不是**出貨目標**的屬性。",
           "  每條線各自宣告，缺一條就在登錄簿驗證階段 exit 2——**不准退回 repoSlug**。"
         ],
+        "_attachAssets": [
+          "inkstone/arcrun-rag#266：false ＝ 版本發佈頁不再掛 dmg／exe／msix 本體（它們在 R2，內文列下載網址）。",
+          "只有宣告了 targets.<目標>.dist 的目標才准設 false；prod 沒有 dist，仍掛附件。"
+        ],
+        "attachAssets": false,
         "host": "gitea",
         "repoSlug": "inkstone/arcrun-rag",
         "baseUrl": "https://git.uncle6.me",

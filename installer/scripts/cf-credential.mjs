@@ -31,7 +31,7 @@ import { fill, describeSources, missingCredentialError } from './credential-stor
 /** 這個目標會用 wrangler 部署到哪些帳號（登錄簿宣告，去重）。 */
 export function deployAccountsOf(T) {
   const out = [];
-  for (const key of ['installer', 'docsSite', 'mailRelay']) {
+  for (const key of ['installer', 'docsSite', 'mailRelay', 'dist']) {   // dist＝R2 上傳（inkstone/arcrun-rag#266）
     const s = T && T[key];
     if (s && s.accountId && !out.includes(s.accountId)) out.push(s.accountId);
   }

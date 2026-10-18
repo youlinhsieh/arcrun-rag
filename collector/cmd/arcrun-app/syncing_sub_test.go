@@ -83,3 +83,24 @@ func TestSyncingSubSaysWhereAndWhy(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncWhere_waitingFile(t *testing.T) {
+	r := &collector.RoundProgress{Account: "a.example", Folder: "/x/docs",
+		Waiting: &collector.StalledCall{Account: "b.example", File: "sub/big.pdf"}}
+	got := syncWhere(r, func(h string) string { return "L-" + h })
+	if got != "L-b.example · big.pdf" {
+		t.Fatalf("got %q", got)
+	}
+	if syncWhere(nil, nil) != "" {
+		t.Fatal("nil 應回空")
+	}
+}
+
+func TestInRoundFresh(t *testing.T) {
+	now := time.Now()
+	fresh := &collector.RoundProgress{UpdatedAt: now.Add(-40 * time.Second).Format(time.RFC3339)}
+	stale := &collector.RoundProgress{UpdatedAt: now.Add(-10 * time.Minute).Format(time.RFC3339)}
+	if !inRoundFresh(fresh, now) || inRoundFresh(stale, now) || inRoundFresh(nil, now) {
+		t.Fatal("fresh 應 true、stale/nil 應 false")
+	}
+}

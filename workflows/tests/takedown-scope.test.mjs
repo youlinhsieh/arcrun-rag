@@ -80,7 +80,7 @@ const idsOf = (r) => r.dead_entries.map((e) => e.id).sort();
   t('撈三元組走 by-source（按這張卡自己的來源取，不是撈全租戶再過濾）',
     url.indexOf('/records/by-source/triplet') >= 0, url);
   t('by-source 的鍵是 source_uri，值來自 prep 算好的 encodeURIComponent',
-    url.indexOf('field=source_uri') >= 0 && url.indexOf('{{prep.data.src_uri_enc}}') >= 0, url);
+    url.indexOf('field=source_uri') >= 0 && url.indexOf('{{prep.data.trip_src_uri_enc}}') >= 0, url);
   // 只看真的會發出去的 url:（註解裡引用舊端點是在說明歷史，不是行為——
   // 同 response-size-cap.test.mjs 對註解行的處置）。
   const liveUrls = y.split('\n').filter((l) => !/^\s*#/.test(l) && /^\s*url:\s*"/.test(l));

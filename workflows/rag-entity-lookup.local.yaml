@@ -1,0 +1,266 @@
+# rag_entity_lookup — 「這張卡的每個 entity，知識圖上已經知道它什麼」（inkstone/arcrun-rag#267，母票 inkstone/Arcrun#297）
+#
+# 為什麼有這支（rag_entity_concept 的前置查詢，內部呼叫，不對外）：
+#   rag_entity_concept 每張卡要先知道「這幾個 entity 是不是已經有 description／已經歸過類」，
+#   才決定要不要請 LLM。原本的作法是撈**整個庫**（本庫三元組 500 筆、全租戶 description 500 筆）
+#   再在 code 節點裡比對——成本跟庫的大小成正比，而且 http_request 零件回應上限 64 KiB，
+#   500 筆（約 190 KB）在庫稍大時整顆 WASM trap（見 workflows/tests/response-size-cap.test.mjs）：
+#   KBDB 那端的讀取照付、這端拿不到東西。geek（上萬份）每張卡因此多付約 3 萬列讀取。
+#
+# 第一個想法（錯的，量過才知道）：對每個 entity 查 `field=subject&value=<entity>`。
+#   KBDB 的欄位過濾是「先找內容等於這個字串的值格（任何欄位），再反查哪些是 subject 欄」。
+#   熱門名詞（「錯誤碼」「NC Error Messages」每張卡都出現，多半當 object）有幾千顆同內容的值格，
+#   問它「當 subject 的有哪些」仍要把那幾千顆都讀一遍——庫 1,500 張 3,004 列、6,000 張 12,004 列，
+#   每個熱門 entity 都是，一張卡有 3 個就是 3.6 萬列，比原本還貴。
+#
+# 本支的作法：**用只屬於這個 entity 自己的記號查**。
+#   rag_entity_concept 寫 description／「屬於」時，source_uri 欄蓋上
+#     entity-desc://<entity>、entity-concept://<entity>
+#   （entity-level 知識，不是哪張卡的出處；下架某張卡用的是卡的路徑，不會碰到它們）。
+#   這個字串只有那一筆（或每個庫一筆）record 有，值格只有 1～幾顆 ⇒ 查詢成本是常數，
+#   不跟庫的大小、也不跟這個名詞在別處出現幾次有關。
+#
+#   舊資料（本票之前寫的、沒有記號）：記號查不到時才退回 `field=subject` 查一次，
+#   找得到就當作已存在（維持原本「已有就不重寫」的判準，不讓既有庫被重新描述一輪）。
+#   退回路徑的成本跟該名詞的出現次數有關，但只有「記號查不到」才走——新 entity 第一次出現時一次，
+#   寫入記號之後就不會再走。
+#
+# 為什麼要獨立成一支 workflow，而不是 rag_entity_concept 自己的 FOREACH：
+#   引擎的 FOREACH 結果（`<節點>.results`）只回到「FOREACH 那條邊的呼叫者」，
+#   同一個節點的其他出邊讀不到——inkstone/Arcrun#263 把每條出邊凍在本節點自己的輸出之後，
+#   `X >> 對每個 … >> A` 加 `X >> ON_SUCCESS >> B` 時 B 的 `{{X.results}}` 不再展開
+#   （本票實測：留著字面 `{{X.results}}`）。把 FOREACH 放在這支的**最後一條邊**，
+#   它的 results 就是這支 workflow 的回應，rag_entity_concept 用一次 http_request 拿到全部。
+#
+# 觸發（內部呼叫，rag_entity_concept 的 fetch_lookup 節點打這個）：
+#   POST {cypher}/webhooks/named/rag_entity_lookup/query
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"entities_json":"[\"[[黃仁勳]]\",\"TimCook\"]","library":"kb"}'
+#   回應（/query 端點直接回最終輸出）：
+#     {"success":true,"data":{...},"results":[{"success":true,"data":{"entity":"黃仁勳",
+#       "has_desc":true,"in_lib_concept":false,"concepts":["科技公司執行長"],"truncated":false,"seen":3}}, ...]}
+#   某個 entity 查詢失敗（含回應超過 64 KiB）→ 該項沒有 `data.entity`、帶 `data.failed:true`，
+#   呼叫端視為「這次不處理它」，不當成「沒有 description」去重寫。
+#
+# 紅線：只讀。零向量、零寫入、不加表（走 KBDB 既有的欄位過濾端點）。entity 名字先照 KBDB 寫入時的
+# 同一份規則收斂（卡片裡寫 [[M150]]，KBDB 存 M150；查詢不會替你收斂）。
+
+name: rag_entity_lookup
+description: >
+  對一張卡的每個 entity 各查一次「它自己」在知識圖上的 description／概念歸屬
+  （以 entity-desc:// 與 entity-concept:// 記號查，常數成本；舊資料退回 field=subject），
+  回傳精簡結果。成本只跟這張卡的 entity 數有關，不跟庫的大小、名詞的出現次數有關。只讀。
+  （inkstone/arcrun-rag#267）
+
+flow:
+  - "input >> ON_SUCCESS >> prep_lookup"
+  - "prep_lookup >> 對每個 entity_item 並行 6 >> fetch_desc_marker"
+  - "fetch_desc_marker >> ON_SUCCESS >> fetch_concept_marker"
+  - "fetch_desc_marker >> ON_FAIL >> item_failed"
+  - "fetch_concept_marker >> ON_SUCCESS >> decide"
+  - "fetch_concept_marker >> ON_FAIL >> item_failed"
+  - "decide >> ON_TRUE >> fetch_legacy"
+  - "fetch_legacy >> ON_SUCCESS >> merge_legacy"
+  - "fetch_legacy >> ON_FAIL >> item_failed"
+
+config:
+  prep_lookup:
+    component: "__CODE_URL__"
+    input:
+      entities_raw: "{{input.entities_json}}"
+      library: "{{input.library}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var entities = parse(input.entities_raw);
+      entities = Array.isArray(entities) ? entities : [];
+      var library = String(input.library || 'kb');
+      // KBDB 寫入三元組時會把 subject／object 收斂成標準寫法（kbdb/src/actions/entity-canon.ts 的
+      // canonicalEntity：NFC、剝 [[X]]／`X` 整串包裝、筆記副檔名路徑取檔名、空白收斂）。
+      // 查詢（field=…&value=）不會替你收斂 ⇒ 用卡片裡原樣的 `[[M150]]` 去查，什麼都找不到，
+      // 等於永遠判成「沒有 description」而重寫。所以這裡先照同一份規則收斂再查、再比對。
+      // （這是 canonicalEntity 的逐行移植；改那份規則時兩處要一起改——workflows/tests/entity-concept-scope.test.mjs 有向量守著。）
+      function unwrapWhole(t) {
+        var code = /^(`+)([\s\S]*?)(`+)$/.exec(t);
+        if (code) { var inner = code[2].trim(); if (inner && inner.indexOf('`') === -1) return inner; }
+        if (t.indexOf('[[') === 0 && t.length > 4 && t.slice(-2) === ']]') {
+          var w = t.slice(2, -2).trim();
+          if (w && w.indexOf('[[') === -1 && w.indexOf(']]') === -1) return w;
+        }
+        return t;
+      }
+      function canon(raw) {
+        var fallback = String(raw == null ? '' : raw).trim();
+        var t = String(raw == null ? '' : raw);
+        if (typeof t.normalize === 'function') t = t.normalize('NFC');
+        t = t.trim();
+        if (!t) return fallback;
+        for (var q = 0; q < 4; q++) { var before = t; t = unwrapWhole(t); if (t === before) break; }
+        var NOTE_EXT = /\.(md|markdown|mdx|txt|org)$/i;
+        if (NOTE_EXT.test(t)) {
+          t = t.replace(NOTE_EXT, '');
+          var cut = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\'));
+          if (cut >= 0) t = t.slice(cut + 1);
+        }
+        t = t.replace(/\s+/g, ' ').trim();
+        return t || fallback;
+      }
+      var seen = {};
+      var items = [];
+      // 一張卡的 entity 上限：超過的這次不查（也就不處理），避免單張卡把子請求數撐爆。
+      var MAX_ENTITIES = 200;
+      for (var i = 0; i < entities.length && items.length < MAX_ENTITIES; i++) {
+        var e = canon(entities[i]);
+        if (!e || e === 'knowledge-base' || seen[e]) continue;
+        seen[e] = true;
+        // 給 URL 用的編碼版；entity 原樣（已收斂）留著給比對。
+        items.push({
+          entity: e,
+          enc: encodeURIComponent(e),
+          desc_q: encodeURIComponent('entity-desc://' + e),
+          concept_q: encodeURIComponent('entity-concept://' + e),
+          library: library,
+        });
+      }
+      if (items.length === 0) throw new Error('沒有可查的 entity（entities_json 空或全被過濾）');
+      return { success: true, entity_items: items, entity_count: items.length };
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 262144
+
+  # 一個 entity 的 description 記號。limit=20：同一個 entity 理論上一筆（舊的重複寫入最多幾筆），
+  # 每筆約 400～900 B，遠低於 http_request 單次 64 KiB。
+  fetch_desc_marker:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=source_uri&value={{entity_item.desc_q}}&owner_id=__NAMESPACE__&limit=20"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 一個 entity 的「屬於」記號：每個庫最多一筆 ⇒ 筆數 ≤ 這個 entity 出現過的庫數。limit=50。
+  fetch_concept_marker:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=source_uri&value={{entity_item.concept_q}}&owner_id=__NAMESPACE__&limit=50"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  # 判準與 rag_entity_concept 原本逐字一致：
+  #   has_desc        ＝ 這個 entity 在任何庫是否已有一句 description（Arcrun#264，跨庫）
+  #   in_lib_concept  ＝ 這個 entity 在「本庫」是否已有「屬於」（membership，子庫各自記錄）
+  #   concepts        ＝ 這個 entity 已歸入的概念名稱（任何庫；給 LLM 當目錄的一部分，讓它照抄）
+  # 記號查得到 ⇒ 直接定案。任何一邊查不到 ⇒ branch=true，走 fetch_legacy 退回舊資料的查法。
+  decide:
+    component: "__CODE_URL__"
+    input:
+      desc_body: "{{fetch_desc_marker.data.body}}"
+      concept_body: "{{fetch_concept_marker.data.body}}"
+      entity: "{{entity_item.entity}}"
+      library: "{{entity_item.library}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var entity = String(input.entity || '');
+      var library = String(input.library || 'kb');
+      var d = parse(input.desc_body);
+      var c = parse(input.concept_body);
+      var dRecs = (d && Array.isArray(d.records)) ? d.records : [];
+      var cRecs = (c && Array.isArray(c.records)) ? c.records : [];
+      var hasDesc = false;
+      for (var i = 0; i < dRecs.length; i++) {
+        var dv = (dRecs[i] && dRecs[i].values) || {};
+        if (String(dv.subject || '') === entity && String(dv.predicate || '') === 'description') hasDesc = true;
+      }
+      var concepts = [];
+      var inLib = false;
+      var markedConcept = false;
+      for (var j = 0; j < cRecs.length; j++) {
+        var cv = (cRecs[j] && cRecs[j].values) || {};
+        var obj = String(cv.object || '');
+        if (String(cv.subject || '') !== entity || String(cv.predicate || '') !== '屬於' || !obj) continue;
+        markedConcept = true;
+        if (concepts.indexOf(obj) === -1) concepts.push(obj);
+        if (String(cv.library || '') === library) inLib = true;
+      }
+      var truncated = (d ? Number(d.total) > dRecs.length : false) || (c ? Number(c.total) > cRecs.length : false);
+      return {
+        success: true,
+        entity: entity,
+        has_desc: hasDesc,
+        in_lib_concept: inLib,
+        concepts: concepts,
+        truncated: truncated,
+        seen: dRecs.length + cRecs.length,
+        legacy: false,
+        branch: (hasDesc && markedConcept) ? 'false' : 'true',
+      };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 16384
+
+  # 舊資料退路：記號查不到時，照原本的語意用 field=subject 查一次（limit 80：64 KiB 天花板下的安全量）。
+  # 成本跟這個名詞在別處出現幾次有關，所以只在記號查不到時走；新 entity 第一次被處理、
+  # 寫下記號之後就不會再走。
+  fetch_legacy:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/records/by-template/triplet?field=subject&value={{entity_item.enc}}&owner_id=__NAMESPACE__&limit=80"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  merge_legacy:
+    component: "__CODE_URL__"
+    input:
+      base: "{{decide.data}}"
+      legacy_body: "{{fetch_legacy.data.body}}"
+      entity: "{{entity_item.entity}}"
+      library: "{{entity_item.library}}"
+    code: |
+      function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
+      var base = (input.base && typeof input.base === 'object') ? input.base : {};
+      var entity = String(input.entity || '');
+      var library = String(input.library || 'kb');
+      var l = parse(input.legacy_body);
+      var recs = (l && Array.isArray(l.records)) ? l.records : [];
+      var hasDesc = !!base.has_desc;
+      var inLib = !!base.in_lib_concept;
+      var concepts = Array.isArray(base.concepts) ? base.concepts.slice() : [];
+      for (var i = 0; i < recs.length; i++) {
+        var v = (recs[i] && recs[i].values) || {};
+        if (String(v.subject || '') !== entity) continue;
+        var pred = String(v.predicate || '');
+        var obj = String(v.object || '');
+        if (pred === 'description') hasDesc = true;
+        if (pred === '屬於' && obj) {
+          if (concepts.indexOf(obj) === -1) concepts.push(obj);
+          if (String(v.library || '') === library) inLib = true;
+        }
+      }
+      var total = l ? Number(l.total) : 0;
+      return {
+        success: true,
+        entity: entity,
+        has_desc: hasDesc,
+        in_lib_concept: inLib,
+        concepts: concepts,
+        truncated: !!base.truncated || total > recs.length,
+        seen: Number(base.seen || 0) + recs.length,
+        legacy: true,
+      };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 16384
+
+  # 任何一個查詢節點失敗（含回應超過 64 KiB）都接到這裡：回成功但不帶 entity，
+  # 呼叫端看不到這個 entity 的結論就這次不處理它（不當成「沒有」）。
+  # 有 ON_FAIL 接住，整支 workflow 才不會因為單一 entity 失敗而整個回 500。
+  item_failed:
+    component: "__CODE_URL__"
+    input:
+      entity: "{{entity_item.entity}}"
+    code: |
+      return { success: true, failed: true, failed_entity: String(input.entity || '') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096

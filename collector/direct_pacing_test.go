@@ -192,7 +192,7 @@ func TestDirect_LargeBacklog_ProcessedInNewestFirstBatches(t *testing.T) {
 	defer mu.Unlock()
 	var contentCards []string
 	for _, pn := range order {
-		if !strings.HasPrefix(pn, "資料夾總覽") {
+		if !strings.HasPrefix(pn, "資料夾總覽") && !strings.HasPrefix(pn, "00-INDEX") {
 			contentCards = append(contentCards, pn)
 		}
 	}
@@ -258,7 +258,9 @@ func TestDirect_StarvedBacklog_HealthyFilesEventuallyGetATurn(t *testing.T) {
 			return
 		}
 		mu.Lock()
-		succeededPages = append(succeededPages, pageName)
+		if !strings.HasPrefix(pageName, "00-INDEX") { // #264 目錄卡不算健康檔案的卡
+			succeededPages = append(succeededPages, pageName)
+		}
 		mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
@@ -331,7 +333,7 @@ func ingestedPaths(results []DirectResult) []string {
 	for _, r := range results {
 		// 只數「檔案事件」。總覽卡（inventory）與資料夾樹（folder_tree，InkStoneCo#44）
 		// 都是每輪的結構回報，不是使用者的檔案——同 countsAsDocument 的那條線。
-		if r.Status == "ingested" && r.Type != "inventory" && r.Type != "folder_tree" {
+		if r.Status == "ingested" && r.Type != "inventory" && r.Type != "folder_tree" && r.Type != "index" {
 			out = append(out, r.Path)
 		}
 	}

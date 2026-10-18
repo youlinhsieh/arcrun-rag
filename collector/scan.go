@@ -734,6 +734,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			ne.CloudMissingAt = carry.CloudMissingAt
 			ne.NoCloudCard = carry.NoCloudCard
 			ne.TwinRoot, ne.TwinPath = carry.TwinRoot, carry.TwinPath // #246 c18734：同內容併卡的指向，漏 carry 就每輪重萃
+			ne.TwinOriginPending = carry.TwinOriginPending            // #209 c10693：漏 carry＝本尊的出處永遠推不上去
 		}
 		newEntries[p] = ne
 	}

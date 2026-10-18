@@ -166,7 +166,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 	// 改走一般化的「分段、本機存書籤、每天接著讀」機制（extract_resume.go）。
 	// 這是**任何**大檔的共通路，不綁定文件形狀（不做「查表型偵測」之類的特判）。
 	if len(srcText) > maxWorkersAIExtractBytes {
-		return extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText, origin, retry, readRep.Notes()...)
+		return extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText, origin, retry, readRep.VerbatimSections(), readRep.Notes()...)
 	}
 
 	output, legacyCard, err := callWorkersAIExtract(workersAIHTTP, url, apiKey, pageName, srcText, extractRequestFor(srcText), retry)
@@ -183,6 +183,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 			return nil, perr
 		}
 		ex.Unreadable = readRep.Notes() // #253：圖片表等讀不到的部分，文件卡明講
+		ex.Verbatim = readRep.VerbatimSections() // #253：文字層的表逐字存進文件卡，不經 LLM
 		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
 		if berr != nil {
 			return nil, berr

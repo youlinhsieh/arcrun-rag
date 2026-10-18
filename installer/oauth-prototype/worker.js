@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@d50334aeabbfaf46d227475b3447e7c1d6605d75';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@aa763acd963d468a5da5ece746986ef61e26ba26';
 const BUNDLE_BUILT = '2026-10-10'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -446,7 +446,7 @@ import SKILLS from './skills.json' with { type: 'json' };
 // 🔴 判準從此是「**這顆 worker 現在綁著誰**」，不是「有沒有叫這個名字的資源」。
 //    舊寫法（ensureKvNamespace/ensureD1Database/ensureVectorizeIndex：照名字找、找不到就建）
 //    已整段刪除——那正是 `Leo/Arcrun#97`「我按了更新，工作流和登入全不見了」的病根。
-import { planResources, applyResourcePlan, ResourcePlanBlocked, bindingKey } from './shared/resource-rule/rule.mjs';
+import { planResources, applyResourcePlan, ResourcePlanBlocked, bindingKey, normalizeLiveVars } from './shared/resource-rule/rule.mjs';
 import { createCloudflareResourceApi } from './shared/resource-rule/cf-resource-api.mjs';
 // 版本＋commit 兩個印記的唯一產地（Arcrun#106 另一半）——見 version-stamp.mjs 檔頭。
 import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from './version-stamp.mjs';
@@ -2777,6 +2777,56 @@ export function canSkipWorker({ name, entrySha, prevSha, scope, presentOnAccount
   return true;
 }
 
+/**
+ * 讀一顆已部署 worker 身上的 `plain_text` var（`secret_text` CF 不回值，本來就碰不到）。
+ *
+ * - script 不存在（404）→ `{ deployed: false, vars: {} }`：這是「還沒裝」，不是錯誤。
+ * - 其他任何失敗 → **往外拋**。呼叫端必須把它當「我不知道」而不是「它沒有」——
+ *   把讀不到當成沒有，就是 arcrun-rag#268 的根因（換信箱重裝，租戶被悄悄換掉）。
+ */
+async function readScriptPlainVars(token, accountId, script) {
+  try {
+    const s = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(script)}/settings`);
+    return { deployed: true, vars: normalizeLiveVars((s && s.bindings) || []) };
+  } catch (e) {
+    if (e instanceof InstallError && e.status === 404) return { deployed: false, vars: {} };
+    throw e;
+  }
+}
+
+/**
+ * 帳號落點（租戶）的既有事實來源，依序看：先看到誰就以誰為準。
+ * 這幾個 var 都是「安裝器寫進去、或當初安裝時對齊過」的同一個租戶代號。
+ */
+const TENANT_SOURCES = [
+  { script: 'arcrun-cypher-executor', vars: ['CONSOLE_TENANT', 'ARCRUN_NAMESPACE'] },
+  { script: 'arcrun-mcp', vars: ['MCP_OWNER_NAMESPACE'] },
+];
+
+/**
+ * 這台實例的帳號落點（租戶）該是誰。
+ *
+ * 🔴 inkstone/arcrun-rag#268：租戶以前永遠＝「這次輸入的信箱」的雜湊（slugFromEmail），
+ *    沒有讀回這台原本的值 ⇒ 同一個 Cloudflare 帳號換信箱重裝，`CONSOLE_TENANT`／
+ *    `MCP_OWNER_NAMESPACE` 就被換成新代號，Portal 登入回 auth_store_empty、
+ *    原本的 App 和知識全看不到（youlin stage 10-11 實撞：yuga3bse → pcemcdk6）。
+ *    ⇒ 判準改成「**這個帳號上已經裝著誰就沿用誰**」，信箱只在**全新安裝**時決定租戶。
+ *
+ * 讀不到（非 404）時往外拋，不退回信箱推導——不知道，就不能去覆蓋。
+ *
+ * @returns {Promise<{tenant: string, source: 'existing'|'email', from: string|null, emailTenant: string}>}
+ */
+export async function resolveInstanceTenant(token, accountId, emailTenant) {
+  for (const src of TENANT_SOURCES) {
+    const { vars } = await readScriptPlainVars(token, accountId, src.script);
+    for (const name of src.vars) {
+      const v = String(vars[name] || '').trim();
+      if (v) return { tenant: v, source: 'existing', from: `${src.script}.${name}`, emailTenant };
+    }
+  }
+  return { tenant: emailTenant, source: 'email', from: null, emailTenant };
+}
+
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
   const base = bundleBase(env);
   // 1. 抓主模組 + wasm 模組（fetchBundleAsset：3 次重試 + GitHub raw 備援）
@@ -2799,6 +2849,7 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   const resolvedFor = (kind, binding) =>
     (resources.bindings && resources.bindings[bindingKey(kind, binding)]) || null;
   const bindings = [];
+  let carriedVars = null;
   for (const name of entry.requires?.kv || []) {
     const id = resolvedFor('kv_namespace', name) || resources.kv?.[name];
     if (!id) throw new InstallError(`缺少快取空間 ${name}`, { detail: `no resolved kv for ${name}` });
@@ -2943,6 +2994,22 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   };
   for (const [k, v] of Object.entries(vars)) bindings.push({ type: 'plain_text', name: k, text: String(v) });
 
+  // arcrun-rag#268：安裝器不管的 var（例如 cypher 的 ARCRUN_NAMESPACE／MULTI_TENANT）不准在重裝時被清掉。
+  // PUT /scripts 的 bindings 是「整份取代」——沒列進去的 plain_text var 會直接消失。
+  // 所以推之前先讀這顆現在身上有哪些，**我們沒有要寫的**就原樣帶過去；我們要寫的照舊以我們為準。
+  // 讀不到（非 404）就往外拋：不知道身上有什麼，就不能去整份取代它。
+  if (inject.carryExistingVars) {
+    const live = await readScriptPlainVars(token, accountId, entry.name);
+    const have = new Set(bindings.map((b) => b.name));
+    const carried = [];
+    for (const [k, v] of Object.entries(live.vars)) {
+      if (have.has(k)) continue;
+      bindings.push({ type: 'plain_text', name: k, text: String(v) });
+      carried.push(k);
+    }
+    if (carried.length) carriedVars = carried;
+  }
+
   // 3. multipart PUT /scripts
   const metadata = {
     main_module: entry.main_module,
@@ -2973,7 +3040,7 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
       + ((e && e.status) ? `（HTTP ${e.status}${e.code == null ? '' : ' code=' + e.code}）` : '');
   }
 
-  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning };
+  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning, carriedVars };
 }
 
 /** 佔位代換：整棵 JSON stringify → 逐一 replace → parse（等價 push-demo-workflow.sh sed 段）。 */
@@ -3656,6 +3723,19 @@ async function runInstall(env, sid, progress, force) {
   } else {
     try {
       await setStep('deploy', 'running');
+      // arcrun-rag#268：帳號落點（租戶）— 這個帳號上已經裝著誰就沿用誰，信箱只在全新安裝時決定。
+      // 存進 progress.result.tenant＝接力續跑的游標（後面每一輪、以及 workflows 步都吃同一個值）。
+      if (!progress.result.tenant) {
+        const t = await resolveInstanceTenant(token, accountId, suffix);
+        progress.result.tenant = t.tenant;
+        progress.result.tenantSource = t.source;
+        if (t.source === 'existing' && t.tenant !== suffix) {
+          progress.result.tenantKept = `沿用這個帳號原本的帳號落點 ${t.tenant}（來自 ${t.from}），`
+            + `沒有改成這次信箱推導的 ${suffix}`;
+        }
+        await writeProgress(env, sid, progress);
+      }
+      const tenant = progress.result.tenant;
       // 子網域先行：零件靠 URL 互打（cypher→component），沒有 workers.dev 子網域整套不通。
       // 🔴 inkstone/Arcrun#190：以前這裡是 fail-closed ＋「請去 Cloudflare 後台自己設一個」。
       //    現在是 fail-**forward**：沒有就我們幫他開（見 ensureWorkersSubdomain 檔頭）。
@@ -3922,7 +4002,7 @@ async function runInstall(env, sid, progress, force) {
         // KV 裡留下的仍是「接力中」而不是「running」，前端就會自動接手（不會永久卡住）。
         progress.state = 'paused_continue';
         await writeProgress(env, sid, progress);
-        const r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant: suffix, bundleBuilt: manifest.built, bundleRelease: manifest.release, bundleSource: manifest.source });
+        const r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant, carryExistingVars: true, bundleBuilt: manifest.built, bundleRelease: manifest.release, bundleSource: manifest.source });
         progress.result.deployedNames.push(r.name);
         progress.state = 'running'; // 這一顆平安做完，恢復 running（上面是被砍時的保底）
         if (r.usedFallback) progress.result.bundleFallbackUsed = true;
@@ -4009,7 +4089,7 @@ async function runInstall(env, sid, progress, force) {
   // --- e2. AI 工作流（graph_neighbors / rag_chat / rag_ingest_card）---------
   try {
     await setStep('workflows', 'running');
-    const ns = suffix; // 用戶實例 namespace＝email 短碼（單租戶自足）
+    const ns = progress.result.tenant || suffix; // 用戶實例 namespace＝這個帳號既有的租戶；全新安裝才是 email 短碼（#268）
 
     // t147（07-29 leo 問「為什麼自己安裝沒有？別人裝會有嗎」——答：**別人裝也不會有**）：
     // 安裝器從未打 /init/seed，只打了 /portal/admin/bootstrap，
@@ -5122,6 +5202,13 @@ export default {
       });
     }
 
+    // inkstone/arcrun-rag#266：stage 的安裝檔與「最新版」指標住 R2（binding DIST），
+    // 由本 worker 自己服務——不另開網域、不碰 DNS，也不再依賴 git.uncle6.me。
+    // 沒綁 R2 的環境（prod、uncle6 staging）不進這條路，行為不變。
+    if (env.DIST && pathname.startsWith("/dist/")) {
+      return distHandle(request, env, pathname);
+    }
+
     if (!env.INSTALLER_KV) {
       return html(
         pageShell(
@@ -5260,6 +5347,30 @@ async function writeInstallLog(env, sid, progress) {
 async function handleDownload(env, os) {
   const daemon = await daemonOf(env);
   const url = daemon && daemon.downloads && daemon.downloads[os];
+  // inkstone/arcrun-rag#266：stage 的檔案就在自己的 R2，直接串出去，不繞一圈 fetch 自己的公開網址。
+  if (url && distOn(env) && url.startsWith(distBaseOf(env) + '/')) {
+    const key = url.slice(distBaseOf(env).length + 1);
+    const obj = distKeyAllowed(key) ? await env.DIST.get(key) : null;
+    if (!obj) {
+      return html(
+        pageShell('安裝檔下載失敗',
+          `<h2>安裝檔下載失敗</h2>
+         <p class="lead">安裝檔暫時讀不到。請稍後再試一次。</p>
+         <a class="btn" href="/">回到安裝首頁</a>`, '', env),
+        502
+      );
+    }
+    return new Response(obj.body, {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-disposition': `attachment; filename="${key.split('/').pop()}"`,
+        'content-length': String(obj.size),
+        // /download/{os} 網址不含版號 ⇒ 不能長快取（同 inkstone/arcrun-rag#263 的修法）
+        'cache-control': 'no-cache, must-revalidate',
+        'x-arcrun-daemon-version': (daemon && daemon.version) || '',
+      },
+    });
+  }
   if (!url) {
     return html(
       pageShell(
@@ -5293,11 +5404,75 @@ async function handleDownload(env, os) {
       'content-type': 'application/octet-stream',
       'content-disposition': `attachment; filename="${filename}"`,
       'content-length': upstream.headers.get('content-length') || '',
-      // 檔名帶版本號 ⇒ 內容不會變 ⇒ 可以放心長快取
-      'cache-control': 'public, max-age=86400',
+      // 🔴 /download/mac、/download/win 網址不含版號，同一網址每版內容不同 ⇒ 不能讓瀏覽器長快取
+      //    （2026-10-11 leo 實撞：出 0.18.102 後點下載仍拿到 0.18.99，因 max-age=86400）。
+      //    no-cache＝每次都回源重取；上游檔案走 cf.cacheTtl 邊緣快取（URL 帶釘點 sha），不增加負擔。
+      'cache-control': 'no-cache, must-revalidate',
       'x-arcrun-daemon-version': (daemon && daemon.version) || '',
     },
   });
+}
+
+// ── inkstone/arcrun-rag#266：stage 的桌面安裝檔放 R2（binding DIST）──────────────
+// 只有 wrangler.toml 綁了 `DIST` 且設了 `DIST_BASE` 的環境（youlin-stage）走這條；
+// 其餘環境（prod／uncle6 staging）`distOn(env)` 為 false，原路徑一字未改。
+function distOn(env) {
+  return !!(env && env.DIST && env.DIST_BASE);
+}
+function distBaseOf(env) {
+  return String(env.DIST_BASE).replace(/\/+$/, '');
+}
+/** 只開放這兩類 key：最新版指標、daemon/ 底下單層安裝檔。其餘（含 .. 與子目錄）一律 404。 */
+function distKeyAllowed(key) {
+  if (key === 'manifest.json') return true;
+  return /^daemon\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) && !key.includes('..');
+}
+async function distHandle(request, env, pathname) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+  }
+  let key;
+  try { key = decodeURIComponent(pathname.slice('/dist/'.length)); } catch (_) { return new Response('not found', { status: 404 }); }
+  if (!distKeyAllowed(key)) return new Response('not found', { status: 404 });
+  const wantRange = request.headers.has('range');
+  const obj = request.method === 'HEAD'
+    ? await env.DIST.head(key)
+    : await env.DIST.get(key, wantRange ? { range: request.headers } : undefined);
+  if (!obj) return new Response('not found', { status: 404 });
+  const headers = new Headers();
+  if (typeof obj.writeHttpMetadata === 'function') obj.writeHttpMetadata(headers);
+  if (obj.httpEtag) headers.set('etag', obj.httpEtag);
+  headers.set('accept-ranges', 'bytes');
+  if (!headers.get('content-type')) headers.set('content-type', 'application/octet-stream');
+  let status = 200;
+  if (wantRange && obj.range && typeof obj.range.offset === 'number') {
+    const len = typeof obj.range.length === 'number' ? obj.range.length : obj.size - obj.range.offset;
+    headers.set('content-range', `bytes ${obj.range.offset}-${obj.range.offset + len - 1}/${obj.size}`);
+    headers.set('content-length', String(len));
+    status = 206;
+  } else if (typeof obj.size === 'number') {
+    headers.set('content-length', String(obj.size));
+  }
+  return new Response(request.method === 'HEAD' ? null : obj.body, { status, headers });
+}
+/** 從 R2 的最新版指標（manifest.json）算出 daemon 區塊；形狀同 daemonOf 的舊路徑。 */
+async function daemonFromDist(env) {
+  try {
+    const o = await env.DIST.get('manifest.json');
+    if (!o) return null;
+    const m = JSON.parse(await o.text());
+    const d = m && m.daemon;
+    if (!d || !d.version) return null;
+    const root = distBaseOf(env) + '/';
+    return {
+      version: String(d.version),
+      notes: d.notes ? String(d.notes) : '',
+      downloads: {
+        mac: d.mac && d.mac.file ? root + d.mac.file : null,
+        win: d.win && d.win.file ? root + d.win.file : null,
+      },
+    };
+  } catch (_) { return null; }
 }
 
 async function handleLatest(request, env) {
@@ -5375,6 +5550,9 @@ async function handleLatest(request, env) {
  * 來源與 manifest 讀的是同一個 base，沒有另立第二條路徑。
  */
 async function daemonOf(env) {
+  // inkstone/arcrun-rag#266：stage 的「最新版」指標在 R2，不在 git.uncle6.me。
+  // 直接讀 binding（不經 Cache API）——出貨後指標一翻，下一個請求就是新版。
+  if (distOn(env)) return daemonFromDist(env);
   const base = bundleBase(env);
   // cacheKey 帶版本後綴（v2）＝這次修 routing bug 的一次性 cache-buster——
   // Cache API 的內容存在邊緣節點，**不會**因為重新 deploy 就失效，舊 key 底下

@@ -88,3 +88,50 @@ func accountLabelFor(host string) string {
 	}
 	return host
 }
+
+// syncWhere＝同步鈕 tooltip 的短標籤「知識庫 · 檔名」（不是整句話）。
+// 檔名優先取正在等的那一發（Waiting.File），其次這一發（File），沒有就資料夾名。
+func syncWhere(r *collector.RoundProgress, label func(host string) string) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	acc := r.Account
+	if r.Waiting != nil && r.Waiting.Account != "" {
+		acc = r.Waiting.Account
+	}
+	if acc != "" {
+		parts = append(parts, label(acc))
+	}
+	file := r.File
+	if r.Waiting != nil && r.Waiting.File != "" {
+		file = r.Waiting.File
+	}
+	switch {
+	case file != "":
+		parts = append(parts, filepath.Base(file))
+	case r.Folder != "":
+		parts = append(parts, filepath.Base(r.Folder))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// inRoundFreshFor＝in_round 多久內有更新還算「在做事」。「還在等」每 30 秒寫一次，
+// 所以 3 分鐘沒動＝不是在等，是行程被殺留下的殘影，不能讓按鈕永遠轉。
+const inRoundFreshFor = 3 * time.Minute
+
+// inRoundFresh：一輪途中的進度檔有沒有在動。r 為 nil（整輪收工了）＝沒有。
+func inRoundFresh(r *collector.RoundProgress, now time.Time) bool {
+	if r == nil {
+		return false
+	}
+	ts := r.UpdatedAt
+	if ts == "" {
+		ts = r.StartedAt
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < inRoundFreshFor
+}

@@ -28,6 +28,7 @@ type RoundProgress struct {
 	Account   string `json:"account,omitempty"`    // 正在處理哪個知識庫（主機名，與 AccountDetails 同一把 key）
 	Folder    string `json:"folder,omitempty"`     // 正在處理哪個看守資料夾（絕對路徑；空＝帳號層的事）
 	Step      string `json:"step,omitempty"`       // 正在做哪件事（白話，同 callStep.Name）
+	File      string `json:"file,omitempty"`       // 那件事是替哪份檔做的（相對路徑；空＝不是替單一檔案做的）
 	StepSince string `json:"step_since,omitempty"` // 那件事從什麼時候開始等
 	Ingested  int    `json:"ingested"`             // 這一輪到目前為止送上雲端的份數
 	Failed    int    `json:"failed"`               // 這一輪到目前為止沒送成功的份數

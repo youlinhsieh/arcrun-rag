@@ -138,6 +138,36 @@ config:
       const path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))
         ? (pageName + '.md') : String(rawPath);
       const srcUri = 'kb://' + path;
+      // ── inkstone/arcrun-rag#255：一次呼叫的雲端工作量要有上限（三個選填輸入，缺＝與從前逐字相同）──
+      //   量到的事實（youlin stage 實送、leo21c／geek 的 /workflows/rag_ingest_card/executions）：
+      //   ① 一條三元組要 ~2 秒寫入，引擎對外連線硬上限 6 條並行 ⇒ 約 0.35 秒牆鐘／條；
+      //      148 條的 NRI 文件卡＝59 秒、1218 條的錯誤碼總表＝28 分鐘（收的人 300 秒就放棄）。
+      //   ② 一份文件的文件卡與概念卡共用同一個 source_uri（kb://<原稿路徑>），而三元組的
+      //      「舊的」是按 source_uri 整批撈的 ⇒ 每張卡都把同一份文件其他卡的三元組當成自己的舊資料
+      //      刪光再重寫（實證：leo21c 上 NRI 的概念卡 block 都在、三元組是 0，且每張概念卡 110～140 秒）。
+      //   所以三元組要能「按卡、按段」各管各的：
+      //   · triplet_scope：這一批三元組的名字。空＝文件卡本人（source_uri＝kb://路徑，與從前一樣）；
+      //     非空＝source_uri 多一個 `#t=<名字>` 尾巴，只屬於這一批，彼此刪不到對方。
+      //   · rel_offset／rel_limit：這一次只寫第幾條起、幾條關係（limit 0＝寫到最後）。
+      //     offset＝0 的那一次才負責 block 與分群／概念（其餘各段只寫自己的三元組）。
+      function unresolvedTpl(v) { return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim()); }
+      function intOpt(v) { if (v == null || unresolvedTpl(v)) return 0; const n = parseInt(v, 10); return n > 0 ? n : 0; }
+      const relOffset = intOpt(input.rel_offset);
+      const relLimit = intOpt(input.rel_limit);
+      const rawScope = input.triplet_scope;
+      const tripScope = (rawScope == null || unresolvedTpl(rawScope)) ? '' : String(rawScope).trim();
+      const tripSrcUri = tripScope ? (srcUri + '#t=' + tripScope) : srcUri;
+      // 這張卡總共有幾條關係（含機械補的 part_of）——數法與 parse_card 逐字一致（同一條正則）。
+      const cardMd = String(input.card_content == null ? '' : input.card_content);
+      const relSecP = /##\s*關聯\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(cardMd);
+      let relTotal = 1;
+      if (relSecP) {
+        for (const ln of relSecP[1].split('\n')) {
+          if (/^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.test(ln)) relTotal++;
+        }
+      }
+      const sliceEnd = relLimit > 0 ? Math.min(relTotal, relOffset + relLimit) : relTotal;
+      const sliceLen = Math.max(0, sliceEnd - relOffset);
       // `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前
       // 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的
       // `String(input.library || 'kb')`／`String(input.machine || '')`——
@@ -163,7 +193,13 @@ config:
       const hashSrc = JSON.stringify([pageName, path, constLibrary, constMachine,
         String(input.machine_label || ''), String(input.card_content == null ? '' : input.card_content)]);
       const cardHash = cyrb53(hashSrc, 0) + cyrb53(hashSrc, 7) + hashSrc.length.toString(16);
+      // inkstone/arcrun-rag#269：page_name 進 URL query 也必須編碼。檔名帶「+」（如 Rotor-1250MT+K2SA…）時，
+      // 裸塞進去會被伺服器當成空白解碼 ⇒ 查不到自己上一版的 block ⇒ 舊版沒刪、新舊兩版疊在同一張卡。
       return { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),
+               trip_src_uri: tripSrcUri, trip_src_uri_enc: encodeURIComponent(tripSrcUri),
+               trip_scope: tripScope, rel_offset: relOffset, rel_limit: relLimit,
+               do_blocks: relOffset === 0, slice_len: sliceLen, rel_total: relTotal,
+               page_enc: encodeURIComponent(pageName),
                path_enc: encodeURIComponent(path),
                const_library: constLibrary, const_machine: constMachine, card_hash: cardHash };
     input:
@@ -173,6 +209,9 @@ config:
       machine: "{{input.machine}}"
       machine_label: "{{input.machine_label}}"
       card_content: "{{input.card_content}}"
+      rel_offset: "{{input.rel_offset}}"
+      rel_limit: "{{input.rel_limit}}"
+      triplet_scope: "{{input.triplet_scope}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -185,7 +224,7 @@ config:
   list_old_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{input.page_name}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -214,7 +253,7 @@ config:
   list_old_triplets:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__"
+    url: "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.trip_src_uri_enc}}&owner_id=__NAMESPACE__"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -233,6 +272,8 @@ config:
       path: "{{input.path}}"
       machine: "{{input.machine}}"
       card_hash: "{{prep.data.card_hash}}"
+      do_blocks: "{{prep.data.do_blocks}}"
+      slice_len: "{{prep.data.slice_len}}"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       const path = String(input.path || '');
@@ -272,6 +313,25 @@ config:
       const at = parse(input.triplets_body);
       const ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];
       const dead_record = ids.map(function (id) { return { record_id: id }; });
+      // inkstone/arcrun-rag#255：後面的「段」（rel_offset>0）不管 block——block 屬於第一段，
+      //   這裡一個都不能刪（否則第二段進來就把文件卡的正文刪了）。它「有沒有變」改看兩件事：
+      //   ① 雲端這張卡的 block 已經帶著這次的指紋（＝第一段已經寫完、這份內容整個提交過）
+      //   ② 這一段自己名下的三元組條數剛好等於這一段該有的條數
+      //   第一段**最後**才送（見 collector 的送法）＝它是整份的「提交標記」：中途斷掉、或內容改了，
+      //   後面的段進來時 block 上還是舊指紋或根本沒有 ⇒ 判成有變、照常刪光重寫。
+      const doBlocks = String(input.do_blocks) !== 'false';
+      const sliceLen = Number(input.slice_len);
+      if (!doBlocks) {
+        const nh = String(input.card_hash || '');
+        let committed = nh !== '' && hitMetas.length > 0;
+        for (const m of hitMetas) { if (String(m.card_hash || '') !== nh) { committed = false; break; } }
+        if (committed && sliceLen > 0 && dead_record.length === sliceLen) {
+          return { result: true, unchanged: true, dead_entry: [], dead_record: [],
+                   removed_blocks: 0, removed_triplets: 0, kept_blocks: 0, kept_triplets: dead_record.length };
+        }
+        return { result: false, unchanged: false, dead_entry: [], dead_record: dead_record,
+                 removed_blocks: 0, removed_triplets: dead_record.length };
+      }
       // inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：
       //   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）
       //   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複
@@ -362,6 +422,13 @@ config:
                  library: lib, machine: machine, machine_label: machineLabel };
       });
       const rels = [];
+      // inkstone/arcrun-rag#255：這一批三元組的 source_uri（有 triplet_scope 時多一個 `#t=` 尾巴）。
+      //   block 的 source 仍然是 kb://<路徑>#<第幾段>，不受影響。
+      const tripSrcUri = String(input.trip_src_uri || '') !== '' && !/^\{\{[\s\S]*\}\}$/.test(String(input.trip_src_uri).trim())
+        ? String(input.trip_src_uri) : srcUri;
+      const toInt = function (v) { const n = parseInt(v, 10); return n > 0 ? n : 0; };
+      const relOffset = toInt(input.rel_offset);
+      const relLimit = toInt(input.rel_limit);
       // InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」
       // 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\n#|\n---|$) 把任何
       // 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」
@@ -375,15 +442,21 @@ config:
         for (const line of relSec[1].split('\n')) {
           const m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(line);
           if (!m) continue;
-          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });
+          rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: tripSrcUri, status: 'active', library: lib, machine: machine });
         }
       }
-      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });
+      rels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: tripSrcUri, status: 'active', library: lib, machine: machine });
+      // inkstone/arcrun-rag#255：只寫自己這一段（offset 起、limit 條；limit 0＝到最後）。
+      //   offset＝0 才寫 block；其餘各段 blocks 為空 ⇒ 下游 post_block 空轉。
+      const relsAll = rels.length;
+      const relsSlice = relLimit > 0 ? rels.slice(relOffset, relOffset + relLimit) : rels.slice(relOffset);
+      const outBlocks = relOffset === 0 ? blocks : [];
       // inkstone/arcrun-rag#241：每段 block 記下整張卡的指紋與「寫入當時共幾段、幾條三元組」，
       // 下次收同一張卡時 pick_stale 靠這三格判斷「雲端那份是不是完整且一模一樣」。
+      // （#255：card_rels＝第一段自己名下的條數；不分段時就是整張卡的條數，與從前一樣）
       const cardHash = String(input.card_hash || '');
-      for (const b of blocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(rels.length); }
-      return { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };
+      for (const b of outBlocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(relsSlice.length); }
+      return { success: true, blocks: outBlocks, block_count: outBlocks.length, rels: relsSlice, rel_count: relsSlice.length, rel_total: relsAll, page_name: pageName };
     input:
       card_hash: "{{prep.data.card_hash}}"
       card: "{{input.card_content}}"
@@ -392,6 +465,9 @@ config:
       library: "{{input.library}}"
       machine: "{{input.machine}}"
       machine_label: "{{input.machine_label}}"
+      trip_src_uri: "{{prep.data.trip_src_uri}}"
+      rel_offset: "{{prep.data.rel_offset}}"
+      rel_limit: "{{prep.data.rel_limit}}"
     limits:
       timeout_ms: 5000
       max_output_bytes: 4194304
@@ -430,7 +506,7 @@ config:
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
       entry_type: "value"
-      content: "{{prep.data.src_uri}}"
+      content: "{{prep.data.trip_src_uri}}"
       owner_id: "__NAMESPACE__"
 
   post_const_status:
@@ -565,9 +641,14 @@ config:
       # 就用同一份預設邏輯算好（`String(input.library || 'kb')`），這裡直接沿用，
       # 不再另一套猜法。
       library: "{{prep.data.const_library}}"
+      do_blocks: "{{prep.data.do_blocks}}"
     code: |
       function looksUnsubstituted(v) {
         return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim());
+      }
+      // inkstone/arcrun-rag#255：分段送的卡，分群只在第一段（寫 block 的那一段）做一次。
+      if (String(input.do_blocks) === 'false') {
+        throw new Error('分段送的後面幾段：分群已在第一段處理，這段略過');
       }
       var rawPageName = input.page_name;
       if (rawPageName === undefined || rawPageName === null || rawPageName === '' ||
@@ -692,9 +773,14 @@ config:
       card: "{{input.card_content}}"
       page_name: "{{input.page_name}}"
       library: "{{prep.data.const_library}}"
+      do_blocks: "{{prep.data.do_blocks}}"
     code: |
       function looksUnsubstitutedLocal(v) {
         return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim());
+      }
+      // inkstone/arcrun-rag#255：分段送的卡，概念歸屬（LLM）只在第一段做一次。
+      if (String(input.do_blocks) === 'false') {
+        throw new Error('分段送的後面幾段：概念歸屬已在第一段處理，這段略過');
       }
       var md = String(input.card == null ? '' : input.card);
       var relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(md);

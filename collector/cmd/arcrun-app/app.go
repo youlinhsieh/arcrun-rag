@@ -531,14 +531,22 @@ func splitFailures(failures []collector.ExtractFail) (attributed, unattributed i
 }
 
 type UIState struct {
-	Version   string      `json:"version"`
-	StatusBig string      `json:"statusBig"`
-	StatusSub string      `json:"statusSub"`
-	Syncing   bool        `json:"syncing"`
-	Accounts  []UIAccount `json:"accounts"`
-	Engine    string      `json:"engine"`  // 恆為 "workers-ai"（#58：引擎不再可選）
-	Steps     []Step      `json:"steps"`   // 首頁狀態時間軸（leo #6）
-	Skipped   *UISkipped  `json:"skipped"` // 讀不了的檔（沒有就是 null，前端不畫）
+	Version   string `json:"version"`
+	StatusBig string `json:"statusBig"`
+	StatusSub string `json:"statusSub"`
+	Syncing   bool   `json:"syncing"`
+	// SyncQueued＝使用者按過「同步」、訊號檔還沒被引擎領走（#260：引擎正忙別的帳號時，
+	// 這一按是「收到，排在這一輪後面」，按鈕要一直轉到那一輪開始）。
+	// SyncWhere＝同步鈕 tooltip 用的短標籤：「知識庫 · 檔名」（#260：看得出是誰的哪份檔在等）。
+	SyncWhere string `json:"syncWhere,omitempty"`
+	// Working＝小幫手此刻有在做事（同步鈕唯一的燈）：引擎報「正在跑一輪」，或 status.json 的
+	// in_round 還新鮮（萃取等雲端、上傳寫卡都會持續更新它）。任何一段在進行都算，只有整輪做完才熄。
+	Working    bool        `json:"working"`
+	SyncQueued bool        `json:"syncQueued"`
+	Accounts   []UIAccount `json:"accounts"`
+	Engine     string      `json:"engine"`  // 恆為 "workers-ai"（#58：引擎不再可選）
+	Steps      []Step      `json:"steps"`   // 首頁狀態時間軸（leo #6）
+	Skipped    *UISkipped  `json:"skipped"` // 讀不了的檔（沒有就是 null，前端不畫）
 	// EngineTrouble＝同步引擎有問題（沒在跑／一直啟動失敗）⇒ 前端才長出「回報問題」卡。
 	// 沒事時不顯示，避免把「哪裡看 log」變成常駐噪音。
 	EngineTrouble bool       `json:"engineTrouble"`
@@ -890,6 +898,12 @@ func (a *App) GetState() UIState {
 	st.Engine = "workers-ai" // inkstone/arcrun-rag#58：萃取 AI 一律在雲端，與 direct.go 一致
 
 	st.Syncing, st.StatusBig, st.StatusSub = describeStatus(sync)
+	_, qerr := os.Stat(syncNowSignal())
+	st.SyncQueued = qerr == nil
+	st.Working = st.Syncing || inRoundFresh(sync.InRound, time.Now())
+	if st.Working {
+		st.SyncWhere = syncWhere(sync.InRound, accountLabelFor)
+	}
 	st.Steps = buildSteps(sync, st.Syncing)
 	st.Skipped = buildSkipped(sync)
 	st.Progress = buildProgress(sync)

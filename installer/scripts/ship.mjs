@@ -121,6 +121,7 @@ import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
+import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
 import { renderBundlesReadme } from './render-bundles-readme.mjs';
@@ -134,6 +135,7 @@ import {
   releaseExists as giteaReleaseExists, createRelease as giteaCreateRelease, commitExists as giteaCommitExists,
   uploadReleaseAsset as giteaUploadAsset, listReleaseAssets as giteaListAssets, listReleases as giteaListReleases,
 } from './gitea-release.mjs';
+import { pruneStrayDaemon, pendingPushBytes, describePushFailure, formatMB } from './bundle-push-scope.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow, fillInstanceNamespaces, maskNamespace } from './ship-arcrun.mjs';
 import { machineId } from './ship-machine.mjs';
@@ -172,6 +174,9 @@ import { fill as fillCredentials, describeSources, missingCredentialError } from
 // 部署 Cloudflare 的鑰匙由登錄簿指名（inkstone/arcrun-rag#212）——不再靠家目錄的 wrangler 登入態，
 // 地端與雲端走同一條路（cloudflareDeployEnv 顯式塞 CLOUDFLARE_API_TOKEN，蓋過任何 ambient 登入態）。
 import { cloudflareDeployEnv } from './cf-credential.mjs';
+// inkstone/arcrun-rag#266：登錄簿宣告了 `dist` 的目標（今天只有 stage），桌面安裝檔與「最新版」
+// 指標放 R2、不進 git 歷史、不在 Gitea 網址上（細節見 stage-dist.mjs 檔頭）。
+import { publishDist, ensureLocalExclude, assertDistDeclared, downloadSection } from './stage-dist.mjs';
 // 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
 //   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
 //   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
@@ -318,6 +323,28 @@ for (const [name, t] of Object.entries(cfg.targets)) {
   }
 }
 
+// 🔴 不變式 Ⅵ.c：**安裝檔放 R2（dist）與「版本頁不掛本體」必須成對**（inkstone/arcrun-rag#266）
+//   · releaseRecord.attachAssets:false 但沒有 dist ⇒ 安裝檔既沒掛在版本頁、也不在 R2，
+//     使用者點下去什麼都沒有——比「掛了大檔」更糟，登錄簿階段就擋下。
+//   · dist 的 publicBase 不准指回 git.uncle6.me、delivery.movingPointer 不准還在 git.uncle6.me
+//     （這張票就是要離開那裡；指標沒跟著搬，Gitea 搬家一樣會讓 stage 送達斷掉）。
+for (const [name, t] of Object.entries(cfg.targets)) {
+  const noAttach = t.releaseRecord && t.releaseRecord.attachAssets === false;
+  if (noAttach && !t.dist) {
+    console.error(`❌ 登錄簿不完整：目標 \`${name}\` 的 releaseRecord.attachAssets 是 false，卻沒宣告 dist。`);
+    console.error(`   版本頁不掛安裝檔本體，就必須有別的地方放它（dist＝R2）。`);
+    process.exit(2);
+  }
+  if (t.dist) {
+    try { assertDistDeclared(t.dist); } catch (e) { console.error(`❌ 登錄簿不完整：目標 \`${name}\`：${e.message}`); process.exit(2); }
+    const mp = t.delivery && t.delivery.movingPointer;
+    if (/git\.uncle6\.me/i.test(String(mp || ''))) {
+      console.error(`❌ 登錄簿矛盾：目標 \`${name}\` 宣告了 dist，delivery.movingPointer 卻還在 git.uncle6.me（${mp}）。`);
+      process.exit(2);
+    }
+  }
+}
+
 // 🔴 不變式 Ⅶ：**有安裝器的目標，一定要有郵差（mailRelay）**（2026-08-11，arcrun-rag#38／#69／#25）
 //   同一種病、同一種解法，這次咬在「忘記密碼」上：D62 代寄機制的兩半——用戶自己的
 //   cypher（寫連結）與 `landing/worker.js`（真的寄信）——只有前者被這支腳本盯著，
@@ -422,11 +449,48 @@ const sh = (cmd, args, cwd, env) => {
   }
 };
 
+/**
+ * bundle repo 的 git 呼叫（給 bundle-push-scope.mjs 注入用；可帶 stdin）。
+ * inkstone/arcrun-rag#265：中止一輪後換新版號重跑，別把上一個沒出成的版號產物一起推。
+ */
+const bundleGit = (args, input) => {
+  try {
+    return execFileSync('git', args, { cwd: ctx.bundlesDir, encoding: 'utf8', input, maxBuffer: 256 * 1024 * 1024 });
+  } catch (e) { throw redactError(e); }
+};
+/** 把「manifest 沒指到的新增 daemon/ 檔」移出待推內容；沒有遠端追蹤分支（selftest）就免。 */
+function pruneStaleDaemonForPush() {
+  const remoteRef = `origin/${T.bundles.branch}`;
+  try { bundleGit(['rev-parse', '--verify', '-q', remoteRef]); } catch { return null; }
+  const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+  const r = pruneStrayDaemon({ git: bundleGit, bundlesDir: ctx.bundlesDir, manifest, remoteRef });
+  return r.moved.length ? r : null;
+}
+
 function shLive(cmd, args, cwd, env) {
   const r = spawnSync(cmd, args, {
     cwd, stdio: 'inherit', env: env ? { ...process.env, ...env } : process.env,
   });
   if (r.status !== 0) throw new Error(redactSecrets(`${cmd} ${args.join(' ')} 失敗（exit ${r.status}）`));
+}
+
+/**
+ * inkstone/arcrun-rag#266：把這一版放進 R2（登錄簿 `dist`）。回報用的 detail 行。
+ * 鑰匙走 cloudflareDeployEnv（登錄簿指名、只進 wrangler 那一個子行程，D36）。
+ * wrangler 的 cwd 用安裝器目錄——部署站也在那裡跑 npx wrangler，同一份 node_modules。
+ */
+function publishToR2() {
+  const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+  const cred = cloudflareDeployEnv({ cfg, accountId: T.dist.accountId, startDir: REPO_ROOT });
+  const r = publishDist({
+    dist: T.dist, manifest, bundlesDir: ctx.bundlesDir,
+    // cwd 用 bundle 工作區：r2 object put 是帳號層級指令，不需要任何 worker 設定；
+    //   在 installer/oauth-prototype 底下跑時 wrangler 會往上讀到 installer/wrangler.jsonc
+    //   （安裝器範本，KV id 是空的）而整條設定檢查失敗（2026-10-14 地端實撞）。
+    run: (args) => shLive('npx', args, ctx.bundlesDir, cred.env),
+  });
+  ctx.distPointer = r.pointerUrl;
+  return [`帳號 ${T.dist.accountId}｜bucket ${T.dist.bucket}`, ...cred.lines, ...r.detail, `最新版指標：${r.pointerUrl}`];
 }
 
 /**
@@ -1331,6 +1395,14 @@ const STEPS = [
     // 版號一樣**不代表內容一樣**（wiki 2026-08-17：msix 停在上一版卻報全綠，
     // 就是因為這裡只比版號就整站跳過）。所以這裡回 skip 是安全的——真正的判定
     // 交給下一站 `daemon-check` 的事實閘（比檔案存不存在、比 sha256），它沒有 skip。
+    // 🔴 但「上一版殘留的選配鍵」（例：prod 的 msix 還指 0.18.99）不能留給閘去擋後讓人手改——
+    //   版號已對、鍵卻是舊的，這條 skip 路徑也要把它拿掉（InkStoneCo#235 c21808）。
+    const sk = dropStaleDaemonKeys(m.daemon, want);
+    if (sk.dropped.length) {
+      m.daemon = sk.daemon;
+      writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
+      return { status: 'done', detail: [`bundle 已委任 ${want}；移除上一版殘留的鍵：${sk.dropped.join('、')}`] };
+    }
     return { status: 'skip', detail: [`bundle 已委任 ${want}；內容是否真的到位由下一站 daemon-check 逐檔查證`] };
   }
 
@@ -1374,9 +1446,12 @@ const STEPS = [
   const stamp = statSync(join(dstDir, `Arcrun-${want}.dmg`)).mtime;
   const p2 = (n) => String(n).padStart(2, '0');
   daemon.built = `${stamp.getFullYear()}${p2(stamp.getMonth() + 1)}${p2(stamp.getDate())}-${p2(stamp.getHours())}${p2(stamp.getMinutes())}`;
-  m.daemon = daemon;
+  // 選配檔（msix）這次沒打 ⇒ 上一版的鍵不能原樣帶過來冒充這一版（InkStoneCo#235 c21808）。
+  const pruned = dropStaleDaemonKeys(daemon, want);
+  m.daemon = pruned.daemon;
   writeFileSync(mPath, JSON.stringify(m, null, 1) + '\n');
   return { status: 'done', detail: [
+    ...(pruned.dropped.length ? [`移除上一版殘留的鍵：${pruned.dropped.join('、')}`] : []),
     `daemon ${before || '(無)'} → ${want}（來源 ${distDir}${fromOtherWorktree ? '　⚠️ 取自另一個 worktree，不是這次執行 ship.mjs 的這個' : ''}）`,
     `複製 ${copied.length} 個安裝檔並重算 sha256：${copied.join('、')}`,
     `built=${daemon.built}（由產物 mtime 推導）`,
@@ -1821,10 +1896,37 @@ const STEPS = [
     });
     console.log(`     ✔ 入庫前複驗：${r.checked} 顆仍逐位元等於 Arcrun 官方成品`);
   }
+  // 🔴 inkstone/arcrun-rag#266：宣告了 `dist` 的目標，安裝檔放 R2，**絕不進 git 歷史**。
+  //   檔案留在工作區（daemon-check／release-record 等讀磁碟的站照舊），但 git 看不見它們
+  //   ⇒ 下面的 `git add -A` 與 push 都不會帶上，推送量只剩 manifest 與零件包。
+  if (T.dist) {
+    assertDistDeclared(T.dist);
+    ensureLocalExclude(ctx.bundlesDir);
+  }
+  // 🔴 inkstone/arcrun-rag#265：沒宣告 dist 的目標（prod）安裝檔仍走 git，所以上一輪中止留下的
+  //   舊版號安裝檔（untracked 或已 commit 沒推）先移出，免得 `git add -A` 把它們跟這一版一起推
+  //   （0.18.103+104 共 84 MB ⇒ Gitea 524）。
+  {
+    const pruned = pruneStaleDaemonForPush();
+    if (pruned) {
+      console.log(`     ✔ 移出 ${pruned.moved.length} 個上一個沒出成的版號安裝檔 → ${pruned.destDir}：${pruned.moved.join('、')}`);
+    }
+  }
   if (!sh('git', ['status', '--porcelain'], ctx.bundlesDir)) {
     return { status: 'skip', detail: ['工作區乾淨——這一版的產物已經在版控裡了'] };
   }
   sh('git', ['add', '-A'], ctx.bundlesDir);
+  if (T.dist) {
+    // 雙保險：就算排除規則被人動過，進了 index 的安裝檔也當場擋下，不 commit。
+    const leaked = sh('git', ['diff', '--cached', '--name-only', '--diff-filter=AM'], ctx.bundlesDir)
+      .split('\n').filter((f) => /^daemon\/.+\.(dmg|exe|msix|zip)$/i.test(f));
+    if (leaked.length) {
+      throw new Error(
+        `本目標宣告了 dist（安裝檔放 R2），但這些安裝檔進了待 commit 的內容：\n` +
+        leaked.map((l) => `       - ${l}`).join('\n') +
+        `\n     → 不 commit。檢查 ${ctx.bundlesDir}/.git/info/exclude 是否被改動（inkstone/arcrun-rag#266）。`);
+    }
+  }
   // 🔴 08-07 實撞：整包蓋掉 prod bundle repo，把 prod 才有的 daemon/（20 個安裝檔）
   //    與 README 砍光，封測者下載不到 daemon。刪檔要人明確放行。
   const deleted = sh('git', ['diff', '--cached', '--diff-filter=D', '--name-only'], ctx.bundlesDir);
@@ -1847,7 +1949,13 @@ const STEPS = [
     return { status: 'skip', detail: ['selftest 目標不推遠端（登錄簿宣告）'] };
   }
   const ahead = sh('git', ['rev-list', '--count', `origin/${T.bundles.branch}..HEAD`], ctx.bundlesDir);
-  if (Number(ahead) === 0) return { status: 'skip', detail: ['已與遠端同步，沒有要推的'] };
+  if (Number(ahead) === 0) {
+    // git 沒東西要推，但 R2 那一份仍要對齊這一版（上一輪可能在 git 推完、R2 放到一半時中止）。
+    const onlyDist = T.dist ? publishToR2() : null;
+    return onlyDist
+      ? { status: 'done', detail: ['git 已與遠端同步，沒有要推的', ...onlyDist] }
+      : { status: 'skip', detail: ['已與遠端同步，沒有要推的'] };
+  }
   // 🔴 人閘（InkStoneCo#56）：產物倉庫的分支就是 `main`（登錄簿寫死）⇒ 這一行每次出貨
   //   都在推 main，而殼層那道閘看不見它。這裡不做例外——**declared 的目的地也是目的地**，
   //   總管照樣要為「這一次覆寫哪個 repo 的 main」按一次閘（preflight 會先把清單列出來）。
@@ -1856,10 +1964,31 @@ const STEPS = [
     remoteUrl: T.bundles.remote, who: `ship.mjs／推產物倉庫（${TARGET_NAME}）`,
     ...pushGuardOpts(),
   });
+  // 🔴 inkstone/arcrun-rag#265：已 commit 沒推的 commit 若帶著 manifest 沒指到的舊版號安裝檔
+  //   （上一輪中止留下的），推之前摘掉——只動未推歷史，遠端不受影響。
+  const pruned = pruneStaleDaemonForPush();
+  if (pruned) {
+    console.log(`     ✔ 推之前移出 ${pruned.moved.length} 個 manifest 沒指到的新增 daemon 檔 → ${pruned.destDir}：${pruned.moved.join('、')}`);
+    ctx.headSha = sh('git', ['rev-parse', 'HEAD'], ctx.bundlesDir);
+    if (Number(sh('git', ['rev-list', '--count', `origin/${T.bundles.branch}..HEAD`], ctx.bundlesDir)) === 0) {
+      return { status: 'skip', detail: [`待推內容全是 manifest 沒指到的舊版號安裝檔，已移出 → ${pruned.destDir}；沒有要推的`] };
+    }
+  }
+  const remoteRef = `origin/${T.bundles.branch}`;
+  const pendingBytes = pendingPushBytes(bundleGit, remoteRef);
+  console.log(`     待推 ${formatMB(pendingBytes)}`);
   // 大 zip 推 GitHub 會 remote hung up（wiki agent-memory:805）⇒ 一律帶 postBuffer
-  sh('git', ['-c', 'http.postBuffer=157286400', 'push', 'origin', T.bundles.branch], ctx.bundlesDir);
+  try {
+    sh('git', ['-c', 'http.postBuffer=157286400', 'push', 'origin', T.bundles.branch], ctx.bundlesDir);
+  } catch (e) {
+    // 524 只說「逾時」，不說多大、上限多少 ⇒ 補上待推大小與 100 秒上限（#265）
+    throw new Error(describePushFailure({ bytes: pendingBytes, original: e.message, remote: normRemote(T.bundles.remote) }));
+  }
   ctx.pushed = true;
-  const detail = [`推了 ${ahead} 個 commit → ${normRemote(T.bundles.remote)}（HEAD ${ctx.headSha.slice(0, 7)}）`];
+  const detail = [`推了 ${ahead} 個 commit（${formatMB(pendingBytes)}）→ ${normRemote(T.bundles.remote)}（HEAD ${ctx.headSha.slice(0, 7)}）`];
+  if (pruned) detail.push(`移出舊版號安裝檔 ${pruned.moved.length} 個 → ${pruned.destDir}`);
+  // inkstone/arcrun-rag#266：git 推完才放 R2（安裝檔先、最新版指標最後）。
+  if (T.dist) detail.push(...publishToR2());
 
   // 🔴 2026-08-09（arcrun-rag#27）留痕：這一行 `git push` 是 execFileSync 開的子行程，
   //   Claude Code 的 github-contact-guard.sh 只看得到「Bash 工具呼叫本身的指令字串」
@@ -2263,7 +2392,7 @@ const STEPS = [
     }
     // 使用者在「版本與更新」看到的那一行，也要真的送到了（不是只在本機 manifest 裡對）
     const shipped = latest.daemon && latest.daemon.notes;
-    if (shipped) lines.push(`使用者會看到的那一行（${String(shipped).length} 字）：${shipped}`);
+    if (shipped) lines.push(`使用者會看到的那一行（小幫手 ${latest.daemon.version || '?'} 的更新畫面，來源＝該版 changelog；只動雲端零件時不會變）（${String(shipped).length} 字）：${shipped}`);
 
     // arcrun-rag#95：安裝器原始碼指紋要送達——這條專門攔「deploy 站判斷跳過，但
     // 其實安裝器邏輯已經改了」這種以前全綠放行的情況。
@@ -2316,6 +2445,7 @@ const STEPS = [
         declaredSha256: meta.sha256,
         daemonVersion: ctx.daemonVersion,
         pinUrl: ctx.pinUrl,
+        distBase: T.dist ? T.dist.publicBase : undefined,   // #266：安裝檔在 R2 的目標
         downloadEndpoint: `${base}/download/${os}?${cb()}`,
         // 安裝器**自己對外宣告**的下載網址（來自線上 env）——與我們由登錄簿＋本機 HEAD
         // 算出來的那個是兩個獨立來源，不相等就是釘子/宿主跑到別條線去了。
@@ -2633,19 +2763,29 @@ const STEPS = [
     const made = [];
     for (const t of todo) {
       if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
-      const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await listBodies(t.slug), homeOf.get(t.slug));
+      let body = bodyWithMapping(t.line, t.changelogBody, t.assets, await listBodies(t.slug), homeOf.get(t.slug));
+      // inkstone/arcrun-rag#266：安裝檔在 R2 的目標，版本頁不掛本體（不再把大檔存進 Gitea），
+      // 內文改列下載網址。只有宣告了 dist 才准這樣做——否則等於發一個點下去沒東西的頁面。
+      //   只搬 `daemon/` 底下的安裝檔；小檔（例如零件包線的 manifest.json）照舊掛附件。
+      const offload = (R.attachAssets === false && T.dist) ? t.assets.filter((a) => /^daemon\//.test(a.rel)) : [];
+      const attachList = t.assets.filter((a) => !offload.includes(a));
+      if (offload.length) body += downloadSection(T.dist, offload);
       const rel = await giteaCreateRelease({
         repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body,
         target: targetOf.get(t.slug), token: cred.token, baseUrl: R.baseUrl,
       });
-      for (const a of t.assets) {
+      if (attachList.length === 0) {
+        made.push(`版本發佈｜${t.line.title} → ${t.slug}：${rel.html_url}（成品在 R2，內文列 ${offload.length} 個下載網址，不掛附件）`);
+        continue;
+      }
+      for (const a of attachList) {
         await giteaUploadAsset({ repoSlug: t.slug, id: rel.id, name: a.name, data: readFileSync(a.abs), ...opts });
       }
       // 🔴 回頭查證，不聽上傳步驟說「我成功了」（同 release-check 站的形狀）。
       //   掛檔失敗而頁面已經建好，是本輪最該擋的狀態：那就是 leo 看到的那種
       //   「有版本頁、附檔卻是原始碼快照」——只是換成「附檔根本沒上去」。
       const onPage = await giteaListAssets(t.slug, rel.id, opts);
-      const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
+      const missing = attachList.filter((a) => !onPage.some((p) => p.name === a.name));
       if (missing.length) {
         throw new Error(
           `${t.line.title} 的版本頁建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +

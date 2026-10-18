@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // bigImageFrac：一張圖佔頁面面積超過這個比例才算「大圖」（小 logo、頁首線不算）。
@@ -29,6 +30,10 @@ type pdfPageInfo struct {
 	Text      string
 	BigImages int
 	Failed    bool // 該頁文字讀取失敗
+	// ImageSigs＝該頁每張大圖的內容指紋（空字串＝讀不到指紋）。同一張圖出現在多頁＝版面底圖，不是內容（見 dropTemplateImages）。
+	ImageSigs []string
+	// Tables＝文字層裡還原出來的表（convert_pdf_table.go）。
+	Tables []PDFTextTable
 }
 
 // PDFImageTable＝一張貼成圖片的表。
@@ -47,11 +52,76 @@ type PDFReadReport struct {
 	ImagePageNums []int
 	// Extra：讀圖（imageread.go）之後要補進說明的幾行（需人工確認、沒讀到的頁）。
 	Extra []string
+	// TextTables＝文字層裡還原出來的表，逐列逐字寫進文件卡「原文表格」段（convert_pdf_table.go）。
+	TextTables []PDFTextTable
+	// TextLists＝文字層裡的條列段落（標準配備、選配……），逐項逐字寫進文件卡「原文條列」段（convert_pdf_list.go，#277）。
+	TextLists  []PDFTextList
+	// ImageReads＝讀圖（#251）辨識出的各頁文字，逐頁寫進文件卡「讀圖原文」段（inkstone/arcrun-rag#277）。
+	ImageReads []ImagePageRead
+	printedOff *int // 印刷頁碼與 PDF 頁序的差（讀得到才有）；給原文表格標題帶印刷頁用
 }
 
 // Empty：沒有任何讀不到的東西，文件卡不必多說什麼。
 func (r *PDFReadReport) Empty() bool {
 	return r == nil || (len(r.ImageTables) == 0 && r.ImagePages == 0 && len(r.Extra) == 0)
+}
+
+// 版面底圖的判準（inkstone/arcrun-rag#253 c20342 實例：Word 匯出的產品方案，每一頁都鋪同一張整頁底圖，
+// 23 頁全被當成「圖片頁」、每頁讀兩次圖、字明明在文字層卻被標「辨識有疑點」）：
+// 同一張圖（內容指紋相同）出現在 ≥3 頁、且 ≥25% 的頁，就是版面底圖／浮水印。
+const (
+	templateImageMinPages = 3
+	templateImageMinFrac  = 4 // 頁數 ×1/4
+	// 有文字層的頁才扣掉底圖：整頁只有一張重複的圖、沒有字，仍當圖片頁（例：掃描檔裡重複的空白頁不該被吃掉）。
+	templateImageMinTextRunes = 40
+)
+
+// dropTemplateImages 把版面底圖從各頁的大圖數裡扣掉。
+func dropTemplateImages(pages []pdfPageInfo) {
+	count := map[string]int{}
+	for _, p := range pages {
+		seen := map[string]bool{}
+		for _, sig := range p.ImageSigs {
+			if sig != "" && !seen[sig] {
+				seen[sig] = true
+				count[sig]++
+			}
+		}
+	}
+	tmpl := map[string]bool{}
+	for sig, n := range count {
+		if n >= templateImageMinPages && n*templateImageMinFrac >= len(pages) {
+			tmpl[sig] = true
+		}
+	}
+	if len(tmpl) == 0 {
+		return
+	}
+	for i := range pages {
+		p := &pages[i]
+		if p.Failed || runeCountNoSpace(p.Text) < templateImageMinTextRunes {
+			continue
+		}
+		left := 0
+		for _, sig := range p.ImageSigs {
+			if sig == "" || !tmpl[sig] {
+				left++
+			}
+		}
+		if left < p.BigImages {
+			p.BigImages = left
+		}
+	}
+}
+
+func runeCountNoSpace(s string) int {
+	n := 0
+	for _, r := range s {
+		if !unicode.IsSpace(r) {
+			n++
+		}
+	}
+	return n
 }
 
 var (
@@ -191,6 +261,19 @@ func renderPDFPages(pages []pdfPageInfo) string {
 // 前一頁的標題只認「頁尾 5 行內」，且那一頁本身沒有大圖（有大圖就是它自己的表）。
 func buildPDFReport(pages []pdfPageInfo) *PDFReadReport {
 	rep := &PDFReadReport{Pages: len(pages)}
+	if off, ok := printedPageOffset(pages); ok {
+		rep.printedOff = &off
+	}
+	// 文字層裡有還原出表格的頁：表的字已經逐字在手，整頁再畫成圖讀一遍只會多一份會出錯的複本
+	// （c20342：規格表所在頁被讀圖後標「辨識有疑點」）⇒ 不當圖片頁。頁上若另有照片，仍可在原檔看到。
+	for i := range pages {
+		if len(pages[i].Tables) > 0 {
+			rep.TextTables = append(rep.TextTables, pages[i].Tables...)
+			pages[i].BigImages = 0
+		}
+	}
+	rep.TextLists = detectAllLists(pages)
+	dropTemplateImages(pages)
 	claimed := map[int]bool{} // 標題已被後一頁認領的頁
 	for i, p := range pages {
 		if p.BigImages == 0 || p.Failed {

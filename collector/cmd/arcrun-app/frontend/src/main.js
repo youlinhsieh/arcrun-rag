@@ -305,40 +305,6 @@ function sectionMyApps(s) {
 }
 
 
-// kbVersionLine：單一知識庫的版本，首頁卡與各庫頁共用同一份（不讓兩處各寫各的）。
-//
-// 🔴 `inkstone/arcrun-rag#159`（leo 2026-08-28）：「**GUI 是國際通用，圖形指示，
-//    不限語文**，所以任何出現文字都要謹慎，文字表示『我的設計不夠好所以要靠文字來補』」
-//    ⇒ 這一行以前是三句話（「有新版可更新（目前 x → 最新 y）」「已是最新版（x）」
-//      「目前連不上這個知識庫，查不到版本」）。現在只剩**版本號與圖示**：
-//
-//        1.4.60          ✅     已是最新
-//        1.4.46 → 1.4.58 ⬆️     有新版（按鈕，按下去帶 email 開安裝頁）
-//        ○                      從來沒查到過這台的版本
-//
-//    說明都收進 title（滑過去才出現），版面上一個字都不佔。
-//
-// 🔴 「這一輪連不上」**不再抹掉版本號**（見 collector/direct.go 那段註解）：
-//    版本查到過就是事實，抽風的是網路。連不上時版本號調淡，滑過去講得出來。
-function kbVersionLine(a) {
-  const dim = a.cloudVerFresh ? '' : ' dim';
-  const tip = a.cloudVerFresh ? '' : '上次查到的版本（現在暫時連不上）';
-  if (!a.cloudVerKnown) {
-    // 分得出「沒查到這台的版本」與「查到了但暫時不知道最新版是多少」——
-    // 前者連版本號都沒有，後者有版本號可以顯示。
-    if (!a.cloudVerMine) {
-      return `<span class="kbv unknown" role="img" title="還沒查到這個知識庫的版本">○</span>`;
-    }
-    return `<span class="kbv${dim}" title="${esc(tip || '暫時查不到最新版本，稍後自動再查')}">${esc(a.cloudVerMine)}</span>`;
-  }
-  if (a.cloudVerStale) {
-    return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)} → ${esc(a.cloudVerLatest)}</span>
-      <button class="ico" data-updatekb="${esc(a.email || '')}"
-        title="前往安裝頁更新這個知識庫" aria-label="前往安裝頁更新這個知識庫">⬆️</button>`;
-  }
-  return `<span class="kbv${dim}" title="${esc(tip)}">${esc(a.cloudVerMine)}</span>`;   // 最新版就沒有任何圖示
-}
-
 // installURLFor：與 portal 版本卡同一個做法——落後才需要按，按下去帶 email 讓安裝頁
 // 預填，既有實例更新免辨識碼（安裝器 t154），不必讓使用者自己去 install.arcrun.dev 找。
 function installURLFor(email) {
@@ -950,8 +916,43 @@ function libPortalURL(a) {
   return 'https://' + a.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/';
 }
 
+// #260：「同步中」全頁只用這顆按鈕表示（leo 2026-10-11 改規格）。
+// 轉＝小幫手正在同步（自己跑的或按出來的都一樣）；靜止＝沒在同步；按一下就馬上恢復轉。
+// 按下去的當下，引擎的 state 可能還沒變成 running，所以另記一筆「剛按過」：
+// 看過 running 又停了就收掉；10 秒都沒看到 running（一瞬間跑完）也收掉，不讓按鈕永遠轉。
+// 狀態必須記在這裡而不是 DOM：libHead 會重畫，DOM 上的 class 會被洗掉。
+const syncPressed = {}; // idx -> { at, sawBusy }
+const SYNC_PRESS_MAX_MS = 10000;
+// 轉的條件（全部是「小幫手」層級，不是這個帳號層級——引擎忙別的帳號時，每個帳號頁的鈕都照轉）：
+//   ① 引擎正在跑一輪（state.syncing）或這個帳號在跑 ② 按過、訊號檔還沒被領走（排隊中）③ 剛按下的緩衝
+function syncSpinning(idx, a) {
+  const busy = !!(state.working || state.syncing || (a && a.state === 'running') || state.syncQueued);
+  const st = syncPressed[idx];
+  if (st) {
+    if (busy) st.sawBusy = true;
+    else if (st.sawBusy || Date.now() - st.at > SYNC_PRESS_MAX_MS) delete syncPressed[idx];
+  }
+  return busy || !!syncPressed[idx];
+}
+function syncBtnHtml(a) {
+  const idx = (state.accounts || []).indexOf(a);
+  const on = syncSpinning(idx, a);
+  const where = on && state.syncWhere ? ' · ' + state.syncWhere : '';
+  const tip = (on ? '同步中' : '同步') + where;
+  return `<button class="icbtn primary${on ? ' syncbusy' : ''}" data-synclib="${idx}" title="${tip}" aria-label="${tip}"${on ? ' aria-busy="true"' : ''}>${IC_REFRESH}</button>`;
+}
+async function pressSync(b) {
+  const idx = Number(b.dataset.synclib);
+  // 連按只排一次：已經按過（本地記著）或訊號檔還在排隊 ⇒ 不重排。
+  // 但「引擎正忙著跑別的」不算排過——這一按要真的寫訊號檔，排在這一輪後面（不准默默吞掉）。
+  if (syncPressed[idx] || state.syncQueued) return;
+  syncPressed[idx] = { at: Date.now(), sawBusy: false };
+  b.classList.add('syncbusy'); b.setAttribute('aria-busy', 'true'); // 當下就轉，不等下一次 tick
+  try { await go.SyncNow(); } catch (e) { delete syncPressed[idx]; }
+  tick();
+}
+
 function libHeadHtml(a) {
-  const b = a.battery;
   // 網址不放（與「開啟知識庫網頁」重複）；同步中的句子也不放——狀態列用符號（#240 c18299）
   return `
     <header class="acchead">
@@ -959,8 +960,7 @@ function libHeadHtml(a) {
       <div class="g">
         <h1 class="nm">${esc(a.name)}</h1>
       </div>
-      <div class="accmeter" title="${esc(b ? b.line : '')}">${usageGauge(b)}</div>
-      <button class="icbtn primary" data-synclib="1" title="同步" aria-label="同步">${IC_REFRESH}</button>
+      ${syncBtnHtml(a)}
     </header>
     ${libStatusBar(a, state)}`;
 }
@@ -971,7 +971,19 @@ const SYM = {
   files: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M13 3v5h5"/></svg>',
   done: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m8 12.2 2.8 2.8L16 9.8"/></svg>',
   queue: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+  days: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M4 10h16M9 3.5v4M15 3.5v4"/></svg>',
 };
+
+// 「這批還要幾天」（#209，leo 2026-09-20：「那就 1/5、2/5」）：只有一天送得完的批次不出現，
+// 免得「裝一次試試看」就冒出額度話題。分子分母都是 Go 側（quotameter.go）算好的，這裡只畫。
+// 雲端沒報每卡成本（batch_known=false）＝不畫，不編天數。多帳號時只掛在算出這個數字的那一台。
+function batchDaysCell(s, a) {
+  const m = s.quotaMeter;
+  if (!m || !m.batch_known || !(m.batch_total_days >= 2)) return '';
+  if (m.account && a.host && m.account !== a.host) return '';
+  const tip = `這批約 ${m.batch_total_days} 天送完 今天第 ${m.batch_day_no} 天`;
+  return `<span class="sp batchdays" title="${esc(tip)}" aria-label="${esc(tip)}">${SYM.days}<b>${m.batch_day_no}/${m.batch_total_days}</b></span>`;
+}
 function libStatusBar(a, s) {
   const p = a.progress;
   const st = a.status || {};
@@ -999,12 +1011,12 @@ function libStatusBar(a, s) {
   // 同步中（running）時同樣的 !40 變成純文字、點不動（leo21c 實撞）。
   const errCell = (a.state === 'fixable' || a.state === 'unsolvable') ? bangHtml(a, ai, '')
     : errN > 0 ? bangHtml({ state: a.state, why: a.why || '自動重試中', n: errN, reported: a.reported }, ai, '') : '';
-  const lead = a.state === 'running' ? `<span class="sp" title="同步中" aria-label="同步中"><i class="beat big"></i></span>`
-    : a.state === 'done' ? `<span class="sp" title="全部完成" aria-label="全部完成">${SYM.done}</span>` : '';
+  // 同步中不在這裡畫燈：全頁只有右上角的同步按鈕表示（#260）
+  const lead = a.state === 'done' ? `<span class="sp" title="全部完成" aria-label="全部完成">${SYM.done}</span>` : '';
   const bang = '';
   const pause = needsOf(s, a).some((i) => i.kind === 'quota') ? `<span class="sp bad" title="額度用完" aria-label="額度用完">⏸</span>` : '';
   const retry = '';
-  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${lead}${cells}${errCell}${rate}${bang}${pause}${retry}<span class="grow"></span></section>`;
+  return `<section class="strip acc" aria-label="這個帳號的狀態列">${ver}${lead}${cells}${batchDaysCell(s, a)}${errCell}${rate}${bang}${pause}${retry}<span class="grow"></span></section>`;
 }
 
 function libTabsHtml(a, idx) {
@@ -1119,7 +1131,7 @@ function tabUsage(s, a) {
   // 它用免費日上限估，對付費帳號是錯的；排隊與進度本來就在同步分頁的狀態列。
   const head = a.usage ? '' : `<div class="card usagecard"><div class="bigmeter">${usageGauge(a.battery)}</div></div>`;
   startUsageTicker();
-  return `${libBatteryWarnHtml(a)}${head}${usageDashboard(a.usage)}`;
+  return `${libBatteryWarnHtml(a)}${head}${usageDashboard(a.usage, { brakeUrl: libPortalURL(a) + '#/admin' })}`;
 }
 
 function tabAI(a) {
@@ -1127,7 +1139,6 @@ function tabAI(a) {
     <div class="card">
       <div class="kv" style="flex-wrap:wrap">
         ${a.email ? `<div><div class="k" title="Cloudflare 帳號">CF 帳號</div><div class="mono">${esc(a.email)}</div></div>` : ''}
-        <div><div class="k">雲端版本</div><div class="kbver">${kbVersionLine(a)}</div></div>
       </div>
     </div>`;
 }
@@ -1470,12 +1481,58 @@ function mountAppUI(accIdx, d) {
 
 // 畫面更新一律先比對：HTML 沒變就完全不碰 DOM（每秒 tick 會呼叫，不能讓正在輸入、
 // 展開著的資料夾樹、iframe 因為重畫而跳掉）。
+// 🔴 #260（leo 2026-10-11 真 App 0.18.102）：滑鼠停在同步鈕上看不到提示。
+// 原因：畫面有任何一格變動（進度數字、同步中的檔名…）就整塊 innerHTML 重灌，
+// 同步鈕連同提示框、轉圈動畫一起被換成新元素 ⇒ 系統要停約 1 秒才跳提示，永遠等不到。
+// ⇒ 同一個畫面區塊內改成「原地對齊」：結構相同的節點留著、只改有變的屬性與文字，
+// 不同才換。全頁所有 title 提示、動畫、輸入焦點一體受惠，不只同步鈕。
+function morphNode(from, to) {
+  if (from.nodeType === 3 || from.nodeType === 8) { if (from.data !== to.data) from.data = to.data; return; }
+  const fa = from.attributes, ta = to.attributes;
+  let attrChanged = false;
+  for (let i = fa.length - 1; i >= 0; i--) {
+    const n = fa[i].name;
+    if (!to.hasAttribute(n)) { from.removeAttribute(n); attrChanged = true; }
+  }
+  for (let i = 0; i < ta.length; i++) {
+    const n = ta[i].name, v = ta[i].value;
+    if (from.getAttribute(n) !== v) { from.setAttribute(n, v); attrChanged = true; }
+  }
+  if (attrChanged) from.onclick = null; // wire() 會依新屬性重掛；舊的不能殘留
+  const tag = from.nodeName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    if (to.value !== undefined && from.value !== to.value && document.activeElement !== from) from.value = to.value;
+    if ('checked' in to && from.checked !== to.checked) from.checked = to.checked;
+    return;
+  }
+  morphChildren(from, to);
+}
+function sameKind(a, b) {
+  return a.nodeType === b.nodeType && a.nodeName === b.nodeName && (a.nodeType !== 1 || a.id === b.id);
+}
+function morphChildren(from, to) {
+  const fk = Array.from(from.childNodes), tk = Array.from(to.childNodes);
+  const n = Math.max(fk.length, tk.length);
+  for (let i = 0; i < n; i++) {
+    const f = fk[i], t = tk[i];
+    if (!t) { from.removeChild(f); continue; }
+    if (!f) { from.appendChild(t); continue; }
+    if (sameKind(f, t)) morphNode(f, t); else from.replaceChild(t, f);
+  }
+}
 function paint(el, html, key) {
   if (!el) return false;
   if (el._last === html && (key === undefined || el.dataset.view === key)) return false;
+  const sameView = el._last != null && (key === undefined || el.dataset.view === key);
   el._last = html;
   if (key !== undefined) el.dataset.view = key;
-  el.innerHTML = html;
+  if (sameView) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    morphChildren(el, tpl.content);
+  } else {
+    el.innerHTML = html;
+  }
   wire(el);
   return true;
 }
@@ -1534,7 +1591,7 @@ function wire(root) {
   on('obNext', () => { obStep = 2; renderPage(); });
   on('obBack', () => { obStep = 1; renderPage(); });
   on('uCheck', checkUpdate); on('uDownload', downloadUpdate); on('uApply', applyUpdate);
-  all('[data-synclib]').forEach((b) => { b.onclick = async () => { await go.SyncNow(); tick(); }; });
+  all('[data-synclib]').forEach((b) => { b.onclick = () => pressSync(b); });
   all('[data-portal]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.portal); });
   all('[data-openurl]').forEach((b) => { b.onclick = () => go.OpenURL(b.dataset.openurl); });
   all('[data-goerr]').forEach((b) => {

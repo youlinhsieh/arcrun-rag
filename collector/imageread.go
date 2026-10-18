@@ -329,7 +329,7 @@ func (r *ImageReadResult) Notes() []string {
 		}
 	}
 	if len(r.Reads) > 0 {
-		out = append(out, fmt.Sprintf("有 %d 頁是圖片，已由機器辨識成文字收進來（原稿裡標〔圖片辨識〕）。", len(r.Reads)))
+		out = append(out, fmt.Sprintf("有 %d 頁是圖片，已由機器辨識成文字，逐頁放在本卡「讀圖原文」段（機器辨識，不是原字串，數字請對原檔）。", len(r.Reads)))
 	}
 	if len(flagged) > 0 {
 		out = append(out, fmt.Sprintf("其中 %s 的圖片辨識有疑點（兩次數字對不上或辨識途中亂轉），需人工確認；引用這些頁的數字時請說明未經確認，並請對方查原檔。", strings.Join(flagged, "、")))
@@ -358,7 +358,7 @@ func (r *PDFReadReport) afterRead(res *ImageReadResult) *PDFReadReport {
 		return nil
 	}
 	done := res.readPages()
-	out := &PDFReadReport{Pages: r.Pages, ImagePageNums: r.ImagePageNums}
+	out := &PDFReadReport{Pages: r.Pages, ImagePageNums: r.ImagePageNums, TextTables: r.TextTables, TextLists: r.TextLists, ImageReads: res.Reads, printedOff: r.printedOff}
 	tablePages := map[int]bool{}
 	for _, t := range r.ImageTables {
 		tablePages[t.Page] = true

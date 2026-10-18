@@ -515,7 +515,8 @@ func (c *DirectConfig) folderTreeURL() string {
 // `inventory`（資料夾總覽卡）刻意**仍然算**：它是真的被寫進知識庫的一張卡，
 // 使用者在雲端查得到它——與這裡的樹不是同一種東西。
 func countsAsDocument(r DirectResult) bool {
-	return r.Type != "folder_tree"
+	// 目錄卡（#264）成功送達不算「一份文件」；失敗的要算進去，才看得到。
+	return r.Type != "folder_tree" && !(r.Type == "index" && r.Status != "failed")
 }
 
 // postJSON POST 一個 JSON body 到 url，回傳 HTTP 狀態碼與回應片段。非 2xx 視為錯誤。
@@ -1036,6 +1037,18 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 					ExcludedDirCount: p.ExcludedDirCount,
 					OtherWikiDirs:    p.Plan.OtherWikiDirs,
 				}
+			}
+		}
+
+		// 🔴 #209 c10693：雙胞胎記了帳、本尊那張卡的「### 出處」還沒推的，在所有資料夾都處理完之後
+		// 每張本尊只推一次（見 contenttwin.go flushTwinOrigins）。省電時延後、額度冷卻中不推——
+		// 這是「加一行出處」的裝飾性寫入，不該跟真正的上傳搶當天的寫入額度。
+		// 排在真正的上傳後面：還有「輪到了卻沒送」的檔（Waiting＝排隊中且沒失敗過）就先不補出處行——
+		// 失敗中／已暫停的不算（否則一個壞檔就讓出處行永遠補不上）。
+		if !dryRun && accCfg.Extractor != "" && !accCfg.SaverMode && !qs.inCooldown(now) && totalProgress.Waiting() == 0 {
+			if _, ferr := accCfg.flushTwinOrigins(); ferr != nil {
+				results = append(results, DirectResult{Type: "resync", Path: accHost, Status: "noticed",
+					Account: accHost, Error: "更新合併卡的出處時有一張沒成功（不影響同步，稍後自動再試）：" + ferr.Error()})
 			}
 		}
 
@@ -1777,6 +1790,16 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// ⇒ 補送走的是**既有的**萃取路，既有的單輪上限／失敗退避／額度冷卻全部照舊生效。
 	// 放在 Scan() 之後就得再等一輪才會動，且要另外發明一條送件路。見 cloud_audit.go。
 	auditErr := ""
+	// arcrun-rag#255：改版前被共用 source_uri 刪光關係的概念卡，內容沒變不會自己重送——升級後排回佇列一次。
+	if !dryRun {
+		if nq := requeueSharedSourceDocs(cfg, absRoot, m); nq > 0 {
+			saveManifest()
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: fmt.Sprintf("%d 份大檔先前的關係被誤刪過，已排進佇列重送一次（不再使用 AI）", nq),
+			})
+		}
+	}
 	// 省電時延後補送：對帳會把「雲端找不到」的章拔掉、引出一批補送，正是額度吃緊時最不該開的門。
 	if ar := auditCloudLedgerUnlessSaving(cfg, absRoot, m, dryRun, runNow); ar != nil {
 		auditErr = ar.Err
@@ -2185,6 +2208,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				if !found || canon != prev || e.IngestedHash != ev.SourceHash {
 					// 內容變了或改指別的本尊：先從舊本尊的卡上拿掉自己這一行（盡力而為，不擋這份檔）。
 					e.TwinRoot, e.TwinPath = "", ""
+					e.TwinOriginPending = false
 					origins := cfg.twinOrigins(prev, absRoot, m, nil, nil)
 					stateMu.Unlock()
 					paceGate.Lock()
@@ -2195,35 +2219,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				}
 			}
 			if found {
-				self := twinRef{absRoot, ev.Path}
-				origins := cfg.twinOrigins(canon, absRoot, m, &self, nil)
-				stateMu.Unlock()
-				paceGate.Lock()
-				paceFor(cfg)
-				paceGate.Unlock()
-				rerr := cfg.refreshCanonCard(canon, origins)
-				stateMu.Lock()
-				if rerr != nil {
-					res.Status, res.Error = "failed", "更新合併卡的出處失敗："+rerr.Error()
-					if isRouteBackoff(rerr) {
-						res.Status = "skipped" // 沒打出去，不是這個檔的失敗
-					} else if isLocalNetworkErr(rerr) {
-						res.Status = "skipped"
-						res.Error = networkDownNote(cfg, rerr)
-						m.MarkNetworkUnavailable(ev.Path, now, rerr.Error())
-					} else {
-						m.MarkFailed(ev.Path, now, res.Error)
-						exit = 1
-					}
-					saveManifest()
-					liveReport(res.Status)
-					out = append(out, res)
-					return
-				}
+				// 🔴 #209 c10693：雙胞胎只記帳，**不在這裡推本尊的卡**。
+				// 本尊的卡在雲端是整張刪掉重寫（出處變了＝卡雜湊變了），一次一整張卡的寫入列。
+				// 以前這裡每份雙胞胎各推一次：使用者新加三個資料夾、裡面有已傳完的檔的副本，
+				// 舊資料夾那些**完全沒改過**的卡就各被重寫三次——「昨天傳完的，按立刻同步又在送」。
+				// 現在先蓋章＋標記待補，這一輪所有資料夾處理完之後由 flushTwinOrigins
+				// 每張本尊的卡只推一次（而且省電／額度冷卻時不推）。
 				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
 				m.MarkNoCloudCard(ev.Path) // 它自己沒有卡上雲：雲端對帳不要為它重萃
 				if e := m.Entries[ev.Path]; e != nil {
 					e.TwinRoot, e.TwinPath = canon.Root, canon.Path
+					e.TwinOriginPending = true
 				}
 				res.Status = "ingested"
 				res.Error = twinNote(canon)
@@ -2279,7 +2285,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// 等不到回覆」⇒ 漏掉這一格的話，單輪上限 25 個檔會變成 25 次
 				// 各自的等待，同一輪照樣走不完。
 				//
-				xgate := cfg.openGate(stepExtractDoc)
+				xgate := cfg.openGate(stepExtractDoc.on(ev.Path))
 				// #121：先前失敗過的檔再失敗，不算「路壞了」；#201：斷網那種不算前科
 				ownFail := m.HasOwnFailure(ev.Path) // 先讀（要握鎖），再放鎖去等雲端
 				stateMu.Unlock()                    // 🔴 #297：等雲端（秒到分鐘級）時不握鎖，別份檔才能同時在途
@@ -2418,10 +2424,20 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				}
 				// #121：這個檔先前失敗過 ⇒ 這一發再失敗不算「路壞了」（見 routebackoff.go 檔頭）。
 				ownFailPost := m.HasOwnFailure(ev.Path)
-				stateMu.Unlock() // #297：同上，等雲端時不握鎖
-				status, _, perr := cfg.postJSONAs(stepIngestCard, cfg.triggerURL(cfg.CardIngestWF), cardBody,
-					ownFailPost)
-				stateMu.Lock()
+				// arcrun-rag#255：一張卡的三元組有自己的名字、關係多的卡切段送，一次呼叫的雲端工作量有上限
+				// （細節與量測見 cardslice.go）。一段一發，**最後一段先送、第一段最後送**。
+				var status int
+				var perr error
+				for _, sl := range planCardSlices(string(cardData), cardIdx, pageName, cloudHasSlicedNotes(cfg.CloudVersion)) {
+					body := sl.body(cardBody)
+					stateMu.Unlock() // #297：同上，等雲端時不握鎖
+					status, _, perr = cfg.postJSONAs(stepIngestCard.on(ev.Path), cfg.triggerURL(cfg.CardIngestWF), body,
+						ownFailPost)
+					stateMu.Lock()
+					if perr != nil {
+						break
+					}
+				}
 				res.HTTPStatus = status
 				if status == http.StatusTooManyRequests || (perr != nil && (isRouteBackoff(perr) || isStallError(perr))) {
 					lane.pressure() // #297：雲端喊慢／路在退避／等到超時 ⇒ 並行數減半
@@ -2462,6 +2478,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				lane.good() // #297：連續成功 ⇒ 並行數慢慢爬回上限
 				// 記下是誰萃的（t73/leo 07-27）：換萃取器時才分辨得出哪些卡是舊的。
 				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
+				if e := m.Entries[ev.Path]; e != nil && !cloudHasSlicedNotes(cfg.CloudVersion) {
+					e.TripletRev = 0 // 舊版雲端還在共用 source_uri：這一發不算新送法，升級後要再送一次
+				}
 				if tw != nil {
 					tw.add(ev.SourceHash, absRoot, ev.Path) // #246 c18734：從此它是這份內容的本尊
 				}
@@ -2500,7 +2519,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		// 現役是 rag_ingest_card）——它會忽略這兩個欄位，行為與從前一字不差。
 		machDirect := cfg.machineIdentity()
 		stateMu.Unlock() // #297：等雲端時不握鎖
-		status, _, perr := cfg.postJSON(stepIngestDoc, cfg.triggerURL(cfg.IngestWF), map[string]any{
+		status, _, perr := cfg.postJSON(stepIngestDoc.on(ev.Path), cfg.triggerURL(cfg.IngestWF), map[string]any{
 			"page_name":     pageNameOf(ev.Path),
 			"path":          ev.Path,
 			"content":       string(content),
@@ -2571,15 +2590,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		// 上雲（見上面 ingest 分支的 multiCard）——下架也要逐一補上，不然
 		// hub 沒了、概念卡卻永遠留在雲端（孤兒）。**要在 RemoveWikiDoc 清掉
 		// manifest 紀錄之前**先問到卡名單，晚了就問不到了。
-		var extraTakedownPageNames []string
-		if docWentThroughResumable(absRoot, ev.Path) {
-			for i, rel := range WikiDocCardRels(absRoot, ev.Path) {
-				if i == 0 {
-					continue // hub 用下面既有的那一發（page_name 跟原稿走）
-				}
-				extraTakedownPageNames = append(extraTakedownPageNames, pageNameOf(rel))
-			}
-		}
+		// arcrun-rag#255：概念卡的三元組有自己的名字、關係多的卡被切過段 ⇒ 每一批各補一發
+		//（頁名＋triplet_scope；細節見 cardslice.go 的 planTakedownCalls）。
+		extraTakedowns := planTakedownCalls(absRoot, ev.Path, docWentThroughResumable(absRoot, ev.Path))
 		// 下架＝POST {page_name, path} 進 rag_takedown_direct（按 page_name 讀 kbdb blocks
 		// 標 deprecated，不碰 R2；獨立於 rag_ingest 的 __CARDS_PREFIX__ 閘——direct 模式檔在
 		// 資料夾根，會被 rag_ingest 的前綴閘擋掉，故自帶不含前綴閘的下架 workflow）。
@@ -2637,14 +2650,19 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				ClearExtractProgress(absRoot, ev.Path)
 				// 逐一下架續讀機制產出的概念卡（上面湊出來的 page_name 清單）。
 				// 最佳努力：任何一張失敗都只記 warning，不擋 hub 已經成功的下架。
-				for _, pn := range extraTakedownPageNames {
+				for _, tc := range extraTakedowns {
 					paceFor(cfg)
-					_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), map[string]any{
+					pn := tc.PageName
+					tdBody := map[string]any{
 						"page_name":     pn,
 						"path":          ev.Path,
 						"machine":       machRm.ID,
 						"machine_label": machRm.Label,
-					})
+					}
+					if tc.Scope != "" {
+						tdBody["triplet_scope"] = tc.Scope
+					}
+					_, _, perr := cfg.postJSON(stepTakedown, cfg.triggerURL(cfg.RemovedWF), tdBody)
 					if perr != nil {
 						out = append(out, DirectResult{
 							Type: "warning", Path: pn, Status: "skipped",
@@ -2711,6 +2729,14 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 不佔用 exit（不該讓「積壓還很多」看起來像出錯了）。
 	if deferredCount > 0 {
 		results = append(results, DirectResult{Type: "info", Status: "skipped", Error: resumeAfterCapMessage(deferredCount)})
+	}
+
+	// 分層目錄卡（inkstone/arcrun-rag#264）：`.wiki` 的 00-INDEX 樹（雲端版連結）送上雲端。
+	// 放在萃取迴圈**之後**：目錄只列「已經上雲的文件」，這輪剛送的卡要同一輪就進目錄。
+	// 失敗記進 manifest.wiki_index_fails（畫面 !N、退避到點自動重送），不安靜跳過；
+	// 不受「有事件才做」的閘限制——靜止時雜湊擋重送，失敗的卡靠這裡到點重試。
+	if ixRes := syncWikiIndexCards(cfg, absRoot, m, dryRun, runNow); len(ixRes) > 0 {
+		results = append(results, ixRes...)
 	}
 
 	if !dryRun {

@@ -149,6 +149,15 @@ func (m *Manifest) Progress() SyncProgress {
 			}
 		}
 	}
+	// #264：目錄卡沒上雲＝AI 走不到卡片，要像檔案一樣算一筆「!」（排隊中但失敗過，退避到點自動重送）。
+	for _, f := range m.WikiIndexFails {
+		if f == nil {
+			continue
+		}
+		p.Total++
+		p.Pending++
+		p.Failing++
+	}
 	best := 0
 	for k, n := range whyCount {
 		if n > best || (n == best && k < p.StuckWhy) {

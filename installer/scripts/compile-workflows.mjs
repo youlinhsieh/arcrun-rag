@@ -52,6 +52,9 @@ const FILES = [
   // 內部呼叫。跟主鏈一起編圖／推送，才能讓 trigger_entity_concept 真的打得到（否則永遠
   // 走 ON_FAIL 吸收分支，功能形同沒接上——c15326 點名的病，不要再犯第二次）。
   'rag-entity-concept.local.yaml',
+  // inkstone/arcrun-rag#267：rag_entity_concept 的前置查詢（對這張卡自己的每個 entity 各查一次）。
+  // 必須跟 rag_entity_concept 一起編圖／推送——它的 fetch_lookup 節點打這支，沒裝＝整支如實失敗。
+  'rag-entity-lookup.local.yaml',
 ];
 
 const py = `

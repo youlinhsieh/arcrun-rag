@@ -36,7 +36,7 @@ func newTwinHarness(t *testing.T, roots ...string) (*DirectConfig, *twinCloud) {
 		case strings.HasSuffix(r.URL.Path, "/rag_ingest_card/trigger"):
 			var m map[string]any
 			_ = json.Unmarshal(b, &m)
-			if pn, _ := m["page_name"].(string); !strings.HasPrefix(pn, "資料夾") {
+			if pn, _ := m["page_name"].(string); !strings.HasPrefix(pn, "資料夾") && !strings.HasPrefix(pn, "00-INDEX") {
 				cl.mu.Lock()
 				cl.cards[m["library"].(string)+"|"+m["path"].(string)], _ = m["card_content"].(string)
 				cl.mu.Unlock()
@@ -44,7 +44,7 @@ func newTwinHarness(t *testing.T, roots ...string) (*DirectConfig, *twinCloud) {
 		case strings.Contains(r.URL.Path, "takedown"):
 			var m map[string]any
 			_ = json.Unmarshal(b, &m)
-			if pth := m["path"].(string); !strings.Contains(pth, "資料夾") { // 資料夾結構卡與併卡無關
+			if pth := m["path"].(string); !strings.Contains(pth, "資料夾") && !strings.Contains(pth, "目錄") { // 資料夾結構卡與併卡無關
 				cl.mu.Lock()
 				cl.takedown = append(cl.takedown, pth)
 				cl.mu.Unlock()

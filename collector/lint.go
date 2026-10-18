@@ -239,10 +239,12 @@ func lintWikiShapeCard(card string, opts LintOptions) LintResult {
 		r = r.addHard("H5", "疑似機敏值："+strings.Join(hits, "、")+"（依規約該段應改寫成描述，不得照抄）")
 	}
 	if opts.Source != "" {
-		if msg := checkSimilarity(card, opts.Source); msg != "" {
+		// 「原文表格」段是轉檔層機械逐字放的（不是 LLM 抄的）：不算進「疑似整段照抄」與落地檢查（#253）
+		plain := stripVerbatimSection(card)
+		if msg := checkSimilarity(plain, opts.Source); msg != "" {
 			r = r.addSoft("H6", msg)
 		}
-		r = r.addGrounding(card, opts.Source)
+		r = r.addGrounding(plain, opts.Source)
 	}
 	return r
 }

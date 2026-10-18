@@ -54,6 +54,10 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)
+		if pn, _ := m["page_name"].(string); strings.HasPrefix(pn, "00-INDEX") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true}) // #264 目錄卡另有測試，不算進這裡的「卡」
+			return
+		}
 		posted = append(posted, m)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))

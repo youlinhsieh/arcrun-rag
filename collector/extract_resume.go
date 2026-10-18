@@ -187,6 +187,12 @@ func clearExtractProgress(absRoot, node, nodeKey, base string) {
 // 與 extractWithWorkersAI 一致；srcText 是已經轉好的純文字（呼叫端已經做過 ConvertToText，
 // 這裡不重讀原始檔，維持「LLM 只碰得到文字」的既有邊界）。
 func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, origin SourceOrigin, retry bool, unreadable ...string) ([]string, error) {
+	return extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText, origin, retry, nil, unreadable...)
+}
+
+// extractResumableWorkersAIWith＝extractResumableWorkersAI，多帶 verbatim：轉檔層逐字還原的段落
+// （PDF 文字層的表格，#253），每一輪組文件卡時都寫進去——大檔的表也不經 LLM 摘要。
+func extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText string, origin SourceOrigin, retry bool, verbatim []VerbatimSection, unreadable ...string) ([]string, error) {
 	pageName := pageNameOf(relPath)
 	node, base := docNodeAndPath(absRoot, relPath)
 	nodeKey := nodeKeyOf(node)
@@ -291,6 +297,7 @@ func extractResumableWorkersAI(url, apiKey, absRoot, relPath, srcText string, or
 	// 的既有設計不變；概念卡數量隨著讀的進度增加，之前完成的段落卡內容不會因為
 	// 這一輪而改變（mergeConcept 對同名概念取聯集，不同名概念純累加）。
 	merged.Unreadable = unreadable // #253：轉檔層盤點出的讀不到部分，文件卡明講
+	merged.Verbatim = verbatim     // #253：文字層的表逐字存進文件卡
 	cards, berr := BuildWikiDoc(absRoot, relPath, srcText, &merged, origin, time.Now())
 	if berr != nil {
 		return nil, berr

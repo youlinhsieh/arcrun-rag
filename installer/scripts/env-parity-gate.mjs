@@ -211,6 +211,29 @@ export const WAIVERS = [
       + '刪掉 wrangler.toml 的 MAIL_RELAY_BASE 與這筆豁免，三筆一起刪。',
   },
   {
+    檔案: 'installer/oauth-prototype/wrangler.toml',
+    鍵: 'r2_buckets',
+    到期: '2027-01-11',
+    理由:
+      'inkstone/arcrun-rag#266：stage 的桌面安裝檔與「最新版」指標改放 R2（binding DIST），'
+      + '離開 git 歷史與 git.uncle6.me（Gitea 要搬家，母票 InkStoneCo#232）。prod 的下載走'
+      + ' GitHub raw／jsDelivr，本來就不經過這個 worker 的儲存；兩邊的「送貨管道」從 '
+      + 'BUNDLE_BASE 起就是不同的（Gitea raw ⇄ GitHub），這是同一類差異。'
+      + 'worker 的 R2 路徑只在綁了 DIST 且設了 DIST_BASE 時啟用，prod 走原路徑一字未改，'
+      + '由 worker-dist.test.mjs 鎖住。',
+    解除條件:
+      'leo 裁定 prod 也把安裝檔搬到自己的 R2（兩邊對稱，prod 同樣綁 DIST），或 stage 的'
+      + '送貨管道回到與 prod 同一種之後，刪掉這筆與 vars.DIST_BASE 那筆豁免；'
+      + '到期前若還沒裁，回頭確認一次是否維持現狀。',
+  },
+  {
+    檔案: 'installer/oauth-prototype/wrangler.toml',
+    鍵: 'vars.DIST_BASE',
+    到期: '2027-01-11',
+    理由: '同上一筆 `r2_buckets` 豁免——DIST_BASE 是 stage 安裝檔 R2 路徑的公開網址，與 DIST 綁定成對出現。',
+    解除條件: '與上一筆 `r2_buckets` 豁免同一個解除條件，兩筆一起刪。',
+  },
+  {
     檔案: 'landing/wrangler.toml',
     鍵: 'send_email',
     到期: '2026-12-26',

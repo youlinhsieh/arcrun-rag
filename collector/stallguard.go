@@ -44,7 +44,13 @@ import (
 type callStep struct {
 	Name   string
 	Budget time.Duration
+	// File＝這一發是替哪份檔打的（相對路徑；空＝不是替單一檔案做的事）。
+	// 只用來讓「還在等」講得出是哪份檔（#260：leo 問「是因為它在處理大檔？」）。
+	File string
 }
+
+// on 回一份帶上檔名的副本（callStep 是值，常數本身不被改動）。
+func (c callStep) on(file string) callStep { c.File = file; return c }
 
 // 🔴 **每一個數字都是量出來的，不是推出來的**（2026-08-28 第三輪的教訓）。
 //
@@ -74,21 +80,21 @@ const (
 )
 
 var (
-	stepIngestDoc    = callStep{"整理一份文件", writeBudget}
-	stepIngestCard   = callStep{"送出一份筆記", writeBudget}
-	stepExtractDoc   = callStep{"請雲端讀一份文件", writeBudget}
-	stepRepairOrigin = callStep{"更新舊筆記的原文位置", writeBudget}
-	stepTakedown     = callStep{"把刪掉的檔案從雲端下架", writeBudget}
-	stepRetire       = callStep{"收回這個資料夾在雲端的資料", writeBudget}
-	stepFolderTree   = callStep{"回報資料夾結構", registerBudget}
-	stepInventory    = callStep{"送出資料夾總覽", registerBudget}
-	stepFolderCard   = callStep{"送出目錄索引", registerBudget}
+	stepIngestDoc    = callStep{Name: "整理一份文件", Budget: writeBudget}
+	stepIngestCard   = callStep{Name: "送出一份筆記", Budget: writeBudget}
+	stepExtractDoc   = callStep{Name: "請雲端讀一份文件", Budget: writeBudget}
+	stepRepairOrigin = callStep{Name: "更新舊筆記的原文位置", Budget: writeBudget}
+	stepTakedown     = callStep{Name: "把刪掉的檔案從雲端下架", Budget: writeBudget}
+	stepRetire       = callStep{Name: "收回這個資料夾在雲端的資料", Budget: writeBudget}
+	stepFolderTree   = callStep{Name: "回報資料夾結構", Budget: registerBudget}
+	stepInventory    = callStep{Name: "送出資料夾總覽", Budget: registerBudget}
+	stepFolderCard   = callStep{Name: "送出目錄索引", Budget: registerBudget}
 	// stepProbeAI＝每輪每個帳號的第一發（探測雲端 AI 通了沒）。它同時是最早
 	// 能認出「這個帳號今天不回應」的位置——認出來，這個帳號其餘的工作就都省了。
-	stepProbeAI = callStep{"確認雲端 AI 可不可以用", probeBudget}
+	stepProbeAI = callStep{Name: "確認雲端 AI 可不可以用", Budget: probeBudget}
 	// stepCloudAudit＝跟雲端核對「先前送過的檔案還在不在」。唯讀查詢，
 	// 一輪可能連打 cloudAuditBatch 發——正是「一發卡住的代價會被乘上批次大小」的例子。
-	stepCloudAudit = callStep{"跟雲端核對哪些檔案還在", probeBudget}
+	stepCloudAudit = callStep{Name: "跟雲端核對哪些檔案還在", Budget: probeBudget}
 )
 
 // stallNoticeEvery＝等多久開口說一次「還在等」。變數而非常數：測試要把它調快。
@@ -104,6 +110,7 @@ var stallStrikesBeforeSkip = 2
 // 「哪個帳號、哪件事、等了多久」。
 type StalledCall struct {
 	Account   string `json:"account"`        // 知識庫網址的主機名（使用者在畫面上看得到的那個）
+	File      string `json:"file,omitempty"` // 等的是哪份檔（相對路徑；空＝不是替單一檔案做的事）
 	Step      string `json:"step"`           // 白話的「哪件事」
 	WaitedSec int    `json:"waited_sec"`     // 等了幾秒
 	Skipped   bool   `json:"skipped"`        // 這一輪之後不再打這個帳號
@@ -112,7 +119,7 @@ type StalledCall struct {
 
 // accountStall＝某個帳號在這一輪的「等待帳」。
 type accountStall struct {
-	strikes int
+	strikes  int
 	answered bool   // 這一輪它**成功回應過** ⇒ 不准說它「沒有回應」
 	skip     string // 非空＝這一輪不再打它，內容是給使用者看的理由
 }
@@ -345,9 +352,9 @@ func (gate *callGate) keepTalking() {
 			announce := gate.g.announce
 			gate.g.mu.Unlock()
 			call := StalledCall{
-				Account: gate.host, Step: gate.step.Name, WaitedSec: waited,
-				Note: fmt.Sprintf("還在等知識庫「%s」回覆「%s」，已經等了 %d 秒。",
-					gate.host, gate.step.Name, waited),
+				Account: gate.host, File: gate.step.File, Step: gate.step.Name, WaitedSec: waited,
+				Note: fmt.Sprintf("還在等知識庫「%s」回覆「%s」%s，已經等了 %d 秒。",
+					gate.host, gate.step.Name, fileSuffix(gate.step.File), waited),
 			}
 			if announce != nil {
 				announce(call)
@@ -407,7 +414,7 @@ func (gate *callGate) record(err error) error {
 //
 // 三種都要認得：我們自己的 context deadline、client.Timeout 包出來的
 // `*url.Error{Timeout:true}`、以及被 `%w` 包過好幾層之後的同一個東西
-//（萃取那條路會加上「連不上你的知識庫：」再包一層）。
+// （萃取那條路會加上「連不上你的知識庫：」再包一層）。
 func isStallError(err error) bool {
 	if err == nil {
 		return false
@@ -420,4 +427,12 @@ func isStallError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// fileSuffix 把檔名念成「（檔名）」；沒有檔名＝空字串。
+func fileSuffix(f string) string {
+	if f == "" {
+		return ""
+	}
+	return "（" + f + "）"
 }

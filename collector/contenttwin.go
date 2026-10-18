@@ -197,6 +197,7 @@ func (c *DirectConfig) sweepOrphanTwins(absRoot string, m *Manifest) int {
 			continue
 		}
 		e.TwinRoot, e.TwinPath = "", ""
+		e.TwinOriginPending = false
 		e.IngestedHash, e.IngestedAt = "", 0
 		e.NoCloudCard = false
 		n++
@@ -293,19 +294,24 @@ func (c *DirectConfig) refreshCanonCard(canon twinRef, origins []SourceOrigin) e
 			if i > 0 {
 				pageName = pageNameOf(rel)
 			}
-			status, _, perr := c.postJSONAs(stepIngestCard, c.triggerURL(c.CardIngestWF), map[string]any{
+			cardBody := map[string]any{
 				"page_name":     pageName,
 				"path":          canon.Path,
 				"card_content":  fixed,
 				"library":       library,
 				"machine":       mach.ID,
 				"machine_label": mach.Label,
-			}, false)
-			if perr != nil {
-				return perr
 			}
-			if status < 200 || status >= 300 {
-				return fmt.Errorf("更新卡片出處失敗（HTTP %s）", itoa(status))
+			// arcrun-rag#255：跟收卡同一套送法（三元組的名字＋關係多的卡切段），
+			// 否則重推會把原本分段存的卡整張寫進第一批、與後面幾段重複。
+			for _, sl := range planCardSlices(fixed, i, pageName, cloudHasSlicedNotes(c.CloudVersion)) {
+				status, _, perr := c.postJSONAs(stepIngestCard, c.triggerURL(c.CardIngestWF), sl.body(cardBody), false)
+				if perr != nil {
+					return perr
+				}
+				if status < 200 || status >= 300 {
+					return fmt.Errorf("更新卡片出處失敗（HTTP %s）", itoa(status))
+				}
 			}
 		}
 		writes = append(writes, fix{abs, fixed})
@@ -320,4 +326,82 @@ func (c *DirectConfig) refreshCanonCard(canon twinRef, origins []SourceOrigin) e
 
 func twinNote(canon twinRef) string {
 	return "內容和「" + strings.TrimPrefix(filepath.ToSlash(canon.Path), "/") + "」一模一樣，已併成同一張卡（出處多寫一行）"
+}
+
+// twinOriginFlushBatch＝單輪最多更新幾張本尊的卡。與 cloudAuditBatch 同一個精神：
+// 巨量積壓（例如一個 1 萬檔的資料夾整份被另一個資料夾複製）不該一輪湧完，剩下的下一輪接著做。
+const twinOriginFlushBatch = 20
+
+// flushTwinOrigins 把「雙胞胎已記帳、本尊的卡還沒補上那一行出處」的卡補推上雲，
+// **每張本尊的卡一輪只推一次**，不管有幾份副本指向它（inkstone/arcrun-rag#209 c10693）。
+//
+// 為什麼要這支：本尊的卡在雲端是整張刪掉重寫，一次一整張卡的寫入列；
+// 在雙胞胎那一刻就推，k 份副本就把同一張沒改過的卡重寫 k 次，而且全擠在使用者按
+// 「立刻同步」的那一輪、跟真正的上傳搶當天的寫入額度。
+//
+// 約束：
+//   - 只推「還站得住」的本尊（canonicalOK）；站不住的由 sweepOrphanTwins 在下一輪放回佇列，標記跟著清掉。
+//   - 推失敗就停手（不連打剩下的），標記留著下一輪再試；回傳那個失敗的原文（不改寫）。
+//   - 單輪上限 twinOriginFlushBatch 張。
+//   - 出處清單仍由 manifest 現算（twinOrigins），所以順序、內容與立即推的舊作法逐字相同。
+func (c *DirectConfig) flushTwinOrigins() (pushed int, err error) {
+	roots := c.watchedRoots("")
+	mans := map[string]*Manifest{}
+	for _, r := range roots {
+		if m := c.loadOtherManifest(r); m != nil {
+			mans[r] = m
+		}
+	}
+	type pend struct {
+		root string
+		e    *ManifestEntry
+	}
+	groups := map[string][]pend{}
+	canons := map[string]twinRef{}
+	for root, m := range mans {
+		for _, e := range m.Entries {
+			if e == nil || !e.TwinOriginPending || e.TwinPath == "" {
+				continue
+			}
+			ref := twinRef{e.TwinRoot, e.TwinPath}
+			groups[ref.key()] = append(groups[ref.key()], pend{root, e})
+			canons[ref.key()] = ref
+		}
+	}
+	if len(groups) == 0 {
+		return 0, nil
+	}
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	dirty := map[string]bool{}
+	for _, k := range keys {
+		if pushed >= twinOriginFlushBatch {
+			break
+		}
+		canon := canons[k]
+		cm := mans[canon.Root]
+		if cm == nil || !canonicalOK(cm.Entries[canon.Path]) {
+			continue // 本尊站不住：下一輪 sweepOrphanTwins 會把這些雙胞胎放回佇列
+		}
+		origins := c.twinOrigins(canon, "", nil, nil, nil)
+		paceFor(c)
+		if rerr := c.refreshCanonCard(canon, origins); rerr != nil {
+			err = rerr
+			break
+		}
+		for _, p := range groups[k] {
+			p.e.TwinOriginPending = false
+			dirty[p.root] = true
+		}
+		pushed++
+	}
+	for root := range dirty {
+		if serr := mans[root].Save(c.manifestPathFor(root)); serr != nil && err == nil {
+			err = serr
+		}
+	}
+	return pushed, err
 }

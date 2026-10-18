@@ -120,12 +120,12 @@ func TestRenderPDFPages_空白頁不插頁界(t *testing.T) {
 func TestRenderDocCard_讀不到的內容段(t *testing.T) {
 	d := &wikiDoc{Card: "某報告", Gloss: "g", Created: "2026-10-10", Updated: "2026-10-10"}
 	ex := &DocExtract{Summary: "s", Unreadable: []string{"本檔有 2 張表是以圖片貼入"}}
-	out := renderDocCard(d, ex, []string{"概念甲"}, testOrigin())
+	out := renderDocCard(d, ex, []string{"概念甲"}, testOrigin(), nil)
 	i, j, k := strings.Index(out, "## 重點"), strings.Index(out, "## 讀不到的內容"), strings.Index(out, "## 關聯")
 	if !(i >= 0 && j > i && k > j) || !strings.Contains(out, "- 本檔有 2 張表是以圖片貼入") {
 		t.Errorf("「讀不到的內容」段應在重點之後、關聯之前：\n%s", out)
 	}
-	if strings.Contains(renderDocCard(d, &DocExtract{Summary: "s"}, []string{"概念甲"}, testOrigin()), "讀不到的內容") {
+	if strings.Contains(renderDocCard(d, &DocExtract{Summary: "s"}, []string{"概念甲"}, testOrigin(), nil), "讀不到的內容") {
 		t.Error("沒有讀不到的東西就不該有這一段")
 	}
 }

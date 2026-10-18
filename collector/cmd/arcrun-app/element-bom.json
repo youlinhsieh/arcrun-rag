@@ -1,0 +1,573 @@
+{
+ "_說明": "畫面元素 BOM（inkstone/arcrun-rag#261）。每一列＝一種零件；asks＝它回答用戶的哪一個問題。判準與規則見 schemas/element-bom-audit.mjs。新增元素必須先在這裡加一列；兩列 asks 相同＝同一件事多花一顆零件。",
+ "entries": [
+  {
+   "id": "brand",
+   "sel": "#brandHome",
+   "asks": "這是什麼產品"
+  },
+  {
+   "id": "side.sec",
+   "sel": "#side .sec",
+   "asks": "邊欄列的是什麼"
+  },
+  {
+   "id": "side.acct.avatar",
+   "sel": "#nav .nav.acct .av",
+   "asks": "這一列是哪一個帳號（頭像字）",
+   "repeat": true
+  },
+  {
+   "id": "side.acct.pip",
+   "sel": "#nav .nav.acct .pip",
+   "asks": "這個帳號有沒有事要處理",
+   "repeat": true
+  },
+  {
+   "id": "side.acct.name",
+   "sel": "#nav .nav.acct .nm",
+   "asks": "這一列是哪一個帳號（名稱）",
+   "repeat": true
+  },
+  {
+   "id": "side.acct.gauge",
+   "sel": "#nav .nav.acct .ugauge",
+   "asks": "側邊欄一眼總結：這個帳號用量還夠不夠用",
+   "repeat": true
+  },
+  {
+   "id": "side.add",
+   "sel": "#navAdd",
+   "asks": "怎麼再連一個帳號"
+  },
+  {
+   "id": "side.update",
+   "sel": "#navUpdate",
+   "asks": "小幫手是哪一版、要不要更新"
+  },
+  {
+   "id": "side.theme",
+   "sel": "#themeBtn",
+   "asks": "畫面用淺色還是深色"
+  },
+  {
+   "id": "side.help",
+   "sel": "#helpBtn",
+   "asks": "出問題怎麼求救"
+  },
+  {
+   "id": "acc.home",
+   "sel": ".acchead [data-gohome]",
+   "asks": "怎麼回首頁"
+  },
+  {
+   "id": "acc.name",
+   "sel": ".acchead h1.nm",
+   "asks": "現在看的是哪一個帳號"
+  },
+  {
+   "id": "acc.sync",
+   "sel": ".acchead [data-synclib]",
+   "asks": "小幫手現在是不是在同步、怎麼立刻同步"
+  },
+  {
+   "id": "strip.cloudver",
+   "sel": ".strip.acc .kbv",
+   "asks": "雲端知識庫是哪一版"
+  },
+  {
+   "id": "strip.upgrade",
+   "sel": ".strip.acc [data-updatekb]",
+   "asks": "雲端有新版時怎麼更新"
+  },
+  {
+   "id": "strip.done",
+   "sel": ".strip.acc .sp[title='全部完成']",
+   "asks": "這個帳號的檔案是不是全部處理完了"
+  },
+  {
+   "id": "strip.total",
+   "sel": ".strip.acc .sp[title^='可讀的檔案']",
+   "asks": "這個帳號有多少檔案可讀"
+  },
+  {
+   "id": "strip.sent",
+   "sel": ".strip.acc .sp[title='已送上']",
+   "asks": "多少檔案已送上雲端"
+  },
+  {
+   "id": "strip.wait",
+   "sel": ".strip.acc .sp[title='待上傳']",
+   "asks": "多少檔案還在排隊"
+  },
+  {
+   "id": "strip.err",
+   "sel": ".strip.acc .bangbtn",
+   "asks": "有幾份出錯、點進去看是哪幾份"
+  },
+  {
+   "id": "strip.rate",
+   "sel": ".strip.acc .sp[title='近一小時送上']",
+   "asks": "最近送得快不快"
+  },
+  {
+   "id": "strip.quota",
+   "sel": ".strip.acc .sp.bad",
+   "asks": "額度是不是用完了"
+  },
+  {
+   "id": "strip.nofile",
+   "sel": ".strip.acc .sp[title='還沒有檔案進度']",
+   "asks": "還沒有檔案進度"
+  },
+  {
+   "id": "tab.sync",
+   "sel": ".tabs [data-libtab='sync']",
+   "asks": "現在要不要處理什麼（同步頁）"
+  },
+  {
+   "id": "tab.folders",
+   "sel": ".tabs [data-libtab='folders']",
+   "asks": "監看了哪些資料夾（資料夾頁）"
+  },
+  {
+   "id": "tab.apps",
+   "sel": ".tabs [data-libtab='apps']",
+   "asks": "裝了哪些 App（App 頁）"
+  },
+  {
+   "id": "tab.usage",
+   "sel": ".tabs [data-libtab='usage']",
+   "asks": "Cloudflare 用量怎麼樣（用量頁）"
+  },
+  {
+   "id": "tab.ai",
+   "sel": ".tabs [data-libtab='ai']",
+   "asks": "這個帳號的設定（設定頁）"
+  },
+  {
+   "id": "tab.portal",
+   "sel": ".tabs [data-portal]",
+   "asks": "怎麼打開知識庫網頁"
+  },
+  {
+   "id": "card.quota.title",
+   "sel": ".quotacard .qt",
+   "asks": "哪一種額度用完了、什麼時候恢復"
+  },
+  {
+   "id": "card.quota.close",
+   "sel": ".alertcard .x",
+   "asks": "怎麼把這則通知收起來"
+  },
+  {
+   "id": "card.quota.upgrade",
+   "sel": ".quotacard .primary",
+   "asks": "額度用完怎麼升級"
+  },
+  {
+   "id": "card.quota.doc",
+   "sel": ".quotacard .qmark",
+   "asks": "額度怎麼算"
+  },
+  {
+   "id": "card.state.title",
+   "sel": ".alertcard:not(.quotacard) .qt",
+   "asks": "這個帳號為什麼停住"
+  },
+  {
+   "id": "card.state.act",
+   "sel": ".alertcard:not(.quotacard) .qrow button",
+   "asks": "停住了該做什麼"
+  },
+  {
+   "id": "folders.add",
+   "sel": ".folderbar .icbtn",
+   "asks": "怎麼加一個資料夾"
+  },
+  {
+   "id": "folder.expand",
+   "sel": ".folder .tw",
+   "asks": "怎麼展開這個資料夾",
+   "repeat": true
+  },
+  {
+   "id": "folder.path",
+   "sel": ".folder .path",
+   "asks": "這是哪一個資料夾",
+   "repeat": true
+  },
+  {
+   "id": "folder.progress",
+   "sel": ".folder .fnum.dim",
+   "asks": "這個資料夾整理到哪（已處理／全部）",
+   "repeat": true
+  },
+  {
+   "id": "folder.errn",
+   "sel": ".folder > b, .folder .frow > b",
+   "asks": "這個資料夾有幾份讀不了",
+   "repeat": true
+  },
+  {
+   "id": "folder.stat",
+   "sel": ".folder .fstat",
+   "asks": "這個資料夾是否全部送上",
+   "repeat": true
+  },
+  {
+   "id": "folder.running",
+   "sel": ".folder > i, .folder .frow > i",
+   "asks": "這個資料夾現在是不是正在跑",
+   "repeat": true
+  },
+  {
+   "id": "folder.remove",
+   "sel": ".folder .ico",
+   "asks": "怎麼移除這個資料夾",
+   "repeat": true
+  },
+  {
+   "id": "folder.bang",
+   "sel": ".folder .bangbtn",
+   "asks": "這個資料夾有新問題",
+   "repeat": true
+  },
+  {
+   "id": "apps.title",
+   "sel": ".s",
+   "asks": "裝了哪些 App"
+  },
+  {
+   "id": "apps.refresh",
+   "sel": "#apRefresh",
+   "asks": "怎麼重整 App 清單"
+  },
+  {
+   "id": "apps.tile",
+   "sel": ".apptile:not(.add)",
+   "asks": "有哪一個 App 可以開",
+   "repeat": true
+  },
+  {
+   "id": "apps.pin",
+   "sel": ".pinbtn",
+   "asks": "這個 App 有沒有釘在首頁",
+   "repeat": true
+  },
+  {
+   "id": "apps.add",
+   "sel": "#apAdd",
+   "asks": "怎麼加裝 App"
+  },
+  {
+   "id": "usage.source",
+   "sel": ".uhead .ucloud",
+   "asks": "用量資料從哪裡來"
+  },
+  {
+   "id": "usage.plan",
+   "sel": ".uhead .uplan",
+   "asks": "這個帳號是免費還是付費方案"
+  },
+  {
+   "id": "usage.fresh",
+   "sel": ".uhead .uhelp",
+   "asks": "數字多新鮮"
+  },
+  {
+   "id": "usage.stale",
+   "sel": ".uhead .ulamp",
+   "asks": "數字是不是過時了"
+  },
+  {
+   "id": "usage.dial",
+   "sel": ".udash .udial",
+   "asks": "儀表頁細節：最吃緊那一項用到幾成"
+  },
+  {
+   "id": "usage.odo.count",
+   "sel": ".uodo .uodov",
+   "asks": "最吃緊那一項用了多少、上限多少"
+  },
+  {
+   "id": "usage.odo.dollar",
+   "sel": ".uodo > .upause",
+   "asks": "最吃緊那一項超線之後是暫停了（免費）"
+  },
+  {
+   "id": "usage.odo.reset",
+   "sel": ".uodo .ureset",
+   "asks": "最吃緊那一項什麼時候歸零"
+  },
+  {
+   "id": "usage.odo.rate",
+   "sel": ".uodo .urate",
+   "asks": "現在每分鐘增加多少"
+  },
+  {
+   "id": "usage.act.pay",
+   "sel": ".uacts .pay",
+   "asks": "想付費或看費用說明，點哪裡（付費帳號帶本月超線約多少）"
+  },
+  {
+   "id": "usage.act.brake",
+   "sel": ".uacts .brk",
+   "asks": "自動剎車開了沒、護著哪幾項、去哪設定"
+  },
+  {
+   "id": "usage.row.name",
+   "sel": ".urow .uname",
+   "asks": "這一列是哪一項用量",
+   "repeat": true
+  },
+  {
+   "id": "usage.row.count",
+   "sel": ".urow .unum",
+   "asks": "每一項各用了多少、上限多少",
+   "repeat": true
+  },
+  {
+   "id": "usage.row.dollar",
+   "sel": ".urow .upause",
+   "asks": "這一項免費額度用完、暫停了",
+   "repeat": true
+  },
+  {
+   "id": "usage.row.reset",
+   "sel": ".urow .ureset",
+   "asks": "這一項什麼時候歸零",
+   "repeat": true
+  },
+  {
+   "id": "usage.row.bar",
+   "sel": ".urow .ubar",
+   "asks": "這一項額度內用了多少、超出多少（進度條）",
+   "repeat": true
+  },
+  {
+   "id": "usage.notice.title",
+   "sel": "span.qt",
+   "asks": "哪一項快到線"
+  },
+  {
+   "id": "settings.email",
+   "sel": "#libBody .mono",
+   "asks": "這個帳號登入用的信箱"
+  },
+  {
+   "id": "usage.odo.icon",
+   "sel": ".uodo .uico",
+   "asks": "最吃緊的是哪一項用量"
+  },
+  {
+   "id": "apps.name",
+   "sel": ".appcell .nm",
+   "asks": "這個 App 叫什麼",
+   "repeat": true
+  },
+  {
+   "id": "home.ok",
+   "sel": ".strip:not(.acc) .sp:has(> i)",
+   "asks": "有幾個帳號是正常的"
+  },
+  {
+   "id": "home.engine",
+   "sel": "#hLogs",
+   "asks": "同步引擎要不要處理"
+  },
+  {
+   "id": "home.quota",
+   "sel": ".strip:not(.acc) .sp.bad:not(.lnkpill)",
+   "asks": "有沒有帳號額度用完"
+  },
+  {
+   "id": "home.attn",
+   "sel": "#notifToggle",
+   "asks": "有哪些事等我處理"
+  },
+  {
+   "id": "home.retry",
+   "sel": ".strip:not(.acc) .sp.quiet[title='自動重試中']",
+   "asks": "有幾份在自動重試"
+  },
+  {
+   "id": "home.skipped",
+   "sel": ".strip:not(.acc) .sp.quiet:not([title='自動重試中'])",
+   "asks": "有幾份被略過讀不了"
+  },
+  {
+   "id": "home.total",
+   "sel": ".strip:not(.acc) .num",
+   "asks": "全部檔案整理了多少"
+  },
+  {
+   "id": "home.nchip",
+   "sel": ".nchip",
+   "asks": "哪個帳號有事、點進去看",
+   "repeat": true
+  },
+  {
+   "id": "home.app",
+   "sel": ".mapp:not(.add)",
+   "asks": "首頁釘了哪些 App，點了開",
+   "repeat": true
+  },
+  {
+   "id": "home.appadd",
+   "sel": "#mappAdd",
+   "asks": "怎麼加一個 App 到首頁"
+  },
+  {
+   "id": "dlg.title",
+   "sel": "#sheet h2",
+   "asks": "這個對話框在做什麼"
+  },
+  {
+   "id": "dlg.section",
+   "sel": "#sheet h3",
+   "asks": "這一段是什麼（求救頁分段）",
+   "repeat": true
+  },
+  {
+   "id": "dlg.cancel",
+   "sel": "#sheet #c1",
+   "asks": "怎麼不做、關掉這個對話框"
+  },
+  {
+   "id": "dlg.ok",
+   "sel": "#sheet #c2",
+   "asks": "怎麼確定、照這個對話框做"
+  },
+  {
+   "id": "rm.path",
+   "sel": "#sheet p.path",
+   "asks": "要移除的是哪一個資料夾"
+  },
+  {
+   "id": "rm.plan",
+   "sel": "#sheet #rmPlan, #sheet li, #sheet b:has(+ ul), #sheet ul",
+   "asks": "清掉時會刪哪些、留哪些"
+  },
+  {
+   "id": "pick.acct",
+   "sel": "#sheet .pickacc",
+   "asks": "要選哪一個帳號",
+   "repeat": true
+  },
+  {
+   "id": "fb.text",
+   "sel": "#fbText",
+   "asks": "要回報什麼（打字）"
+  },
+  {
+   "id": "fb.send",
+   "sel": "#fbSend",
+   "asks": "怎麼送出回報"
+  },
+  {
+   "id": "fb.diag",
+   "sel": "#uDiag",
+   "asks": "怎麼匯出診斷檔"
+  },
+  {
+   "id": "fb.docs",
+   "sel": "#uDocs",
+   "asks": "怎麼看文件"
+  },
+  {
+   "id": "upd.title",
+   "sel": "#page h3",
+   "asks": "這一段是什麼",
+   "repeat": true
+  },
+  {
+   "id": "upd.ver",
+   "sel": "#page .big-num",
+   "asks": "版本號是多少",
+   "repeat": true
+  },
+  {
+   "id": "upd.check",
+   "sel": "#uCheck",
+   "asks": "怎麼檢查有沒有新版"
+  },
+  {
+   "id": "upd.down",
+   "sel": "#uDownload",
+   "asks": "怎麼更新到新版"
+  },
+  {
+   "id": "ob.step",
+   "sel": "#page .obdots .obdot, #page .obdots .obline",
+   "asks": "現在是第幾步",
+   "repeat": true
+  },
+  {
+   "id": "ob.title",
+   "sel": "#page .t",
+   "asks": "這是什麼產品／這一步要做什麼",
+   "repeat": true
+  },
+  {
+   "id": "ob.next",
+   "sel": "#obNext",
+   "asks": "怎麼開始設定"
+  },
+  {
+   "id": "ob.head",
+   "sel": "#page .obh",
+   "asks": "這個選項是給誰的",
+   "repeat": true
+  },
+  {
+   "id": "ob.connect",
+   "sel": "#obConnect",
+   "asks": "已經有帳號怎麼連線"
+  },
+  {
+   "id": "ob.install",
+   "sel": "#obInstall",
+   "asks": "還沒有帳號怎麼申請"
+  },
+  {
+   "id": "ob.back",
+   "sel": "#obBack",
+   "asks": "怎麼回上一步"
+  },
+  {
+   "id": "field.label",
+   "sel": "#page .k, #sheet .lb",
+   "asks": "這一格是什麼（欄位名）",
+   "repeat": true
+  },
+  {
+   "id": "conn.input",
+   "sel": "#sheet #u, #sheet #e, #sheet #p",
+   "asks": "這一欄要填的內容",
+   "repeat": true
+  },
+  {
+   "id": "rm.mode",
+   "sel": "#sheet label:has(input:not(#rmClean))",
+   "asks": "要連同雲端收回還是只停同步",
+   "pair": true
+  },
+  {
+   "id": "rm.clean",
+   "sel": "#sheet label:has(#rmClean)",
+   "asks": "要不要順便清掉 Arcrun 放在資料夾裡的東西",
+   "pair": true
+  },
+  {
+   "id": "fb.attach",
+   "sel": "#fbAttach, #fbAttach ~ span",
+   "asks": "要不要附統計數字",
+   "pair": true
+  }
+ ],
+ "layout": [
+  ".grow"
+ ],
+ "waivers": []
+}

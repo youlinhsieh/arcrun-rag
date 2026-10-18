@@ -23,6 +23,10 @@ type ManifestEntry struct {
 	Size         int64  `json:"size"`
 	Mtime        int64  `json:"mtime"`
 	IngestedHash string `json:"ingested_hash,omitempty"`
+	// TripletRev＝蓋章當時，三元組「按卡各管各的」這套送法的世代（0＝改版前，arcrun-rag#255）。
+	// 改版前走過續讀的大檔，概念卡的關係被後送的卡刪光；內容沒變 ⇒ 不重送 ⇒ 永遠補不回來。
+	// 見 cardslice.go 的 requeueSharedSourceDocs。
+	TripletRev int `json:"triplet_rev,omitempty"`
 	IngestedAt   int64  `json:"ingested_at,omitempty"`
 	// ExtractedBy＝這張卡是誰萃的（"claude"／"gemma"／""＝無萃取器的直送路）。
 	//
@@ -100,6 +104,23 @@ type ManifestEntry struct {
 	// 本尊消失／內容變了，下一輪由 sweepOrphanTwins 把這份放回佇列自己萃。
 	TwinRoot string `json:"twin_root,omitempty"`
 	TwinPath string `json:"twin_path,omitempty"`
+	// TwinOriginPending＝這份雙胞胎已經記帳（章蓋了、指向本尊），但本尊那張卡的「### 出處」
+	// 還沒把它這一行推上雲（inkstone/arcrun-rag#209 c10693）。
+	// 為什麼不當場推：本尊那張卡在雲端是「整張刪掉重寫」（出處是卡的一部分，卡雜湊變了），
+	// 一次要付一整張卡的寫入列。以前每份雙胞胎各推一次——同一份檔在三個新資料夾各有一份副本，
+	// 舊資料夾那張**完全沒改過**的卡就被重寫三次，使用者看到的是「已經傳完的又在送」。
+	// 現在雙胞胎先記帳，這一輪所有資料夾都處理完之後，每張本尊的卡只推一次（flushTwinOrigins）。
+	// 推成功才清；失敗留著下一輪再試。
+	TwinOriginPending bool `json:"twin_origin_pending,omitempty"`
+}
+
+// IndexCardFail＝一張目錄卡送失敗的病歷。
+type IndexCardFail struct {
+	Hash      string `json:"hash"` // 失敗時那版內容的雜湊（內容變了視同新卡，立即可再試）
+	Count     int    `json:"count"`
+	LastError string `json:"last_error"`
+	LastFail  int64  `json:"last_fail_at"`
+	NextRetry int64  `json:"next_retry"`
 }
 
 // retryBackoff 退避階梯：1m → 5m → 15m → 1h → 6h，之後每次 6h。
@@ -124,6 +145,11 @@ type Manifest struct {
 	// 資料夾消失時由 syncFolderCards 清掉對應的鍵，不讓這張表無限長大。
 	// （`inkstone/Arcrun#146` 碎形目錄索引）
 	FolderCardHashes map[string]string `json:"folder_card_hashes,omitempty"`
+	// WikiIndexHashes／WikiIndexFails＝雲端「目錄卡」（00-INDEX 與它的分層子卡）的送達記帳（#264）。
+	// 鍵＝雲端卡名。Hashes＝最後一次成功送達的內容雜湊；Fails＝送失敗的病歷（有病歷＝畫面上算一筆「!」，
+	// 退避到點自動重送，永不暫停——目錄卡沒上雲，AI 就走不到任何一張卡，不能安靜放著）。
+	WikiIndexHashes map[string]string         `json:"wiki_index_hashes,omitempty"`
+	WikiIndexFails  map[string]*IndexCardFail `json:"wiki_index_fails,omitempty"`
 	Root     string                    `json:"root"`
 	Entries  map[string]*ManifestEntry `json:"entries"`
 	// InventoryHash＝最後一次**成功送達雲端**的資料夾總覽卡內容雜湊（結構先行，
@@ -267,6 +293,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	e.IngestedHash = sourceHash
 	e.IngestedAt = at
 	e.ExtractedBy = extractor
+	e.TripletRev = currentTripletRev
 	// 成功即清掉失敗狀態（t195）：下次再壞會從第一階退避重新算起。
 	e.FailCount, e.LastFailAt, e.NextRetry = 0, 0, 0
 	e.LastError = ""
@@ -279,6 +306,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	// 不再被對帳，雲端掉了也沒人發現——那正是本票在修的病。
 	e.NoCloudCard = false
 	e.TwinRoot, e.TwinPath = "", "" // 自己萃過卡＝不再是別人的雙胞胎（#246 c18734）
+	e.TwinOriginPending = false
 	// 🔴 CloudCheckedAt／CloudMissingAt **刻意不清**：
 	//    前者是輪值排序的依據，後者是防重送迴圈的 grace 窗口與「補送過」的證據
 	//    （ResyncSummary 靠 IngestedAt >= CloudMissingAt 判斷這份是不是剛補回來的）。
@@ -507,6 +535,9 @@ func isTransientCloudText(msg string) bool {
 		"4007:", "4002:", "An internal server error occured", "could not route request",
 		"雲端萃取失敗（HTTP 502）", "雲端萃取失敗（HTTP 503）", "雲端萃取失敗（HTTP 504）",
 		"connection reset by peer", "unexpected EOF", "i/o timeout", "TLS handshake timeout", "broken pipe",
+		// #256 c19045：雲端那一側回得太慢／沒回（stallguard 的措辭）。畫面對用戶說「稍後會自動恢復」，
+		// 這句就得是真的：算雲端端暫時性失敗——換版即重送，撞滿 8 次後照退避窗口繼續試。
+		"回得太慢", "沒有回應；稍後會自動恢復",
 	} {
 		if strings.Contains(msg, mark) {
 			return true

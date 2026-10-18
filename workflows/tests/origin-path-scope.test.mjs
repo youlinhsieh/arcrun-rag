@@ -36,3 +36,14 @@ for (const [wfName, node, yamlPath] of CASES) {
     });
   }
 }
+
+// inkstone/arcrun-rag#269：page_name 含「+」的檔（Rotor-1250MT+K2SA…）重收時，舊版 block 沒被刪、新舊疊成一張卡。
+// 根因：list_old_blocks 把 page_name 裸塞進 URL query，「+」被伺服器解成空白 ⇒ 查不到自己上一版。
+test('rag_ingest_card：list_old_blocks 的 page_name 走 prep.page_enc（encodeURIComponent）', async () => {
+  const y = read('workflows/rag-ingest-card.local.yaml');
+  const m = y.match(/list_old_blocks:[\s\S]*?url:\s*"([^"]*)"/);
+  assert.match(m[1], /page_name=\{\{prep\.data\.page_enc\}\}/);
+  assert.doesNotMatch(m[1], /page_name=\{\{input\.page_name\}\}/);
+  assert.match(y, /page_enc:\s*encodeURIComponent\(pageName\)/);
+  assert.equal(encodeURIComponent('Rotor-1250MT+K2SA(A100)'), 'Rotor-1250MT%2BK2SA(A100)');
+});

@@ -227,3 +227,30 @@ func TestParseWikiExtractJSON_EntitiesAsStringsTolerated(t *testing.T) {
 		t.Fatal("真壞的 JSON 仍應報錯")
 	}
 }
+
+// #256 c19045：NRI 期中報告書的真實病歷——「知識庫回得太慢」被巡邏漏掉，fail_count 9 之後永久暫停，
+// 而訊息卻對用戶說「稍後會自動恢復」。
+func TestShouldRetry_256_SlowCloudNRIRecord(t *testing.T) {
+	const msg = "「送出一份筆記」等了 166 秒，知識庫「arcrun-cypher-executor.leo21c.workers.dev」回得太慢；這一輪先跳過⋯稍後會自動恢復。"
+	mk := func(cloudNow string) *Manifest {
+		m := newRetryTestManifest("通訊衛星政策與發展動向調查委辦案-期中報告書_vF_1698034343630_0.pdf")
+		m.CloudVersion, m.DaemonVersion = cloudNow, "0.18.98"
+		e := m.Entries["通訊衛星政策與發展動向調查委辦案-期中報告書_vF_1698034343630_0.pdf"]
+		e.FailCount, e.NextRetry, e.LastError, e.FailLintRev = 9, 99999, msg, lintGateRevision
+		e.FailCloudVersion, e.FailDaemonVersion = "1.4.95", ""
+		return m
+	}
+	f := "通訊衛星政策與發展動向調查委辦案-期中報告書_vF_1698034343630_0.pdf"
+	if !isCloudSideFailureText(msg) {
+		t.Fatal("回得太慢應算雲端那一側的失敗")
+	}
+	if m := mk("1.4.98"); !m.ShouldRetry(f, 1000, false) {
+		t.Fatal("雲端換版後（窗口內也要）應重送")
+	}
+	if m := mk("1.4.95"); m.ShouldRetry(f, 1000, false) {
+		t.Fatal("版本沒變、退避窗口內不該重送")
+	}
+	if m := mk("1.4.95"); !m.ShouldRetry(f, 100000, false) {
+		t.Fatal("版本沒變時，窗口過後要照退避繼續試，不准停在第 8 次")
+	}
+}

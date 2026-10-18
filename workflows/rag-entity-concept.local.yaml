@@ -45,6 +45,29 @@
 # workflows/rag-concept-dedupe.local.yaml（同 rag_entity_dedupe 血統，LLM 判斷同義組、
 # 預設只回報，dry_run=false 才真的把非 canonical 的概念名 PATCH 成 canonical）。
 #
+# inkstone/arcrun-rag#267（母票 inkstone/Arcrun#297，geek 上萬份文件每張卡越來越慢）：
+#   上面三支「撈整個庫」的 GET（本庫三元組 500、全租戶 description 500、全租戶「屬於」目錄 2000→500）
+#   讓每張卡多讀約 3 萬列，且與庫的大小、熱門名詞的成員數掛鉤；而且 http_request 零件單次只收
+#   64 KiB（約 170 筆三元組），庫稍大時三支全部 trap——KBDB 那端的讀取照付，這端拿不到東西
+#   （workflows/tests/response-size-cap.test.mjs 早就標紅這條）。
+#   修法：
+#     ① membership（本庫有沒有歸類）與 description（任何庫有沒有）都改成「問這張卡自己的 entity」：
+#        內部呼叫 rag_entity_lookup（workflows/rag-entity-lookup.local.yaml），對每個 entity 各查一次，
+#        用只屬於該 entity 的記號（source_uri＝entity-desc://<entity>、entity-concept://<entity>）查——
+#        成本是常數，不跟庫的大小、也不跟這個名詞在別處出現幾次有關。
+#        （直接查 field=subject 不行：熱門名詞有幾千顆同內容的值格，問「當 subject 的有哪些」
+#         仍要全讀一遍，量過：庫 1,500 張 3,004 列、6,000 張 12,004 列。詳見 lookup 檔頭。）
+#        ⚠️ 判準不變：has_desc 跨庫、in_lib_concept 限本庫（#264/#265 的設計原樣保留）。
+#        本票之前寫的舊資料沒有記號：lookup 查不到記號才退回 field=subject 查一次，維持「已有就不重寫」。
+#     ② 因此 post_description／post_concept 寫入時多蓋上面那個 source_uri 記號
+#        （entity-level 知識，不是哪張卡的出處；下架某張卡用的是卡的路徑，不會碰到它們）。
+#        每個新 entity 多 2 列（一顆值格＋一條關係列）× 2 筆 record，既有 entity 不再寫，所以不影響每卡寫入帳。
+#     ③ 給 LLM 的概念目錄改成「全租戶最新 100 筆『屬於』＋這幾個 entity 自己已歸入的概念」。
+#        100 筆是 64 KiB 天花板下的上限（原本的 500／2000 在庫稍大時只會 trap），
+#        且不隨庫的大小長。這張卡 entity 自己的既有概念一定在目錄裡，所以同一個 entity
+#        換子庫再來，仍會照抄它原本的概念名，不會重新取一個同義詞。
+#   LLM 呼叫次數、提示詞、寫入的三元組內容（description／屬於）都不變。
+#
 # 觸發（內部呼叫，rag_ingest_card 的 trigger_entity_concept 節點打這個）：
 #   POST {cypher}/webhooks/named/rag_entity_concept/query
 #     -H "X-Arcrun-API-Key: __NAMESPACE__"
@@ -57,13 +80,13 @@ name: rag_entity_concept
 description: >
   entity description（一句話文字）＋ 概念歸屬（LLM 判斷、寫成「X >> 屬於 >> concept」
   文字三元組）。零向量：不讀不寫任何嵌入。description 去重（Arcrun#264）與概念目錄
-  （Arcrun#265）都跨庫查詢，只有「這個 entity 在本庫是否已歸類」的 membership 判斷
-  仍限定本庫。（inkstone/Arcrun#60／#264／#265）
+  （Arcrun#265）都跨庫，只有「這個 entity 在本庫是否已歸類」的 membership 判斷
+  仍限定本庫。查詢量只跟這張卡自己的 entity 有關（內部呼叫 rag_entity_lookup；概念目錄
+  是有界的最新 100 筆），不跟庫的大小有關。（inkstone/Arcrun#60／#264／#265／arcrun-rag#267）
 
 flow:
-  - "input >> ON_SUCCESS >> fetch_lib_triplets"
-  - "fetch_lib_triplets >> ON_SUCCESS >> fetch_global_desc"
-  - "fetch_global_desc >> ON_SUCCESS >> fetch_global_concepts"
+  - "input >> ON_SUCCESS >> fetch_lookup"
+  - "fetch_lookup >> ON_SUCCESS >> fetch_global_concepts"
   - "fetch_global_concepts >> ON_SUCCESS >> prep_llm"
   - "prep_llm >> ON_SUCCESS >> ask_llm"
   - "prep_llm >> ON_FAIL >> absorb_no_work"
@@ -72,40 +95,31 @@ flow:
   - "parse_llm >> 對每個 concept_item >> post_concept"
 
 config:
-  # 撈這個子庫（library）目前所有三元組，client 端（prep_llm）只用來判斷
-  # **membership**：predicate=屬於 的 subject → 這個 entity 在本庫是否已經歸類過
-  # （決定要不要再寫一次，子庫各自記錄是對的設計，不動）。
-  # （Arcrun#264 之前這裡也篩 predicate=description 當去重依據，Arcrun#265 之前
-  #  這裡也篩出「現有概念目錄」——兩者檢查範圍都只到本子庫，但 description 與
-  #  概念名稱都是跨庫共用的東西 ⇒ 換一個子庫就從空白重來一次。
-  #  description 的去重已搬到 fetch_global_desc（#264），概念目錄已搬到
-  #  fetch_global_concepts（#265）——這裡現在只留 membership 判斷。）
-  fetch_lib_triplets:
+  # inkstone/arcrun-rag#267：membership（本庫有沒有「屬於」）與 description（任何庫有沒有）
+  # 都改問「這張卡自己的 entity」——內部呼叫 rag_entity_lookup，每個 entity 各查一次，
+  # 回 results:[{data:{entity, has_desc, in_lib_concept, concepts[], truncated}}]。
+  # 原本的 fetch_lib_triplets（本庫 500 筆）／fetch_global_desc（全租戶 description 500 筆）已移除：
+  # 兩者都隨庫長大，且超過 64 KiB 就 trap（見檔頭 #267）。
+  # 本節點失敗（例如這台實例還沒裝 rag_entity_lookup）＝整支如實失敗，不假裝「沒有 description」去重寫；
+  # 呼叫端 rag_ingest_card 的 trigger_entity_concept 本來就有 ON_FAIL 吸收，不影響收卡。
+  fetch_lookup:
     component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?field=library&value={{input.library}}&owner_id=__NAMESPACE__&limit=500"
+    method: POST
+    url: "__CYPHER_BASE__/webhooks/named/rag_entity_lookup/query"
     headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+      Content-Type: "application/json"
+      X-Arcrun-API-Key: "__NAMESPACE__"
+    body_json:
+      entities_json: "{{input.entities_json}}"
+      library: "{{input.library}}"
 
-  # Arcrun#264：description 的存在判斷改跨庫——field=predicate&value=description，
-  # 不帶 library，撈的是「這個租戶下所有庫、所有 entity 已經有的 description」。
-  fetch_global_desc:
-    component: "__HTTP_REQ_URL__"
-    method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=description&owner_id=__NAMESPACE__&limit=500"
-    headers:
-      Accept: "application/json"
-      Authorization: "Bearer {{credential.kbdb_internal_token}}"
-
-  # Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改跨庫——field=predicate&value=屬於，
-  # 不帶 library，撈的是「這個租戶下所有庫已經寫過的『屬於』三元組」。membership 判斷
-  # （某個 entity 在本庫是否已經有屬於，決定要不要再寫一次）仍讀 fetch_lib_triplets
-  # 的本庫結果，兩者職責分開（見檔頭 #265 說明）。
+  # Arcrun#265 的跨庫概念目錄，#267 改成有界：全租戶最新 100 筆「屬於」。
+  # 100 ＝ http_request 64 KiB 天花板下的安全上限（response-size-cap 閘），且不隨庫的大小長。
+  # 這張卡 entity 自己已歸入的概念由 fetch_lookup 另外補進目錄（prep_llm），不靠這個視窗撈得到。
   fetch_global_concepts:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=2000"
+    url: "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=100"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -116,37 +130,86 @@ config:
       entities_raw: "{{input.entities_json}}"
       card_content: "{{input.card_content}}"
       library: "{{input.library}}"
-      lib_triplets_body: "{{fetch_lib_triplets.data.body}}"
-      global_desc_body: "{{fetch_global_desc.data.body}}"
+      lookup_body: "{{fetch_lookup.data.body}}"
       global_concepts_body: "{{fetch_global_concepts.data.body}}"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
       var entities = parse(input.entities_raw);
       entities = Array.isArray(entities) ? entities : [];
+      // KBDB 寫入三元組時會把 subject／object 收斂成標準寫法（kbdb/src/actions/entity-canon.ts 的
+      // canonicalEntity：NFC、剝 [[X]]／`X` 整串包裝、筆記副檔名路徑取檔名、空白收斂）。
+      // 查詢（field=subject&value=）不會替你收斂 ⇒ 用卡片裡原樣的 `[[M150]]` 去查，什麼都找不到，
+      // 等於永遠判成「沒有 description」而重寫。所以這裡先照同一份規則收斂再查、再比對。
+      // （這是 canonicalEntity 的逐行移植；改那份規則時兩處要一起改——workflows/tests/entity-concept-scope.test.mjs 有向量守著。）
+      function unwrapWhole(t) {
+        var code = /^(`+)([\s\S]*?)(`+)$/.exec(t);
+        if (code) { var inner = code[2].trim(); if (inner && inner.indexOf('`') === -1) return inner; }
+        if (t.indexOf('[[') === 0 && t.length > 4 && t.slice(-2) === ']]') {
+          var w = t.slice(2, -2).trim();
+          if (w && w.indexOf('[[') === -1 && w.indexOf(']]') === -1) return w;
+        }
+        return t;
+      }
+      function canon(raw) {
+        var fallback = String(raw == null ? '' : raw).trim();
+        var t = String(raw == null ? '' : raw);
+        if (typeof t.normalize === 'function') t = t.normalize('NFC');
+        t = t.trim();
+        if (!t) return fallback;
+        for (var q = 0; q < 4; q++) { var before = t; t = unwrapWhole(t); if (t === before) break; }
+        var NOTE_EXT = /\.(md|markdown|mdx|txt|org)$/i;
+        if (NOTE_EXT.test(t)) {
+          t = t.replace(NOTE_EXT, '');
+          var cut = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\'));
+          if (cut >= 0) t = t.slice(cut + 1);
+        }
+        t = t.replace(/\s+/g, ' ').trim();
+        return t || fallback;
+      }
       var seen = {};
       var uniq = [];
       for (var i = 0; i < entities.length; i++) {
-        var e = String(entities[i] || '').trim();
+        var e = canon(entities[i]);
         if (!e || e === 'knowledge-base' || seen[e]) continue;
         seen[e] = true;
         uniq.push(e);
       }
       if (uniq.length === 0) throw new Error('沒有可處理的 entity（entities_json 空或全被過濾）');
 
-      var parsedTriplets = parse(input.lib_triplets_body);
-      var records = (parsedTriplets && Array.isArray(parsedTriplets.records)) ? parsedTriplets.records : [];
-      var existingConcept = {};   // subject -> 有沒有「屬於」（已存在，限本子庫——membership 判斷不變）
-      for (var r = 0; r < records.length; r++) {
-        var v = (records[r] && records[r].values) || {};
-        var subj = String(v.subject || '');
-        var pred = String(v.predicate || '');
-        var obj = String(v.object || '');
-        if (!subj) continue;
-        if (pred === '屬於' && obj) existingConcept[subj] = true;
+      // inkstone/arcrun-rag#267：membership 與 description 的存在判斷，來自 rag_entity_lookup
+      // 對「這張卡自己的 entity」各查一次的結果（不再撈整個庫）。
+      //   existingConcept[entity] ＝ 這個 entity 在本庫已有「屬於」（membership，子庫各自記錄——判斷不變）
+      //   existingDesc[entity]    ＝ 這個 entity 在任何庫已有 description（Arcrun#264，跨庫——判斷不變）
+      var lookup = parse(input.lookup_body);
+      var lookupResults = (lookup && Array.isArray(lookup.results)) ? lookup.results : null;
+      if (!lookupResults) throw new Error('LOOKUP_UNREADABLE：rag_entity_lookup 的回應讀不出 results，不猜（猜錯＝重寫 description）');
+      var existingConcept = {};
+      var existingDesc = {};
+      var knownConcepts = {};     // concept -> [已歸入的 entity]，來自這幾個 entity 自己的既有歸屬
+      var looked = {};            // entity -> true（查詢成功、有結論）
+      var truncatedCount = 0;
+      for (var l = 0; l < lookupResults.length; l++) {
+        var lr = lookupResults[l] || {};
+        var ld = (lr.data && typeof lr.data === 'object') ? lr.data : lr;
+        var lname = String(ld.entity || '');
+        if (!lname || lr.success === false) continue;   // 這個 entity 查詢失敗＝這次不處理它（不當成「沒有」）
+        looked[lname] = true;
+        if (ld.has_desc) existingDesc[lname] = true;
+        if (ld.in_lib_concept) existingConcept[lname] = true;
+        if (ld.truncated) truncatedCount++;
+        var own = Array.isArray(ld.concepts) ? ld.concepts : [];
+        for (var oc = 0; oc < own.length; oc++) {
+          var oname = String(own[oc] || '');
+          if (!oname) continue;
+          if (!knownConcepts[oname]) knownConcepts[oname] = [];
+          if (knownConcepts[oname].indexOf(lname) === -1) knownConcepts[oname].push(lname);
+        }
       }
-      // Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改讀跨庫查詢結果
+
+      // Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）讀跨庫查詢結果
       // （field=predicate&value=屬於，不帶 library）——不管哪個子庫先用過的概念名稱，
       // 這裡都收進目錄，讓 LLM 照抄既有名稱，不會因為換了子庫又重新命名一個同義詞。
+      // #267：視窗是「最新 100 筆」（64 KiB 天花板下的上限），再補上這幾個 entity 自己已歸入的概念。
       var parsedGlobalConcepts = parse(input.global_concepts_body);
       var globalConceptRecords = (parsedGlobalConcepts && Array.isArray(parsedGlobalConcepts.records)) ? parsedGlobalConcepts.records : [];
       var conceptMembers = {};    // concept(object) -> [members(subject)]，跨庫 hub 目錄
@@ -158,17 +221,13 @@ config:
         if (!conceptMembers[cobj]) conceptMembers[cobj] = [];
         if (conceptMembers[cobj].indexOf(csubj) === -1) conceptMembers[cobj].push(csubj);
       }
-      // Arcrun#264：existingDesc 改讀跨庫查詢結果（field=predicate&value=description，
-      // 不帶 library）——同一個 entity 不管哪個子庫先寫過 description，這裡都算「已存在」，
-      // 不會因為換一個子庫又被判定成新的而重寫一次。
-      var parsedGlobalDesc = parse(input.global_desc_body);
-      var globalDescRecords = (parsedGlobalDesc && Array.isArray(parsedGlobalDesc.records)) ? parsedGlobalDesc.records : [];
-      var existingDesc = {};      // subject -> 有沒有 description（跨庫已存在）
-      for (var g = 0; g < globalDescRecords.length; g++) {
-        var gv = (globalDescRecords[g] && globalDescRecords[g].values) || {};
-        var gsubj = String(gv.subject || '');
-        if (gsubj && String(gv.predicate || '') === 'description') existingDesc[gsubj] = true;
+      for (var kc in knownConcepts) {
+        if (!conceptMembers[kc]) conceptMembers[kc] = [];
+        for (var km = 0; km < knownConcepts[kc].length; km++) {
+          if (conceptMembers[kc].indexOf(knownConcepts[kc][km]) === -1) conceptMembers[kc].push(knownConcepts[kc][km]);
+        }
       }
+
       // 冪等：只處理「描述或概念歸屬還缺一項」的 entity，同一張卡重送不會重複寫。
       // Arcrun#264：todo 只決定「要不要送 LLM」；真正決定「寫哪一半」的是下面
       // 每個 entity 各自的 needsDesc／needsConcept 旗標（傳給 parse_llm，各自過濾
@@ -176,8 +235,10 @@ config:
       // 只是概念缺（本庫沒有），還是會連著把 description 也重寫一次）。
       var todo = [];
       var flags = {};
+      var unlooked = 0;
       for (var t = 0; t < uniq.length; t++) {
         var name = uniq[t];
+        if (!looked[name]) { unlooked++; continue; }   // 沒有查詢結論的 entity 這次不處理
         var needsDesc = !existingDesc[name];
         var needsConcept = !existingConcept[name];
         if (needsDesc || needsConcept) {
@@ -186,7 +247,10 @@ config:
         }
       }
       if (todo.length === 0) {
-        throw new Error('ALL_ALREADY_DESCRIBED：本次 entity 皆已有 description 與屬於關係，不重複寫');
+        if (unlooked > 0 && unlooked === uniq.length) {
+          throw new Error('LOOKUP_NO_CONCLUSION：rag_entity_lookup 對本卡全部 ' + unlooked + ' 個 entity 都沒有結論（查詢失敗），這次不處理，不當成沒有 description 去重寫');
+        }
+        throw new Error('ALL_ALREADY_DESCRIBED：本次 entity 皆已有 description 與屬於關係（或查詢無結論 ' + unlooked + ' 個），不重複寫');
       }
       var conceptDirLines = [];
       for (var c in conceptMembers) {
@@ -199,6 +263,8 @@ config:
         concept_directory: conceptDirLines.length ? conceptDirLines.join('\n') : '（目前這個庫還沒有任何概念節點）',
         card_snippet: String(input.card_content || '').slice(0, 4000),
         library: String(input.library || 'kb'),
+        lookup_unresolved: unlooked,
+        lookup_truncated: truncatedCount,
       };
     limits:
       timeout_ms: 3000
@@ -326,6 +392,8 @@ config:
         predicate: "description"
         object: "{{desc_item.description}}"
         library: "{{desc_item.library}}"
+        # 記號：rag_entity_lookup 用它在常數成本內找到「這個 entity 已經有 description」（#267）
+        source_uri: "entity-desc://{{desc_item.entity}}"
 
   # 寫「entity >> 屬於 >> concept」——同屬一個概念節點的文字關係，不是 alias、不是距離數字。
   post_concept:
@@ -343,3 +411,5 @@ config:
         predicate: "屬於"
         object: "{{concept_item.concept}}"
         library: "{{concept_item.library}}"
+        # 記號：rag_entity_lookup 用它在常數成本內找到「這個 entity 已歸入哪些概念」（#267）
+        source_uri: "entity-concept://{{concept_item.entity}}"

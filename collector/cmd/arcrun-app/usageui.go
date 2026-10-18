@@ -211,7 +211,7 @@ func buildUsageUI(u *collector.Usage, now time.Time) *UIUsage {
 		ui.MonthUSD += u.BaseUSD
 		ui.Upgrade = "billing"
 		ui.TipMonth = "本月約 " + usdText(ui.MonthUSD)
-		ui.UpgradeN = "到 Cloudflare 看帳單"
+		ui.UpgradeN = "費用由 Cloudflare 收 點看說明"
 	case collector.UsagePlanFree:
 		if ui.Level != "ok" {
 			ui.Upgrade, ui.UpgradeN = "advise", "建議升級 Cloudflare"
@@ -228,9 +228,9 @@ func buildUsageUI(u *collector.Usage, now time.Time) *UIUsage {
 	case u.Brake == nil:
 		ui.Brake, ui.TipBrake = "na", "查不到剎車狀態"
 	case u.Brake.On:
-		ui.Brake, ui.Covers, ui.TipBrake = "on", u.Brake.Covers, "剎車已開 接近線自動放慢"
+		ui.Brake, ui.Covers, ui.TipBrake = "on", u.Brake.Covers, "剎車已開 接近線自動放慢 點此設定"
 	default:
-		ui.Brake, ui.Covers, ui.TipBrake = "off", u.Brake.Covers, "剎車已關 不會自動放慢"
+		ui.Brake, ui.Covers, ui.TipBrake = "off", u.Brake.Covers, "剎車已關 不會自動放慢 點此設定"
 	}
 	// 新鮮度
 	delay := u.DelaySec

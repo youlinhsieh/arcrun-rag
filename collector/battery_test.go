@@ -264,7 +264,7 @@ func TestSaverOnlyAffectsLowAccount(t *testing.T) {
 	hostA, hostB := instanceHostOf(srvA.URL), instanceHostOf(srvB.URL)
 	n := map[string]int{}
 	for _, r := range results {
-		if r.Status == "ingested" && r.Type != "inventory" && r.Type != "folder_tree" {
+		if r.Status == "ingested" && r.Type != "inventory" && r.Type != "folder_tree" && r.Type != "index" {
 			n[r.Account]++
 		}
 	}

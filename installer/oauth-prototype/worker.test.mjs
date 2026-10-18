@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, landingBase,
+  deployBundledWorker, landingBase, resolveInstanceTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -5337,4 +5337,183 @@ test('/api/latest：第一次讀釘點 manifest 失敗、第二次成功 → 第
     restoreFetch();
     if (prevCaches === undefined) delete globalThis.caches; else globalThis.caches = prevCaches;
   }
+});
+
+// inkstone/arcrun-rag#263：/download/* 網址不含版號，絕不能被瀏覽器長快取
+test('263: /download/mac 與 /download/win 回應 cache-control 不得長快取', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u) => {
+    const s = String(u);
+    if (s.endsWith('/manifest.json')) {
+      return new Response(JSON.stringify({ daemon: { version: '9.9.9', mac: { file: 'Arcrun-9.9.9.dmg' }, win: { file: 'Arcrun-win-v9.9.9.exe' } } }));
+    }
+    return new Response('BIN', { headers: { 'content-length': '3' } });
+  };
+  try {
+    for (const os of ['mac', 'win']) {
+      const env = { INSTALLER_KV: makeKV(), BUNDLE_BASE: 'https://bundles.test/raw/commit/abc1234' };
+      const res = await worker.fetch(new Request(`https://x.test/download/${os}`), env, { waitUntil() {} });
+      assert.equal(res.status, 200);
+      const cc = res.headers.get('cache-control') || '';
+      assert.match(cc, /no-cache|no-store/);
+      assert.doesNotMatch(cc, /max-age=[1-9]/);
+    }
+  } finally { globalThis.fetch = realFetch; }
+});
+
+// ===========================================================================
+// inkstone/arcrun-rag#268：換信箱重裝，帳號落點（租戶）不能被換掉；安裝器不管的 var 不能被清掉
+// ===========================================================================
+
+/** 假 CF：script → 身上的 plain_text／secret_text bindings。沒列到的 script 回 404。 */
+function installFetchScriptSettings(scripts) {
+  return installFetch((url, init) => {
+    const m = url.match(/\/workers\/scripts\/([^/]+)\/settings$/);
+    if (m && (init.method || 'GET').toUpperCase() === 'GET') {
+      const b = scripts[decodeURIComponent(m[1])];
+      if (!b) return { status: 404, json: { success: false, errors: [{ code: 10007, message: 'This Worker does not exist' }], result: null } };
+      return cfOk({ bindings: b });
+    }
+    throw new Error('未預期的 URL：' + url);
+  });
+}
+const pt = (name, text) => ({ type: 'plain_text', name, text });
+
+test('#268 resolveInstanceTenant：帳號上已有租戶 ⇒ 沿用，不理這次信箱推導的值', async () => {
+  installFetchScriptSettings({
+    'arcrun-cypher-executor': [pt('CONSOLE_TENANT', 'yuga3bse'), pt('ARCRUN_NAMESPACE', 'other')],
+  });
+  try {
+    const t = await resolveInstanceTenant('tok', 'acct-1', 'pcemcdk6');
+    assert.equal(t.tenant, 'yuga3bse');
+    assert.equal(t.source, 'existing');
+    assert.equal(t.from, 'arcrun-cypher-executor.CONSOLE_TENANT');
+  } finally { restoreFetch(); }
+});
+
+test('#268 resolveInstanceTenant：cypher 沒有 CONSOLE_TENANT 時退看 ARCRUN_NAMESPACE，再退看 mcp', async () => {
+  installFetchScriptSettings({ 'arcrun-cypher-executor': [pt('ARCRUN_NAMESPACE', 'yuga3bse')] });
+  try {
+    assert.equal((await resolveInstanceTenant('tok', 'a', 'new')).tenant, 'yuga3bse');
+  } finally { restoreFetch(); }
+  installFetchScriptSettings({ 'arcrun-cypher-executor': [pt('X', '1')], 'arcrun-mcp': [pt('MCP_OWNER_NAMESPACE', 'fromMcp')] });
+  try {
+    const t = await resolveInstanceTenant('tok', 'a', 'new');
+    assert.equal(t.tenant, 'fromMcp');
+    assert.equal(t.from, 'arcrun-mcp.MCP_OWNER_NAMESPACE');
+  } finally { restoreFetch(); }
+});
+
+test('#268 resolveInstanceTenant：全新帳號（兩顆都 404）⇒ 才用信箱推導的值', async () => {
+  installFetchScriptSettings({});
+  try {
+    const t = await resolveInstanceTenant('tok', 'a', 'pcemcdk6');
+    assert.deepEqual([t.tenant, t.source, t.from], ['pcemcdk6', 'email', null]);
+  } finally { restoreFetch(); }
+});
+
+test('#268 resolveInstanceTenant：讀不到（非 404）⇒ 往外拋，不退回信箱值去覆蓋', async () => {
+  installFetch(() => ({ status: 500, json: { success: false, errors: [{ code: 1, message: 'boom' }] } }));
+  try {
+    await assert.rejects(() => resolveInstanceTenant('tok', 'a', 'pcemcdk6'));
+  } finally { restoreFetch(); }
+});
+
+test('#268 deployBundledWorker：carryExistingVars ⇒ 身上我們不管的 var 原樣帶過去，我們要寫的以我們為準', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let meta = null;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && url.endsWith('/workers/scripts/arcrun-rag-cypher/settings')) {
+      return cfOk({ bindings: [
+        pt('ARCRUN_NAMESPACE', 'yuga3bse'), pt('MULTI_TENANT', 'false'),
+        pt('CONSOLE_TENANT', 'old-tenant'),            // 我們要寫 ⇒ 以我們為準
+        { type: 'secret_text', name: 'SOME_SECRET' },   // secret CF 不回值、也不碰
+      ] });
+    }
+    if (method === 'PUT') { meta = JSON.parse(await init.body.get('metadata').text()); return cfOk({}); }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const r = await deployBundledWorker(env, 'tok', 'acct-1', baseEntry, baseResources,
+      { subdomain: 'acme', tenant: 'yuga3bse', carryExistingVars: true });
+    const vars = varsOf(meta);
+    assert.equal(vars.ARCRUN_NAMESPACE, 'yuga3bse');
+    assert.equal(vars.MULTI_TENANT, 'false');
+    assert.equal(vars.CONSOLE_TENANT, 'yuga3bse');
+    assert.equal(meta.bindings.filter((b) => b.name === 'CONSOLE_TENANT').length, 1, '同名不重複');
+    assert.ok(!meta.bindings.some((b) => b.name === 'SOME_SECRET'), 'secret 不被搬');
+    assert.deepEqual(r.carriedVars.sort(), ['ARCRUN_NAMESPACE', 'MULTI_TENANT']);
+  } finally { restoreFetch(); }
+});
+
+test('#268 deployBundledWorker：carryExistingVars 但 script 還不存在（全新）⇒ 照舊只寫我們的 var', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let meta = null;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && url.endsWith('/settings')) return { status: 404, json: { success: false, errors: [{ code: 10007, message: 'nf' }] } };
+    if (method === 'PUT') { meta = JSON.parse(await init.body.get('metadata').text()); return cfOk({}); }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-1', baseEntry, baseResources, { subdomain: 'acme', tenant: 't1', carryExistingVars: true });
+    assert.equal(varsOf(meta).CONSOLE_TENANT, 't1');
+  } finally { restoreFetch(); }
+});
+
+test('#268 deployBundledWorker：carryExistingVars 讀身上 var 失敗（非 404）⇒ 不推（不整份取代不知道的東西）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let putHit = false;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && url.endsWith('/settings')) return { status: 500, json: { success: false, errors: [{ code: 1, message: 'boom' }] } };
+    if (method === 'PUT') { putHit = true; return cfOk({}); }
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    await assert.rejects(() => deployBundledWorker(env, 'tok', 'acct-1', baseEntry, baseResources,
+      { subdomain: 'acme', tenant: 't1', carryExistingVars: true }));
+    assert.equal(putHit, false);
+  } finally { restoreFetch(); }
+});
+
+test('#268 端到端：已裝過的帳號換信箱重裝 ⇒ 租戶沿用原本的，cypher 身上不管的 var 還在', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-268-e2e';
+  await seedAccountSession(env, sid);
+  installFetchWithEdge530();
+  const inner = globalThis.fetch;
+  let cypherMeta = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && url.endsWith('/workers/scripts/arcrun-cypher-executor/settings')) {
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { bindings: [
+        { type: 'plain_text', name: 'CONSOLE_TENANT', text: 'yuga3bse' },
+        { type: 'plain_text', name: 'ARCRUN_NAMESPACE', text: 'yuga3bse' },
+        { type: 'plain_text', name: 'MULTI_TENANT', text: 'false' },
+      ] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (method === 'PUT' && /\/workers\/scripts\/arcrun-cypher-executor$/.test(url)) {
+      cypherMeta = JSON.parse(await init.body.get('metadata').text());
+    }
+    return inner(input, init);
+  };
+  try { await startInstallAndDrain(env, sid, {}); } finally { restoreFetch(); }
+  const p = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.equal(p.result.tenant, 'yuga3bse', '租戶要沿用帳號上原本的，不是這次信箱推導的 ' + p.result.suffix);
+  assert.notEqual(p.result.suffix, 'yuga3bse', '前置條件：這次信箱推導的代號和原本的不同');
+  assert.equal(p.result.tenantSource, 'existing');
+  assert.match(p.result.tenantKept, /yuga3bse/);
+  assert.ok(cypherMeta, 'cypher 有被推');
+  const v = varsOf(cypherMeta);
+  assert.equal(v.CONSOLE_TENANT, 'yuga3bse');
+  assert.equal(v.ARCRUN_NAMESPACE, 'yuga3bse', '安裝器不管的 var 不能被清掉');
+  assert.equal(v.MULTI_TENANT, 'false');
 });

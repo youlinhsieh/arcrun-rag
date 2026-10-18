@@ -49,7 +49,7 @@ func TestDirectExtractor_FormatDuplicate_ExtractAndUploadOnce(t *testing.T) {
 			bodyBytes, _ := io.ReadAll(r.Body)
 			var m map[string]any
 			_ = json.Unmarshal(bodyBytes, &m)
-			if pn, _ := m["page_name"].(string); !strings.HasPrefix(pn, "資料夾") {
+			if pn, _ := m["page_name"].(string); !strings.HasPrefix(pn, "資料夾") && !strings.HasPrefix(pn, "00-INDEX") {
 				atomic.AddInt32(&contentCardPosts, 1)
 			}
 		}

@@ -335,3 +335,26 @@ func TestWriteCostParsesTheRealCloudResponse(t *testing.T) {
 		t.Errorf("550 張卡、一天 136 張 ⇒ 該是 5 天，得 known=%v days=%d", m.BatchKnown, m.BatchTotalDays)
 	}
 }
+
+// ── 前端讀的欄位名不准悄悄改（#209：「這批還要幾天」的狀態列小格）────────────
+//
+// 首頁的用量卡在 #246 被拿掉後，「N/M」曾經整個沒有畫面——欄位還在、沒有人讀。
+// frontend/src/main.js 的 batchDaysCell 讀這五個鍵；改名時這裡先紅，不是畫面安靜地消失。
+func TestMeterJSONKeysTheFrontendReads(t *testing.T) {
+	total := CardCount{Files: 400, Folders: 11, Roots: 1}
+	m := buildQuotaMeter(meterInput{Account: "h.example", Cost: gen12(), Pending: total, Total: total, Now: meterNow})
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, k := range []string{"account", "batch_known", "batch_total_days", "batch_day_no"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("前端讀的鍵 %q 不見了：%s", k, raw)
+		}
+	}
+	if got["batch_known"] != true || got["batch_total_days"].(float64) != 4 || got["batch_day_no"].(float64) != 1 {
+		t.Fatalf("412 張卡、一天 136 張 ⇒ 該是 1/4，拿到 %s", raw)
+	}
+}

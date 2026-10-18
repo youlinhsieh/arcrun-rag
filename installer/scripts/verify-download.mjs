@@ -93,12 +93,18 @@ async function fetchSha(url, fetchImpl) {
 export async function checkDaemonDownload({
   os, file, declaredSha256, daemonVersion,
   pinUrl, downloadEndpoint, advertisedUrl,
+  distBase,
   fetchImpl = globalThis.fetch,
 }) {
   const lines = [];
   const fails = [];
   const warns = [];
-  const expectUrl = pinArtifactUrl(pinUrl, file);
+  // inkstone/arcrun-rag#266：目標宣告了 dist（安裝檔放 R2）⇒ 安裝檔的真實網址是
+  // `${dist.publicBase}/${file}`，不是釘點 commit 底下的 raw。登錄簿與本機 manifest 算出來的
+  // 這個網址，仍然要跟安裝器線上宣告的逐字相等（②），打錯環境的防線沒有放寬。
+  const expectUrl = distBase
+    ? `${String(distBase).replace(/\/+$/, '')}/${String(file).replace(/^\/+/, '')}`
+    : pinArtifactUrl(pinUrl, file);
 
   // ── ① 內容對：使用者真的按下去、真的收到的位元組 ────────────────────────
   const got = await fetchSha(downloadEndpoint, fetchImpl);

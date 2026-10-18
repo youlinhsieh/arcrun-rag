@@ -310,14 +310,17 @@
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "// 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把\n// 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，\n// 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。\n// code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。\nfunction isUnresolvedTemplate(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPageName = input.page_name;\nif (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {\n  throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');\n}\nconst pageName = String(rawPageName);\n// 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`\n// 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是\n// truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。\n// 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進\n// source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。\nconst rawPath = input.path;\nconst path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))\n  ? (pageName + '.md') : String(rawPath);\nconst srcUri = 'kb://' + path;\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\n// inkstone/arcrun-rag#241：整張卡的內容指紋。所有會被寫進雲端 block 的東西（頁名、路徑、\n// 庫、機器、機器稱呼、卡片全文）都算進去——其中任何一格變了，指紋就變，才會重寫。\n// 純 JS 的 cyrb53 兩顆不同種子（共 106 位元）：只用來偵測「有沒有改過」，不是密碼學用途，\n// 且不依賴沙箱有沒有 crypto。\nfunction cyrb53(str, seed) {\n  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;\n  for (let i = 0; i < str.length; i++) {\n    const ch = str.charCodeAt(i);\n    h1 = Math.imul(h1 ^ ch, 2654435761);\n    h2 = Math.imul(h2 ^ ch, 1597334677);\n  }\n  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);\n  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);\n  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);\n}\nconst hashSrc = JSON.stringify([pageName, path, constLibrary, constMachine,\n  String(input.machine_label || ''), String(input.card_content == null ? '' : input.card_content)]);\nconst cardHash = cyrb53(hashSrc, 0) + cyrb53(hashSrc, 7) + hashSrc.length.toString(16);\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         path_enc: encodeURIComponent(path),\n         const_library: constLibrary, const_machine: constMachine, card_hash: cardHash };\n",
+        "code": "// 入口驗證（inkstone/arcrun-rag#13 c15014 第 1 條）：呼叫端沒帶 page_name 時，模板引擎把\n// 字面的 `{{input.page_name}}` 原樣塞進來（graph-executor interpolateString），對 `||` 是 truthy，\n// 舊寫法因此把那串字面文字當成真的頁名寫進知識庫。prep 是整張卡進 KBDB 前的第一個節點，在這裡擋。\n// code 零件只有 throw 才算節點失敗；return {success:false} 會被沙箱包成成功信封照樣往下走（c15011）。\nfunction isUnresolvedTemplate(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPageName = input.page_name;\nif (rawPageName == null || String(rawPageName).trim() === '' || isUnresolvedTemplate(rawPageName)) {\n  throw new Error('page_name 缺失或未代入（收到 ' + JSON.stringify(rawPageName) + '）——拒絕寫入知識庫');\n}\nconst pageName = String(rawPageName);\n// 🔴 c15345（總管實測抓到的真 bug）：呼叫端沒帶 path 時，同一個 `isUnresolvedTemplate`\n// 沒套在這一格——`input.path || (pageName + '.md')` 對字面 `{{input.path}}` 也是\n// truthy，跟 page_name 那次 c15014 撞過的病一模一樣，只是這次是 path 這格。\n// 修法：套同一個檢查，未代入就退回 `pageName + '.md'`，不讓字面模板字串流進\n// source_path／source_uri，寫進 KBDB 給使用者看到的原稿路徑。\nconst rawPath = input.path;\nconst path = (rawPath == null || String(rawPath).trim() === '' || isUnresolvedTemplate(rawPath))\n  ? (pageName + '.md') : String(rawPath);\nconst srcUri = 'kb://' + path;\n// ── inkstone/arcrun-rag#255：一次呼叫的雲端工作量要有上限（三個選填輸入，缺＝與從前逐字相同）──\n//   量到的事實（youlin stage 實送、leo21c／geek 的 /workflows/rag_ingest_card/executions）：\n//   ① 一條三元組要 ~2 秒寫入，引擎對外連線硬上限 6 條並行 ⇒ 約 0.35 秒牆鐘／條；\n//      148 條的 NRI 文件卡＝59 秒、1218 條的錯誤碼總表＝28 分鐘（收的人 300 秒就放棄）。\n//   ② 一份文件的文件卡與概念卡共用同一個 source_uri（kb://<原稿路徑>），而三元組的\n//      「舊的」是按 source_uri 整批撈的 ⇒ 每張卡都把同一份文件其他卡的三元組當成自己的舊資料\n//      刪光再重寫（實證：leo21c 上 NRI 的概念卡 block 都在、三元組是 0，且每張概念卡 110～140 秒）。\n//   所以三元組要能「按卡、按段」各管各的：\n//   · triplet_scope：這一批三元組的名字。空＝文件卡本人（source_uri＝kb://路徑，與從前一樣）；\n//     非空＝source_uri 多一個 `#t=<名字>` 尾巴，只屬於這一批，彼此刪不到對方。\n//   · rel_offset／rel_limit：這一次只寫第幾條起、幾條關係（limit 0＝寫到最後）。\n//     offset＝0 的那一次才負責 block 與分群／概念（其餘各段只寫自己的三元組）。\nfunction unresolvedTpl(v) { return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim()); }\nfunction intOpt(v) { if (v == null || unresolvedTpl(v)) return 0; const n = parseInt(v, 10); return n > 0 ? n : 0; }\nconst relOffset = intOpt(input.rel_offset);\nconst relLimit = intOpt(input.rel_limit);\nconst rawScope = input.triplet_scope;\nconst tripScope = (rawScope == null || unresolvedTpl(rawScope)) ? '' : String(rawScope).trim();\nconst tripSrcUri = tripScope ? (srcUri + '#t=' + tripScope) : srcUri;\n// 這張卡總共有幾條關係（含機械補的 part_of）——數法與 parse_card 逐字一致（同一條正則）。\nconst cardMd = String(input.card_content == null ? '' : input.card_content);\nconst relSecP = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(cardMd);\nlet relTotal = 1;\nif (relSecP) {\n  for (const ln of relSecP[1].split('\\n')) {\n    if (/^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.test(ln)) relTotal++;\n  }\n}\nconst sliceEnd = relLimit > 0 ? Math.min(relTotal, relOffset + relLimit) : relTotal;\nconst sliceLen = Math.max(0, sliceEnd - relOffset);\n// `inkstone/InkStoneCo#140` comment 10651：常數格共用要在 parse_card 跑之前\n// 就把 library／machine 算好（同一份預設邏輯，逐字抄 parse_card 的\n// `String(input.library || 'kb')`／`String(input.machine || '')`——\n// 不能只用裸模板 `{{input.library}}`，因為 payload 沒帶該欄位時模板會\n// 原樣印出字面 `{{input.library}}`，不會像 JS `||` 那樣退回預設值）。\nconst constLibrary = String(input.library || 'kb');\nconst constMachine = String(input.machine || '');\n// inkstone/arcrun-rag#241：整張卡的內容指紋。所有會被寫進雲端 block 的東西（頁名、路徑、\n// 庫、機器、機器稱呼、卡片全文）都算進去——其中任何一格變了，指紋就變，才會重寫。\n// 純 JS 的 cyrb53 兩顆不同種子（共 106 位元）：只用來偵測「有沒有改過」，不是密碼學用途，\n// 且不依賴沙箱有沒有 crypto。\nfunction cyrb53(str, seed) {\n  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;\n  for (let i = 0; i < str.length; i++) {\n    const ch = str.charCodeAt(i);\n    h1 = Math.imul(h1 ^ ch, 2654435761);\n    h2 = Math.imul(h2 ^ ch, 1597334677);\n  }\n  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);\n  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);\n  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);\n}\nconst hashSrc = JSON.stringify([pageName, path, constLibrary, constMachine,\n  String(input.machine_label || ''), String(input.card_content == null ? '' : input.card_content)]);\nconst cardHash = cyrb53(hashSrc, 0) + cyrb53(hashSrc, 7) + hashSrc.length.toString(16);\n// inkstone/arcrun-rag#269：page_name 進 URL query 也必須編碼。檔名帶「+」（如 Rotor-1250MT+K2SA…）時，\n// 裸塞進去會被伺服器當成空白解碼 ⇒ 查不到自己上一版的 block ⇒ 舊版沒刪、新舊兩版疊在同一張卡。\nreturn { success: true, src_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         trip_src_uri: tripSrcUri, trip_src_uri_enc: encodeURIComponent(tripSrcUri),\n         trip_scope: tripScope, rel_offset: relOffset, rel_limit: relLimit,\n         do_blocks: relOffset === 0, slice_len: sliceLen, rel_total: relTotal,\n         page_enc: encodeURIComponent(pageName),\n         path_enc: encodeURIComponent(path),\n         const_library: constLibrary, const_machine: constMachine, card_hash: cardHash };\n",
         "input": {
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
           "library": "{{input.library}}",
           "machine": "{{input.machine}}",
           "machine_label": "{{input.machine_label}}",
-          "card_content": "{{input.card_content}}"
+          "card_content": "{{input.card_content}}",
+          "rel_offset": "{{input.rel_offset}}",
+          "rel_limit": "{{input.rel_limit}}",
+          "triplet_scope": "{{input.triplet_scope}}"
         },
         "limits": {
           "timeout_ms": 2000,
@@ -327,7 +330,7 @@
       "list_old_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries?page_name={{input.page_name}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -336,7 +339,7 @@
       "list_old_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__",
+        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.trip_src_uri_enc}}&owner_id=__NAMESPACE__",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -349,9 +352,11 @@
           "triplets_body": "{{list_old_triplets.data.body}}",
           "path": "{{input.path}}",
           "machine": "{{input.machine}}",
-          "card_hash": "{{prep.data.card_hash}}"
+          "card_hash": "{{prep.data.card_hash}}",
+          "do_blocks": "{{prep.data.do_blocks}}",
+          "slice_len": "{{prep.data.slice_len}}"
         },
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nconst hitMetas = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\n// inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：\n//   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）\n//   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複\n//      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複\n//   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels\n// 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。\nconst newHash = String(input.card_hash || '');\nlet unchanged = false;\nif (newHash !== '' && hitMetas.length > 0) {\n  const m0 = hitMetas[0];\n  const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);\n  const seen = {};\n  let allSame = true;\n  for (const m of hitMetas) {\n    if (String(m.card_hash || '') !== newHash) { allSame = false; break; }\n    seen[String(m.source || '')] = true;\n  }\n  unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length\n    && nRels === dead_record.length && dead_record.length > 0;\n}\nif (unchanged) {\n  // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。\n  return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n           removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };\n}\nreturn { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nconst hitMetas = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\n// inkstone/arcrun-rag#255：後面的「段」（rel_offset>0）不管 block——block 屬於第一段，\n//   這裡一個都不能刪（否則第二段進來就把文件卡的正文刪了）。它「有沒有變」改看兩件事：\n//   ① 雲端這張卡的 block 已經帶著這次的指紋（＝第一段已經寫完、這份內容整個提交過）\n//   ② 這一段自己名下的三元組條數剛好等於這一段該有的條數\n//   第一段**最後**才送（見 collector 的送法）＝它是整份的「提交標記」：中途斷掉、或內容改了，\n//   後面的段進來時 block 上還是舊指紋或根本沒有 ⇒ 判成有變、照常刪光重寫。\nconst doBlocks = String(input.do_blocks) !== 'false';\nconst sliceLen = Number(input.slice_len);\nif (!doBlocks) {\n  const nh = String(input.card_hash || '');\n  let committed = nh !== '' && hitMetas.length > 0;\n  for (const m of hitMetas) { if (String(m.card_hash || '') !== nh) { committed = false; break; } }\n  if (committed && sliceLen > 0 && dead_record.length === sliceLen) {\n    return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n             removed_blocks: 0, removed_triplets: 0, kept_blocks: 0, kept_triplets: dead_record.length };\n  }\n  return { result: false, unchanged: false, dead_entry: [], dead_record: dead_record,\n           removed_blocks: 0, removed_triplets: dead_record.length };\n}\n// inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：\n//   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）\n//   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複\n//      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複\n//   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels\n// 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。\nconst newHash = String(input.card_hash || '');\nlet unchanged = false;\nif (newHash !== '' && hitMetas.length > 0) {\n  const m0 = hitMetas[0];\n  const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);\n  const seen = {};\n  let allSame = true;\n  for (const m of hitMetas) {\n    if (String(m.card_hash || '') !== newHash) { allSame = false; break; }\n    seen[String(m.source || '')] = true;\n  }\n  unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length\n    && nRels === dead_record.length && dead_record.length > 0;\n}\nif (unchanged) {\n  // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。\n  return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n           removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };\n}\nreturn { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
       },
       "skip_unchanged": {
         "component": "__CODE_URL__",
@@ -379,7 +384,7 @@
       },
       "parse_card": {
         "component": "__CODE_URL__",
-        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\n// 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致\n// （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine\n// 兩格在這個節點裡的既有做法）。\nfunction isUnresolvedTemplateLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPathLocal = input.path;\nconst srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))\n  ? (pageName + '.md') : String(rawPathLocal);\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: srcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: srcUri, status: 'active', library: lib, machine: machine });\n// inkstone/arcrun-rag#241：每段 block 記下整張卡的指紋與「寫入當時共幾段、幾條三元組」，\n// 下次收同一張卡時 pick_stale 靠這三格判斷「雲端那份是不是完整且一模一樣」。\nconst cardHash = String(input.card_hash || '');\nfor (const b of blocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(rels.length); }\nreturn { success: true, blocks: blocks, block_count: blocks.length, rels: rels, rel_count: rels.length, page_name: pageName };\n",
+        "code": "const md = String(input.card == null ? '' : input.card);\nconst pageName = String(input.page_name || 'unknown');\n// 🔴 c15345：同一個 path 未代入退回預設值的檢查，跟 prep 節點那份逐字一致\n// （這裡是獨立沙箱、看不到 prep 算好的值，只能各自維護一份——同 library/machine\n// 兩格在這個節點裡的既有做法）。\nfunction isUnresolvedTemplateLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\w.]+\\}\\}$/.test(v);\n}\nconst rawPathLocal = input.path;\nconst srcPath = (rawPathLocal == null || String(rawPathLocal).trim() === '' || isUnresolvedTemplateLocal(rawPathLocal))\n  ? (pageName + '.md') : String(rawPathLocal);\nconst srcUri = 'kb://' + srcPath;\nconst lib = String(input.library || 'kb');\n// 🔴 `inkstone/mira#6`：machine 是**獨立的一格**，不塞進 source_uri。\n//   source_uri 的既有意思是「相對於被監看資料夾的路徑」，portal 的 srcLocalPath()\n//   直接把 `kb://` 之後整段當本機相對路徑用（console-ui/public/portal/index.html）——\n//   把機器名混進去會讓那條路吐出 `youlinhsieh@Leo-MBA/RFP/design.md` 這種不存在的路徑，\n//   而且舊資料的第一段（`kb://RFP/...` 的 RFP）會被誤讀成機器名 ⇒ **憑空長出假機器**。\n//   分成獨立欄位就沒有這個猜測：舊資料沒有這一格＝誠實地「未知來源」。\nconst machine = String(input.machine || '');\nconst machineLabel = String(input.machine_label || '') || machine;\nif (!md.trim()) return { success: false, error: 'card_content 為空' };\nconst chunks = [];\nlet cur = [];\nfor (const line of md.split('\\n')) {\n  if (/^#{1,6}\\s/.test(line) && cur.join('').trim()) { chunks.push(cur.join('\\n').trim()); cur = []; }\n  cur.push(line);\n}\nif (cur.join('').trim()) chunks.push(cur.join('\\n').trim());\nconst blocks = chunks.map(function (content, i) {\n  return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,\n           library: lib, machine: machine, machine_label: machineLabel };\n});\nconst rels = [];\n// inkstone/arcrun-rag#255：這一批三元組的 source_uri（有 triplet_scope 時多一個 `#t=` 尾巴）。\n//   block 的 source 仍然是 kb://<路徑>#<第幾段>，不受影響。\nconst tripSrcUri = String(input.trip_src_uri || '') !== '' && !/^\\{\\{[\\s\\S]*\\}\\}$/.test(String(input.trip_src_uri).trim())\n  ? String(input.trip_src_uri) : srcUri;\nconst toInt = function (v) { const n = parseInt(v, 10); return n > 0 ? n : 0; };\nconst relOffset = toInt(input.rel_offset);\nconst relLimit = toInt(input.rel_limit);\n// InkStoneCo#44：#6-#10 改版後,「## 關聯」下面多了「### 內文知識關係」\n// 「### 卡片關係」「### 出處」三個 H3 子區。舊版界線 (?=\\n#|\\n---|$) 把任何\n// 井字號開頭的行都當成段落結束——遇到緊接在「## 關聯」後的第一個「### ...」\n// 子標題就立刻收尾,relSec[1] 只抓到「### 內文知識關係」這一行本身,真正的\n// 關係清單（卡片關係／出處那些「主體>>述語>>客體」行）從未被讀到,parse_card\n// 只剩最後機械補的 part_of 一條會進 kbdb（實測：4 條卡上宣稱的關係只落地 1 條）。\n// 修法：邊界只認「下一個 H1／H2」（1-2 個 # 後面接空白,且不是第 3 個 #),\n// 不再被巢狀的 H3 子標題提前打斷；沒有下一個 H1/H2 時仍讀到檔尾或 ---。\nconst relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  for (const line of relSec[1].split('\\n')) {\n    const m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(line);\n    if (!m) continue;\n    rels.push({ subject: m[1], predicate: m[2], object: m[3], source_uri: tripSrcUri, status: 'active', library: lib, machine: machine });\n  }\n}\nrels.push({ subject: pageName, predicate: 'part_of', object: 'knowledge-base', source_uri: tripSrcUri, status: 'active', library: lib, machine: machine });\n// inkstone/arcrun-rag#255：只寫自己這一段（offset 起、limit 條；limit 0＝到最後）。\n//   offset＝0 才寫 block；其餘各段 blocks 為空 ⇒ 下游 post_block 空轉。\nconst relsAll = rels.length;\nconst relsSlice = relLimit > 0 ? rels.slice(relOffset, relOffset + relLimit) : rels.slice(relOffset);\nconst outBlocks = relOffset === 0 ? blocks : [];\n// inkstone/arcrun-rag#241：每段 block 記下整張卡的指紋與「寫入當時共幾段、幾條三元組」，\n// 下次收同一張卡時 pick_stale 靠這三格判斷「雲端那份是不是完整且一模一樣」。\n// （#255：card_rels＝第一段自己名下的條數；不分段時就是整張卡的條數，與從前一樣）\nconst cardHash = String(input.card_hash || '');\nfor (const b of outBlocks) { b.card_hash = cardHash; b.card_blocks = String(blocks.length); b.card_rels = String(relsSlice.length); }\nreturn { success: true, blocks: outBlocks, block_count: outBlocks.length, rels: relsSlice, rel_count: relsSlice.length, rel_total: relsAll, page_name: pageName };\n",
         "input": {
           "card_hash": "{{prep.data.card_hash}}",
           "card": "{{input.card_content}}",
@@ -387,7 +392,10 @@
           "path": "{{input.path}}",
           "library": "{{input.library}}",
           "machine": "{{input.machine}}",
-          "machine_label": "{{input.machine_label}}"
+          "machine_label": "{{input.machine_label}}",
+          "trip_src_uri": "{{prep.data.trip_src_uri}}",
+          "rel_offset": "{{prep.data.rel_offset}}",
+          "rel_limit": "{{prep.data.rel_limit}}"
         },
         "limits": {
           "timeout_ms": 5000,
@@ -420,7 +428,7 @@
         },
         "body_json": {
           "entry_type": "value",
-          "content": "{{prep.data.src_uri}}",
+          "content": "{{prep.data.trip_src_uri}}",
           "owner_id": "__NAMESPACE__"
         }
       },
@@ -509,9 +517,10 @@
         "input": {
           "page_name": "{{parse_card.data.page_name}}",
           "blocks": "{{parse_card.data.blocks}}",
-          "library": "{{prep.data.const_library}}"
+          "library": "{{prep.data.const_library}}",
+          "do_blocks": "{{prep.data.do_blocks}}"
         },
-        "code": "function looksUnsubstituted(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\nvar rawPageName = input.page_name;\nif (rawPageName === undefined || rawPageName === null || rawPageName === '' ||\n    looksUnsubstituted(rawPageName) || String(rawPageName) === 'unknown') {\n  throw new Error('page_name 未代入或缺失（收到：' + JSON.stringify(rawPageName) + '），拒收未代入的樣板字串，不觸發分群');\n}\nvar pageName = String(rawPageName);\nvar blocks = Array.isArray(input.blocks) ? input.blocks : [];\n// c15345（總管實測：00-INDEX 讀回的摘要是「# 頁名」標題行，不是真摘要）：blocks[0]\n// 通常只是 H1 標題那個 chunk（parse_card 以標題切塊，「## 摘要」另成一塊）。\n// 改成跟 kbdb library-index.ts 的 GLOSS_HEADINGS 同一套慣例去找摘要段\n// （兩套段名都收：雲端重萃「## 摘要」／本機 daemon「## 一句話定義」），\n// 找不到才退回 blocks[0]（沒有摘要段的卡至少還有個開頭可看）。\nvar GLOSS_HEADINGS_LOCAL = ['## 摘要', '## 一句話定義'];\nvar glossBlock = null;\nfor (var bi = 0; bi < blocks.length; bi++) {\n  var bc = String(blocks[bi].content || '');\n  for (var hi = 0; hi < GLOSS_HEADINGS_LOCAL.length; hi++) {\n    if (bc.indexOf(GLOSS_HEADINGS_LOCAL[hi]) === 0) { glossBlock = bc; break; }\n  }\n  if (glossBlock) break;\n}\nvar snippetSource = glossBlock !== null ? glossBlock : (blocks.length ? String(blocks[0].content || '') : '');\nvar snippet = snippetSource\n  .split('\\n')\n  .filter(function (l) { return GLOSS_HEADINGS_LOCAL.indexOf(l.trim()) === -1; })\n  .join(' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 300);\n// library 理論上 `prep` 一定會給值（沒帶就退回 'kb'），這裡再防禦一次未代入的\n// 樣板字面字串，跟 page_name 同一套檢查邏輯。\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstituted(rawLibrary))\n  ? 'kb' : String(rawLibrary);\n// c15323 第 3 點（總管退回「一列一卡＋摘要」只有 title 沒摘要）：\n// item_title 保持「pageName+片段」不變（分群 TF-IDF 沿用這個組合文字，避免\n// 動到既有分群精度）；item_summary 是給卡層級目錄列顯示用的純片段，不進分群。\nreturn { success: true, item_id: 'kb://' + pageName,\n         item_title: (pageName + ' ' + snippet).trim(),\n         item_summary: snippet || pageName,\n         item_library: library };\n",
+        "code": "function looksUnsubstituted(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\n// inkstone/arcrun-rag#255：分段送的卡，分群只在第一段（寫 block 的那一段）做一次。\nif (String(input.do_blocks) === 'false') {\n  throw new Error('分段送的後面幾段：分群已在第一段處理，這段略過');\n}\nvar rawPageName = input.page_name;\nif (rawPageName === undefined || rawPageName === null || rawPageName === '' ||\n    looksUnsubstituted(rawPageName) || String(rawPageName) === 'unknown') {\n  throw new Error('page_name 未代入或缺失（收到：' + JSON.stringify(rawPageName) + '），拒收未代入的樣板字串，不觸發分群');\n}\nvar pageName = String(rawPageName);\nvar blocks = Array.isArray(input.blocks) ? input.blocks : [];\n// c15345（總管實測：00-INDEX 讀回的摘要是「# 頁名」標題行，不是真摘要）：blocks[0]\n// 通常只是 H1 標題那個 chunk（parse_card 以標題切塊，「## 摘要」另成一塊）。\n// 改成跟 kbdb library-index.ts 的 GLOSS_HEADINGS 同一套慣例去找摘要段\n// （兩套段名都收：雲端重萃「## 摘要」／本機 daemon「## 一句話定義」），\n// 找不到才退回 blocks[0]（沒有摘要段的卡至少還有個開頭可看）。\nvar GLOSS_HEADINGS_LOCAL = ['## 摘要', '## 一句話定義'];\nvar glossBlock = null;\nfor (var bi = 0; bi < blocks.length; bi++) {\n  var bc = String(blocks[bi].content || '');\n  for (var hi = 0; hi < GLOSS_HEADINGS_LOCAL.length; hi++) {\n    if (bc.indexOf(GLOSS_HEADINGS_LOCAL[hi]) === 0) { glossBlock = bc; break; }\n  }\n  if (glossBlock) break;\n}\nvar snippetSource = glossBlock !== null ? glossBlock : (blocks.length ? String(blocks[0].content || '') : '');\nvar snippet = snippetSource\n  .split('\\n')\n  .filter(function (l) { return GLOSS_HEADINGS_LOCAL.indexOf(l.trim()) === -1; })\n  .join(' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 300);\n// library 理論上 `prep` 一定會給值（沒帶就退回 'kb'），這裡再防禦一次未代入的\n// 樣板字面字串，跟 page_name 同一套檢查邏輯。\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstituted(rawLibrary))\n  ? 'kb' : String(rawLibrary);\n// c15323 第 3 點（總管退回「一列一卡＋摘要」只有 title 沒摘要）：\n// item_title 保持「pageName+片段」不變（分群 TF-IDF 沿用這個組合文字，避免\n// 動到既有分群精度）；item_summary 是給卡層級目錄列顯示用的純片段，不進分群。\nreturn { success: true, item_id: 'kb://' + pageName,\n         item_title: (pageName + ' ' + snippet).trim(),\n         item_summary: snippet || pageName,\n         item_library: library };\n",
         "limits": {
           "timeout_ms": 2000,
           "max_output_bytes": 65536
@@ -559,9 +568,10 @@
         "input": {
           "card": "{{input.card_content}}",
           "page_name": "{{input.page_name}}",
-          "library": "{{prep.data.const_library}}"
+          "library": "{{prep.data.const_library}}",
+          "do_blocks": "{{prep.data.do_blocks}}"
         },
-        "code": "function looksUnsubstitutedLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\nvar md = String(input.card == null ? '' : input.card);\nvar relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nvar seen = {};\nvar entities = [];\nif (relSec) {\n  var lines = relSec[1].split('\\n');\n  for (var i = 0; i < lines.length; i++) {\n    var m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(lines[i]);\n    if (!m) continue;\n    var pair = [String(m[1] || '').trim(), String(m[3] || '').trim()];\n    for (var k = 0; k < pair.length; k++) {\n      var e = pair[k];\n      if (!e || e === 'knowledge-base' || seen[e]) continue;\n      seen[e] = true;\n      entities.push(e);\n    }\n  }\n}\nif (entities.length === 0) {\n  throw new Error('本卡「## 關聯」段沒有可處理的 entity（沒有這段，或裡面沒有 A>>B>>C 格式的行）');\n}\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstitutedLocal(rawLibrary))\n  ? 'kb' : String(rawLibrary);\nreturn { success: true, entities_json: JSON.stringify(entities), library: library };\n",
+        "code": "function looksUnsubstitutedLocal(v) {\n  return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim());\n}\n// inkstone/arcrun-rag#255：分段送的卡，概念歸屬（LLM）只在第一段做一次。\nif (String(input.do_blocks) === 'false') {\n  throw new Error('分段送的後面幾段：概念歸屬已在第一段處理，這段略過');\n}\nvar md = String(input.card == null ? '' : input.card);\nvar relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nvar seen = {};\nvar entities = [];\nif (relSec) {\n  var lines = relSec[1].split('\\n');\n  for (var i = 0; i < lines.length; i++) {\n    var m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(lines[i]);\n    if (!m) continue;\n    var pair = [String(m[1] || '').trim(), String(m[3] || '').trim()];\n    for (var k = 0; k < pair.length; k++) {\n      var e = pair[k];\n      if (!e || e === 'knowledge-base' || seen[e]) continue;\n      seen[e] = true;\n      entities.push(e);\n    }\n  }\n}\nif (entities.length === 0) {\n  throw new Error('本卡「## 關聯」段沒有可處理的 entity（沒有這段，或裡面沒有 A>>B>>C 格式的行）');\n}\nvar rawLibrary = input.library;\nvar library = (rawLibrary === undefined || rawLibrary === null || rawLibrary === '' || looksUnsubstitutedLocal(rawLibrary))\n  ? 'kb' : String(rawLibrary);\nreturn { success: true, entities_json: JSON.stringify(entities), library: library };\n",
         "limits": {
           "timeout_ms": 2000,
           "max_output_bytes": 65536
@@ -890,20 +900,23 @@
       "input >> ON_SUCCESS >> prep",
       "prep >> ON_SUCCESS >> list_dead_blocks",
       "list_dead_blocks >> ON_SUCCESS >> build_deprecations",
-      "build_deprecations >> 對每個 dead_entry >> deprecate_entry",
+      "build_deprecations >> 對每個 dead_entry 並行 6 >> deprecate_entry",
       "build_deprecations >> ON_SUCCESS >> list_triplets",
       "list_triplets >> ON_SUCCESS >> pick_dead_triplets",
-      "pick_dead_triplets >> 對每個 dead_record >> deprecate_triplet"
+      "pick_dead_triplets >> 對每個 dead_record 並行 6 >> deprecate_triplet",
+      "deprecate_entry >> ON_FAIL >> accept_entry_gone",
+      "deprecate_triplet >> ON_FAIL >> accept_triplet_gone"
     ],
     "config": {
       "prep": {
         "component": "__CODE_URL__",
-        "code": "// 🔴 inkstone/arcrun-rag#237（2026-10-05 實撞）：這支做的是**不可逆真刪**，\n//   必要輸入缺失、或仍帶著「沒被代換的佔位符」時，必須在刪任何東西**之前**就停。\n//   實撞：沒帶 path 觸發 ⇒ 引擎不代換、`{{input.path}}` 以字面字串進來，\n//   它不是 falsy（舊的 `input.path || 預設` 不接手），一路查到 `kb://{{input.path}}`\n//   並真刪命中的 record。⇒ 兩道：① page_name／path 都必填（不再默默補預設）\n//   ② 值裡只要還有 `{{…}}` 就當作沒代換、拒絕。\n//   daemon 一直都會送 path（collector/direct.go），正常觸發行為不變。\n//   library／machine 是選填的收窄條件，不在此列（缺了只會殺得更少、不會殺錯）。\nfunction unresolved(v) { return /\\{\\{[^}]*\\}\\}/.test(v); }\nconst page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) return { success: false, error: 'rag_takedown_direct 缺 page_name，什麼都沒刪' };\nconst path = String(input.path == null ? '' : input.path).trim();\nif (!path) return { success: false, error: 'rag_takedown_direct 缺 path（原檔路徑），什麼都沒刪' };\nif (unresolved(page)) return { success: false, error: 'rag_takedown_direct 的 page_name 仍是未代換的佔位符（' + page + '），什麼都沒刪' };\nif (unresolved(path)) return { success: false, error: 'rag_takedown_direct 的 path 仍是未代換的佔位符（' + path + '），什麼都沒刪' };\n// library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。\nconst library = String(input.library == null ? '' : input.library).trim();\n// machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，\n// 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。\n// 選填：舊版 daemon 不送，此時行為與從前一字不差。\nconst machine = String(input.machine == null ? '' : input.machine).trim();\n// src_uri_enc：list_triplets 要拿它去 KBDB by-source 查「這張卡自己的三元組」，\n// CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。\nconst srcUri = 'kb://' + path;\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, path_enc: encodeURIComponent(path), source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         library: library, machine: machine };\n",
+        "code": "// 🔴 inkstone/arcrun-rag#237（2026-10-05 實撞）：這支做的是**不可逆真刪**，\n//   必要輸入缺失、或仍帶著「沒被代換的佔位符」時，必須在刪任何東西**之前**就停。\n//   實撞：沒帶 path 觸發 ⇒ 引擎不代換、`{{input.path}}` 以字面字串進來，\n//   它不是 falsy（舊的 `input.path || 預設` 不接手），一路查到 `kb://{{input.path}}`\n//   並真刪命中的 record。⇒ 兩道：① page_name／path 都必填（不再默默補預設）\n//   ② 值裡只要還有 `{{…}}` 就當作沒代換、拒絕。\n//   daemon 一直都會送 path（collector/direct.go），正常觸發行為不變。\n//   library 是選填的收窄條件（缺了只會殺得更少）；machine 見下方，#273 起必填。\nfunction unresolved(v) { return /\\{\\{[^}]*\\}\\}/.test(v); }\nconst page = String(input.page_name == null ? '' : input.page_name).trim();\nif (!page) throw new Error('rag_takedown_direct 缺 page_name，什麼都沒刪');\nconst path = String(input.path == null ? '' : input.path).trim();\nif (!path) throw new Error('rag_takedown_direct 缺 path（原檔路徑），什麼都沒刪');\nif (unresolved(page)) throw new Error('rag_takedown_direct 的 page_name 仍是未代換的佔位符（' + page + '），什麼都沒刪');\nif (unresolved(path)) throw new Error('rag_takedown_direct 的 path 仍是未代換的佔位符（' + path + '），什麼都沒刪');\n// library（arcrun-rag#46）：選填。舊版 daemon 不會送，此時維持原本只看 path 的行為。\nconst library = String(input.library == null ? '' : input.library).trim();\n// machine（`inkstone/mira#6`，leo 2026-08-18）：與 library 同一條規則、同一個理由，\n// 只是差一層——library 分得開「同一台機器的兩個資料夾」，machine 分得開「兩台機器」。\n// 選填：舊版 daemon 不送，此時行為與從前一字不差。\nconst machine = String(input.machine == null ? '' : input.machine).trim();\n// 🔴 inkstone/arcrun-rag#273（2026-10-18 實撞，#269 c21346）：machine 不帶時引擎不代換，\n//   `{{input.machine}}` 以字面字串進來，build_deprecations 拿它去比 meta.machine ⇒ 全部「別台機器」\n//   ⇒ 一張都不殺（dead_count 0）、卻只刪了 triplet（triplet 那側不看 machine）：回成功，實際沒下架。\n//   machine 因此改為**必填**（現行 daemon 一律會送，collector/direct.go drainPendingTakedowns）。\n//   空的 machine 也不放行：空＝不收窄＝會連坐別台機器上同名同路徑的卡（inkstone/mira#6）。\nif (!machine) throw new Error('rag_takedown_direct 缺 machine（機器身分，如 youlinhsieh@Leo-MBA），什麼都沒刪');\nif (unresolved(machine)) throw new Error('rag_takedown_direct 的 machine 仍是未代換的佔位符（' + machine + '），什麼都沒刪');\n// src_uri_enc：list_triplets 要拿它去 KBDB by-source 查「這張卡自己的三元組」，\n// CJK 進 URL query 前必先 encodeURIComponent（同 rag_ingest_card 的 prep）。\nconst srcUri = 'kb://' + path;\n// inkstone/arcrun-rag#255：概念卡／分段的三元組有自己的 source_uri（kb://路徑#t=<名字>，\n// 見 rag_ingest_card 的 triplet_scope）。帶了 triplet_scope 就只下架那一批；沒帶＝與從前一樣\n// （kb://路徑，也就是文件卡本人那一批，連同改版前所有卡共用這個 source_uri 時寫下的）。\nconst rawScope = input.triplet_scope;\nconst scope = (rawScope == null || unresolved(String(rawScope))) ? '' : String(rawScope).trim();\nconst tripSrcUri = scope ? (srcUri + '#t=' + scope) : srcUri;\nreturn { success: true, page_name: page, page_enc: encodeURIComponent(page),\n         path: path, path_enc: encodeURIComponent(path), source_uri: srcUri, src_uri_enc: encodeURIComponent(srcUri),\n         trip_src_uri: tripSrcUri, trip_src_uri_enc: encodeURIComponent(tripSrcUri),\n         library: library, machine: machine };\n",
         "input": {
           "page_name": "{{input.page_name}}",
           "path": "{{input.path}}",
           "library": "{{input.library}}",
-          "machine": "{{input.machine}}"
+          "machine": "{{input.machine}}",
+          "triplet_scope": "{{input.triplet_scope}}"
         },
         "limits": {
           "timeout_ms": 2000,
@@ -944,7 +957,7 @@
       "list_triplets": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.src_uri_enc}}&owner_id=__NAMESPACE__",
+        "url": "__KBDB_BASE__/records/by-source/triplet?field=source_uri&value={{prep.data.trip_src_uri_enc}}&owner_id=__NAMESPACE__",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -967,6 +980,28 @@
         "url": "__KBDB_BASE__/records/{{dead_record.record_id}}",
         "headers": {
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "accept_entry_gone": {
+        "component": "__CODE_URL__",
+        "input": {
+          "err2": "{{deprecate_entry.error}}"
+        },
+        "code": "const e = String(input.err2 == null ? '' : input.err2);\nif (/\\b404\\b/.test(e)) return { success: true, already_gone: true };\nthrow new Error('deprecate_entry 失敗且不是 404：' + e);\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "accept_triplet_gone": {
+        "component": "__CODE_URL__",
+        "input": {
+          "err2": "{{deprecate_triplet.error}}"
+        },
+        "code": "const e = String(input.err2 == null ? '' : input.err2);\nif (/\\b404\\b/.test(e)) return { success: true, already_gone: true };\nthrow new Error('deprecate_triplet 失敗且不是 404：' + e);\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
         }
       }
     },
@@ -1025,6 +1060,18 @@
           "type": "Component",
           "componentId": "deprecate_triplet",
           "label": "deprecate_triplet"
+        },
+        {
+          "id": "accept_entry_gone",
+          "type": "Component",
+          "componentId": "accept_entry_gone",
+          "label": "accept_entry_gone"
+        },
+        {
+          "id": "accept_triplet_gone",
+          "type": "Component",
+          "componentId": "accept_triplet_gone",
+          "label": "accept_triplet_gone"
         }
       ],
       "edges": [
@@ -1047,7 +1094,8 @@
           "from": "build_deprecations",
           "to": "deprecate_entry",
           "type": "FOREACH",
-          "iterator": "dead_entry"
+          "iterator": "dead_entry",
+          "concurrency": 6
         },
         {
           "from": "build_deprecations",
@@ -1063,7 +1111,18 @@
           "from": "pick_dead_triplets",
           "to": "deprecate_triplet",
           "type": "FOREACH",
-          "iterator": "dead_record"
+          "iterator": "dead_record",
+          "concurrency": 6
+        },
+        {
+          "from": "deprecate_entry",
+          "to": "accept_entry_gone",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "deprecate_triplet",
+          "to": "accept_triplet_gone",
+          "type": "ON_FAIL"
         }
       ]
     }
@@ -1071,11 +1130,10 @@
   {
     "file": "rag-entity-concept.local.yaml",
     "name": "rag_entity_concept",
-    "description": "entity description（一句話文字）＋ 概念歸屬（LLM 判斷、寫成「X >> 屬於 >> concept」 文字三元組）。零向量：不讀不寫任何嵌入。description 去重（Arcrun#264）與概念目錄 （Arcrun#265）都跨庫查詢，只有「這個 entity 在本庫是否已歸類」的 membership 判斷 仍限定本庫。（inkstone/Arcrun#60／#264／#265）\n",
+    "description": "entity description（一句話文字）＋ 概念歸屬（LLM 判斷、寫成「X >> 屬於 >> concept」 文字三元組）。零向量：不讀不寫任何嵌入。description 去重（Arcrun#264）與概念目錄 （Arcrun#265）都跨庫，只有「這個 entity 在本庫是否已歸類」的 membership 判斷 仍限定本庫。查詢量只跟這張卡自己的 entity 有關（內部呼叫 rag_entity_lookup；概念目錄 是有界的最新 100 筆），不跟庫的大小有關。（inkstone/Arcrun#60／#264／#265／arcrun-rag#267）\n",
     "flow": [
-      "input >> ON_SUCCESS >> fetch_lib_triplets",
-      "fetch_lib_triplets >> ON_SUCCESS >> fetch_global_desc",
-      "fetch_global_desc >> ON_SUCCESS >> fetch_global_concepts",
+      "input >> ON_SUCCESS >> fetch_lookup",
+      "fetch_lookup >> ON_SUCCESS >> fetch_global_concepts",
       "fetch_global_concepts >> ON_SUCCESS >> prep_llm",
       "prep_llm >> ON_SUCCESS >> ask_llm",
       "prep_llm >> ON_FAIL >> absorb_no_work",
@@ -1084,28 +1142,23 @@
       "parse_llm >> 對每個 concept_item >> post_concept"
     ],
     "config": {
-      "fetch_lib_triplets": {
+      "fetch_lookup": {
         "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?field=library&value={{input.library}}&owner_id=__NAMESPACE__&limit=500",
+        "method": "POST",
+        "url": "__CYPHER_BASE__/webhooks/named/rag_entity_lookup/query",
         "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
-        }
-      },
-      "fetch_global_desc": {
-        "component": "__HTTP_REQ_URL__",
-        "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=description&owner_id=__NAMESPACE__&limit=500",
-        "headers": {
-          "Accept": "application/json",
-          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+          "Content-Type": "application/json",
+          "X-Arcrun-API-Key": "__NAMESPACE__"
+        },
+        "body_json": {
+          "entities_json": "{{input.entities_json}}",
+          "library": "{{input.library}}"
         }
       },
       "fetch_global_concepts": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=2000",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=predicate&value=屬於&owner_id=__NAMESPACE__&limit=100",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -1117,11 +1170,10 @@
           "entities_raw": "{{input.entities_json}}",
           "card_content": "{{input.card_content}}",
           "library": "{{input.library}}",
-          "lib_triplets_body": "{{fetch_lib_triplets.data.body}}",
-          "global_desc_body": "{{fetch_global_desc.data.body}}",
+          "lookup_body": "{{fetch_lookup.data.body}}",
           "global_concepts_body": "{{fetch_global_concepts.data.body}}"
         },
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar entities = parse(input.entities_raw);\nentities = Array.isArray(entities) ? entities : [];\nvar seen = {};\nvar uniq = [];\nfor (var i = 0; i < entities.length; i++) {\n  var e = String(entities[i] || '').trim();\n  if (!e || e === 'knowledge-base' || seen[e]) continue;\n  seen[e] = true;\n  uniq.push(e);\n}\nif (uniq.length === 0) throw new Error('沒有可處理的 entity（entities_json 空或全被過濾）');\n\nvar parsedTriplets = parse(input.lib_triplets_body);\nvar records = (parsedTriplets && Array.isArray(parsedTriplets.records)) ? parsedTriplets.records : [];\nvar existingConcept = {};   // subject -> 有沒有「屬於」（已存在，限本子庫——membership 判斷不變）\nfor (var r = 0; r < records.length; r++) {\n  var v = (records[r] && records[r].values) || {};\n  var subj = String(v.subject || '');\n  var pred = String(v.predicate || '');\n  var obj = String(v.object || '');\n  if (!subj) continue;\n  if (pred === '屬於' && obj) existingConcept[subj] = true;\n}\n// Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）改讀跨庫查詢結果\n// （field=predicate&value=屬於，不帶 library）——不管哪個子庫先用過的概念名稱，\n// 這裡都收進目錄，讓 LLM 照抄既有名稱，不會因為換了子庫又重新命名一個同義詞。\nvar parsedGlobalConcepts = parse(input.global_concepts_body);\nvar globalConceptRecords = (parsedGlobalConcepts && Array.isArray(parsedGlobalConcepts.records)) ? parsedGlobalConcepts.records : [];\nvar conceptMembers = {};    // concept(object) -> [members(subject)]，跨庫 hub 目錄\nfor (var cr = 0; cr < globalConceptRecords.length; cr++) {\n  var cv = (globalConceptRecords[cr] && globalConceptRecords[cr].values) || {};\n  var csubj = String(cv.subject || '');\n  var cobj = String(cv.object || '');\n  if (!csubj || !cobj || String(cv.predicate || '') !== '屬於') continue;\n  if (!conceptMembers[cobj]) conceptMembers[cobj] = [];\n  if (conceptMembers[cobj].indexOf(csubj) === -1) conceptMembers[cobj].push(csubj);\n}\n// Arcrun#264：existingDesc 改讀跨庫查詢結果（field=predicate&value=description，\n// 不帶 library）——同一個 entity 不管哪個子庫先寫過 description，這裡都算「已存在」，\n// 不會因為換一個子庫又被判定成新的而重寫一次。\nvar parsedGlobalDesc = parse(input.global_desc_body);\nvar globalDescRecords = (parsedGlobalDesc && Array.isArray(parsedGlobalDesc.records)) ? parsedGlobalDesc.records : [];\nvar existingDesc = {};      // subject -> 有沒有 description（跨庫已存在）\nfor (var g = 0; g < globalDescRecords.length; g++) {\n  var gv = (globalDescRecords[g] && globalDescRecords[g].values) || {};\n  var gsubj = String(gv.subject || '');\n  if (gsubj && String(gv.predicate || '') === 'description') existingDesc[gsubj] = true;\n}\n// 冪等：只處理「描述或概念歸屬還缺一項」的 entity，同一張卡重送不會重複寫。\n// Arcrun#264：todo 只決定「要不要送 LLM」；真正決定「寫哪一半」的是下面\n// 每個 entity 各自的 needsDesc／needsConcept 旗標（傳給 parse_llm，各自過濾\n// 出只需要的那一半才 POST——不然即使這裡跨庫查到 description 已存在，\n// 只是概念缺（本庫沒有），還是會連著把 description 也重寫一次）。\nvar todo = [];\nvar flags = {};\nfor (var t = 0; t < uniq.length; t++) {\n  var name = uniq[t];\n  var needsDesc = !existingDesc[name];\n  var needsConcept = !existingConcept[name];\n  if (needsDesc || needsConcept) {\n    todo.push(name);\n    flags[name] = { needsDesc: needsDesc, needsConcept: needsConcept };\n  }\n}\nif (todo.length === 0) {\n  throw new Error('ALL_ALREADY_DESCRIBED：本次 entity 皆已有 description 與屬於關係，不重複寫');\n}\nvar conceptDirLines = [];\nfor (var c in conceptMembers) {\n  conceptDirLines.push('- 「' + c + '」（現有成員：' + conceptMembers[c].slice(0, 8).join('、') + '）');\n}\nreturn {\n  success: true,\n  todo_json: JSON.stringify(todo),\n  flags_json: JSON.stringify(flags),\n  concept_directory: conceptDirLines.length ? conceptDirLines.join('\\n') : '（目前這個庫還沒有任何概念節點）',\n  card_snippet: String(input.card_content || '').slice(0, 4000),\n  library: String(input.library || 'kb'),\n};\n",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar entities = parse(input.entities_raw);\nentities = Array.isArray(entities) ? entities : [];\n// KBDB 寫入三元組時會把 subject／object 收斂成標準寫法（kbdb/src/actions/entity-canon.ts 的\n// canonicalEntity：NFC、剝 [[X]]／`X` 整串包裝、筆記副檔名路徑取檔名、空白收斂）。\n// 查詢（field=subject&value=）不會替你收斂 ⇒ 用卡片裡原樣的 `[[M150]]` 去查，什麼都找不到，\n// 等於永遠判成「沒有 description」而重寫。所以這裡先照同一份規則收斂再查、再比對。\n// （這是 canonicalEntity 的逐行移植；改那份規則時兩處要一起改——workflows/tests/entity-concept-scope.test.mjs 有向量守著。）\nfunction unwrapWhole(t) {\n  var code = /^(`+)([\\s\\S]*?)(`+)$/.exec(t);\n  if (code) { var inner = code[2].trim(); if (inner && inner.indexOf('`') === -1) return inner; }\n  if (t.indexOf('[[') === 0 && t.length > 4 && t.slice(-2) === ']]') {\n    var w = t.slice(2, -2).trim();\n    if (w && w.indexOf('[[') === -1 && w.indexOf(']]') === -1) return w;\n  }\n  return t;\n}\nfunction canon(raw) {\n  var fallback = String(raw == null ? '' : raw).trim();\n  var t = String(raw == null ? '' : raw);\n  if (typeof t.normalize === 'function') t = t.normalize('NFC');\n  t = t.trim();\n  if (!t) return fallback;\n  for (var q = 0; q < 4; q++) { var before = t; t = unwrapWhole(t); if (t === before) break; }\n  var NOTE_EXT = /\\.(md|markdown|mdx|txt|org)$/i;\n  if (NOTE_EXT.test(t)) {\n    t = t.replace(NOTE_EXT, '');\n    var cut = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\\\'));\n    if (cut >= 0) t = t.slice(cut + 1);\n  }\n  t = t.replace(/\\s+/g, ' ').trim();\n  return t || fallback;\n}\nvar seen = {};\nvar uniq = [];\nfor (var i = 0; i < entities.length; i++) {\n  var e = canon(entities[i]);\n  if (!e || e === 'knowledge-base' || seen[e]) continue;\n  seen[e] = true;\n  uniq.push(e);\n}\nif (uniq.length === 0) throw new Error('沒有可處理的 entity（entities_json 空或全被過濾）');\n\n// inkstone/arcrun-rag#267：membership 與 description 的存在判斷，來自 rag_entity_lookup\n// 對「這張卡自己的 entity」各查一次的結果（不再撈整個庫）。\n//   existingConcept[entity] ＝ 這個 entity 在本庫已有「屬於」（membership，子庫各自記錄——判斷不變）\n//   existingDesc[entity]    ＝ 這個 entity 在任何庫已有 description（Arcrun#264，跨庫——判斷不變）\nvar lookup = parse(input.lookup_body);\nvar lookupResults = (lookup && Array.isArray(lookup.results)) ? lookup.results : null;\nif (!lookupResults) throw new Error('LOOKUP_UNREADABLE：rag_entity_lookup 的回應讀不出 results，不猜（猜錯＝重寫 description）');\nvar existingConcept = {};\nvar existingDesc = {};\nvar knownConcepts = {};     // concept -> [已歸入的 entity]，來自這幾個 entity 自己的既有歸屬\nvar looked = {};            // entity -> true（查詢成功、有結論）\nvar truncatedCount = 0;\nfor (var l = 0; l < lookupResults.length; l++) {\n  var lr = lookupResults[l] || {};\n  var ld = (lr.data && typeof lr.data === 'object') ? lr.data : lr;\n  var lname = String(ld.entity || '');\n  if (!lname || lr.success === false) continue;   // 這個 entity 查詢失敗＝這次不處理它（不當成「沒有」）\n  looked[lname] = true;\n  if (ld.has_desc) existingDesc[lname] = true;\n  if (ld.in_lib_concept) existingConcept[lname] = true;\n  if (ld.truncated) truncatedCount++;\n  var own = Array.isArray(ld.concepts) ? ld.concepts : [];\n  for (var oc = 0; oc < own.length; oc++) {\n    var oname = String(own[oc] || '');\n    if (!oname) continue;\n    if (!knownConcepts[oname]) knownConcepts[oname] = [];\n    if (knownConcepts[oname].indexOf(lname) === -1) knownConcepts[oname].push(lname);\n  }\n}\n\n// Arcrun#265：概念目錄（給 LLM 看的「現有概念清單」）讀跨庫查詢結果\n// （field=predicate&value=屬於，不帶 library）——不管哪個子庫先用過的概念名稱，\n// 這裡都收進目錄，讓 LLM 照抄既有名稱，不會因為換了子庫又重新命名一個同義詞。\n// #267：視窗是「最新 100 筆」（64 KiB 天花板下的上限），再補上這幾個 entity 自己已歸入的概念。\nvar parsedGlobalConcepts = parse(input.global_concepts_body);\nvar globalConceptRecords = (parsedGlobalConcepts && Array.isArray(parsedGlobalConcepts.records)) ? parsedGlobalConcepts.records : [];\nvar conceptMembers = {};    // concept(object) -> [members(subject)]，跨庫 hub 目錄\nfor (var cr = 0; cr < globalConceptRecords.length; cr++) {\n  var cv = (globalConceptRecords[cr] && globalConceptRecords[cr].values) || {};\n  var csubj = String(cv.subject || '');\n  var cobj = String(cv.object || '');\n  if (!csubj || !cobj || String(cv.predicate || '') !== '屬於') continue;\n  if (!conceptMembers[cobj]) conceptMembers[cobj] = [];\n  if (conceptMembers[cobj].indexOf(csubj) === -1) conceptMembers[cobj].push(csubj);\n}\nfor (var kc in knownConcepts) {\n  if (!conceptMembers[kc]) conceptMembers[kc] = [];\n  for (var km = 0; km < knownConcepts[kc].length; km++) {\n    if (conceptMembers[kc].indexOf(knownConcepts[kc][km]) === -1) conceptMembers[kc].push(knownConcepts[kc][km]);\n  }\n}\n\n// 冪等：只處理「描述或概念歸屬還缺一項」的 entity，同一張卡重送不會重複寫。\n// Arcrun#264：todo 只決定「要不要送 LLM」；真正決定「寫哪一半」的是下面\n// 每個 entity 各自的 needsDesc／needsConcept 旗標（傳給 parse_llm，各自過濾\n// 出只需要的那一半才 POST——不然即使這裡跨庫查到 description 已存在，\n// 只是概念缺（本庫沒有），還是會連著把 description 也重寫一次）。\nvar todo = [];\nvar flags = {};\nvar unlooked = 0;\nfor (var t = 0; t < uniq.length; t++) {\n  var name = uniq[t];\n  if (!looked[name]) { unlooked++; continue; }   // 沒有查詢結論的 entity 這次不處理\n  var needsDesc = !existingDesc[name];\n  var needsConcept = !existingConcept[name];\n  if (needsDesc || needsConcept) {\n    todo.push(name);\n    flags[name] = { needsDesc: needsDesc, needsConcept: needsConcept };\n  }\n}\nif (todo.length === 0) {\n  if (unlooked > 0 && unlooked === uniq.length) {\n    throw new Error('LOOKUP_NO_CONCLUSION：rag_entity_lookup 對本卡全部 ' + unlooked + ' 個 entity 都沒有結論（查詢失敗），這次不處理，不當成沒有 description 去重寫');\n  }\n  throw new Error('ALL_ALREADY_DESCRIBED：本次 entity 皆已有 description 與屬於關係（或查詢無結論 ' + unlooked + ' 個），不重複寫');\n}\nvar conceptDirLines = [];\nfor (var c in conceptMembers) {\n  conceptDirLines.push('- 「' + c + '」（現有成員：' + conceptMembers[c].slice(0, 8).join('、') + '）');\n}\nreturn {\n  success: true,\n  todo_json: JSON.stringify(todo),\n  flags_json: JSON.stringify(flags),\n  concept_directory: conceptDirLines.length ? conceptDirLines.join('\\n') : '（目前這個庫還沒有任何概念節點）',\n  card_snippet: String(input.card_content || '').slice(0, 4000),\n  library: String(input.library || 'kb'),\n  lookup_unresolved: unlooked,\n  lookup_truncated: truncatedCount,\n};\n",
         "limits": {
           "timeout_ms": 3000,
           "max_output_bytes": 262144
@@ -1172,7 +1224,8 @@
             "subject": "{{desc_item.entity}}",
             "predicate": "description",
             "object": "{{desc_item.description}}",
-            "library": "{{desc_item.library}}"
+            "library": "{{desc_item.library}}",
+            "source_uri": "entity-desc://{{desc_item.entity}}"
           }
         }
       },
@@ -1191,13 +1244,15 @@
             "subject": "{{concept_item.entity}}",
             "predicate": "屬於",
             "object": "{{concept_item.concept}}",
-            "library": "{{concept_item.library}}"
+            "library": "{{concept_item.library}}",
+            "source_uri": "entity-concept://{{concept_item.entity}}"
           }
         }
       }
     },
     "placeholders": [
       "__CODE_URL__",
+      "__CYPHER_BASE__",
       "__HTTP_REQ_URL__",
       "__KBDB_BASE__",
       "__NAMESPACE__"
@@ -1211,16 +1266,10 @@
           "label": "input"
         },
         {
-          "id": "fetch_lib_triplets",
+          "id": "fetch_lookup",
           "type": "Component",
-          "componentId": "fetch_lib_triplets",
-          "label": "fetch_lib_triplets"
-        },
-        {
-          "id": "fetch_global_desc",
-          "type": "Component",
-          "componentId": "fetch_global_desc",
-          "label": "fetch_global_desc"
+          "componentId": "fetch_lookup",
+          "label": "fetch_lookup"
         },
         {
           "id": "fetch_global_concepts",
@@ -1268,16 +1317,11 @@
       "edges": [
         {
           "from": "input",
-          "to": "fetch_lib_triplets",
+          "to": "fetch_lookup",
           "type": "ON_SUCCESS"
         },
         {
-          "from": "fetch_lib_triplets",
-          "to": "fetch_global_desc",
-          "type": "ON_SUCCESS"
-        },
-        {
-          "from": "fetch_global_desc",
+          "from": "fetch_lookup",
           "to": "fetch_global_concepts",
           "type": "ON_SUCCESS"
         },
@@ -1312,6 +1356,209 @@
           "to": "post_concept",
           "type": "FOREACH",
           "iterator": "concept_item"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-entity-lookup.local.yaml",
+    "name": "rag_entity_lookup",
+    "description": "對一張卡的每個 entity 各查一次「它自己」在知識圖上的 description／概念歸屬 （以 entity-desc:// 與 entity-concept:// 記號查，常數成本；舊資料退回 field=subject）， 回傳精簡結果。成本只跟這張卡的 entity 數有關，不跟庫的大小、名詞的出現次數有關。只讀。 （inkstone/arcrun-rag#267）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> prep_lookup",
+      "prep_lookup >> 對每個 entity_item 並行 6 >> fetch_desc_marker",
+      "fetch_desc_marker >> ON_SUCCESS >> fetch_concept_marker",
+      "fetch_desc_marker >> ON_FAIL >> item_failed",
+      "fetch_concept_marker >> ON_SUCCESS >> decide",
+      "fetch_concept_marker >> ON_FAIL >> item_failed",
+      "decide >> ON_TRUE >> fetch_legacy",
+      "fetch_legacy >> ON_SUCCESS >> merge_legacy",
+      "fetch_legacy >> ON_FAIL >> item_failed"
+    ],
+    "config": {
+      "prep_lookup": {
+        "component": "__CODE_URL__",
+        "input": {
+          "entities_raw": "{{input.entities_json}}",
+          "library": "{{input.library}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar entities = parse(input.entities_raw);\nentities = Array.isArray(entities) ? entities : [];\nvar library = String(input.library || 'kb');\n// KBDB 寫入三元組時會把 subject／object 收斂成標準寫法（kbdb/src/actions/entity-canon.ts 的\n// canonicalEntity：NFC、剝 [[X]]／`X` 整串包裝、筆記副檔名路徑取檔名、空白收斂）。\n// 查詢（field=…&value=）不會替你收斂 ⇒ 用卡片裡原樣的 `[[M150]]` 去查，什麼都找不到，\n// 等於永遠判成「沒有 description」而重寫。所以這裡先照同一份規則收斂再查、再比對。\n// （這是 canonicalEntity 的逐行移植；改那份規則時兩處要一起改——workflows/tests/entity-concept-scope.test.mjs 有向量守著。）\nfunction unwrapWhole(t) {\n  var code = /^(`+)([\\s\\S]*?)(`+)$/.exec(t);\n  if (code) { var inner = code[2].trim(); if (inner && inner.indexOf('`') === -1) return inner; }\n  if (t.indexOf('[[') === 0 && t.length > 4 && t.slice(-2) === ']]') {\n    var w = t.slice(2, -2).trim();\n    if (w && w.indexOf('[[') === -1 && w.indexOf(']]') === -1) return w;\n  }\n  return t;\n}\nfunction canon(raw) {\n  var fallback = String(raw == null ? '' : raw).trim();\n  var t = String(raw == null ? '' : raw);\n  if (typeof t.normalize === 'function') t = t.normalize('NFC');\n  t = t.trim();\n  if (!t) return fallback;\n  for (var q = 0; q < 4; q++) { var before = t; t = unwrapWhole(t); if (t === before) break; }\n  var NOTE_EXT = /\\.(md|markdown|mdx|txt|org)$/i;\n  if (NOTE_EXT.test(t)) {\n    t = t.replace(NOTE_EXT, '');\n    var cut = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\\\'));\n    if (cut >= 0) t = t.slice(cut + 1);\n  }\n  t = t.replace(/\\s+/g, ' ').trim();\n  return t || fallback;\n}\nvar seen = {};\nvar items = [];\n// 一張卡的 entity 上限：超過的這次不查（也就不處理），避免單張卡把子請求數撐爆。\nvar MAX_ENTITIES = 200;\nfor (var i = 0; i < entities.length && items.length < MAX_ENTITIES; i++) {\n  var e = canon(entities[i]);\n  if (!e || e === 'knowledge-base' || seen[e]) continue;\n  seen[e] = true;\n  // 給 URL 用的編碼版；entity 原樣（已收斂）留著給比對。\n  items.push({\n    entity: e,\n    enc: encodeURIComponent(e),\n    desc_q: encodeURIComponent('entity-desc://' + e),\n    concept_q: encodeURIComponent('entity-concept://' + e),\n    library: library,\n  });\n}\nif (items.length === 0) throw new Error('沒有可查的 entity（entities_json 空或全被過濾）');\nreturn { success: true, entity_items: items, entity_count: items.length };\n",
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 262144
+        }
+      },
+      "fetch_desc_marker": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=source_uri&value={{entity_item.desc_q}}&owner_id=__NAMESPACE__&limit=20",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "fetch_concept_marker": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=source_uri&value={{entity_item.concept_q}}&owner_id=__NAMESPACE__&limit=50",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "decide": {
+        "component": "__CODE_URL__",
+        "input": {
+          "desc_body": "{{fetch_desc_marker.data.body}}",
+          "concept_body": "{{fetch_concept_marker.data.body}}",
+          "entity": "{{entity_item.entity}}",
+          "library": "{{entity_item.library}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar entity = String(input.entity || '');\nvar library = String(input.library || 'kb');\nvar d = parse(input.desc_body);\nvar c = parse(input.concept_body);\nvar dRecs = (d && Array.isArray(d.records)) ? d.records : [];\nvar cRecs = (c && Array.isArray(c.records)) ? c.records : [];\nvar hasDesc = false;\nfor (var i = 0; i < dRecs.length; i++) {\n  var dv = (dRecs[i] && dRecs[i].values) || {};\n  if (String(dv.subject || '') === entity && String(dv.predicate || '') === 'description') hasDesc = true;\n}\nvar concepts = [];\nvar inLib = false;\nvar markedConcept = false;\nfor (var j = 0; j < cRecs.length; j++) {\n  var cv = (cRecs[j] && cRecs[j].values) || {};\n  var obj = String(cv.object || '');\n  if (String(cv.subject || '') !== entity || String(cv.predicate || '') !== '屬於' || !obj) continue;\n  markedConcept = true;\n  if (concepts.indexOf(obj) === -1) concepts.push(obj);\n  if (String(cv.library || '') === library) inLib = true;\n}\nvar truncated = (d ? Number(d.total) > dRecs.length : false) || (c ? Number(c.total) > cRecs.length : false);\nreturn {\n  success: true,\n  entity: entity,\n  has_desc: hasDesc,\n  in_lib_concept: inLib,\n  concepts: concepts,\n  truncated: truncated,\n  seen: dRecs.length + cRecs.length,\n  legacy: false,\n  branch: (hasDesc && markedConcept) ? 'false' : 'true',\n};\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 16384
+        }
+      },
+      "fetch_legacy": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/records/by-template/triplet?field=subject&value={{entity_item.enc}}&owner_id=__NAMESPACE__&limit=80",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "merge_legacy": {
+        "component": "__CODE_URL__",
+        "input": {
+          "base": "{{decide.data}}",
+          "legacy_body": "{{fetch_legacy.data.body}}",
+          "entity": "{{entity_item.entity}}",
+          "library": "{{entity_item.library}}"
+        },
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nvar base = (input.base && typeof input.base === 'object') ? input.base : {};\nvar entity = String(input.entity || '');\nvar library = String(input.library || 'kb');\nvar l = parse(input.legacy_body);\nvar recs = (l && Array.isArray(l.records)) ? l.records : [];\nvar hasDesc = !!base.has_desc;\nvar inLib = !!base.in_lib_concept;\nvar concepts = Array.isArray(base.concepts) ? base.concepts.slice() : [];\nfor (var i = 0; i < recs.length; i++) {\n  var v = (recs[i] && recs[i].values) || {};\n  if (String(v.subject || '') !== entity) continue;\n  var pred = String(v.predicate || '');\n  var obj = String(v.object || '');\n  if (pred === 'description') hasDesc = true;\n  if (pred === '屬於' && obj) {\n    if (concepts.indexOf(obj) === -1) concepts.push(obj);\n    if (String(v.library || '') === library) inLib = true;\n  }\n}\nvar total = l ? Number(l.total) : 0;\nreturn {\n  success: true,\n  entity: entity,\n  has_desc: hasDesc,\n  in_lib_concept: inLib,\n  concepts: concepts,\n  truncated: !!base.truncated || total > recs.length,\n  seen: Number(base.seen || 0) + recs.length,\n  legacy: true,\n};\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 16384
+        }
+      },
+      "item_failed": {
+        "component": "__CODE_URL__",
+        "input": {
+          "entity": "{{entity_item.entity}}"
+        },
+        "code": "return { success: true, failed: true, failed_entity: String(input.entity || '') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      }
+    },
+    "placeholders": [
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "prep_lookup",
+          "type": "Component",
+          "componentId": "prep_lookup",
+          "label": "prep_lookup"
+        },
+        {
+          "id": "fetch_desc_marker",
+          "type": "Component",
+          "componentId": "fetch_desc_marker",
+          "label": "fetch_desc_marker"
+        },
+        {
+          "id": "fetch_concept_marker",
+          "type": "Component",
+          "componentId": "fetch_concept_marker",
+          "label": "fetch_concept_marker"
+        },
+        {
+          "id": "item_failed",
+          "type": "Component",
+          "componentId": "item_failed",
+          "label": "item_failed"
+        },
+        {
+          "id": "decide",
+          "type": "Component",
+          "componentId": "decide",
+          "label": "decide"
+        },
+        {
+          "id": "fetch_legacy",
+          "type": "Component",
+          "componentId": "fetch_legacy",
+          "label": "fetch_legacy"
+        },
+        {
+          "id": "merge_legacy",
+          "type": "Component",
+          "componentId": "merge_legacy",
+          "label": "merge_legacy"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "prep_lookup",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_lookup",
+          "to": "fetch_desc_marker",
+          "type": "FOREACH",
+          "iterator": "entity_item",
+          "concurrency": 6
+        },
+        {
+          "from": "fetch_desc_marker",
+          "to": "fetch_concept_marker",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_desc_marker",
+          "to": "item_failed",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "fetch_concept_marker",
+          "to": "decide",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_concept_marker",
+          "to": "item_failed",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "decide",
+          "to": "fetch_legacy",
+          "type": "ON_TRUE"
+        },
+        {
+          "from": "fetch_legacy",
+          "to": "merge_legacy",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "fetch_legacy",
+          "to": "item_failed",
+          "type": "ON_FAIL"
         }
       ]
     }

@@ -292,3 +292,34 @@ func mustRead(t *testing.T, p string) string {
 	}
 	return string(data)
 }
+
+// inkstone/arcrun-rag#278：概念卡不上雲，文件卡的「內文知識關係」必須帶著各概念的 facts，
+// 否則雲端圖上只有結構邊、查不到「這台機器有哪些配備」。
+func TestBuildWikiDoc_DocCardCarriesConceptFacts(t *testing.T) {
+	root := t.TempDir()
+	src := "# 測試文件\n\n內文若干"
+	mustWrite(t, filepath.Join(root, "測試文件.md"), src)
+	ex := wsExtract()
+	ex.Concepts[1].Facts = [][]string{{"甲", "屬於", "測試域"}, {"乙", "對照", "甲"}, {"x >> y", "z", "w"}, {"", "空主詞", "q"}}
+	if _, err := BuildWikiDoc(root, "測試文件.md", src, ex, wsOrigin("測試文件.md"), wsNow); err != nil {
+		t.Fatal(err)
+	}
+	doc := mustRead(t, filepath.Join(root, ".wiki", "測試文件.md"))
+	i := strings.Index(doc, "### 內文知識關係")
+	j := strings.Index(doc, "### 卡片關係")
+	if i < 0 || j < i {
+		t.Fatalf("文件卡缺小節：\n%s", doc)
+	}
+	sec := doc[i:j]
+	for _, want := range []string{"- 甲" + triSep + "屬於" + triSep + "測試域", "- 乙" + triSep + "對照" + triSep + "甲", "x →"} {
+		if !strings.Contains(sec, want) {
+			t.Fatalf("文件卡內文知識關係缺「%s」：\n%s", want, sec)
+		}
+	}
+	if strings.Count(sec, "測試域") != 1 {
+		t.Fatalf("重複的 fact 沒去重：\n%s", sec)
+	}
+	if strings.Contains(sec, "空主詞") {
+		t.Fatalf("空主詞的 fact 不該落卡：\n%s", sec)
+	}
+}
