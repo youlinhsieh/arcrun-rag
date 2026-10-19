@@ -354,7 +354,6 @@
       "requiresArm": true,
       "armTicket": {
         "repo": "InkStoneCo",
-        "issue": 202,
         "coversMainPush": true,
         "_": [
           "2026-09-22（inkstone/ISEP#30 comment 10739，總管交辦）：leo 只要在這張載體票",
@@ -362,8 +361,10 @@
           "gitea-arm-request.sh／gitea-arm-check.sh，也不必貼 .github-armed 或",
           "/tmp/.main-push-ok。核對邏輯見 installer/scripts/ticket-arm-guard.mjs；",
           "owner 寫死 inkstone（不接受覆蓋，安全邊界同 scripts/lib/gitea-arm-common.sh）。",
-          "`issue: 202` 是目前這一輪的 InkStoneCo 開閘票（2026-09-29 由已關的 #140 改指 #202＝地端清單，prod 出貨是它第 5 項）——**里程碑換了就要改這個號碼**，",
-          "改錯號碼的後果只是「查不到 ARM ⇒ 擋下」（fail-closed），不會誤放行到別張票。",
+          "【2026-10-18 inkstone/arcrun-rag#281】票號不再寫死在這裡（原本 9/22 寫 #140、9/29 改 #202，",
+          "每一版的核准都堆在同一張不相干的票，功能票追不到它有沒有出貨——leo：『為什麼亂改？就無法追蹤每個功能是否有出貨，破壞歷史』）。",
+          "現在每趟出貨帶 `--ship-ticket <這一版自己的出貨票>`（例 `--ship-ticket 235`），leo 的 `ARM: <版號>` 簽在那張票底下；",
+          "沒帶就在開跑前斷（預演會印出「ARM 會去哪張票找」）。核對規則不變：作者必須是 Leo、版號必須一致、找不到一律斷。",
           "`coversMainPush: true`：這張票的 ARM 同時當成 main-push-guard 的授權來源",
           "（見 ship.mjs 的 version 站），總管不必再逐筆看 commit 貼戳記——這是明講的取捨，",
           "不是悄悄放寬，理由見 ship.mjs 該段註解。要退回舊的「總管逐筆看 commit」流程，",

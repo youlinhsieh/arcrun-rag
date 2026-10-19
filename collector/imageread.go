@@ -358,7 +358,7 @@ func (r *PDFReadReport) afterRead(res *ImageReadResult) *PDFReadReport {
 		return nil
 	}
 	done := res.readPages()
-	out := &PDFReadReport{Pages: r.Pages, ImagePageNums: r.ImagePageNums, TextTables: r.TextTables, TextLists: r.TextLists, ImageReads: res.Reads, printedOff: r.printedOff}
+	out := &PDFReadReport{Pages: r.Pages, ImagePageNums: r.ImagePageNums, TextTables: r.TextTables, TextLists: r.TextLists, TextParagraphs: r.TextParagraphs, ImageReads: res.Reads, printedOff: r.printedOff}
 	tablePages := map[int]bool{}
 	for _, t := range r.ImageTables {
 		tablePages[t.Page] = true

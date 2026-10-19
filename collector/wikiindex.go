@@ -325,6 +325,9 @@ func idxFirstClause(lines string) string {
 	if j := strings.Index(t, "；"); j >= 0 {
 		t = t[:j]
 	}
+	if j := strings.Index(t, "｜中："); j >= 0 { // c21860 中文譯名段不進分組摘要
+		t = t[:j]
+	}
 	t = strings.TrimSpace(t)
 	if j := strings.Index(t, "："); j >= 0 && j <= 24 {
 		t = strings.TrimSpace(t[j+len("："):])

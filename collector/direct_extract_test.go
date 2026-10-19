@@ -96,9 +96,19 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 	if len(posted) != 2 {
 		t.Fatalf("應恰好 POST 兩張卡（總覽＋內容），got %d", len(posted))
 	}
+	// inkstone/arcrun-rag#277：純文字檔的原文逐字進文件卡「## 原文段落」（和 PDF 的原文表格／條列同一條路），
+	// 這是產品要的行為，不是洩漏。邊界收窄成：原文只准出現在那一段，卡的其他部分（摘要、重點、概念卡）不得照抄；
+	// 被 POST 的仍然只有卡片（payload 沒有原檔位元組）。
 	for _, p := range posted {
-		if cc, _ := p["card_content"].(string); strings.Contains(cc, "XYZZY") {
-			t.Fatal("原文內容洩上雲＝違反四步定稿邊界")
+		cc, _ := p["card_content"].(string)
+		if !strings.Contains(cc, "XYZZY") {
+			continue
+		}
+		if !strings.Contains(cc, "## "+verbatimParagraphsHeading) {
+			t.Fatal("原文出現在原文段落以外的地方＝違反邊界")
+		}
+		if strings.Contains(stripVerbatimSection(cc), "XYZZY") {
+			t.Fatal("原文洩進摘要／重點等非原文段落")
 		}
 	}
 	var contentCard map[string]any

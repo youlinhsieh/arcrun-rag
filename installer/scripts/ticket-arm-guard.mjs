@@ -127,6 +127,34 @@ async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl,
 }
 
 /**
+ * 決定「這一趟要去哪張票找 ARM」（inkstone/arcrun-rag#281）。
+ * leo 的核准要留在**那一版自己的出貨票**底下，所以票號由每趟出貨的 `--ship-ticket` 指定，
+ * 不再寫死在 ship.targets.json（寫死 ⇒ 每一版的核准堆在同一張不相干的票，功能票追不到出貨）。
+ * 接受：`235`／`#235`／`InkStoneCo#235`／`inkstone/InkStoneCo#235`。owner 只認 inkstone。
+ * `armTicket.issue` 若仍寫在登錄簿，只當沒給旗標時的後備（prod 已移除）。
+ * @returns {{repo:string, issue:number, source:'flag'|'targets'} | null} null＝沒指定任何票
+ * @throws 格式不合法（fail-closed）
+ */
+export function resolveArmTicket({ armTicket, shipTicket } = {}) {
+  const defRepo = (armTicket && armTicket.repo) || 'InkStoneCo';
+  if (shipTicket != null && String(shipTicket).trim() !== '') {
+    const raw = String(shipTicket).trim();
+    const m = raw.match(/^#?(\d+)$/) ? [raw, undefined, undefined, raw.replace('#', '')]
+      : raw.match(/^(?:([A-Za-z0-9._-]+)\/)?([A-Za-z0-9._-]+)#(\d+)$/);
+    if (!m) throw new Error(`--ship-ticket 格式不合法：${JSON.stringify(raw)}（要 \`235\`、\`InkStoneCo#235\` 或 \`inkstone/InkStoneCo#235\`）`);
+    const [, owner, repo, num] = m;
+    if (owner && owner !== OWNER) throw new Error(`--ship-ticket 的 owner 只認 ${OWNER}（收到：${owner}）——安全邊界，不接受覆蓋。`);
+    const issue = Number(num);
+    if (!Number.isInteger(issue) || issue <= 0) throw new Error(`--ship-ticket 票號必須是正整數（收到：${num}）。`);
+    return { repo: repo || defRepo, issue, source: 'flag' };
+  }
+  if (armTicket && Number.isInteger(armTicket.issue) && armTicket.issue > 0) {
+    return { repo: defRepo, issue: armTicket.issue, source: 'targets' };
+  }
+  return null;
+}
+
+/**
  * 核心檢查：這一版（`version`）在載體票上有沒有 Leo 簽的 `ARM: <同一版>`。
  * 過不了就丟例外（fail-closed，訊息說明原因），過了回傳可供留痕用的資訊。
  *

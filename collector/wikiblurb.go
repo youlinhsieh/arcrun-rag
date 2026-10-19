@@ -150,8 +150,45 @@ func blurbsFor(absRoot, node string, docs []wikiDoc) map[string]string {
 		if weak || form || errMsg {
 			out[d.Path] = ex
 		}
+		// inkstone/arcrun-rag#264 c21860（應急補丁）：英文說明的行附統一中文譯名，中文症狀描述才搜得到。
+		if v := out[d.Path]; zhEnglishDominant(v) {
+			if tag := zhTag(sourceHead(filepath.Join(absRoot, filepath.FromSlash(node), filepath.FromSlash(d.Path)))); tag != "" {
+				out[d.Path] = v + tag
+			}
+		}
 	}
 	return out
+}
+
+// sourceHead：讀原稿開頭一小段文字；非文字檔／讀不到 ⇒ ""。
+func sourceHead(p string) string {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".md", ".markdown", ".txt":
+	default:
+		return ""
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, blurbReadBytes)
+	n, _ := f.Read(buf)
+	return string(buf[:n])
+}
+
+// zhEnglishDominant：這行說明主要是英文（拉丁字母多於漢字）才需要附中文。
+func zhEnglishDominant(s string) bool {
+	lat, han := 0, 0
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			han++
+		case r < 128 && unicode.IsLetter(r):
+			lat++
+		}
+	}
+	return lat >= 8 && lat > han*2
 }
 
 // sourceBlurb 讀原稿開頭，節錄成一行說明；第二個回傳值＝原稿是不是表單型。非文字檔／讀不到／沒內容 ⇒ ""。

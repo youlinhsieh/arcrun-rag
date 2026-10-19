@@ -113,8 +113,8 @@ crons = ["*/2 * * * *"]
 #     不必動 worker.js**（跟 staging 換 [env.staging.vars] 同一個動作）。
 [vars]
 LANDING_BASE = "https://arcrun-landing.uncle6-me.workers.dev"
-BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@aa763acd963d468a5da5ece746986ef61e26ba26"
-BUNDLE_BUILT = "2026-10-11"
+BUNDLE_BASE = "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@ed27212a656fed9c98bef4947a99b1f22d113bbe"
+BUNDLE_BUILT = "2026-10-18"
 # arcrun-rag#29 驗收帶出的坑（2026-08-09）：導覽列「首頁／說明文件」以前整段寫死
 # rag.arcrun.dev，staging 頁面因此把人導去 prod。這兩個是**人看的**網址（跟上面
 # LANDING_BASE 那個後端 API 用的 workers.dev 網址不是同一件事），與 worker.js 的
@@ -281,8 +281,8 @@ bucket_name = "arcrun-stage-dist"
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
 DIST_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
-BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/1a85f47"
-BUNDLE_BUILT = "2026-10-18"
+BUNDLE_BASE = "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/d373fa9"
+BUNDLE_BUILT = "2026-10-19"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。
 # 現在指向同一批本票新部署、住在 youlin 帳號的 landing／docs stage worker。

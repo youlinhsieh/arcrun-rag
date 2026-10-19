@@ -740,7 +740,7 @@ func renderVerbatimTables(tables []PDFTextTable, printed func(page int) string) 
 
 // VerbatimSections 回傳要寫進文件卡「原文表格」段的內容；沒有表就回 nil。
 func (r *PDFReadReport) VerbatimSections() []VerbatimSection {
-	if r == nil || (len(r.TextTables) == 0 && len(r.TextLists) == 0 && len(r.ImageReads) == 0) {
+	if r == nil || (len(r.TextTables) == 0 && len(r.TextLists) == 0 && len(r.TextParagraphs) == 0 && len(r.ImageReads) == 0) {
 		return nil
 	}
 	printed := func(p int) string {
@@ -788,6 +788,17 @@ func (r *PDFReadReport) VerbatimSections() []VerbatimSection {
 			})
 		}
 	}
+	if len(r.TextParagraphs) > 0 {
+		ps, dropped := renderVerbatimParagraphs(r.TextParagraphs, printed)
+		secs = append(secs, ps...)
+		if dropped > 0 {
+			secs = append(secs, VerbatimSection{
+				Title: "未收入的段落",
+				Body:  fmt.Sprintf("另有約 %d 字因超過單份文件上限（%d 字、%d 塊）未收入原文段落，請查原檔。", dropped, maxParaRunesPerDoc, maxParaBlocksPerDoc),
+				Group: paragraphsGroup,
+			})
+		}
+	}
 	secs = append(secs, renderImageReads(r.ImageReads, printed)...)
 	return secs
 }
@@ -805,7 +816,7 @@ func stripVerbatimSection(card string) string {
 			if m != nil {
 				h = strings.TrimSpace(m[1])
 			}
-			skip = h == verbatimTablesHeading || h == verbatimListsHeading || h == verbatimImageReadHeading
+			skip = h == verbatimTablesHeading || h == verbatimListsHeading || h == verbatimParagraphsHeading || h == verbatimImageReadHeading
 		}
 		if !skip {
 			out = append(out, ln)

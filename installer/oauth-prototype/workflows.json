@@ -285,7 +285,16 @@
     "flow": [
       "input >> ON_SUCCESS >> prep",
       "prep >> ON_SUCCESS >> list_old_blocks",
-      "list_old_blocks >> ON_SUCCESS >> list_old_triplets",
+      "list_old_blocks >> ON_SUCCESS >> list_old_blocks_p2",
+      "list_old_blocks_p2 >> ON_SUCCESS >> list_old_blocks_p3",
+      "list_old_blocks_p3 >> ON_SUCCESS >> list_old_blocks_p4",
+      "list_old_blocks_p4 >> ON_SUCCESS >> list_old_blocks_p5",
+      "list_old_blocks_p5 >> ON_SUCCESS >> list_old_blocks_p6",
+      "list_old_blocks_p6 >> ON_SUCCESS >> list_old_blocks_p7",
+      "list_old_blocks_p7 >> ON_SUCCESS >> list_old_blocks_p8",
+      "list_old_blocks_p8 >> ON_SUCCESS >> list_old_blocks_p9",
+      "list_old_blocks_p9 >> ON_SUCCESS >> list_old_blocks_p10",
+      "list_old_blocks_p10 >> ON_SUCCESS >> list_old_triplets",
       "list_old_triplets >> ON_SUCCESS >> pick_stale",
       "pick_stale >> 對每個 dead_entry 並行 6 >> delete_entry",
       "pick_stale >> 對每個 dead_record 並行 6 >> delete_record",
@@ -330,7 +339,88 @@
       "list_old_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=0",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p2": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=60",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p3": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=120",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p4": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=180",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p5": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=240",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p6": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=300",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p7": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=360",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p8": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=420",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p9": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=480",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_old_blocks_p10": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=540",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -349,6 +439,15 @@
         "component": "__CODE_URL__",
         "input": {
           "blocks_body": "{{list_old_blocks.data.body}}",
+          "blocks_body_p2": "{{list_old_blocks_p2.data.body}}",
+          "blocks_body_p3": "{{list_old_blocks_p3.data.body}}",
+          "blocks_body_p4": "{{list_old_blocks_p4.data.body}}",
+          "blocks_body_p5": "{{list_old_blocks_p5.data.body}}",
+          "blocks_body_p6": "{{list_old_blocks_p6.data.body}}",
+          "blocks_body_p7": "{{list_old_blocks_p7.data.body}}",
+          "blocks_body_p8": "{{list_old_blocks_p8.data.body}}",
+          "blocks_body_p9": "{{list_old_blocks_p9.data.body}}",
+          "blocks_body_p10": "{{list_old_blocks_p10.data.body}}",
           "triplets_body": "{{list_old_triplets.data.body}}",
           "path": "{{input.path}}",
           "machine": "{{input.machine}}",
@@ -356,7 +455,7 @@
           "do_blocks": "{{prep.data.do_blocks}}",
           "slice_len": "{{prep.data.slice_len}}"
         },
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\nconst ab = parse(input.blocks_body);\nconst entries = (ab && ab.entries) || [];\nconst dead_entry = [];\nconst hitMetas = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\n// inkstone/arcrun-rag#255：後面的「段」（rel_offset>0）不管 block——block 屬於第一段，\n//   這裡一個都不能刪（否則第二段進來就把文件卡的正文刪了）。它「有沒有變」改看兩件事：\n//   ① 雲端這張卡的 block 已經帶著這次的指紋（＝第一段已經寫完、這份內容整個提交過）\n//   ② 這一段自己名下的三元組條數剛好等於這一段該有的條數\n//   第一段**最後**才送（見 collector 的送法）＝它是整份的「提交標記」：中途斷掉、或內容改了，\n//   後面的段進來時 block 上還是舊指紋或根本沒有 ⇒ 判成有變、照常刪光重寫。\nconst doBlocks = String(input.do_blocks) !== 'false';\nconst sliceLen = Number(input.slice_len);\nif (!doBlocks) {\n  const nh = String(input.card_hash || '');\n  let committed = nh !== '' && hitMetas.length > 0;\n  for (const m of hitMetas) { if (String(m.card_hash || '') !== nh) { committed = false; break; } }\n  if (committed && sliceLen > 0 && dead_record.length === sliceLen) {\n    return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n             removed_blocks: 0, removed_triplets: 0, kept_blocks: 0, kept_triplets: dead_record.length };\n  }\n  return { result: false, unchanged: false, dead_entry: [], dead_record: dead_record,\n           removed_blocks: 0, removed_triplets: dead_record.length };\n}\n// inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：\n//   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）\n//   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複\n//      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複\n//   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels\n// 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。\nconst newHash = String(input.card_hash || '');\nlet unchanged = false;\nif (newHash !== '' && hitMetas.length > 0) {\n  const m0 = hitMetas[0];\n  const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);\n  const seen = {};\n  let allSame = true;\n  for (const m of hitMetas) {\n    if (String(m.card_hash || '') !== newHash) { allSame = false; break; }\n    seen[String(m.source || '')] = true;\n  }\n  unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length\n    && nRels === dead_record.length && dead_record.length > 0;\n}\nif (unchanged) {\n  // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。\n  return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n           removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };\n}\nreturn { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst path = String(input.path || '');\nconst machine = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\n// 🔴 `inkstone/mira#6`（leo 2026-08-18）：path 是**相對於被監看資料夾**的路徑，\n//   所以兩台機器上的 `RFP/design.md` 在這裡長得一模一樣 ⇒ 後同步的那台會把\n//   前一台的知識**無聲刪掉**（症狀不是「變兩份」，是前面那份消失）。\n//   machine 是唯一分得開它們的那一維。規則照抄 arcrun-rag#46 對 library 的做法：\n//   **兩邊都有值時才收緊**——payload 沒帶（舊版 daemon）或卡上沒有（改版前的\n//   既有資料）都退回原本的行為，既有資料照樣被同一台機器 upsert 掉，不會突然變兩份。\nfunction machineBlocks(theirs) {\n  return machine !== '' && theirs !== '' && theirs !== machine;\n}\n// inkstone/arcrun-rag#269 c21857：block 分頁撈（每頁 60、最多 10 頁），這裡合併。\nconst entries = [];\nlet blocksTotal = 0;\nfor (const key of ['blocks_body', 'blocks_body_p2', 'blocks_body_p3', 'blocks_body_p4', 'blocks_body_p5', 'blocks_body_p6', 'blocks_body_p7', 'blocks_body_p8', 'blocks_body_p9', 'blocks_body_p10']) {\n  const pg = parse(input[key]);\n  if (pg && Array.isArray(pg.entries)) for (const e of pg.entries) entries.push(e);\n  if (pg && Number(pg.total) > blocksTotal) blocksTotal = Number(pg.total);\n}\n// 雲端這張卡的舊 block 比我們撈得到的還多 ⇒ 繼續下去會留下舊的疊在新的底下，寧可明講失敗。\nif (blocksTotal > 600) throw new Error('這張卡在雲端有 ' + blocksTotal + ' 個 block，超過一次最多清 600 個的上限，先用下架清掉再重收');\nconst dead_entry = [];\nconst hitMetas = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else { hit = true; }\n  if (hit && machineBlocks(String(meta.machine || ''))) hit = false;\n  if (hit && e.id) { dead_entry.push({ id: e.id }); hitMetas.push(meta); }\n}\n// `inkstone/Arcrun#223`／PR #225：list_old_triplets 已改走 by-source（伺服器端用\n// source_uri 精確比對），回應只有 { record_ids: [...] }——不再是 by-template 那種\n// { records: [{record_id, values:{...}}] }，這裡不用再逐筆比對 source_uri/subject\n// （見 list_old_triplets 節點上方註解，含 machine 二次過濾拿掉的已知取捨）。\nconst at = parse(input.triplets_body);\nconst ids = (at && Array.isArray(at.record_ids)) ? at.record_ids : [];\nconst dead_record = ids.map(function (id) { return { record_id: id }; });\n// inkstone/arcrun-rag#255：後面的「段」（rel_offset>0）不管 block——block 屬於第一段，\n//   這裡一個都不能刪（否則第二段進來就把文件卡的正文刪了）。它「有沒有變」改看兩件事：\n//   ① 雲端這張卡的 block 已經帶著這次的指紋（＝第一段已經寫完、這份內容整個提交過）\n//   ② 這一段自己名下的三元組條數剛好等於這一段該有的條數\n//   第一段**最後**才送（見 collector 的送法）＝它是整份的「提交標記」：中途斷掉、或內容改了，\n//   後面的段進來時 block 上還是舊指紋或根本沒有 ⇒ 判成有變、照常刪光重寫。\nconst doBlocks = String(input.do_blocks) !== 'false';\nconst sliceLen = Number(input.slice_len);\nif (!doBlocks) {\n  const nh = String(input.card_hash || '');\n  let committed = nh !== '' && hitMetas.length > 0;\n  for (const m of hitMetas) { if (String(m.card_hash || '') !== nh) { committed = false; break; } }\n  if (committed && sliceLen > 0 && dead_record.length === sliceLen) {\n    return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n             removed_blocks: 0, removed_triplets: 0, kept_blocks: 0, kept_triplets: dead_record.length };\n  }\n  return { result: false, unchanged: false, dead_entry: [], dead_record: dead_record,\n           removed_blocks: 0, removed_triplets: dead_record.length };\n}\n// inkstone/arcrun-rag#241：「跟雲端那份一模一樣」＝以下全部成立才算，缺一不可：\n//   ① 雲端這張卡有 block，且每一段都帶同一個 card_hash（＝跟這次送來的指紋相同）\n//   ② block 數量剛好等於寫入當時記下的段數 card_blocks，且各段來源（#N）不重複\n//      ⇒ 半寫入（少段）與重複寫入（多份）都不算「一樣」，會落到下面照舊刪光重寫＝順便清掉重複\n//   ③ 三元組數量剛好等於寫入當時記下的條數 card_rels\n// 舊資料沒有 card_hash ⇒ 一律算「有變」，重寫一次後就帶上指紋（一次性遷移）。\nconst newHash = String(input.card_hash || '');\nlet unchanged = false;\nif (newHash !== '' && hitMetas.length > 0) {\n  const m0 = hitMetas[0];\n  const nBlocks = Number(m0.card_blocks), nRels = Number(m0.card_rels);\n  const seen = {};\n  let allSame = true;\n  for (const m of hitMetas) {\n    if (String(m.card_hash || '') !== newHash) { allSame = false; break; }\n    seen[String(m.source || '')] = true;\n  }\n  unchanged = allSame && nBlocks === hitMetas.length && Object.keys(seen).length === hitMetas.length\n    && nRels === dead_record.length && dead_record.length > 0;\n}\nif (unchanged) {\n  // 清單清空：上面兩條刪除用的 FOREACH 也跟著空轉，一列都不碰。\n  return { result: true, unchanged: true, dead_entry: [], dead_record: [],\n           removed_blocks: 0, removed_triplets: 0, kept_blocks: hitMetas.length, kept_triplets: dead_record.length };\n}\nreturn { result: false, unchanged: false, dead_entry: dead_entry, dead_record: dead_record,\n         removed_blocks: dead_entry.length, removed_triplets: dead_record.length };\n"
       },
       "skip_unchanged": {
         "component": "__CODE_URL__",
@@ -639,6 +738,60 @@
           "label": "list_old_blocks"
         },
         {
+          "id": "list_old_blocks_p2",
+          "type": "Component",
+          "componentId": "list_old_blocks_p2",
+          "label": "list_old_blocks_p2"
+        },
+        {
+          "id": "list_old_blocks_p3",
+          "type": "Component",
+          "componentId": "list_old_blocks_p3",
+          "label": "list_old_blocks_p3"
+        },
+        {
+          "id": "list_old_blocks_p4",
+          "type": "Component",
+          "componentId": "list_old_blocks_p4",
+          "label": "list_old_blocks_p4"
+        },
+        {
+          "id": "list_old_blocks_p5",
+          "type": "Component",
+          "componentId": "list_old_blocks_p5",
+          "label": "list_old_blocks_p5"
+        },
+        {
+          "id": "list_old_blocks_p6",
+          "type": "Component",
+          "componentId": "list_old_blocks_p6",
+          "label": "list_old_blocks_p6"
+        },
+        {
+          "id": "list_old_blocks_p7",
+          "type": "Component",
+          "componentId": "list_old_blocks_p7",
+          "label": "list_old_blocks_p7"
+        },
+        {
+          "id": "list_old_blocks_p8",
+          "type": "Component",
+          "componentId": "list_old_blocks_p8",
+          "label": "list_old_blocks_p8"
+        },
+        {
+          "id": "list_old_blocks_p9",
+          "type": "Component",
+          "componentId": "list_old_blocks_p9",
+          "label": "list_old_blocks_p9"
+        },
+        {
+          "id": "list_old_blocks_p10",
+          "type": "Component",
+          "componentId": "list_old_blocks_p10",
+          "label": "list_old_blocks_p10"
+        },
+        {
           "id": "list_old_triplets",
           "type": "Component",
           "componentId": "list_old_triplets",
@@ -778,6 +931,51 @@
         },
         {
           "from": "list_old_blocks",
+          "to": "list_old_blocks_p2",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p2",
+          "to": "list_old_blocks_p3",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p3",
+          "to": "list_old_blocks_p4",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p4",
+          "to": "list_old_blocks_p5",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p5",
+          "to": "list_old_blocks_p6",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p6",
+          "to": "list_old_blocks_p7",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p7",
+          "to": "list_old_blocks_p8",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p8",
+          "to": "list_old_blocks_p9",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p9",
+          "to": "list_old_blocks_p10",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_old_blocks_p10",
           "to": "list_old_triplets",
           "type": "ON_SUCCESS"
         },
@@ -899,7 +1097,16 @@
     "flow": [
       "input >> ON_SUCCESS >> prep",
       "prep >> ON_SUCCESS >> list_dead_blocks",
-      "list_dead_blocks >> ON_SUCCESS >> build_deprecations",
+      "list_dead_blocks >> ON_SUCCESS >> list_dead_blocks_p2",
+      "list_dead_blocks_p2 >> ON_SUCCESS >> list_dead_blocks_p3",
+      "list_dead_blocks_p3 >> ON_SUCCESS >> list_dead_blocks_p4",
+      "list_dead_blocks_p4 >> ON_SUCCESS >> list_dead_blocks_p5",
+      "list_dead_blocks_p5 >> ON_SUCCESS >> list_dead_blocks_p6",
+      "list_dead_blocks_p6 >> ON_SUCCESS >> list_dead_blocks_p7",
+      "list_dead_blocks_p7 >> ON_SUCCESS >> list_dead_blocks_p8",
+      "list_dead_blocks_p8 >> ON_SUCCESS >> list_dead_blocks_p9",
+      "list_dead_blocks_p9 >> ON_SUCCESS >> list_dead_blocks_p10",
+      "list_dead_blocks_p10 >> ON_SUCCESS >> build_deprecations",
       "build_deprecations >> 對每個 dead_entry 並行 6 >> deprecate_entry",
       "build_deprecations >> ON_SUCCESS >> list_triplets",
       "list_triplets >> ON_SUCCESS >> pick_dead_triplets",
@@ -926,7 +1133,88 @@
       "list_dead_blocks": {
         "component": "__HTTP_REQ_URL__",
         "method": "GET",
-        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=0",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p2": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=60",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p3": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=120",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p4": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=180",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p5": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=240",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p6": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=300",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p7": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=360",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p8": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=420",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p9": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=480",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      },
+      "list_dead_blocks_p10": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "GET",
+        "url": "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=540",
         "headers": {
           "Accept": "application/json",
           "Authorization": "Bearer {{credential.kbdb_internal_token}}"
@@ -934,9 +1222,18 @@
       },
       "build_deprecations": {
         "component": "__CODE_URL__",
-        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst a = parse(input.blocks_body);\nconst entries = (a && a.entries) || [];\nconst path = String(input.path || '');\nconst lib = String(input.library || '');\nconst mach = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst dead_entries = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，\n  // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else {\n    hit = true;\n  }\n  // arcrun-rag#46：library 兩邊都有才比；不一致＝別的資料夾的同名檔，不准動。\n  const mLib = String(meta.library || '');\n  if (hit && lib !== '' && mLib !== '' && mLib !== lib) hit = false;\n  // `inkstone/mira#6`：machine 同一條規則（兩邊都有才收緊）。少了這一維，\n  // 「A 機器刪掉 notes.md」會把 B 機器上還活著的 notes.md 一起殺掉。\n  const mMachine = String(meta.machine || '');\n  if (hit && mach !== '' && mMachine !== '' && mMachine !== mach) hit = false;\n  if (!hit) continue;\n  dead_entries.push({ id: e.id });   // 真刪只需要 id\n}\nreturn { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };\n",
+        "code": "function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }\nconst entries = [];\nlet blocksTotal = 0;\nfor (const key of ['blocks_body', 'blocks_body_p2', 'blocks_body_p3', 'blocks_body_p4', 'blocks_body_p5', 'blocks_body_p6', 'blocks_body_p7', 'blocks_body_p8', 'blocks_body_p9', 'blocks_body_p10']) {\n  const pg = parse(input[key]);\n  if (pg && Array.isArray(pg.entries)) for (const e of pg.entries) entries.push(e);\n  if (pg && Number(pg.total) > blocksTotal) blocksTotal = Number(pg.total);\n}\nif (blocksTotal > 600) throw new Error('這張卡在雲端有 ' + blocksTotal + ' 個 block，超過一次最多清 600 個的上限，請分次下架');\nconst path = String(input.path || '');\nconst lib = String(input.library || '');\nconst mach = String(input.machine || '');\nconst kbPrefix = 'kb://' + path + '#';\nconst dead_entries = [];\nfor (const e of entries) {\n  let meta = {};\n  if (e.metadata_json) { try { meta = JSON.parse(e.metadata_json) || {}; } catch (err) { meta = {}; } }\n  // 2026-08-05 改真刪後拿掉「跳過已 deprecated」：那些舊垃圾正是要清的對象，\n  // 留著跳過等於永遠清不掉（實測 youlin 374 blocks 裡有 23 筆）。\n  const mPath = String(meta.source_path || '');\n  const mSrc = String(meta.source || '');\n  const hasPath = mPath !== '';\n  const hasKbSrc = mSrc.indexOf('kb://') === 0;\n  let hit;\n  if (hasPath || hasKbSrc) {\n    hit = (hasPath && path && mPath === path) || (hasKbSrc && path && mSrc.indexOf(kbPrefix) === 0);\n  } else {\n    hit = true;\n  }\n  // arcrun-rag#46：library 兩邊都有才比；不一致＝別的資料夾的同名檔，不准動。\n  const mLib = String(meta.library || '');\n  if (hit && lib !== '' && mLib !== '' && mLib !== lib) hit = false;\n  // `inkstone/mira#6`：machine 同一條規則（兩邊都有才收緊）。少了這一維，\n  // 「A 機器刪掉 notes.md」會把 B 機器上還活著的 notes.md 一起殺掉。\n  const mMachine = String(meta.machine || '');\n  if (hit && mach !== '' && mMachine !== '' && mMachine !== mach) hit = false;\n  if (!hit) continue;\n  dead_entries.push({ id: e.id });   // 真刪只需要 id\n}\nreturn { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };\n",
         "input": {
           "blocks_body": "{{list_dead_blocks.data.body}}",
+          "blocks_body_p2": "{{list_dead_blocks_p2.data.body}}",
+          "blocks_body_p3": "{{list_dead_blocks_p3.data.body}}",
+          "blocks_body_p4": "{{list_dead_blocks_p4.data.body}}",
+          "blocks_body_p5": "{{list_dead_blocks_p5.data.body}}",
+          "blocks_body_p6": "{{list_dead_blocks_p6.data.body}}",
+          "blocks_body_p7": "{{list_dead_blocks_p7.data.body}}",
+          "blocks_body_p8": "{{list_dead_blocks_p8.data.body}}",
+          "blocks_body_p9": "{{list_dead_blocks_p9.data.body}}",
+          "blocks_body_p10": "{{list_dead_blocks_p10.data.body}}",
           "path": "{{prep.data.path}}",
           "library": "{{prep.data.library}}",
           "machine": "{{prep.data.machine}}"
@@ -1032,6 +1329,60 @@
           "label": "list_dead_blocks"
         },
         {
+          "id": "list_dead_blocks_p2",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p2",
+          "label": "list_dead_blocks_p2"
+        },
+        {
+          "id": "list_dead_blocks_p3",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p3",
+          "label": "list_dead_blocks_p3"
+        },
+        {
+          "id": "list_dead_blocks_p4",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p4",
+          "label": "list_dead_blocks_p4"
+        },
+        {
+          "id": "list_dead_blocks_p5",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p5",
+          "label": "list_dead_blocks_p5"
+        },
+        {
+          "id": "list_dead_blocks_p6",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p6",
+          "label": "list_dead_blocks_p6"
+        },
+        {
+          "id": "list_dead_blocks_p7",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p7",
+          "label": "list_dead_blocks_p7"
+        },
+        {
+          "id": "list_dead_blocks_p8",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p8",
+          "label": "list_dead_blocks_p8"
+        },
+        {
+          "id": "list_dead_blocks_p9",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p9",
+          "label": "list_dead_blocks_p9"
+        },
+        {
+          "id": "list_dead_blocks_p10",
+          "type": "Component",
+          "componentId": "list_dead_blocks_p10",
+          "label": "list_dead_blocks_p10"
+        },
+        {
           "id": "build_deprecations",
           "type": "Component",
           "componentId": "build_deprecations",
@@ -1087,6 +1438,51 @@
         },
         {
           "from": "list_dead_blocks",
+          "to": "list_dead_blocks_p2",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p2",
+          "to": "list_dead_blocks_p3",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p3",
+          "to": "list_dead_blocks_p4",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p4",
+          "to": "list_dead_blocks_p5",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p5",
+          "to": "list_dead_blocks_p6",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p6",
+          "to": "list_dead_blocks_p7",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p7",
+          "to": "list_dead_blocks_p8",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p8",
+          "to": "list_dead_blocks_p9",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p9",
+          "to": "list_dead_blocks_p10",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "list_dead_blocks_p10",
           "to": "build_deprecations",
           "type": "ON_SUCCESS"
         },

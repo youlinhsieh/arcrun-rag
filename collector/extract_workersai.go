@@ -141,6 +141,9 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 	srcText, readRep, err := ConvertToTextReport(relPath, raw)
 	pageName := pageNameOf(relPath)
 	url := workersAIExtractURL(cypherURL)
+	if err == nil && IsPlainText(relPath) {
+		readRep = plainTextReport(readRep, srcText) // 純文字檔也走原文保留（#277）
+	}
 
 	// #251：PDF 裡的圖片頁（含整份掃描）寫入時讀一次存成文字。舊雲端沒有讀圖入口 ⇒ 維持原行為。
 	if (err == nil || errors.Is(err, ErrNoText)) && readRep != nil && len(readRep.ImagePageNums) > 0 {

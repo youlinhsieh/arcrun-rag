@@ -80,7 +80,7 @@
  * ── 用法 ────────────────────────────────────────────────────────────────
  *   node installer/scripts/ship.mjs --target stage              # 預演（建＋算版本，不推不部署）
  *   node installer/scripts/ship.mjs --target stage --confirm    # 真的走完
- *   node installer/scripts/ship.mjs --target prod  --confirm    # 需 leo 先開 D20 閘
+ *   node installer/scripts/ship.mjs --target prod  --confirm --ship-ticket <該版出貨票號>   # 需 leo 先開 D20 閘；ARM 簽在這張票底下（#281），沒帶就在開跑前斷
  *   node installer/scripts/ship.mjs --list                      # 有哪些目標
  *   node installer/scripts/ship.mjs --target prod --verify-only # 只驗收線上現況，什麼都不改
  *   node installer/scripts/ship.mjs --target stage --delivery-only          # 只查「新版送到了嗎」
@@ -93,6 +93,10 @@
  *       --verify-only（只跑最後那步驗收；不建/不推/不部署/不蓋章，判定與 --confirm 一樣嚴）
  *       --delivery-only（只跑送達收斂那一站；禁用在 publish 目標）
  *       --release-record-only（只跑發佈紀錄那一站；禁用在 publish 目標 ⇒ 碰不到 GitHub）
+ *       --ship-ticket <票>（有 armTicket 的目標＝prod：這一版的出貨票，leo 的 `ARM: <版號>` 要簽在它底下。
+ *          例 `--ship-ticket 235`／`InkStoneCo#235`；owner 只認 inkstone。真的 --confirm 必填；預演不填也能跑，
+ *          預演輸出會印出「這次要去哪張票找 ARM」。別張票上的 ARM、非 Leo 的 ARM、版號對不上一律斷。
+ *          inkstone/arcrun-rag#281：核准留在該版自己的票底下，功能票才追得到它有沒有出貨。）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync } from 'node:fs';
@@ -109,6 +113,7 @@ import { commitShipOutputs } from './worktree-commit.mjs';
 import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 import { requireDaemonInBundle, GATE_LOG_REL as DAEMON_IN_BUNDLE_GATE_LOG_REL } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
+import { resolveArmTicket } from './ticket-arm-guard.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
 //   d20-guard 解的是「殼層 hook 看不見 node 子行程」的**GitHub 接觸**那一半；
 //   這一支解同一個形狀的另一半：**推 main**。2026-08-18 出貨線就是這樣把
@@ -383,6 +388,8 @@ for (const [name, t] of Object.entries(cfg.targets)) {
 const CONFIRM = flag('--confirm');
 const QUICK = flag('--quick');
 const ALLOW_DELETIONS = flag('--allow-deletions');
+// 🔴 inkstone/arcrun-rag#281：ARM 簽在「這一版自己的出貨票」，不再是登錄簿裡寫死的一張票。
+const SHIP_TICKET_ARG = opt('--ship-ticket');
 
 // 🔴 --verify-only（2026-08-09，arcrun-rag#27）：**只跑最後那一步驗收，什麼都不改**。
 //   為什麼要有：verify 這道閘 08-09 在 prod 誤報一次（見 verify-download.mjs 檔頭），
@@ -857,12 +864,20 @@ const STEPS = [
   //   沒配 `armTicket` 的目標／呼叫方式，完全照舊（舊路一個字沒動，見 d20-guard.mjs）。
   if (T.requiresArm) {
     if (T.armTicket) {
-      const { repo = 'InkStoneCo', issue } = T.armTicket;
-      if (!Number.isInteger(issue) || issue <= 0) {
-        throw new Error(`installer/ship.targets.json 的 ${TARGET_NAME}.armTicket.issue 必須是正整數（收到：${JSON.stringify(issue)}）。`);
+      // #281：票號來自 --ship-ticket（該版自己的出貨票）；預演沒給就明講，真的 --confirm 沒給就斷。
+      const at = resolveArmTicket({ armTicket: T.armTicket, shipTicket: SHIP_TICKET_ARG });
+      if (!at) {
+        if (CONFIRM) {
+          throw new Error(`${TARGET_NAME} 要 --ship-ticket <這一版的出貨票>（例 \`--ship-ticket 235\`）：`
+            + `leo 的 \`ARM: <版號>\` 要簽在那一版自己的出貨票底下，不再認一張固定的票（inkstone/arcrun-rag#281）。`);
+        }
+        lines.push(`ARM 會去哪張票找：⚠ 尚未指定——真的 --confirm 要帶 \`--ship-ticket <出貨票>\`（例 \`--ship-ticket 235\`），否則會在開跑前斷`);
+      } else {
+        ctx.armTicketResolved = at;
+        lines.push(`ARM 會去這張票找：inkstone/${at.repo}#${at.issue}（${at.source === 'flag' ? '--ship-ticket' : '登錄簿後備'}）——`
+          + `leo 要在那張票留獨立一行 \`ARM: <版本號>\`（作者必須是 Leo、版號必須一致）；`
+          + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
       }
-      lines.push(`保險走 Gitea 票（inkstone/${repo}#${issue}）：leo 留一行 \`ARM: <版本號>\` 就放行——`
-        + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
     } else if (CONFIRM) {
       const { mission, expiresAt } = checkArmed(INKSTONE_ROOT);
       ctx.armMission = mission;
@@ -1772,7 +1787,8 @@ const STEPS = [
   //   **馬上核對**（不拖到真正寫 GitHub 的那一步才發現簽錯版本，浪費前面 20 站）。
   //   只在真的 `--confirm` 才查（跟舊路一致：純預演不必先解保險）。
   if (T.requiresArm && CONFIRM && T.armTicket) {
-    const { repo = 'InkStoneCo', issue } = T.armTicket;
+    if (!ctx.armTicketResolved) throw new Error('缺出貨票：preflight 沒解出 ARM 要去哪張票找（--ship-ticket），fail-closed。');
+    const { repo, issue } = ctx.armTicketResolved;
     // 讀權杖：走既有 Gitea 寫入權杖來源（remote 內嵌帳密）——這裡只是**讀**留言，
     // 公開 repo 不需要 token 也查得到，但 InkStoneCo 若轉私有，帶著token 才不會 403。
     const giteaCred = giteaWriteCredentialsFromRemote(REPO_ROOT);

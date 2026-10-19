@@ -71,6 +71,9 @@ func TestDetectTextLists_條列逐字且附頁碼(t *testing.T) {
 	secs := rep.VerbatimSections()
 	all := ""
 	for _, s := range secs {
+		if s.Group == paragraphsGroup {
+			continue // 條列之外的字（例：只有 1 項的「1.3 Control System」）改走原文段落，不在這個測試的範圍
+		}
 		if s.Group != listsGroup {
 			t.Errorf("條列段要標 Group：%+v", s)
 		}

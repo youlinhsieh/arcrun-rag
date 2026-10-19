@@ -164,3 +164,58 @@ test('checkTicketArmed：HTTP 非 200（非暫時性）直接回報，不假裝�
     /HTTP 404/,
   );
 });
+
+// ── inkstone/arcrun-rag#281：ARM 簽在「這一版自己的出貨票」底下 ─────────────────
+
+import { resolveArmTicket } from './ticket-arm-guard.mjs';
+
+/** 依 URL 裡的票號回不同留言：模擬「ARM 只在某一張票上」。 */
+function ticketFetch(byIssue) {
+  return async (url) => {
+    const n = Number(/\/issues\/(\d+)\/comments/.exec(url)[1]);
+    return { ok: true, status: 200, json: async () => byIssue[n] || [] };
+  };
+}
+
+test('#281：出貨票上有 Leo 的 ARM: 該版 → 放行，且讀的就是指定那張票', async () => {
+  const r = await checkTicketArmed({
+    version: '1.4.111', repo: 'InkStoneCo', issue: 235,
+    fetchImpl: ticketFetch({ 235: [leoComment('ARM: 1.4.111')] }),
+  });
+  assert.equal(r.armed, true);
+  assert.match(r.ticketUrl, /InkStoneCo\/issues\/235$/);
+});
+
+test('#281：ARM 簽在別張票（例如舊的固定票）→ 對出貨票不算', async () => {
+  await assert.rejects(
+    checkTicketArmed({
+      version: '1.4.111', repo: 'InkStoneCo', issue: 235,
+      fetchImpl: ticketFetch({ 202: [leoComment('ARM: 1.4.111')], 235: [] }),
+    }),
+    /沒有任何一則來自/,
+  );
+});
+
+test('#281：出貨票上 ARM 不是 Leo 寫的 → 擋', async () => {
+  await assert.rejects(
+    checkTicketArmed({
+      version: '1.4.111', repo: 'InkStoneCo', issue: 235,
+      fetchImpl: ticketFetch({ 235: [aiComment('ARM: 1.4.111')] }),
+    }),
+    /沒有任何一則來自/,
+  );
+});
+
+test('#281：resolveArmTicket——旗標格式與 fail-closed', () => {
+  const at = { repo: 'InkStoneCo', coversMainPush: true };
+  assert.deepEqual(resolveArmTicket({ armTicket: at, shipTicket: '235' }), { repo: 'InkStoneCo', issue: 235, source: 'flag' });
+  assert.equal(resolveArmTicket({ armTicket: at, shipTicket: '#235' }).issue, 235);
+  assert.deepEqual(resolveArmTicket({ armTicket: at, shipTicket: 'InkStoneCo#235' }), { repo: 'InkStoneCo', issue: 235, source: 'flag' });
+  assert.deepEqual(resolveArmTicket({ armTicket: at, shipTicket: 'inkstone/arcrun-rag#281' }), { repo: 'arcrun-rag', issue: 281, source: 'flag' });
+  assert.throws(() => resolveArmTicket({ armTicket: at, shipTicket: 'evil/InkStoneCo#235' }), /owner 只認/);
+  assert.throws(() => resolveArmTicket({ armTicket: at, shipTicket: 'abc' }), /格式不合法/);
+  assert.throws(() => resolveArmTicket({ armTicket: at, shipTicket: '0' }), /正整數/);
+  assert.equal(resolveArmTicket({ armTicket: at }), null, '沒旗標、登錄簿也沒寫死票號 ⇒ null（confirm 會在 preflight 斷）');
+  assert.equal(resolveArmTicket({ armTicket: { ...at, issue: 202 } }).source, 'targets', '舊登錄簿後備仍可用');
+  assert.equal(resolveArmTicket({ armTicket: { ...at, issue: 202 }, shipTicket: '235' }).issue, 235, '旗標優先');
+});

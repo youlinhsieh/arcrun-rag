@@ -545,6 +545,7 @@ func renderDocCard(d *wikiDoc, ex *DocExtract, conceptNames []string, origin Sou
 	}
 	writeVerbatimGroup("", verbatimTablesHeading, "以下是原檔文字層裡的表格，一列一行、儲存格用「｜」隔開，文字照原稿、沒有經過 AI 改寫；引用數值請照這裡的原字串並附頁碼。")
 	writeVerbatimGroup(listsGroup, verbatimListsHeading, "以下是原檔文字層裡的條列段落（標準配備、選配、隨機文件等），一項一行，文字照原稿、沒有經過 AI 改寫；列配置清單時請照這裡的原字串並附頁碼。")
+	writeVerbatimGroup(paragraphsGroup, verbatimParagraphsHeading, "以下是原檔裡表格、條列之外的一般段落（說明、規範、條款、敘述），文字照原稿、沒有經過 AI 改寫；被問到細節時請照這裡的原句並附頁碼。")
 	writeVerbatimGroup(imageReadGroup, verbatimImageReadHeading, "以下是原檔圖片頁經機器辨識出的文字，逐頁照辨識結果放、沒有經過 AI 改寫；這是機器辨識不是原稿字串，型號與數字引用時請說明來自圖片辨識並對原檔。")
 
 	ents := ex.Entities

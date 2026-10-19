@@ -40,7 +40,16 @@ description: >
 flow:
   - "input >> ON_SUCCESS >> prep"
   - "prep >> ON_SUCCESS >> list_dead_blocks"
-  - "list_dead_blocks >> ON_SUCCESS >> build_deprecations"
+  - "list_dead_blocks >> ON_SUCCESS >> list_dead_blocks_p2"
+  - "list_dead_blocks_p2 >> ON_SUCCESS >> list_dead_blocks_p3"
+  - "list_dead_blocks_p3 >> ON_SUCCESS >> list_dead_blocks_p4"
+  - "list_dead_blocks_p4 >> ON_SUCCESS >> list_dead_blocks_p5"
+  - "list_dead_blocks_p5 >> ON_SUCCESS >> list_dead_blocks_p6"
+  - "list_dead_blocks_p6 >> ON_SUCCESS >> list_dead_blocks_p7"
+  - "list_dead_blocks_p7 >> ON_SUCCESS >> list_dead_blocks_p8"
+  - "list_dead_blocks_p8 >> ON_SUCCESS >> list_dead_blocks_p9"
+  - "list_dead_blocks_p9 >> ON_SUCCESS >> list_dead_blocks_p10"
+  - "list_dead_blocks_p10 >> ON_SUCCESS >> build_deprecations"
   - "build_deprecations >> 對每個 dead_entry 並行 6 >> deprecate_entry"
   - "build_deprecations >> ON_SUCCESS >> list_triplets"
   - "list_triplets >> ON_SUCCESS >> pick_dead_triplets"
@@ -104,10 +113,87 @@ config:
       timeout_ms: 2000
       max_output_bytes: 65536
 
+  # inkstone/arcrun-rag#269 c21857（geek 1.4.111 實撞）：一張卡的 block 一頁撈不完。
+  #   http_request 零件單次回應上限 64 KB，identity 檢視每個 block 仍有 ~530 B（出處、指紋、段數），
+  #   一張疊了三份的大卡（147 block）＝78 KB ⇒ 「回應太大」整張卡寫不進去，而且越疊越大、
+  #   重收這條路本身就清不掉。改成每頁 60 筆（約 32 KB，長檔名也留得住餘裕）、最多 10 頁（600 筆，
+  #   超過就在 pick/build 節點明講失敗，不再靜默漏刪）。後面的頁沒資料時回應只有幾十 bytes。
   list_dead_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&limit=500&view=identity&origin_path={{prep.data.path_enc}}"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=0"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p2:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=60"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p3:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=120"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p4:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=180"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p5:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=240"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p6:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=300"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p7:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=360"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p8:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=420"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p9:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=480"
+    headers:
+      Accept: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+
+  list_dead_blocks_p10:
+    component: "__HTTP_REQ_URL__"
+    method: GET
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=540"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -128,8 +214,14 @@ config:
     component: "__CODE_URL__"
     code: |
       function parse(b) { if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return null; } } return b; }
-      const a = parse(input.blocks_body);
-      const entries = (a && a.entries) || [];
+      const entries = [];
+      let blocksTotal = 0;
+      for (const key of ['blocks_body', 'blocks_body_p2', 'blocks_body_p3', 'blocks_body_p4', 'blocks_body_p5', 'blocks_body_p6', 'blocks_body_p7', 'blocks_body_p8', 'blocks_body_p9', 'blocks_body_p10']) {
+        const pg = parse(input[key]);
+        if (pg && Array.isArray(pg.entries)) for (const e of pg.entries) entries.push(e);
+        if (pg && Number(pg.total) > blocksTotal) blocksTotal = Number(pg.total);
+      }
+      if (blocksTotal > 600) throw new Error('這張卡在雲端有 ' + blocksTotal + ' 個 block，超過一次最多清 600 個的上限，請分次下架');
       const path = String(input.path || '');
       const lib = String(input.library || '');
       const mach = String(input.machine || '');
@@ -163,6 +255,15 @@ config:
       return { success: true, dead_entries: dead_entries, dead_count: dead_entries.length };
     input:
       blocks_body: "{{list_dead_blocks.data.body}}"
+      blocks_body_p2: "{{list_dead_blocks_p2.data.body}}"
+      blocks_body_p3: "{{list_dead_blocks_p3.data.body}}"
+      blocks_body_p4: "{{list_dead_blocks_p4.data.body}}"
+      blocks_body_p5: "{{list_dead_blocks_p5.data.body}}"
+      blocks_body_p6: "{{list_dead_blocks_p6.data.body}}"
+      blocks_body_p7: "{{list_dead_blocks_p7.data.body}}"
+      blocks_body_p8: "{{list_dead_blocks_p8.data.body}}"
+      blocks_body_p9: "{{list_dead_blocks_p9.data.body}}"
+      blocks_body_p10: "{{list_dead_blocks_p10.data.body}}"
       path: "{{prep.data.path}}"
       library: "{{prep.data.library}}"
       machine: "{{prep.data.machine}}"

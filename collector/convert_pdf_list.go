@@ -111,29 +111,54 @@ func tabularLine(line string, cells map[string]bool) bool {
 
 // detectTextLists 從一頁的純文字還原條列段落。純函式，不碰 PDFium。
 func detectTextLists(page int, text string, skip map[string]bool, tables []PDFTextTable) []PDFTextList {
+	lists, _, _ := scanPageLists(page, text, skip, tables)
+	return lists
+}
+
+// scanPageLists＝detectTextLists 的本體，多回「這頁清理後的每一行」與「哪幾行已被收進條列」，
+// 給一般段落（convert_pdf_para.go）用：條列、表格沒收的字，就是段落要收的字。
+// lines 裡的空字串＝原稿的空行（段落分隔）；頁首頁尾與頁碼行不進 lines。
+func scanPageLists(page int, text string, skip map[string]bool, tables []PDFTextTable) (out []PDFTextList, lines []string, consumed []bool) {
 	cells := tableCellSet(tables)
-	var out []PDFTextList
 	var cur *PDFTextList
-	lastNum := 0 // 目前這段裡「單層數字開頭」的項目已走到幾號
+	var curIdx []int // cur 的標題與各項在 lines 裡的位置
+	lastNum := 0     // 目前這段裡「單層數字開頭」的項目已走到幾號
 	flush := func() {
 		if cur == nil {
 			return
 		}
 		if l, ok := acceptList(*cur, cells); ok {
 			out = append(out, l)
+			for _, i := range curIdx {
+				consumed[i] = true
+			}
 		}
 		cur = nil
+		curIdx = nil
 	}
-	open := func(h string) {
+	push := func(ln string) int {
+		lines = append(lines, ln)
+		consumed = append(consumed, false)
+		return len(lines) - 1
+	}
+	open := func(h string, idx int) {
 		flush()
 		cur = &PDFTextList{Page: page, Heading: h}
+		curIdx = []int{idx}
 		lastNum = 0
 	}
 	for _, raw := range strings.Split(text, "\n") {
 		ln := cleanCellText(raw)
-		if ln == "" || skip[ln] || footerNumRe.MatchString(ln) {
+		if ln == "" {
+			if n := len(lines); n > 0 && lines[n-1] != "" {
+				push("")
+			}
 			continue
 		}
+		if skip[ln] || footerNumRe.MatchString(ln) {
+			continue
+		}
+		idx := push(ln)
 		runes := len([]rune(ln))
 		isHead := false
 		if runes <= maxListHeadRunes && hasLetter(ln) && !endsSentence(ln) {
@@ -152,7 +177,7 @@ func detectTextLists(page int, text string, skip map[string]bool, tables []PDFTe
 			}
 		}
 		if isHead {
-			open(ln)
+			open(ln, idx)
 			continue
 		}
 		if cur == nil {
@@ -168,9 +193,10 @@ func detectTextLists(page int, text string, skip map[string]bool, tables []PDFTe
 			}
 		}
 		cur.Items = append(cur.Items, ln)
+		curIdx = append(curIdx, idx)
 	}
 	flush()
-	return out
+	return out, lines, consumed
 }
 
 var (

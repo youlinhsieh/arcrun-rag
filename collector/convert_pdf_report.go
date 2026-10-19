@@ -56,6 +56,8 @@ type PDFReadReport struct {
 	TextTables []PDFTextTable
 	// TextLists＝文字層裡的條列段落（標準配備、選配……），逐項逐字寫進文件卡「原文條列」段（convert_pdf_list.go，#277）。
 	TextLists  []PDFTextList
+	// TextParagraphs＝表格、條列都沒收走的一般段落，逐字寫進文件卡「原文段落」段（convert_pdf_para.go，#277 下一刀）。
+	TextParagraphs []PDFTextParagraph
 	// ImageReads＝讀圖（#251）辨識出的各頁文字，逐頁寫進文件卡「讀圖原文」段（inkstone/arcrun-rag#277）。
 	ImageReads []ImagePageRead
 	printedOff *int // 印刷頁碼與 PDF 頁序的差（讀得到才有）；給原文表格標題帶印刷頁用
@@ -273,6 +275,7 @@ func buildPDFReport(pages []pdfPageInfo) *PDFReadReport {
 		}
 	}
 	rep.TextLists = detectAllLists(pages)
+	rep.TextParagraphs = detectAllParagraphs(pages)
 	dropTemplateImages(pages)
 	claimed := map[int]bool{} // 標題已被後一頁認領的頁
 	for i, p := range pages {
