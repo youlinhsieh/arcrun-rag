@@ -2398,6 +2398,11 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				if cardIdx > 0 && !multiCard {
 					continue // 概念卡先只落本機 .wiki（品質檢查照跑），上雲等第⑤環
 				}
+				if cardIdx == 0 && !multiCard && len(cards) > 1 {
+					// #280 c21932：概念卡不上雲，文件卡就不准留指向它們的 [[連結]]
+					// （雲端 get_card 會 card_not_found，AI 照連結走會反覆重試）。只動送出的副本。
+					cardData = []byte(unlinkUnsentConceptCards(string(cardData), conceptCardNames(cards[1:])))
+				}
 				// machine／machine_label（`inkstone/mira#6`）：與 library 同一個位置、
 				// 同一個理由——library 分得開「同一台機器的兩個資料夾」，machine 分得開
 				// 「兩台機器的同一個相對路徑」。少送這一維，雲端就只能把兩台的同名檔

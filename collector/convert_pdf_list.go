@@ -89,6 +89,12 @@ func tableCellSet(tabs []PDFTextTable) map[string]bool {
 				}
 			}
 		}
+		// 曲線圖的座標刻度表格層不收，但這些字不能因此漏進段落（#280 c21938）
+		for _, c := range t.ChartDroppedTexts {
+			if len([]rune(c)) >= 2 {
+				m[c] = true
+			}
+		}
 	}
 	return m
 }

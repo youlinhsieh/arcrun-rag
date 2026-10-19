@@ -124,6 +124,13 @@ func TestDirectExtractorModeE2E(t *testing.T) {
 	if !strings.Contains(cc, "## 摘要") || !strings.Contains(cc, "gloss:") {
 		t.Fatalf("card_content 不是規範形卡片：%.80s", cc)
 	}
+	// #280 c21932：概念卡沒上雲，送出的文件卡就不准有指向它的 [[連結]]（雲端會 card_not_found）。
+	if strings.Contains(cc, "[[報銷規則·概念]]") {
+		t.Fatalf("上雲的文件卡仍連到沒上雲的概念卡：\n%s", cc)
+	}
+	if !strings.Contains(cc, "報銷規則·概念") {
+		t.Fatalf("拆殼後概念名文字應保留：\n%s", cc)
+	}
 	// path 必須是「原檔路徑」（takedown 比對鍵＋B4 溯源）——不是卡片路徑（07-24 第五枚坑）
 	if p, _ := contentCard["path"].(string); p != "報銷規則.md" {
 		t.Fatalf("path=%q（應為原檔路徑）", p)

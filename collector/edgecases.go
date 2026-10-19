@@ -45,6 +45,7 @@ var EdgeCases = []EdgeCase{
 	{ID: "table-limits", Detector: "maxTableRows"},
 	{ID: "pdf-table-pages", Detector: "detectTextTables"},
 	{ID: "pdf-shattered-text", Detector: "normalizeRectSizes"},
+	{ID: "pdf-chart-ticks", Detector: "dropChartTicks"},
 	{ID: "pdf-bullet-lists", Detector: "detectTextLists"},
 	{ID: "prose-paragraphs", Detector: "detectParagraphs"},
 	{ID: "template-background-image", Detector: "dropTemplateImages"},

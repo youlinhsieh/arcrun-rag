@@ -249,7 +249,13 @@ func renderPDFPages(pages []pdfPageInfo) string {
 			sb.WriteString(pageMarker(p.Index, off, haveOff))
 			sb.WriteString("\n")
 		}
-		sb.WriteString(p.Text)
+		// 曲線圖的座標刻度不餵給 AI（#280 c21950）：表格層拿掉的那批字，純文字層也要拿掉，
+		// 不然模型把刻度當規格寫進重點／三元組／實體。
+		var ticks []string
+		for _, t := range p.Tables {
+			ticks = append(ticks, t.ChartDroppedTexts...)
+		}
+		sb.WriteString(stripChartTicksFromText(p.Text, ticks))
 		sb.WriteString("\n")
 	}
 	return sb.String()

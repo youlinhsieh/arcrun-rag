@@ -1,5 +1,5 @@
-出貨報告　release 1.4.112　共 22 站（上次（1.4.111）22 站　無增減）
-來源（stage）＝Arcrun@afdb6b9991ad　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.113　共 22 站（上次（1.4.112）22 站　無增減）
+來源（stage）＝Arcrun@9ab17d2a75c0　｜　來源（prod）＝（未出）
 機器（stage）＝9f06f3113188　｜　機器（prod）＝（未出）
 
 | 件次 | 項目 | stage | prod |
@@ -30,12 +30,12 @@
 真的做事的站：stage 16／22 站（與上次相同）　｜　prod （未出）
 
 ⬜ 跳過的站（6 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
-   · stage｜daemon-sync：bundle 已委任 0.18.113；內容是否真的到位由下一站 daemon-check 逐檔查證
-   · stage｜notes：已是最新：一般段落與純文字、.md 檔的原文，逐字進知識卡・錯誤碼這類英文手冊的目錄，每一行附上統一的中文譯名・包含 0.18.112 的全部內容
+   · stage｜daemon-sync：bundle 已委任 0.18.115；內容是否真的到位由下一站 daemon-check 逐檔查證
+   · stage｜notes：已是最新：型錄曲線圖的座標刻度，連 AI 讀的內容裡也不留了・包含 0.18.114 的全部內容
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜pin：釘子沒動（built 2026-10-19）；安裝器原始碼指紋 d27a13fdc3f0（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.112／pin d373fa9／安裝器原始碼 d27a13fdc3f0 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜deploy：線上已是 1.4.113／pin 596d05f／安裝器原始碼 d27a13fdc3f0 未變，且釘子沒動 ⇒ 不重複部署
 
 件數：stage 22 站　｜　prod （未出）
 ⏳ 只有 stage 出過這一版，另一邊還沒跑——還不到比對件數的時候

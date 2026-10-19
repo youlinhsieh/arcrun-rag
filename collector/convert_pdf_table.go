@@ -48,6 +48,12 @@ type PDFTextTable struct {
 	Garbled bool
 	Caption string     // 表正上方那一行單格文字（例：「1.2 Machine Specifications」）；沒有就空
 	Rows    [][]string // 每列的儲存格（已去頭尾空白）
+	// ChartCellsDropped＝這張表其實夾著曲線圖的座標刻度與數字讀數，被拿掉的格數（inkstone/arcrun-rag#280 c21938）。
+	// >0 時卡上明說「圖的座標未收」；0＝沒有圖。
+	ChartCellsDropped int
+	// ChartDroppedTexts＝被拿掉的那些格的原字串。不進卡，但「原文段落」要靠它認出這些字已經由表格層處理過，
+	// 不能因為表格不收了就漏到段落去（tableCellSet 會把它算進已收字集合）。
+	ChartDroppedTexts []string
 }
 
 // 表格判準的常數。數字都是用樣本實測定的，不是拍腦袋：
@@ -575,7 +581,25 @@ func buildTextTable(page int, region []*trow) (PDFTextTable, bool) {
 	}
 	sort.SliceStable(keep, func(a, b int) bool { return keep[a].row.cy() > keep[b].row.cy() })
 
-	t := PDFTextTable{Page: page}
+	// 曲線圖的座標刻度不當成規格列（#280 c21938）：整張表重新排一次，刻度證據成立才動。
+	chartDropped := 0
+	var chartTexts []string
+	{
+		cellRows := make([][]tcell, len(keep))
+		for i, m := range keep {
+			cellRows[i] = m.cells
+		}
+		if newRows, texts := dropChartTicks(cellRows); len(texts) > 0 {
+			chartDropped = len(texts)
+			chartTexts = texts
+			keep = keep[:0:0]
+			for _, cr := range newRows {
+				keep = append(keep, &merged{cells: cr})
+			}
+		}
+	}
+
+	t := PDFTextTable{Page: page, ChartCellsDropped: chartDropped, ChartDroppedTexts: chartTexts}
 	totalRunes, nCells := 0, 0
 	for _, m := range keep {
 		var cells []string
@@ -723,6 +747,9 @@ func renderVerbatimTables(tables []PDFTextTable, printed func(page int) string) 
 				}
 				fmt.Fprintf(&b, "第 %d 列｜%s\n", ri+1, strings.Join(cells, "｜"))
 				dataRows++
+			}
+			if t.ChartCellsDropped > 0 {
+				fmt.Fprintf(&b, "（這一塊夾著曲線圖：座標刻度與圖上的數字讀數共 %d 格未收錄，圖的數值請查原檔的圖）\n", t.ChartCellsDropped)
 			}
 			b.WriteString("\n")
 		}
