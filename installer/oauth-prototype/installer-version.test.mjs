@@ -128,3 +128,18 @@ test('⑥ wrangler.toml 不准再宣告 INSTALLER_SRC_SHA（不留第二份手�
   assert.ok(!/env\s*&&\s*env\.INSTALLER_SRC_SHA|env\.INSTALLER_SRC_SHA\s*\?/.test(js),
     'worker.js 又從 env 讀識別值 ⇒ 部署腳本宣告的期望值會再度冒充「線上實際跑的那份」');
 });
+
+test('⑦ /api/latest 公告零件包位置 bundle.base（inkstone/arcrun-rag#276）', () => withFetch(manifestFetch, async () => {
+  const kv = { get: async () => null, put: async () => {}, delete: async () => {} };
+  // 頻道一：沒設 BUNDLE_BASE ⇒ 吐預設釘點（prod 路徑）
+  let res = await worker.fetch(new Request('https://install.example/api/latest'), { INSTALLER_KV: kv }, {});
+  let body = await res.json();
+  assert.ok(body.bundle && typeof body.bundle.base === 'string', '少了 bundle.base ⇒ acr update 只能從 daemon 網址反推，零件搬家就 404');
+  assert.match(body.bundle.base, /^https:\/\//);
+  assert.ok(!body.bundle.base.endsWith('/'), 'base 不帶結尾斜線，呼叫端直接接 /manifest.json');
+  // 頻道二：stage 用 env.BUNDLE_BASE 蓋掉 ⇒ 公告值要跟著 env 走（與安裝本身同一個 bundleBase）
+  const stage = 'https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/0123456789abcdef0123456789abcdef01234567/';
+  res = await worker.fetch(new Request('https://install.example/api/latest'), { INSTALLER_KV: kv, BUNDLE_BASE: stage }, {});
+  body = await res.json();
+  assert.equal(body.bundle.base, stage.replace(/\/+$/, ''));
+}));

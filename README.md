@@ -2,7 +2,9 @@
 
 **丟檔案 → AI 讀完重寫成定稿知識卡 → 沿知識圖譜找到子庫，再讀知識卡→ 直接問 AI 拿帶出處的答案。**
 self-hosted：裝在你自己的 Cloudflare 帳號或你自己的電腦，資料完全屬於你，不是 SaaS。
-跑在 [Arcrun](https://github.com/youlinhsieh/Arcrun)（開源、AI-friendly 的工作流引擎）上。
+跑在 [Arcrun](https://github.com/youlinhsieh/Arcrun)（AI-friendly 的工作流引擎）上。
+
+> 授權：[Sustainable Use License](LICENSE.md)（自用免費，不可轉售成服務）· License: [Sustainable Use License](LICENSE.md) (free for internal and personal use; not for resale as a service). 詳見文末「授權／License」。
 
 ## 30 秒看懂它跟「裸 RAG」差在哪
 
@@ -105,3 +107,34 @@ flowchart LR
 - **不是**：第二份核心程式碼。核心改動一律上游化到 [Arcrun](https://github.com/youlinhsieh/Arcrun) 走 PR，本 repo 不 fork 核心。
 - 產品規劃與內部 SDD 不在公開鏡像裡（只在私有真相源）。這裡公開的是**裝得起來、跑得動**所需的東西：
   [安裝手冊](docs/manual/cf-install-guide.md)、[Portal 導覽](docs/demo/客戶測試指南.md)、[collector 架構說明](collector/README.md)。
+
+## 授權
+
+本專案採 **Sustainable Use License**（全文見 [LICENSE.md](LICENSE.md)）：
+
+- 你可以把它用在**自己的內部業務**，或**非商業／個人**用途，免費。
+- 你可以免費、非商業地散佈給別人；**不可以**把它轉售、或包成服務賣給別人。
+- 保留所有授權與著作權聲明；修改過要明確標示你改過。
+- 新授權自本授權隨附發佈的版本起生效（授權人法律實體名稱待確認）。
+- 以上是摘要，**以 LICENSE.md 全文為準**。商用或授權洽詢請聯絡我們。
+
+**歷史版本聲明**：本 repo 在這個授權生效之前**從未附過任何授權檔**（沒有任何 MIT 版本）。
+底下的 Arcrun 引擎曾以 MIT 釋出，那些已公開的 MIT 版本不受本次變更影響；本授權只適用於本 repo 自本授權隨附發佈的版本起的內容。
+
+**商標**：Arcrun、Arcrun RAG 與相關標誌是授權人的商標；本授權不授予任何商標權，使用須依適用法律。
+
+## License
+
+This project is licensed under the **Sustainable Use License** (full text in [LICENSE.md](LICENSE.md)):
+
+- You may use it for your **own internal business purposes**, or for **non-commercial / personal use**, free of charge.
+- You may distribute it to others only **free of charge and for non-commercial purposes**; you may **not** resell it or offer it to others as a service.
+- Keep all licensing and copyright notices; mark clearly any modifications you make.
+- The license applies from the version it is distributed with onward (licensor legal entity name TBC).
+- This is a summary; **LICENSE.md governs**.
+
+**Prior versions**: before this license took effect, this repository **never carried any license file** (there is no MIT release of it). The Arcrun engine underneath was released under MIT earlier; those already-published MIT versions are unaffected. This license applies only to this repository's content from the version it is distributed with onward.
+
+**Trademarks**: "Arcrun", "Arcrun RAG" and related logos are trademarks of the licensor; this license grants no trademark rights.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributions.

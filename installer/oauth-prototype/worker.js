@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@058a4c7a24eff020e8da11b67813d46a693caf83';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@ebf80c1d0e7c22f78cac386494ffcbaaea435826';
 const BUNDLE_BUILT = '2026-10-19'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -4577,7 +4577,7 @@ body{margin-top:0 !important}
     <div class="lockup" role="img" aria-label="Arcrun 知識庫">${WORDMARK_HTML}</div>
   </header>
   ${bodyHtml}
-  <footer>安裝過程中我們不會保存你的 Cloudflare 密碼，也不會讀取你既有的任何資料。</footer>
+  <footer>安裝過程中我們不會保存你的 Cloudflare 密碼，也不會讀取你既有的任何資料。<br><a href="${navSite}/license" target="_blank" rel="noopener">授權條款</a></footer>
 </div>
 </body>
 </html>`;
@@ -4627,6 +4627,10 @@ ${noticeHtml}
        提示放在真的會缺的那個位置（07-27 鐵律）——就在辨識碼欄下方，不事先預告。
        同 email 重申請＝landing 冪等重寄同一組碼（handleRequestCode），這條路已實測走得通。 -->
   <p class="hint">找不到辨識碼？<a href="${siteBase(env)}" target="_blank" rel="noopener">重新申請一組</a>，用同一個 Email 就會把它再寄給你。</p>
+  <!-- 授權同意（arcrun-rag#205）：摘要＋全文連結＋必勾。伺服器端也擋（handleAuthStart），不只靠 required。 -->
+  <div style="height:14px"></div>
+  <p class="hint" id="license-summary" style="margin:0">授權：Sustainable Use License。自用免費、可做內部業務；不可轉售或包成服務賣給別人。<a href="${siteBase(env)}/license" target="_blank" rel="noopener">看全文</a></p>
+  <label for="agree" style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="agree" name="agree" type="checkbox" value="1" required style="width:auto;margin:0">我已閱讀並同意授權條款</label>
   <div style="height:20px"></div>
   <!-- t133 三修（leo 07-29：「install.arcrun.dev 裡面的「開始安裝/更新」，
        也要把版本號寫在按鈕裡面，你只改了首頁」）：版本寫進按鈕本身，不另起一行。 -->
@@ -5515,6 +5519,11 @@ async function handleLatest(request, env) {
     //   現在它跟版本號同住 `version.mjs`（機器產、`--check` 守著）⇒ 部署動作只有一種：
     //   把這棵樹推上去，推上去的那份必然自帶自己的指紋。**沒有可以忘記的那一步。**
     installer_sha: INSTALLER_SRC_SHA,
+    // 🔴 inkstone/arcrun-rag#276（合約：總管 2026-10-18 核准；CLI 端 inkstone/Arcrun#315 已照此名讀）
+    //   零件包（core/*/worker.mjs、manifest.json）住哪——由安裝器公告，`acr update` 不必從 daemon
+    //   下載網址反推（#266 之後 stage 的 daemon 在 R2 `/dist`、零件在 Gitea raw ⇒ 反推必 404），
+    //   也不必用戶自設 ARCRUN_BUNDLE_BASE。值與安裝本身用的是同一個 bundleBase(env)，不另存第二份。
+    bundle: { base: bundleBase(env) },
   }), {
     headers: {
       ...cors,
@@ -5640,6 +5649,11 @@ async function handleHome(request, env, url) {
       title: '辨識碼不符',
       body: '核對 Email 與辨識碼',
     };
+  } else if (err === 'agree') {
+    notice = {
+      title: '請先同意授權條款',
+      body: '勾選同意後再按一次',
+    };
   } else if (err === 'code_rate') {
     notice = {
       title: '太頻繁',
@@ -5663,6 +5677,10 @@ async function handleHome(request, env, url) {
 async function handleAuthStart(request, env, url) {
   // inkstone/arcrun-rag#238（leo 裁決 B）：portal 改密碼寫不進 → 導來這裡授權一次（不是安裝、不要辨識碼）
   if (url.searchParams.get('grant') === '1') return handleGrantStart(request, env, url);
+  // arcrun-rag#205：安裝／更新前必須取得授權同意（表單 checkbox 之外，伺服器端也擋）。
+  if (url.searchParams.get('agree') !== '1') {
+    return Response.redirect(`${url.origin}/?error=agree`, 302);
+  }
   const inviteCode = (url.searchParams.get('code') || '').trim().slice(0, 64);
   const inviteEmail = (url.searchParams.get('email') || '').trim().slice(0, 254).toLowerCase();
 

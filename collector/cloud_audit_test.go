@@ -317,7 +317,7 @@ func TestCloudCardPresent_RequestShapeAndParsing(t *testing.T) {
 		if r.URL.Path != "/kbdb/entries" {
 			t.Errorf("打錯端點：%s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "entries": []any{}, "count": 0, "total": 1})
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "entries": []any{liveBlock()}, "count": 1, "total": 1})
 	}))
 	defer srv.Close()
 
@@ -332,8 +332,8 @@ func TestCloudCardPresent_RequestShapeAndParsing(t *testing.T) {
 	if got.Get("library") != "mylib" || got.Get("entry_type") != "block" {
 		t.Fatalf("庫／型別 filter 不對：%v", got)
 	}
-	if got.Get("offset") == "" || got.Get("offset") == "0" {
-		t.Fatalf("沒有用大 offset 避開卡片內文：%q", got.Get("offset"))
+	if got.Get("limit") != "10" || got.Get("offset") != "0" {
+		t.Fatalf("要分頁拉 entries 才看得到 status（limit=%q offset=%q）", got.Get("limit"), got.Get("offset"))
 	}
 	if gotKey != "ns" {
 		t.Fatalf("沒帶 X-Arcrun-API-Key：%q", gotKey)
@@ -386,5 +386,180 @@ func TestCloudCardPresent_MissingTotalIsUnknown(t *testing.T) {
 func TestCloudCardPresent_NoConnectionInfo(t *testing.T) {
 	if _, ok, _ := cloudCardPresent(&DirectConfig{}, "lib", "a.md"); ok {
 		t.Fatal("沒有連線資訊時不該宣稱查得到答案")
+	}
+}
+
+// ── inkstone/arcrun-rag#275：對帳不能把「已下架（deprecated）的殘留 block」讀成「卡還在」 ──
+
+func liveBlock() map[string]any {
+	return map[string]any{"id": "b-live", "entry_type": "block", "metadata_json": `{"source":"kb://x#0","status":"active"}`}
+}
+
+func deprecatedBlock(id string) map[string]any {
+	return map[string]any{"id": id, "entry_type": "block", "metadata_json": `{"source":"kb://x#0","status":"deprecated"}`}
+}
+
+// fakeEntries 模擬 KBDB `GET /entries`：沒有 deprecated 謂詞（total 含殘留），依 limit／offset 分頁，
+// 並把每次收到的 query 記下來。
+func fakeEntries(t *testing.T, rows []map[string]any, seen *[]url.Values) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if seen != nil {
+			*seen = append(*seen, q)
+		}
+		limit, offset := 100, 0
+		fmt.Sscan(q.Get("limit"), &limit)
+		fmt.Sscan(q.Get("offset"), &offset)
+		page := []map[string]any{}
+		for i := offset; i < len(rows) && len(page) < limit; i++ {
+			page = append(page, rows[i])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "entries": page, "count": len(page), "total": len(rows)})
+	}))
+}
+
+// 主場景：卡已下架（只剩 deprecated 殘留 block）⇒ 判「不在」。舊版只看 total ⇒ 判「在」⇒ 永遠不重送。
+func TestCloudCardPresent_OnlyDeprecatedResidueIsMissing(t *testing.T) {
+	srv := fakeEntries(t, []map[string]any{deprecatedBlock("d1"), deprecatedBlock("d2")}, nil)
+	defer srv.Close()
+	present, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib_473ed4",
+		"assets/CompactB-3020(Z1250)+K2 (A63)24K-Machine Features.pdf")
+	if err != nil || !ok || present {
+		t.Fatalf("只剩 deprecated 殘留應判 missing，實得 present=%v ok=%v err=%v", present, ok, err)
+	}
+}
+
+// 殘留 deprecated 與現役並存（重收後的常態）⇒ 在。現役排在第二頁也要找得到。
+func TestCloudCardPresent_LiveBlockAmongDeprecatedIsPresent(t *testing.T) {
+	rows := []map[string]any{}
+	for i := 0; i < 12; i++ { // 第一頁（10 列）全是殘留，現役在第二頁
+		rows = append(rows, deprecatedBlock(fmt.Sprint("d", i)))
+	}
+	rows = append(rows, liveBlock())
+	srv := fakeEntries(t, rows, nil)
+	defer srv.Close()
+	present, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", "a.pdf")
+	if err != nil || !ok || !present {
+		t.Fatalf("第二頁有現役應判 present，實得 present=%v ok=%v err=%v", present, ok, err)
+	}
+}
+
+// 只剩 triplet／entity、沒有 block ⇒ block 查詢 total=0 ⇒ 不在；
+// 且查詢一律限定 entry_type=block（不會拿殘留的 triplet／entity 當「卡還在」）。
+func TestCloudCardPresent_OnlyTripletsLeftIsMissing(t *testing.T) {
+	var seen []url.Values
+	srv := fakeEntries(t, nil, &seen) // block 一列都沒有（triplet 在別的 entry_type，查不到）
+	defer srv.Close()
+	present, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", "a+b.pdf")
+	if err != nil || !ok || present {
+		t.Fatalf("沒有 block 應判 missing，實得 present=%v ok=%v err=%v", present, ok, err)
+	}
+	for _, q := range seen {
+		if q.Get("entry_type") != "block" {
+			t.Fatalf("對帳必須只認 block，實際查了 entry_type=%q", q.Get("entry_type"))
+		}
+	}
+}
+
+// 檔名含「+」（與空白、%、#、中文）：server 端解回來的 source 必須逐字等於 kb://<原路徑>#0，
+// 「+」不能被讀成空白。
+func TestCloudCardPresent_PlusInFilenameSurvivesEncoding(t *testing.T) {
+	paths := []string{
+		"assets/CompactB-3020(Z1250)+K2 (A63)24K-Machine Features.pdf",
+		"assets/Focus5-2330+K4.pdf",
+		"a b/100%+中文#1.pdf",
+	}
+	for _, rel := range paths {
+		var seen []url.Values
+		srv := fakeEntries(t, []map[string]any{liveBlock()}, &seen)
+		_, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", rel)
+		srv.Close()
+		if err != nil || !ok || len(seen) == 0 {
+			t.Fatalf("%q 沒查成：ok=%v err=%v", rel, ok, err)
+		}
+		if got := seen[0].Get("source"); got != "kb://"+rel+"#0" {
+			t.Fatalf("source 被編壞：want %q got %q", "kb://"+rel+"#0", got)
+		}
+	}
+}
+
+// 答不完（前 50 列都是殘留、後面還有）⇒ 不知道（ok=false），不准當成「雲端沒有」。
+func TestCloudCardPresent_TooManyDeprecatedIsUnknown(t *testing.T) {
+	rows := []map[string]any{}
+	for i := 0; i < cloudAuditPageSize*cloudAuditMaxPages+5; i++ {
+		rows = append(rows, deprecatedBlock(fmt.Sprint("d", i)))
+	}
+	srv := fakeEntries(t, rows, nil)
+	defer srv.Close()
+	_, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", "a.pdf")
+	if ok || err == nil {
+		t.Fatalf("答不完應回 ok=false 且留真因，實得 ok=%v err=%v", ok, err)
+	}
+}
+
+// total>0 卻沒有 entries（端點換形狀）⇒ 不知道；metadata_json 是物件而不是字串也要認得。
+func TestCloudCardPresent_ShapeVariants(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "total": 3})
+	}))
+	_, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", "a.pdf")
+	srv.Close()
+	if ok || err == nil {
+		t.Fatalf("total>0 卻無 entries 應回不知道，實得 ok=%v err=%v", ok, err)
+	}
+
+	obj := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "total": 1,
+			"entries": []any{map[string]any{"metadata_json": map[string]any{"status": "deprecated"}}}})
+	}))
+	defer obj.Close()
+	present, ok, err := cloudCardPresent(&DirectConfig{CypherURL: obj.URL, APIKey: "ns"}, "lib", "a.pdf")
+	if err != nil || !ok || present {
+		t.Fatalf("物件形 metadata_json 的 deprecated 也要認得，實得 present=%v ok=%v err=%v", present, ok, err)
+	}
+}
+
+// 端到端（離線）：帳本蓋了章、雲端只剩 deprecated 殘留 ⇒ 對帳拔章、記 cloud_missing_at；
+// 拔過章的下一輪 Scan 自動補發 added（既有路徑），24h 內不會被再拔一次。
+func TestAudit_DeprecatedResidueVoidsStampAndResends(t *testing.T) {
+	srv := fakeEntries(t, []map[string]any{deprecatedBlock("d1")}, nil)
+	defer srv.Close()
+	cfg := &DirectConfig{CypherURL: srv.URL, APIKey: "ns", Namespace: "ns"}
+	rel := "assets/Focus5-2330+K4.pdf"
+	m := newAuditManifest(rel)
+	m.Entries[rel].CloudCheckedAt = 0 // 把 cloud_checked_at 歸 0（c21464 的做法）
+	now := time.Unix(1_000_000, 0)
+
+	res := auditCloudLedger(cfg, "/root", m, false, now)
+	if res == nil || res.Checked != 1 || res.Voided != 1 {
+		t.Fatalf("預期問 1 份、作廢 1 份，實得 %+v", res)
+	}
+	e := m.Entries[rel]
+	if e.IngestedHash != "" || e.CloudMissingAt != now.Unix() {
+		t.Fatalf("章沒拔或沒記 cloud_missing_at：%+v", e)
+	}
+
+	root := t.TempDir()
+	writeFile(t, root, rel, "pdf", time.Unix(900_000, 0))
+	m2 := newAuditManifest(rel)
+	m2.Entries[rel].IngestedHash = ""
+	payload, err := Scan(root, m2, ScanOptions{MaxRemovedRatio: 0.4})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	found := false
+	for _, ev := range payload.Events {
+		if ev.Path == rel {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("拔章後 Scan 沒有補發 %s：%+v", rel, payload.Events)
+	}
+	// grace 內不再被拔第二次
+	m.Entries[rel].IngestedHash = "sha256:resent"
+	if r2 := auditCloudLedger(cfg, "/root", m, false, now.Add(2*time.Minute)); r2 != nil && r2.Voided != 0 {
+		t.Fatalf("grace 內不該再拔：%+v", r2)
 	}
 }

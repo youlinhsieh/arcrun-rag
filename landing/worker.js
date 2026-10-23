@@ -26,6 +26,8 @@
  *   env.EMAIL_ENABLED ("true" 時走寄信路徑，需 send_email binding SEND_EMAIL)
  */
 
+import { LICENSE_TEXT } from "./license-text.js";
+
 // 辨識碼字元集：大寫去混淆字元（去 0/O/1/I）
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 8;
@@ -601,6 +603,10 @@ export default {
     if (pathname === "/support" && (request.method === "GET" || request.method === "HEAD")) {
       return htmlPage(SUPPORT_HTML);
     }
+    // 授權全文（Sustainable Use License）：安裝器與下載頁的「全文連結」都指這裡。
+    if (pathname === "/license" && (request.method === "GET" || request.method === "HEAD")) {
+      return htmlPage(licenseHtml());
+    }
 
     if (pathname === "/" && (request.method === "GET" || request.method === "HEAD")) {
       // t133：請求時把版本佔位符換成實值（LANDING_HTML 是模組層常數拿不到 env）
@@ -866,8 +872,8 @@ body{margin-top:0 !important}
         <p class="pain">存了一堆卻找不回來？這裡的重點就是「找得到」（見頁尾註②）。</p>
       </li>
       <li>
-        <h3>啟動完全免費</h3>
-        <p class="sell-body">完全開源，Cloudflare 免費額度高，速度甚至比本機還快。</p>
+        <h3>自用免費</h3>
+        <p class="sell-body">自用免費（Sustainable Use License），Cloudflare 免費額度高，速度甚至比本機還快。</p>
         <p class="pain">怕花錢？免費額度就跑得動，跑起來再說。</p>
       </li>
       <li>
@@ -898,6 +904,11 @@ body{margin-top:0 !important}
               <input type="checkbox" id="subscribe" name="subscribe">
               <label for="subscribe">訂閱產品更新（可不勾，不勾也完全不影響）</label>
             </div>
+            <div class="check-row">
+              <input type="checkbox" id="agree-license" name="agree" required>
+              <label for="agree-license">我已閱讀並同意<a href="/license" target="_blank" rel="noopener">授權條款</a></label>
+            </div>
+            <p class="soft" id="license-summary" style="margin:6px 0 0">授權：Sustainable Use License。自用免費、可做內部業務；不可轉售或包成服務賣給別人。<a href="/license" target="_blank" rel="noopener">看全文</a></p>
             <button type="submit" class="btn" id="submit-btn">送出，領取辨識碼</button>
             <p id="form-result"></p>
           </form>
@@ -932,6 +943,7 @@ body{margin-top:0 !important}
             <a class="btn" href="__DAEMON_DL_WIN__" style="margin-right:8px">🪟 下載 Windows 版同步器</a>
             <a class="btn" href="__DAEMON_DL_MAC__">🍎 下載 Mac 版同步器</a>
           </p>
+          <p class="soft" style="margin:6px 0 0">下載即表示同意<a href="/license" style="color:#241804;font-weight:600">授權條款</a>（Sustainable Use License：自用免費，不可轉售）。</p>
           <p class="soft" style="margin:6px 0 0">
             同步器版本：<b>__DAEMON_VERSION__</b>　·
             <a href="https://github.com/youlinhsieh/arcrun-rag/releases" target="_blank" rel="noopener" style="color:#241804;font-weight:600">這一版改了什麼</a>
@@ -991,6 +1003,8 @@ body{margin-top:0 !important}
       <a href="/privacy">隱私政策</a>
       <span aria-hidden="true">·</span>
       <a href="/support">技術支援</a>
+      <span aria-hidden="true">·</span>
+      <a href="/license">授權條款</a>
       <span aria-hidden="true">·</span>
       <a href="__DOCS_BASE__/">使用說明</a>
     </p>
@@ -1069,6 +1083,32 @@ const DOC_CSS = `
   a { color: var(--amber); }
   .back { display: inline-block; margin-top: 40px; font-size: 14.5px; }
 `;
+
+function escapeLicense(t) {
+  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function licenseHtml() {
+  return `<!doctype html>
+<html lang="zh-Hant">
+<head>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>授權條款 — Arcrun RAG</title>
+<style>${DOC_CSS} pre { white-space: pre-wrap; word-break: break-word; font-size: 14px; margin-top: 16px; }</style>
+</head>
+<body><div class="wrap">
+  <h1>Arcrun RAG 授權條款</h1>
+  <div class="lead"><b>簡單講：自用免費，不能轉售。</b><br>
+  可用在自己的內部業務或非商業、個人用途；不可轉售，也不可包成服務賣給別人。以下英文全文為準。</div>
+  <pre>${escapeLicense(LICENSE_TEXT)}</pre>
+  <a class="back" href="/">← 回首頁</a>
+</div></body>
+</html>`;
+}
 
 const PRIVACY_HTML = `<!doctype html>
 <html lang="zh-Hant">

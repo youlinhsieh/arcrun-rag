@@ -284,11 +284,24 @@ test('P0-1 /auth/start：辨識碼驗不過 → 302 回首頁 error，不進 OAu
   });
   try {
     const env = { INSTALLER_KV: makeKV(), LANDING_BASE: 'https://landing.test' };
-    const req = new Request('https://inst.test/auth/start?email=a@b.com&code=BAD');
+    const req = new Request('https://inst.test/auth/start?email=a@b.com&code=BAD&agree=1');
     const res = await worker.fetch(req, env, { waitUntil() {} });
     assert.equal(res.status, 302);
     assert.match(res.headers.get('location'), /\/\?error=code$/);
     // 沒有任何 state 被寫進 KV（沒放行）
+    assert.equal([...env.INSTALLER_KV.store.keys()].some((k) => k.startsWith('state:')), false);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#205 /auth/start：沒勾同意授權 → 302 回首頁 error=agree，不驗碼、不進 OAuth', async () => {
+  installFetch((url) => { throw new Error('沒同意就不該打任何端點：' + url); });
+  try {
+    const env = { INSTALLER_KV: makeKV(), LANDING_BASE: 'https://landing.test' };
+    const res = await worker.fetch(new Request('https://inst.test/auth/start?email=a@b.com&code=GOOD'), env, { waitUntil() {} });
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location'), /\/\?error=agree$/);
     assert.equal([...env.INSTALLER_KV.store.keys()].some((k) => k.startsWith('state:')), false);
   } finally {
     restoreFetch();
@@ -302,7 +315,7 @@ test('P0-1 /auth/start：辨識碼通過 → 302 導 CF 授權頁，state 記 in
   });
   try {
     const env = { INSTALLER_KV: makeKV(), LANDING_BASE: 'https://landing.test' };
-    const req = new Request('https://inst.test/auth/start?email=A@B.com&code=GOOD');
+    const req = new Request('https://inst.test/auth/start?email=A@B.com&code=GOOD&agree=1');
     const res = await worker.fetch(req, env, { waitUntil() {} });
     assert.equal(res.status, 302);
     assert.match(res.headers.get('location'), /^https:\/\/dash\.cloudflare\.com\/oauth2\/auth/);

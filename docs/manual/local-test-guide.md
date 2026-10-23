@@ -18,7 +18,7 @@
 
 ## 1. 這是什麼
 
-arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：關鍵字查詢＋知識圖譜讀取＋ MCP。引擎是 [Arcrun](https://github.com/youlinhsieh/Arcrun)（開源工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
+arcrun-rag 是「把檔案丟進知識資料夾，公司知識庫自動長出來」的企業 RAG 產品：關鍵字查詢＋知識圖譜讀取＋ MCP。引擎是 [Arcrun](https://github.com/youlinhsieh/Arcrun)（工作流引擎，正式版跑在 Cloudflare Workers）。本手冊教你**在自己電腦上、完全不需要 Cloudflare 帳號**，用 `wrangler dev`（miniflare 本機模擬）把整套引擎跑起來測試。
 
 ### 本機測試能看到什麼／看不到什麼（誠實對照表）
 

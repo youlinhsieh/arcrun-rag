@@ -29,6 +29,7 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,16 +75,32 @@ var probeCloudCard = cloudCardPresent
 
 // cloudCardPresent 問雲端「這個庫裡還有沒有這個檔的卡」。
 //
-// 判準＝`metadata_json.source == kb://<相對路徑>#0`。為什麼是 `#0` 而不是頁名：
+// 判準＝`metadata_json.source == kb://<相對路徑>#0` 的 block 裡，**至少有一個是現役**
+// （`metadata_json.status != "deprecated"`）。為什麼是 `#0` 而不是頁名：
 //   - 頁名是 basename 去副檔名（pageNameOf），**兩個資料夾裡的同名檔會撞在一起**；
 //   - `source` 是 rag_ingest_card parse_card 寫死的 `kb://<path>#<第幾塊>`，
 //     而第 0 塊必然存在（卡片至少一塊）⇒ 它就是「這張卡在不在」的存在性鍵，
 //     也正是 rag_takedown_direct 用來比對的同一個鍵（兩邊用同一把尺）。
 //
-// `offset` 故意帶一個大數：回應只要 `total`，不要 entries 本身——
-// 卡片內文動輒數 KB，20 個檔就是幾百 KB 的白搭流量。
+// 🔴 `inkstone/arcrun-rag#275`：為什麼不能只看 `total`。
+// 舊版只要 `total`（`limit=1&offset=1000000`），把「有幾列」讀成「卡在不在」。
+// 但 KBDB `GET /entries`（kbdb/src/actions/entry-crud.ts `listEntries`）**沒有 deprecated 謂詞**
+// ——被軟刪（`metadata.status=deprecated`）的 block 照樣算進 total；而使用者／AI 看到的
+// 庫目錄（`library-cards`，`listLibraryCards`）明確排除 deprecated。
+// 結果：卡明明已從目錄消失（geek6688 lib_473ed4 那 5 份：`kbdb_get_index` 只剩 2 張），
+// 對帳仍問到殘留的 deprecated block ⇒ 判「在」⇒ 只更新 cloud_checked_at、不拔章 ⇒ 永遠不重送。
+// 所以現在要把 entries 本身拉回來，逐列看 status；全是 deprecated 才算「不在」。
 //
-// 回傳的 ok=false＝**這次沒查成**（連不上、非 2xx、回應不是 JSON）。
+// 與檔名的關係：`source` 鍵以 url.Values 編碼（「+」→`%2B`、空白→`+`），server 端解回原字串後
+// 做 `json_extract(...) = ?` 精確比對——「+」本身不會被讀成空白（測試釘住）。
+// 檔名含「+」的卡會中這個洞，只是因為它們剛好是被下架過的那批，不是「+」的編碼出錯。
+//
+// 每頁只拉 cloudAuditPageSize 列（卡片內文動輒數 KB，20 個檔不能變成幾百 KB 的白搭流量）；
+// 同一個 `#0` 正常只有 1 列現役＋少數 deprecated 殘留，最新的排最前（created_at DESC），
+// 現役通常第一頁就見到。翻頁上限 cloudAuditMaxPages：翻完仍全是 deprecated 但後面還有 ⇒
+// 答不出來，回 ok=false（「不知道」），**不准當成「雲端沒有」**。
+//
+// 回傳的 ok=false＝**這次沒查成**（連不上、非 2xx、回應不是 JSON、答不完）。
 // 呼叫端必須把它當「不知道」，**不准當成「雲端沒有」**——
 // 那會讓一次網路抖動變成一次全量重送。
 func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool, ok bool, err error) {
@@ -91,11 +108,73 @@ func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool,
 	if base == "" || strings.TrimSpace(cfg.APIKey) == "" {
 		return false, false, fmt.Errorf("沒有雲端連線資訊（cypher_url／api_key 是空的）")
 	}
+	seen := 0
+	for page := 0; page < cloudAuditMaxPages; page++ {
+		entries, total, perr := fetchCardBlocks(cfg, base, library, relPath, page*cloudAuditPageSize)
+		if perr != nil {
+			return false, false, perr
+		}
+		if total == 0 {
+			return false, true, nil // 連 deprecated 殘留都沒有 ⇒ 真的不在（含「只剩 triplet／entity、沒有 block」）
+		}
+		if len(entries) == 0 {
+			// total>0 卻一列都沒給：端點換了形狀（或 limit 被吃掉）。看不到 status 就不能判，
+			// 寧可什麼都不做（舊行為會在這裡讀成「在」，那正是 #275 的洞）。
+			return false, false, fmt.Errorf("雲端說有 %d 列、卻沒有回 entries，看不出是否現役", total)
+		}
+		for _, e := range entries {
+			if !e.deprecated() {
+				return true, true, nil
+			}
+		}
+		seen += len(entries)
+		if seen >= total {
+			return false, true, nil // 全部殘留都是 deprecated（已下架）⇒ 卡不在了
+		}
+	}
+	return false, false, fmt.Errorf("同一個來源有超過 %d 列、前 %d 列都是已下架，答不出是否還有現役", seen, seen)
+}
+
+// cloudAuditPageSize／cloudAuditMaxPages：每頁拉幾列、最多翻幾頁（見 cloudCardPresent）。
+const (
+	cloudAuditPageSize = 10
+	cloudAuditMaxPages = 5
+)
+
+// kbdbEntryStatus 只取 status 判現役——其餘欄位對帳用不到。
+// metadata_json 在 KBDB 回應裡可能是字串（D1 原樣）也可能是已展開的物件，兩種都收。
+type kbdbEntryStatus struct {
+	Metadata json.RawMessage `json:"metadata_json"`
+}
+
+func (e kbdbEntryStatus) deprecated() bool {
+	raw := bytes.TrimSpace(e.Metadata)
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	if raw[0] == '"' { // 字串化的 JSON
+		var inner string
+		if json.Unmarshal(raw, &inner) != nil {
+			return false
+		}
+		raw = []byte(inner)
+	}
+	var meta struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(raw, &meta) != nil {
+		return false
+	}
+	return meta.Status == "deprecated"
+}
+
+// fetchCardBlocks 拉一頁「source=kb://<relPath>#0」的 block（含 status）與符合條件的總列數。
+func fetchCardBlocks(cfg *DirectConfig, base, library, relPath string, offset int) (entries []kbdbEntryStatus, total int, err error) {
 	q := url.Values{}
 	q.Set("source", "kb://"+relPath+"#0")
 	q.Set("entry_type", "block")
-	q.Set("limit", "1")
-	q.Set("offset", "1000000") // 只要 total，不要把卡片內文整包拉下來
+	q.Set("limit", fmt.Sprint(cloudAuditPageSize))
+	q.Set("offset", fmt.Sprint(offset))
 	if strings.TrimSpace(library) != "" {
 		q.Set("library", library)
 	}
@@ -105,40 +184,52 @@ func cloudCardPresent(cfg *DirectConfig, library, relPath string) (present bool,
 	gate := cfg.openGate(stepCloudAudit)
 	defer gate.release()
 	if note := gate.blocked(); note != "" {
-		return false, false, errors.New(note)
+		return nil, 0, errors.New(note)
 	}
 	req, err := http.NewRequestWithContext(gate.ctx, http.MethodGet, base+"/kbdb/entries?"+q.Encode(), nil)
 	if err != nil {
-		return false, false, err
+		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Arcrun-API-Key", cfg.APIKey)
 	resp, err := cloudAuditHTTP.Do(req)
 	if err != nil {
-		return false, false, gate.record(err)
+		return nil, 0, gate.record(err)
 	}
 	gate.ok()
 	defer resp.Body.Close()
-	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, cloudAuditMaxBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, false, fmt.Errorf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, 0, fmt.Errorf("HTTP %d：%s", resp.StatusCode, clip(strings.TrimSpace(string(body)), 300))
 	}
 	if rerr != nil {
-		return false, false, rerr
+		return nil, 0, rerr
 	}
 	var payload struct {
-		Success *bool `json:"success"`
-		Total   *int  `json:"total"`
+		Success *bool             `json:"success"`
+		Total   *int              `json:"total"`
+		Entries []kbdbEntryStatus `json:"entries"`
 	}
 	if jerr := json.Unmarshal(body, &payload); jerr != nil {
-		return false, false, fmt.Errorf("雲端回應不是 JSON：%s", strings.TrimSpace(string(body)))
+		return nil, 0, fmt.Errorf("雲端回應不是 JSON：%s", clip(strings.TrimSpace(string(body)), 300))
 	}
-	// 🔴 total 缺席時回 ok=false 而不是「total=0」。少一個欄位可能是端點換了形狀，
+	// 🔴 total 缺席時回錯而不是「total=0」。少一個欄位可能是端點換了形狀，
 	//    把它讀成「雲端沒有這個檔」就會全部重送——寧可什麼都不做。
 	if payload.Total == nil || (payload.Success != nil && !*payload.Success) {
-		return false, false, fmt.Errorf("雲端回應少了 total 欄位：%s", strings.TrimSpace(string(body)))
+		return nil, 0, fmt.Errorf("雲端回應少了 total 欄位：%s", clip(strings.TrimSpace(string(body)), 300))
 	}
-	return *payload.Total > 0, true, nil
+	return payload.Entries, *payload.Total, nil
+}
+
+// cloudAuditMaxBody＝單頁回應讀入上限。10 列 block 全文通常 < 100 KB；
+// 截斷會讓 JSON 解析失敗 ⇒ 走「不知道」，不會被讀成「不在」。
+const cloudAuditMaxBody = 2 << 20
+
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // auditCandidates 挑出這一輪要問的檔：蓋過章、且太久沒對過帳的，最久沒對的排前面。
