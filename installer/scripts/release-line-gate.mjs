@@ -64,6 +64,8 @@ import {
 } from './release-lines.mjs';
 import { hostForLine } from './line-source-repo.mjs';
 import { giteaWriteCredentialsFromRemote } from './gitea-release.mjs';
+import { releaseForgeBase } from './forge-config.mjs';
+import { releaseForgeApi } from './release-forge.mjs';
 import { installerChangelogSection } from './installer-line.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -485,11 +487,16 @@ export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl =
         { headers: { 'user-agent': 'release-line-gate', accept: 'application/vnd.github+json' } });
       if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
       out[slug] = (await r.json()).map((x) => x.tag_name);
+    } else if (home.host === 'gitea' && fetchImpl === fetch && releaseForgeApi().kind === 'ahub') {
+      // 發佈紀錄的家是 AHub（TICKET_FORGE=ahub，InkStoneCo#234）；列表是公開讀，帶權杖只是署名。
+      const rf = releaseForgeApi();
+      const cred = rf.writeCredentials(root);
+      out[slug] = (await rf.listReleases(slug, { token: cred && cred.token, limit: 100 })).map((x) => x.tag_name);
     } else if (home.host === 'gitea') {
       const cred = giteaWriteCredentialsFromRemote(root);
       const headers = { accept: 'application/json' };
       if (cred) headers.authorization = `token ${cred.token}`;
-      const base = (home.baseUrl || 'https://git.uncle6.me').replace(/\/$/, '');
+      const base = releaseForgeBase(home.baseUrl);
       const r = await fetchImpl(`${base}/api/v1/repos/${slug}/releases?limit=100`, { headers });
       if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
       out[slug] = (await r.json()).map((x) => x.tag_name);

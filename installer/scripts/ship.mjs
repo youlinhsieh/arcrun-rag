@@ -114,6 +114,7 @@ import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_
 import { requireDaemonInBundle, GATE_LOG_REL as DAEMON_IN_BUNDLE_GATE_LOG_REL } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
 import { resolveArmTicket } from './ticket-arm-guard.mjs';
+import { ticketForge, ticketToken, releaseForgeBase } from './forge-config.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
 //   d20-guard 解的是「殼層 hook 看不見 node 子行程」的**GitHub 接觸**那一半；
 //   這一支解同一個形狀的另一半：**推 main**。2026-08-18 出貨線就是這樣把
@@ -135,11 +136,9 @@ import {
   uploadReleaseAsset as ghUploadAsset, listReleaseAssets as ghListAssets,
   listReleases as ghListReleases,
 } from './github-release.mjs';
-import {
-  giteaWriteCredentialsFromRemote, redactToken,
-  releaseExists as giteaReleaseExists, createRelease as giteaCreateRelease, commitExists as giteaCommitExists,
-  uploadReleaseAsset as giteaUploadAsset, listReleaseAssets as giteaListAssets, listReleases as giteaListReleases,
-} from './gitea-release.mjs';
+import { redactToken } from './gitea-release.mjs';
+import { releaseForgeApi } from './release-forge.mjs';
+
 import { pruneStrayDaemon, pendingPushBytes, describePushFailure, formatMB } from './bundle-push-scope.mjs';
 import { requireStations, arcrunWorkflows, STATIONS_REL } from './ship-stations.mjs';
 import { assertWorkflowsExist, checkLive, describeChecks, runWorkflow, fillInstanceNamespaces, maskNamespace } from './ship-arcrun.mjs';
@@ -194,6 +193,18 @@ installConsoleRedaction();
 import { runGate as runEnvParityGate, NEXT_STEPS as PARITY_NEXT_STEPS } from './env-parity-gate.mjs';
 
 const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
+
+// 🔴 版本發佈紀錄（release／附件／commit 存在檢查）住哪一家，只看 installer/forge.conf 的 TICKET_FORGE
+//   （inkstone/InkStoneCo#234）：gitea ＝ 原樣打 Gitea；ahub ＝ 打 AHub 的 release 路由，附件先寫 R2 再登記指標。
+//   函式名仍叫 gitea* 是因為這一站的 prose 與測試都用這些名字；它們現在是「目前這一家」的函式。
+const RELEASE_FORGE = releaseForgeApi({ repoDir: REPO_ROOT });
+const giteaWriteCredentialsFromRemote = (dir) => RELEASE_FORGE.writeCredentials(dir);
+const giteaReleaseExists = (...a) => RELEASE_FORGE.releaseExists(...a);
+const giteaCreateRelease = (...a) => RELEASE_FORGE.createRelease(...a);
+const giteaCommitExists = (...a) => RELEASE_FORGE.commitExists(...a);
+const giteaUploadAsset = (...a) => RELEASE_FORGE.uploadReleaseAsset(...a);
+const giteaListAssets = (...a) => RELEASE_FORGE.listReleaseAssets(...a);
+const giteaListReleases = (...a) => RELEASE_FORGE.listReleases(...a);
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
 // InkStoneCo 頂層（.github-armed／github-contact-log.md 的真身都住在這裡，見 d20-guard.mjs 檔頭）
 const INKSTONE_ROOT = resolve(REPO_ROOT, '..', '..');
@@ -699,7 +710,7 @@ async function recordInternalReleases({ R, manifest }) {
   const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
   if (!cred) {
     throw new Error(
-      '讀不到 Gitea 寫入權杖，發不出內部版本物件（來源＝本機 `gitea` remote 網址內嵌的帳密）。\n' +
+      `讀不到 ${RELEASE_FORGE.kind === 'ahub' ? 'AHub 寫入權杖（環境變數 AHUB_TOKEN／TICKET_FORGE_TOKEN）' : 'Gitea 寫入權杖（來源＝本機 `gitea` remote 網址內嵌的帳密）'}，發不出內部版本物件。\n` +
       '     不跳過：跳過的結果就是 2026-09-01 那件事——東西上線了，而 leo 找不到任何版本可以打開。');
   }
   const headSha = sh('git', ['rev-parse', 'HEAD'], REPO_ROOT);
@@ -877,6 +888,12 @@ const STEPS = [
         lines.push(`ARM 會去這張票找：inkstone/${at.repo}#${at.issue}（${at.source === 'flag' ? '--ship-ticket' : '登錄簿後備'}）——`
           + `leo 要在那張票留獨立一行 \`ARM: <版本號>\`（作者必須是 Leo、版號必須一致）；`
           + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
+        const forge = ticketForge();
+        lines.push(`票的正本：${forge.label}（installer/forge.conf 的 TICKET_FORGE，切換日只翻那一格）`);
+        if (CONFIRM && forge.kind === 'ahub' && !ticketToken('ahub')) {
+          throw new Error('票的正本在 AHub，但環境裡沒有 AHUB_TOKEN（或 TICKET_FORGE_TOKEN）——讀不到 leo 的 ARM。'
+            + '現在就斷，不等到 version 站才發現。只拿名字，值在環境（D36）。');
+        }
       }
     } else if (CONFIRM) {
       const { mission, expiresAt } = checkArmed(INKSTONE_ROOT);
@@ -937,13 +954,20 @@ const STEPS = [
       // 「Gitea 寫入 token：各 repo 的 git remote 網址內嵌」）。**不另開一條路**——
       // `GITEA_TOKEN` 環境變數只有 read:repository，開 release 會 403，不是替代品。
       const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+      // AHub 模式還要有寫 R2 的金鑰與帳號（附件本體先進 R2 才能登記指標）——同樣現在就發現，不等打到第 21 站。
+      const forgeProblems = RELEASE_FORGE.preflightProblems();
+      if (forgeProblems.length) {
+        throw new Error(
+          `發佈紀錄的家是 ${RELEASE_FORGE.label}，但前置不齊——release-record 步驟會需要，現在就能發現：\n` +
+          forgeProblems.map((x) => `       • ${x}`).join('\n'));
+      }
       if (!cred) {
         throw new Error(
-          `讀不到 Gitea 寫入權杖——release-record 步驟會需要它，現在就能發現，不必打到那一步才失敗。\n` +
+          `讀不到 ${RELEASE_FORGE.kind === 'ahub' ? 'AHub' : 'Gitea'} 寫入權杖——release-record 步驟會需要它，現在就能發現，不必打到那一步才失敗。\n` +
           `     來源＝本機 \`gitea\` remote 網址內嵌的帳密（system-dev/wiki/credentials-map.md）。\n` +
           `     這個 clone 的 gitea remote 不存在，或網址沒有帶帳密。`);
       }
-      lines.push(`發佈紀錄目的地：Gitea ${R.repoSlug}（寫入權杖已就位：${redactToken(cred)}）`);
+      lines.push(`發佈紀錄目的地：${RELEASE_FORGE.kind === 'ahub' ? RELEASE_FORGE.label : 'Gitea'} ${R.repoSlug}（寫入權杖已就位：${redactToken(cred)}）`);
     }
 
     // (a3) 🔴 **每條版本線宣告的 repo，此刻真的存在嗎**（D95，2026-08-18，InkStoneCo#40）
@@ -1789,11 +1813,15 @@ const STEPS = [
   if (T.requiresArm && CONFIRM && T.armTicket) {
     if (!ctx.armTicketResolved) throw new Error('缺出貨票：preflight 沒解出 ARM 要去哪張票找（--ship-ticket），fail-closed。');
     const { repo, issue } = ctx.armTicketResolved;
-    // 讀權杖：走既有 Gitea 寫入權杖來源（remote 內嵌帳密）——這裡只是**讀**留言，
-    // 公開 repo 不需要 token 也查得到，但 InkStoneCo 若轉私有，帶著token 才不會 403。
-    const giteaCred = giteaWriteCredentialsFromRemote(REPO_ROOT);
+    // 票住哪一家由 installer/forge.conf 的 TICKET_FORGE 決定（inkstone/InkStoneCo#234，一處翻）：
+    //   gitea ⇒ 讀權杖走既有來源（TICKET_FORGE_TOKEN｜本機 gitea remote 內嵌帳密｜GITEA_TOKEN_CLAUDE_CODE）；
+    //   ahub  ⇒ AHUB_TOKEN｜TICKET_FORGE_TOKEN（**不**拿 Gitea 的金鑰去 AHub）。
+    // 這裡只是**讀**留言；InkStoneCo 是私有 repo，沒 token 一律 404（Gitea）／401（AHub）。
+    const forge = ticketForge();
+    const giteaCred = forge.kind === 'gitea' ? giteaWriteCredentialsFromRemote(REPO_ROOT) : null;
     const { mission } = await checkArmedViaTicket({
-      version: ctx.release, repo, issue, token: giteaCred && giteaCred.token,
+      version: ctx.release, repo, issue,
+      token: ticketToken(forge.kind, { fallback: giteaCred && giteaCred.token }),
     });
     ctx.armMission = mission;
     detail.push(`ticket-arm 核對過：${mission}`);
@@ -2653,7 +2681,7 @@ const STEPS = [
   if (R.host === 'gitea') {
     const cred = giteaWriteCredentialsFromRemote(REPO_ROOT);
     if (!cred) throw new Error('讀不到 Gitea 寫入權杖（preflight 已經查過一次，走到這裡還沒有＝remote 在兩步之間被改動過）');
-    const opts = { token: cred.token, baseUrl: R.baseUrl };
+    const opts = { token: cred.token, baseUrl: releaseForgeBase(R.baseUrl) };
 
     // 內部號的序號要從「這個 repo 上已經有的 release」算 ⇒ 先撈一次（唯讀）。
     // 🔴 tag 與內文**都要餵**：2026-08-17 那兩筆內部號（`RAG-20260817-001/002-…`）
@@ -2735,7 +2763,7 @@ const STEPS = [
       guardOpts: pushGuardOpts(),
           message: `sync: ${t.entry.sourceDir}/ 同步自 ${R.repoSlug}@${headSha.slice(0, 7)}（${t.line.product} ${t.line.tag}）`,
         });
-        const onServer = await giteaCommitExists(t.slug, sync.sha, opts);
+        const onServer = await giteaCommitExists(t.slug, sync.sha, { ...opts, repoDir: expandHome(t.entry.workDir) });
         if (!onServer) {
           throw new Error(
             `同步完了，但 ${t.slug} 還是查不到 commit ${sync.sha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
@@ -2788,14 +2816,14 @@ const STEPS = [
       if (offload.length) body += downloadSection(T.dist, offload);
       const rel = await giteaCreateRelease({
         repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body,
-        target: targetOf.get(t.slug), token: cred.token, baseUrl: R.baseUrl,
+        target: targetOf.get(t.slug), token: cred.token, baseUrl: releaseForgeBase(R.baseUrl),
       });
       if (attachList.length === 0) {
         made.push(`版本發佈｜${t.line.title} → ${t.slug}：${rel.html_url}（成品在 R2，內文列 ${offload.length} 個下載網址，不掛附件）`);
         continue;
       }
       for (const a of attachList) {
-        await giteaUploadAsset({ repoSlug: t.slug, id: rel.id, name: a.name, data: readFileSync(a.abs), ...opts });
+        await giteaUploadAsset({ repoSlug: t.slug, id: rel.id, name: a.name, data: readFileSync(a.abs), tag: rel.tag_name || t.line.tag, ...opts });
       }
       // 🔴 回頭查證，不聽上傳步驟說「我成功了」（同 release-check 站的形狀）。
       //   掛檔失敗而頁面已經建好，是本輪最該擋的狀態：那就是 leo 看到的那種

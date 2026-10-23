@@ -1,6 +1,13 @@
 # feedback_report — 學員／封測者打字回報，一律變成 inkstone/arcrun-rag 的一張票
 # （inkstone/arcrun-rag#210）
 #
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-10-23（inkstone/InkStoneCo#234，票的正本搬家）：這一份是 **Gitea 版（現役＋回退用）**。
+# ══════════════════════════════════════════════════════════════════════════════
+# 票的正本換到 AHub 之後，部署的是同目錄 `feedback-report.ahub.yaml`（同名工作流 feedback_report，
+# 用 `node installer/scripts/render-feedback-report.mjs` 依 installer/forge.conf 渲染出要部署的那一份）。
+# 切換窗口內失敗 ⇒ 把這一份重新部署回去就是回退。兩份的 prep 只有 FORGE-SPECIFIC 區段不同。
+#
 # leo 2026-09-20 原話：「現在封測不只朋友，還有學員，他們發現問題如何回報我？
 # 他們不會用 github issues⋯⋯不然多少人測試也不知道有什麼需要改的。」
 # 定案經過（同票 comment 10300 → 10309，四次修正，最後一次拍板）：
@@ -166,12 +173,15 @@ config:
       return {
         success: true,
         repo: repo,
-        api_url: 'https://git.uncle6.me/api/v1/repos/' + repo + '/issues',
         title: title,
         body: body,
         reporter: reporter,
+        // FORGE-SPECIFIC-BEGIN ── 只有這一段會因票的正本換家而不同（feedback-report.ahub.yaml 同位置是 AHub 版）。
+        // 其餘 prep 全部共用，feedback-report-contract.test.mjs 逐字比對兩份。
+        api_url: 'https://git.uncle6.me/api/v1/repos/' + repo + '/issues',
         // 🔴 label id 只對 inkstone/arcrun-rag 有效（user=493／s/triage=69，2026-09-20 現查）。
         labels: [493, 69]
+        // FORGE-SPECIFIC-END
       };
     input:
       text: "{{input.text}}"

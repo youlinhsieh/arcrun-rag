@@ -1,0 +1,290 @@
+# feedback_report（AHub 版）— 學員／封測者打字回報，一律變成 inkstone/arcrun-rag 的一張票
+# （inkstone/arcrun-rag#210）
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-10-23（inkstone/InkStoneCo#234，票的正本搬家）：這一份是 **AHub 版（切換日部署）**。
+# ══════════════════════════════════════════════════════════════════════════════
+# 票的正本從 Gitea 搬到 leo21c 的 AHub（母票 #232）。同一條工作流，只換「票開在哪」：
+#   · 開票節點不再打 Gitea REST，而是打 AHub 的具名工作流
+#       POST {AHUB_CYPHER_URL}/webhooks/named/{AHUB_NS}/ahub__issue_create/query
+#     信封 { method, path, query, body, token, params, base }（Arcrun workflows/ahub/bridge/ahub_bridge.py 同款；
+#     真身是 Arcrun workflows/ahub/routes.json 的 issue_create）。回應是 {success, data:{status, body}}，
+#     所以 after_issue 要多拆一層，並且**以內層 status 判成敗**——外層 HTTP 永遠是 200。
+#   · 標籤用**名字**（user、s/triage）：AHub 的標籤 id 是匯入時重發的，不跟 Gitea 的 493／69 對；labelByRef 認名字。
+#   · 金鑰只寫名字 {{credential.ahub_token}}（D36）。這把是 AHub 登記過雜湊的 agent token，
+#     放在 inbox-feedback 這個 namespace 的金鑰中心；值 AI 不碰。
+#   · 🔴 網址不寫死在這份檔裡：`__AHUB_CYPHER_URL__`／`__AHUB_NS__` 兩個佔位由
+#     `node installer/scripts/render-feedback-report.mjs` 依 installer/forge.conf 渲染（#235 的地板：
+#     用戶實例上的工作流不得出現通往 leo 個人實例的網址——這份只部署在我們自己的收件端，網址在渲染時才進去）。
+#     沒渲染就推上去 ＝ 佔位原字串上線 ＝ 開票永遠失敗；渲染器會在殘留任何 `__X__` 時直接丟。
+#   · 回退：把 `feedback-report.yaml`（Gitea 版）重新部署回去。
+# 其餘（輸入驗證、標題只做機械處理、外部輸入一律 user + s/triage 進場、不呼叫任何通知端點）與 Gitea 版逐字相同——
+# prep 除了 FORGE-SPECIFIC 區段全部共用，feedback-report-contract.test.mjs 逐字比對。
+#
+# leo 2026-09-20 原話：「現在封測不只朋友，還有學員，他們發現問題如何回報我？
+# 他們不會用 github issues⋯⋯不然多少人測試也不知道有什麼需要改的。」
+# 定案經過（同票 comment 10300 → 10309，四次修正，最後一次拍板）：
+#   ① 一開始想只發 Telegram → leo 否決：「只有我知道，這個回饋應該要你可以看到」
+#   ② 改想存 KBDB feedback template → leo 再否決：「還是說用戶來的應該變成票？
+#      因為你本來就有有票就通知你的機制，所以它會通知你，就進行分診」
+#   ⇒ 定案：一則回報＝一張票（label user + s/triage），自動接上既有的分診產線
+#     （`inkstone/ISEP#159`），不必為回報另造一個收件匣。
+#
+# 🔴 紅線（票上寫的，這裡逐條對應）：
+#   · 學員沒有 Gitea 帳號 ⇒ 票由機器帳號代開，內文要寫清楚回報者是誰
+#     （顯示名／email／實例），不能看起來像機器自己開的。
+#   · 外部輸入一律 user + s/triage 進場，不准直接標 s/todo——分診由既有機制做。
+#   · 標題＝學員原話（不 AI 改寫），只做「多空白壓成一個空格＋超長截斷」這種機械處理。
+#   · 開票失敗＝送出失敗（學員要看到「沒送出去，請再試一次」）；開票成功＝送出成功，到此為止。
+#   · 金鑰只寫 {{credential.ahub_token}}（D36），值在執行前才由金鑰中心回填。（Gitea 版是 gitea_token）
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-29 改版（inkstone/arcrun-rag#235）：**這條工作流不再呼叫任何通知端點。**
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# leo 2026-09-29 規格：「prod 的環境，用戶就是免設定發給我們訊息，直接塞進票即可，
+# 不需要通知到手機，如果有必要由總管通知手機」「不可能預設每個用戶會製作 telegram bot，
+# 只是在測試環境由你或雲端總管回報」。
+#
+# ⇒ 用戶按下送出 ＝ 開一張票，就結束。**通知手機是總管另外的事，不長在用戶實例上。**
+# 舊版有一個 `notify` 節點，POST 到 `leo21c`（leo 個人實例）的 `notify_leo` 具名工作流：
+#   · 那等於每個用戶的實例都裝著一條通往 leo 個人實例的線（違反「不要把開發者的東西
+#     塞進使用者的空間」），而且 leo21c 沒有 telegram_bot_token ⇒ 每次都回 notify_ok:false
+#     （arcrun-rag#229／#233 實撞），看起來像失敗。
+#   · 本版**整個移除 notify 節點**，連帶移除 prep 的 notify_url 預設（原本硬指 leo21c）
+#     與 finalize 的 notify_ok 欄位（回應裡不再出現會被誤讀成「失敗」的通知欄位）。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-10-09 再改版（inkstone/arcrun-rag#235 c18393）：**這條工作流只住在我們自己的收件端。**
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 實測：小幫手「回報」在 geek6688／youlin／leo21c 三台都 404——這條工作流從沒被裝進任何用戶實例
+# （installer 的 workflows.json 只編 5 條 RAG 工作流），而且就算裝進去，它要的
+# `{{credential.ahub_token}}`（Gitea 版是 gitea_token）是**我們的**金鑰，用戶不會有也不該有。
+# ⇒ 部署點＝我們的 youlin（stage，leo 2026-10-09 裁決 B）上專屬 namespace `inbox-feedback`，只放這一條工作流＋
+#   `ahub_token`（Gitea 版是 `gitea_token`）一把憑證；桌面小幫手直接 POST 到
+#   `<youlin cypher>/webhooks/named/inbox-feedback/feedback_report/trigger`（namespace 走 path＝
+#   Arcrun 的公開表單形態），用戶實例完全不參與。**不要把它加進 installer 的 workflows.json。**
+#   用戶端防濫用在小幫手（本機每小時上限）；本工作流只做輸入長度上限。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 2026-09-21 結論：**這條工作流不依賴任何私庫 recipe。** 推它只要一個動作。
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 舊版用 `component: gitea_create_issue` 引用要先 `arcrun_recipe_push` 到私庫的 recipe
+# ⇒ **上線是兩個動作，而推 recipe 那個動作在雲端 session 裡推不上去**（comment 10532／
+# 10540：MCP 的 `arcrun_recipe_push` schema 沒有 `body_template` 欄位且
+# additionalProperties:false，走它等於重現 `df9b402d` 修掉的 100% 靜默失敗；
+# 走 HTTP 則被 harness 的 classifier 擋死）。
+#
+# 改法＝開票節點換成引擎自帶的 `http_request` 零件，把 recipe 的 endpoint／
+# method／headers／body 直接寫在節點上。**為什麼這樣是安全的，三條都實讀過引擎**：
+#
+#   ① `http_request` 不需要任何 recipe 就解析得動。
+#      `cypher-executor/src/lib/component-loader.ts:37` 的 `WASM_HTTP_RUNNER_IDS`
+#      第一個就是它，走第 7 步直接推導出 `arcrun-http-request.{WORKER_SUBDOMAIN}
+#      .workers.dev`——不查 RECIPES KV、不查 registry。（同檔 :95 那段註解也白紙黑字
+#      寫著這一整類零件「從未被 submit 過，也不需要」。）
+#
+#   ② **`body_json:` 沒有 `body_template:` vs 裸 `body:` 那個跳脫問題。**
+#      那個問題是 recipe 專屬的（component-loader.ts:402 對 recipe 做
+#      `interpolate(JSON.stringify(定義))`＝先序列化再字串替換）。
+#      節點走的是完全不同的一條路：`graph-executor.ts:297` 的 `interpolateData`
+#      **在物件結構上逐值替換**（:711 `interpolateValue` 遞迴），替換完才由
+#      `makeHttpRunner`（component-loader.ts:270）整包 `JSON.stringify(ctx)` 一次。
+#      ⇒ 換行與雙引號由 JSON.stringify 正確跳脫，**順序天生就是對的那一種**。
+#      零件那端再 `json.Marshal(body_json)` 一次（registry/components/http_request/
+#      main.go:77），仍然是「先組物件再序列化」。
+#      `labels` 保持 `[493, 69]` 陣列原型別：`interpolateString` 的 single-ref
+#      pass-through（graph-executor.ts:697）對「整串就是單一 {{x}}」回原值不 stringify。
+#
+#   ③ **`http_request` 的 `body_json` 是顯式白名單，不會被上游 ctx 污染。**
+#      main.go 的 `Input` struct 只認 url/method/headers/body/body_json，其餘欄位
+#      json.Unmarshal 直接丟掉（auth-recipe 零件則會把整個 ctx 攤平當 body ——
+#      那個坑記在 workers-ai-generate.yaml 檔頭）。節點自己寫的 `url` 也永遠贏過 ctx 裡
+#      同名的值（`mergedContext = {...ctx, ...resolvedData}`，resolvedData 在後）。
+#
+# ✅ 同時保留的舊結論（仍然成立，不要退回去）：
+#   · code 節點一律 `component: code`，不是 `__CODE_URL__` 佔位——後者只有
+#     安裝器那條路（installer/src/index.js:63 的 subsMap，對象是 *.local.yaml 編出的
+#     workflows.json）會代換；本檔是 canonical `.yaml`，佔位不會有人代換。
+
+name: feedback_report
+description: >
+  學員／封測者在小幫手或 Portal 打字回報問題 → 在 inkstone/arcrun-rag 開一張票
+  （label user + s/triage，標題＝原話不改寫，內文含回報原文＋回報者＋版本／實例／OS＋
+  選填的診斷檔摘要）→ 開票成功才算送出成功。用戶端免設定、不需任何通知金鑰、
+  不呼叫任何外部通知端點；通知手機是總管另外的事，不長在用戶實例上（inkstone/arcrun-rag#235）。
+  不依賴任何私庫 recipe，推一次 workflow 即上線。
+
+flow:
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> create_issue"
+  - "create_issue >> ON_SUCCESS >> after_issue"
+  - "after_issue >> ON_SUCCESS >> finalize"
+
+config:
+  # 1) 組標題／內文／labels。輸入驗證與內文組裝全部是純字串處理（決定性，無 IO）。
+  prep:
+    component: code
+    code: |
+      // 🔴 呼叫端沒帶的欄位，插值之後留下的是**字面** '{{input.x}}'，不是 undefined
+      //    （graph-executor.ts:700：取不到值就回原字串）。不擋掉它，沒附診斷檔的票會印出
+      //    一段 ```json "{{input.diagnostics}}"```、桌面小幫手送的票回報者會寫成
+      //    「{{input.reporter}}」。這是靜默的——YAML 正常、工作流也回 success。
+      var raw = function (v) {
+        // 只認 {{input.x}}（本節點 input: 區塊裡就只有這一種模板），不要連 {{foo}} 一起吃掉
+        // ——學員原話裡寫的大括號是**資料**，不是沒帶。
+        if (typeof v === 'string' && /^\s*\{\{input\.\w+\}\}\s*$/.test(v)) return undefined;
+        return v;
+      };
+      var clean = function (v, cap) {
+        v = raw(v);
+        if (v === undefined || v === null) return '';
+        return String(v).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, cap);
+      };
+
+      var text = String(raw(input.text) == null ? '' : raw(input.text)).trim();
+      if (!text) return { success: false, error: 'feedback_report 缺 text（不能是空白回報）' };
+      // 🔴 這條工作流現在掛在公開網址上（收件端，inkstone/arcrun-rag#235）：輸入一律設上限，
+      //    任何欄位都不能無限長。
+      if (text.length > 4000) text = text.slice(0, 4000) + '…';
+      var version = clean(input.version, 100) || 'unknown';
+      var instance = clean(input.instance, 200) || 'unknown';
+      var os = clean(input.os, 50) || 'unknown';
+      var repo = String(raw(input.repo) || 'inkstone/arcrun-rag').trim().replace(/^\/+|\/+$/g, '');
+      if (!/^[^\/\s]+\/[^\/\s]+$/.test(repo)) repo = 'inkstone/arcrun-rag';
+
+      // 🔴 回報者：票上紅線「不能看起來像機器自己開的」。Portal 會帶（顯示名＋email，
+      //    portal-data.ts 的 /portal/data/feedback），桌面小幫手沒有登入身分所以不帶
+      //    ——那種情況誠實寫「桌面小幫手（本機，未具名）」，用下面那行實例／namespace 認人，
+      //    不要假裝有名字。（缺這一格 ⇒ 同一台實例上每個學員開出來的票長得一模一樣。）
+      var reporter = clean(input.reporter, 200);
+      if (!reporter) reporter = '桌面小幫手（本機，未具名）';
+
+      // 標題＝學員原話，只做機械處理（壓空白＋截斷），不是 AI 改寫。
+      var title = text.replace(/\s+/g, ' ').trim();
+      if (title.length > 200) title = title.slice(0, 200) + '…';
+
+      var diag = raw(input.diagnostics);
+      var diagBlock = '（沒有附上診斷檔）';
+      if (diag !== undefined && diag !== null && diag !== '') {
+        try { diagBlock = '```json\n' + JSON.stringify(diag, null, 2).slice(0, 6000) + '\n```'; }
+        catch (e) { diagBlock = String(diag).slice(0, 6000); }
+      }
+
+      var body = '## 回報內容\n' + text +
+        '\n\n## 回報者\n' + reporter +
+        '\n\n## 環境\n- 版本：' + version +
+        '\n- 實例／namespace：' + instance +
+        '\n- 作業系統：' + os +
+        '\n- 回報時間：' + new Date().toISOString() +
+        '\n\n## 診斷檔\n' + diagBlock +
+        '\n\n---\n學員透過小幫手／Portal「打字回報」送出（inkstone/arcrun-rag#210），' +
+        '機器帳號代開；回報者＝上面「回報者」與「實例／namespace」兩行。';
+
+      return {
+        success: true,
+        repo: repo,
+        title: title,
+        body: body,
+        reporter: reporter,
+        // FORGE-SPECIFIC-BEGIN ── 只有這一段會因票的正本換家而不同（feedback-report.yaml 同位置是 Gitea 版）。
+        // 其餘 prep 全部共用，feedback-report-contract.test.mjs 逐字比對兩份。
+        api_url: '__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__issue_create/query',
+        base: '__AHUB_CYPHER_URL__',
+        path: '/repos/' + repo + '/issues',
+        params: { owner: repo.split('/')[0], repo: repo.split('/')[1] },
+        // AHub 的標籤用名字引用（labelByRef 認名字或 id），不跟 Gitea 的 id 對。
+        labels: ['user', 's/triage']
+        // FORGE-SPECIFIC-END
+      };
+    input:
+      text: "{{input.text}}"
+      version: "{{input.version}}"
+      instance: "{{input.instance}}"
+      os: "{{input.os}}"
+      reporter: "{{input.reporter}}"
+      diagnostics: "{{input.diagnostics}}"
+      repo: "{{input.repo}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 2) 真的開票（AHub）。ahub_token 值由金鑰中心在執行前回填（D36），這裡只寫佔位。
+  #    🔴 body 一律走 `body_json:`（物件），不要改成 `body:`（字串）——理由見檔頭②。
+  #    🔴 信封的 token 欄在 body_json 裡（AHub 工作流從信封讀 token，不讀 HTTP header）。
+  create_issue:
+    component: http_request
+    method: POST
+    url: "{{prep.data.api_url}}"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{prep.data.path}}"
+      query: {}
+      body:
+        title: "{{prep.data.title}}"
+        body: "{{prep.data.body}}"
+        labels: "{{prep.data.labels}}"
+      token: "{{credential.ahub_token}}"
+      params: "{{prep.data.params}}"
+      base: "{{prep.data.base}}"
+
+  # 3) 解析 AHub 回應，拿到票號／網址。
+  #    🔴 `http_request` 的成功輸出是 {success:true, data:{body:"<回應原文字串>"}}（main.go 最後那段）⇒ 讀 `create_issue.data.body`。
+  #    🔴 AHub 的具名工作流外層 HTTP 永遠是 200，真正的 HTTP 狀態在內層 {status, body}：
+  #       原文 ＝ {"success":true,"data":{"success":true,"status":201,"body":{…票…}}}。
+  #       所以**成敗只看內層 status === 201**；status 是 401／404／422／502 都要誠實判失敗（不假綠），
+  #       portal 讀不到 number 就回「沒送出去」。
+  after_issue:
+    component: code
+    code: |
+      var env = input.issue_raw;
+      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+      var inner = env && typeof env === 'object' ? env.data : null;
+      if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+      if (!inner || typeof inner !== 'object' || typeof inner.status !== 'number') {
+        return { success: false, error: '開票失敗：AHub 沒有回 {status, body}' };
+      }
+      if (inner.status !== 201) {
+        var m = inner.body && inner.body.message ? String(inner.body.message) : '沒有說明';
+        return { success: false, error: '開票失敗：HTTP ' + inner.status + ' ' + m };
+      }
+      var issue = inner.body;
+      if (!issue || typeof issue.number !== 'number') {
+        return { success: false, error: '開票失敗：回應解析不出票號' };
+      }
+      return {
+        success: true,
+        number: issue.number,
+        html_url: String(issue.html_url || '')
+      };
+    input:
+      issue_raw: "{{create_issue.data.body}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 4) 收尾＝圖上唯一的終點。工作流最後回給 portal／小幫手的永遠是「票號」那一包。
+  #    不呼叫任何通知端點，回應裡也不再有 notify 相關欄位（inkstone/arcrun-rag#235）。
+  finalize:
+    component: code
+    code: |
+      return {
+        success: true,
+        repo: input.repo,
+        number: input.number,
+        url: input.url,
+        reporter: input.reporter
+      };
+    input:
+      repo: "{{prep.data.repo}}"
+      number: "{{after_issue.data.number}}"
+      url: "{{after_issue.data.html_url}}"
+      reporter: "{{prep.data.reporter}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536

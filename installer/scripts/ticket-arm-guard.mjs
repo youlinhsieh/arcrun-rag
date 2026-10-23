@@ -43,14 +43,19 @@
  * 掉包），理由與 `d20-guard.mjs`／`github-release.mjs` 一致：呼叫端才是真正碰網路、
  * 真正寫入的那個，這支只負責「讀＋判定」，本身不做任何寫入、不產生任何放行憑證檔案。
  */
-import { withRetry, fetchWithRetry as defaultFetchWithRetry } from './fetch-retry.mjs';
+import { withRetry } from './fetch-retry.mjs';
+import { ticketForge, ticketToken, LEGACY_FORGE_URL } from './forge-config.mjs';
 
 /** 安全邊界：只認這個帳號名，不接受任何覆蓋——理由同 `scripts/lib/gitea-arm-common.sh`。 */
 export const APPROVER_LOGIN = 'Leo';
 /** 安全邊界：只認這個 org，不接受任何覆蓋——理由同上。 */
 export const OWNER = 'inkstone';
 
-export const GITEA_API_BASE_DEFAULT = 'https://git.uncle6.me';
+/**
+ * 舊家網址（相容舊匯出名）。🔴 票現在住哪由 `installer/forge.conf` 的 TICKET_FORGE 決定
+ * （inkstone/InkStoneCo#234）；這個常數只剩「forge.conf 讀不到」時的後備，別再拿它當預設。
+ */
+export const GITEA_API_BASE_DEFAULT = LEGACY_FORGE_URL;
 
 /** 版本號正規化：去掉單一前導 `v`/`V`、去頭尾空白。兩邊都用同一支比，才不會各自為政。 */
 export function normVersion(v) {
@@ -100,7 +105,7 @@ export function findArmMatch(comments, version) {
  * 到本次撰寫時已有 138 則 ⇒ 不能只抓第一頁）。有界：最多 `maxPages` 頁，
  * 避免票異常肥大時無限迴圈——真的超過上限，判定為「查不完整」，fail-closed。
  */
-async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl, maxPages = 20, pageSize = 50 }) {
+async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl, maxPages = 20, pageSize = 50, hint = '' }) {
   const out = [];
   for (let page = 1; page <= maxPages; page++) {
     const url = `${baseUrl}/api/v1/repos/${owner}/${repo}/issues/${issue}/comments?limit=${pageSize}&page=${page}`;
@@ -108,7 +113,7 @@ async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl,
     if (token) headers.authorization = `token ${token}`;
     const r = await fetchImpl(url, { headers });
     if (!r.ok) {
-      throw new Error(`讀 ${owner}/${repo}#${issue} 的留言失敗：HTTP ${r.status}（第 ${page} 頁）`);
+      throw new Error(`讀 ${owner}/${repo}#${issue} 的留言失敗：HTTP ${r.status}（第 ${page} 頁）${hint}`);
     }
     const batch = await r.json();
     if (!Array.isArray(batch)) {
@@ -164,17 +169,18 @@ export function resolveArmTicket({ armTicket, shipTicket } = {}) {
  *                              確保這裡傳進來的就是 `ctx.release`，不是任何可被外部操控的值。
  * @param {string} [o.repo]    載體票所在 repo（inkstone org 底下），預設 InkStoneCo
  * @param {number} o.issue     載體票號
- * @param {string} [o.token]   Gitea 讀權杖。🔴 2026-09-22 實測：`inkstone/InkStoneCo` 是
- *                              **私有** repo（不是公開讀），沒帶 token 會回 HTTP 404
- *                              （Gitea 對私有資源刻意回 404 而非 401/403，避免洩露存不存在）。
- *                              呼叫端（ship.mjs）用既有的 `giteaWriteCredentialsFromRemote()`
- *                              取，不必另開一條路。公開 repo（若載體票搬去那種 repo）不帶也行。
- * @param {string} [o.baseUrl]
- * @param {typeof fetch} [o.fetchImpl] 預設走有界重試版（c10724），測試可換成假的
+ * @param {string|null} [o.token]  讀權杖。不給（undefined）＝照 `forge.conf` 的 TICKET_FORGE 由環境變數名取
+ *                              （ahub：AHUB_TOKEN｜TICKET_FORGE_TOKEN；gitea：TICKET_FORGE_TOKEN｜GITEA_TOKEN_CLAUDE_CODE）。
+ *                              🔴 2026-09-22 實測：`inkstone/InkStoneCo` 是**私有** repo，沒帶 token 會回 HTTP 404
+ *                              （Gitea 對私有資源刻意回 404 而非 401/403）；AHub 沒 token 一律 401。
+ *                              呼叫端（ship.mjs）可傳自己解好的值（含 null＝明確沒有）。
+ * @param {string} [o.baseUrl]  不給＝用 forge 設定的（gitea 的網址｜`ahub://<ns>`）
+ * @param {typeof fetch} [o.fetchImpl] 不給＝用 forge 設定的（gitea：有界重試版 c10724；ahub：直連工作流），測試可換成假的
+ * @param {object} [o.env] 測試用：注入環境變數
+ * @param {object} [o.conf] 測試用：注入 forge.conf 內容
  */
 export async function checkTicketArmed({
-  version, repo = 'InkStoneCo', issue, token,
-  baseUrl = GITEA_API_BASE_DEFAULT, fetchImpl = defaultFetchWithRetry,
+  version, repo = 'InkStoneCo', issue, token, baseUrl, fetchImpl, env, conf,
 }) {
   if (!version || typeof version !== 'string') {
     throw new Error('checkTicketArmed 缺 version（呼叫端必須傳自己 manifest 算出的版本號，不接受空值）。');
@@ -186,7 +192,14 @@ export async function checkTicketArmed({
     throw new Error(`checkTicketArmed 的 repo 名格式不合法（收到：${JSON.stringify(repo)}）。`);
   }
 
-  const comments = await fetchAllComments({ owner: OWNER, repo, issue, token, baseUrl, fetchImpl });
+  const forge = ticketForge({ ...(env ? { env } : {}), ...(conf ? { conf } : {}) });
+  baseUrl = baseUrl ?? forge.baseUrl;
+  fetchImpl = fetchImpl ?? forge.fetchImpl;
+  if (token === undefined) token = ticketToken(forge.kind, env ? { env } : {});
+  const hint = forge.kind === 'ahub'
+    ? `\n     票的正本在 ${forge.label}（installer/forge.conf）。401 ＝ 缺或錯的 AHUB_TOKEN（只拿名字，值在環境）；404 ＝ 那張票在 AHub 上不存在。`
+    : '';
+  const comments = await fetchAllComments({ owner: OWNER, repo, issue, token, baseUrl, fetchImpl, hint });
   const m = findArmMatch(comments, version);
   const ticketUrl = `${baseUrl}/${OWNER}/${repo}/issues/${issue}`;
 

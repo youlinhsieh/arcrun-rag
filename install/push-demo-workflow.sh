@@ -42,7 +42,9 @@ esac
 # ⚠ GITEA_* 在 ingest 路徑已 deprecated（SDD ingest-hash-trigger task 4：rag-ingest*
 #   已改 collector→R2 鏈，不再吃 Gitea）。保留只為 rag-extract*/其他仍讀 Gitea 的 workflow；
 #   全部 de-Gitea 後（Part B）連同本段刪除。
-GITEA_BASE="${GITEA_BASE:-https://git.uncle6.me}"
+# 不再預設指向我們的私有 Gitea（inkstone/InkStoneCo#234，票的正本搬家）。萃取鏈要的是「Gitea 形狀的 contents API」，
+# Artifacts／AHub 都沒有那種端點——要跑 rag-extract*.local.yaml 的 demo 站，GITEA_BASE 自己給（例：install.sh 起的本機 Gitea）。
+GITEA_BASE="${GITEA_BASE:-}"
 GITEA_TOKEN="${GITEA_TOKEN:-}"
 # R2 原稿讀取（rag-ingest* v3 用；collector 上傳的 content-addressed bucket）
 CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"
@@ -56,6 +58,9 @@ NAME_OVERRIDE="${NAME_OVERRIDE:-}"   # 測試部署用：覆蓋 workflow 名（�
 # bash 內設的預設值要進 python heredoc 的 os.environ，必須 export
 export NS CYPHER KBDB HTTPREQ CODE GITEA_BASE GITEA_TOKEN DOCS_PREFIX CARDS_DIR INDEX_PATH LIBRARY NAME_OVERRIDE CF_ACCOUNT_ID R2_BUCKET CF_R2_TOKEN
 
+if grep -q "__GITEA_BASE__" "$YAML" && [ -z "$GITEA_BASE" ]; then
+  echo "❌ $YAML 需要 GITEA_BASE（Gitea 形狀的 git 後端網址；不再預設指向 git.uncle6.me）" >&2; exit 1
+fi
 if grep -q "__GITEA_TOKEN__" "$YAML" && [ -z "$GITEA_TOKEN" ]; then
   echo "❌ $YAML 需要 GITEA_TOKEN（能寫知識庫 repo contents 的 token）" >&2; exit 1
 fi

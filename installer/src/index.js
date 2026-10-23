@@ -63,7 +63,9 @@ function subsMap(env, b) {
     '__CODE_URL__': b.code,
     '__LLM_MODEL__': env.LLM_MODEL || 'gemma-4-31b-it',
     '__GEMINI_API_KEY__': env.GEMINI_API_KEY || '',
-    '__GITEA_BASE__': env.GITEA_BASE || 'https://git.uncle6.me',
+    // 不再預設指向我們的私有 Gitea（inkstone/InkStoneCo#234）：編進用戶實例的 6 條工作流沒有一條用這個佔位
+    // （萃取鏈是 demo 站專用），要用就明確給 env.GITEA_BASE。
+    '__GITEA_BASE__': env.GITEA_BASE || '',
     '__GITEA_TOKEN__': env.GITEA_TOKEN || '',
     '__DOCS_PREFIX__': env.DOCS_PREFIX || 'docs/',
     '__CARDS_DIR__': env.CARDS_DIR || 'system-dev/wiki/cards',

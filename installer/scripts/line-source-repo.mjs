@@ -53,6 +53,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { assertPushAllowed } from './main-push-guard.mjs';
 // #169：哪些線會產生版本物件（含只發內部的那種——它一樣要宣告落點）。
 import { publishesRelease } from './release-lines.mjs';
+import { releaseForgeBase } from './forge-config.mjs';
+import { releaseForgeApi } from './release-forge.mjs';
 
 /** `~/x` → `$HOME/x`。與 ship.mjs 的 expandHome 同一個理由：不准寫死 `/Users/<誰>/`。 */
 export function expandHome(p) {
@@ -113,7 +115,9 @@ export function hostForLine(lineId, releaseRecord) {
       `版本線 \`${lineId}\` 不知道要發到哪台主機：該線沒宣告 host，目標也沒有 releaseRecord.host。\n` +
       `     不猜（猜錯的症狀是「發成功了，但發在另一邊」）⇒ 在 installer/ship.targets.json 補一個。`);
   }
-  const baseUrl = entry.baseUrl || (releaseRecord && releaseRecord.baseUrl);
+  const declared = entry.baseUrl || (releaseRecord && releaseRecord.baseUrl);
+  // 發佈紀錄的主機：RELEASE_FORGE_URL（installer/forge.conf）有填就覆蓋 gitea 這一側（inkstone/InkStoneCo#234）。
+  const baseUrl = host === 'gitea' ? releaseForgeBase(declared) : declared;
   return { host, baseUrl, repoSlug: entry.repoSlug, entry };
 }
 
@@ -396,19 +400,28 @@ export function normRemote(u) {
  *
  * @returns {Promise<boolean>}
  */
-export async function repoExists(host, repoSlug, { token, baseUrl, fetchImpl = fetch } = {}) {
+export async function repoExists(host, repoSlug, { token, baseUrl, fetchImpl } = {}) {
   const headers = { accept: 'application/json', 'user-agent': 'line-source-repo' };
   let url;
   if (host === 'gitea') {
     if (token) headers.authorization = `token ${token}`;
-    url = `${(baseUrl || 'https://git.uncle6.me').replace(/\/$/, '')}/api/v1/repos/${repoSlug}`;
+    // 票／發佈紀錄的家是 AHub（installer/forge.conf 的 TICKET_FORGE=ahub，InkStoneCo#234）⇒ 問 AHub 的 repo_get，
+    // 不再打 Gitea 形狀的主機。呼叫端自己注入 fetchImpl（測試）時尊重它，不繞路。
+    const rf = fetchImpl ? null : releaseForgeApi();
+    if (rf && rf.kind === 'ahub') {
+      const h = rf.http();
+      fetchImpl = h.fetchImpl;
+      url = `${h.base}/api/v1/repos/${repoSlug}`;
+    } else {
+      url = `${releaseForgeBase(baseUrl)}/api/v1/repos/${repoSlug}`;
+    }
   } else if (host === 'github') {
     // D20 2026-08-10：讀一律匿名、放行、不計次。
     url = `https://api.github.com/repos/${repoSlug}`;
   } else {
     throw new Error(`不認得的 host：${host}`);
   }
-  const r = await fetchImpl(url, { headers });
+  const r = await (fetchImpl || fetch)(url, { headers });
   if (r.status === 404) return false;
   if (!r.ok) throw new Error(`查詢 ${repoSlug} 是否存在失敗：HTTP ${r.status}（不猜，直接停）`);
   return true;

@@ -1,0 +1,162 @@
+{
+  "_": [
+    "inkstone/InkStoneCo#234（母票 #232）：本 repo 每一處還寫著 git.uncle6.me（舊家）的被追蹤非 md 檔，逐項標「已換／不必換／待決」＋理由。",
+    "installer/scripts/forge-consumers.test.mjs 會擋：有人在被追蹤的非 md 檔新寫了 git.uncle6.me、卻沒登記在這裡 ⇒ 紅；",
+    "登記了卻已不含那串字（清單過期）⇒ 也紅——清單不能默默變成謊。",
+    "",
+    "狀態只有三種：",
+    "  已換  ＝ 已經讀 installer/forge.conf（或已移除寫死的舊址）。切換日只翻 forge.conf 的 TICKET_FORGE，翻回 gitea ＝ 回退。",
+    "  不必換＝ 註解／歷史落帳／測試樣本／『不准指回舊家』的規則文字。理由寫在 reason。",
+    "  待決  ＝ 這一處的新家**現在沒有答案**（不是沒做）。decision 欄寫誰要決定什麼；在那之前它照舊打舊家。",
+    "",
+    "票之外的『舊家』：",
+    "  · 版本發佈紀錄（release／commit 存在檢查／附件）：AHub 第一層沒有 release 端點（Arcrun workflows/ahub/routes.json），",
+    "    Artifacts 也沒有；release 說明與附件已備份在 Artifacts repo InkStoneCo/gitea-attic（gitea-ops#4 c22809），但那是備份不是 API。",
+    "    forge.conf 的 RELEASE_FORGE_URL 是覆蓋點，填了 ship 的 gitea 主機全部改打它。",
+    "  · git 本身（clone／push 的 remote、bundles 的 raw 網址）：歸 gitea-ops#4 與 arcrun-rag#266，這裡只登記。",
+    "  · 寫入 release 用的 Gitea 權杖來自本機 `gitea` remote 內嵌帳密（giteaWriteCredentialsFromRemote）；remote 換成 Artifacts 後讀不到 ⇒ 發佈紀錄站會當場斷。"
+  ],
+  "files": {
+    "installer/forge.conf": {
+      "status": "已換",
+      "reason": "設定本體。TICKET_FORGE／TICKET_FORGE_URL／AHUB_CYPHER_URL／AHUB_NS／RELEASE_FORGE_URL 五格；環境變數同名者優先。TICKET_FORGE_URL 目前仍是舊家（切換前的現況）。"
+    },
+    "installer/scripts/forge-config.mjs": {
+      "status": "已換",
+      "reason": "讀 forge.conf 的唯一模組。裡面的舊家網址只是 forge.conf 讀不到時的最後後備（LEGACY_FORGE_URL）。"
+    },
+    "installer/scripts/ship.mjs": {
+      "status": "不必換",
+      "reason": "三處都是文字：『dist 的 publicBase 不准指回 git.uncle6.me』的規則訊息與註解，不是連線。ARM 核對改走 ticketForge()（已換）；發佈紀錄的 baseUrl 走 releaseForgeBase()。"
+    },
+    "installer/scripts/stage-dist.mjs": {
+      "status": "不必換",
+      "reason": "『下載不准指回 git.uncle6.me』的守門規則（arcrun-rag#266），舊家搬走後這條規則更該留著。"
+    },
+    "installer/scripts/env-parity-gate.mjs": {
+      "status": "不必換",
+      "reason": "一行說明文字（prod 的下載走 R2，離開 git 歷史），不是連線。"
+    },
+    "installer/scripts/fetch-retry.mjs": {
+      "status": "不必換",
+      "reason": "檔頭實測紀錄的註解（2026-09-22 對舊家 api/v1/version 的連線掉包），歷史事實不改寫。"
+    },
+    "installer/scripts/main-push-guard.mjs": {
+      "status": "不必換",
+      "reason": "註解舉例『正規化後的 remote』長什麼樣；判斷邏輯對 host 不挑（normRemote 去帳密、去 .git）。remote 換成 Artifacts 後，登錄簿 destinations 要跟著換——歸 gitea-ops#4。"
+    },
+    "installer/scripts/org-namespace-gate.mjs": {
+      "status": "不必換",
+      "reason": "擋「舊 owner（Leo）的 Gitea 路徑」的閘；舊 owner 不會因為搬家變合法，留著。"
+    },
+    "installer/scripts/gitea-release.mjs": {
+    "status": "已換",
+    "reason": "TICKET_FORGE=gitea 時的後端，翻回舊家（回退）就是它。TICKET_FORGE=ahub 時 ship.mjs／release-line-gate.mjs／line-source-repo.mjs 改走 release-forge.mjs（建 release 打 AHub 的 release 路由、附件先寫 R2 再登記指標），這支不再被呼叫。預設主機仍是舊家，是翻回去時要的。"
+  },
+  "installer/ship.targets.json": {
+    "status": "待決",
+    "reason": "五處：①releaseRecord／installer 的 baseUrl（發佈紀錄主機）——已換：TICKET_FORGE=ahub 時 baseUrl 不再被使用（release-forge.mjs 直打 AHub），翻回 gitea 才照它 ②collector 線的 remote（git push 目的地，歸 gitea-ops#4）③bundles.remote＋pin.template（stage 的 bundle 倉，歸 arcrun-rag#266）④一段註解。",
+    "decision": "②③隨 gitea-ops#4／arcrun-rag#266 的新 remote 與下載指標；①已結案（總管裁定 InkStoneCo#234 c22852：發佈紀錄住 AHub，附件住 leo21c R2 gitea-lfs）。"
+  },
+    "installer/scripts/local-install-check.mjs": {
+      "status": "待決",
+      "reason": "本機安裝檢查的 BUNDLE_BASE 預設指 staging bundle 倉 raw（舊家）；環境變數 BUNDLE_BASE 可覆蓋。",
+      "decision": "arcrun-rag#266：stage 下載改走 R2 後，預設值跟著換成 R2 指標。依紅線不碰 arcrun-rag-bundles-staging。"
+    },
+    "installer/oauth-prototype/wrangler.toml": {
+      "status": "待決",
+      "reason": "stage 的 BUNDLE_BASE（:192、:284）仍指舊家 staging 倉 raw，與 :274 的註解互相矛盾。",
+      "decision": "arcrun-rag#266（工單明寫不在 #234 做）。"
+    },
+    "installer/oauth-prototype/worker.js": {
+      "status": "不必換",
+      "reason": "兩處都是註解（『不再依賴 git.uncle6.me』）。"
+    },
+    "installer/oauth-prototype/worker.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：證明 GITEA_BASE_URL 這類 leo 專屬變數不會洩給用戶。"
+    },
+    "installer/oauth-prototype/worker-dist.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：故意指向舊家，證明走 R2 的環境絕不再讀它。"
+    },
+    "installer/oauth-prototype/installer-version.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（stage pin 網址的格式）。"
+    },
+    "install/push-demo-workflow.sh": {
+      "status": "已換",
+      "reason": "GITEA_BASE 預設拿掉（原本預設舊家）；工作流真的含 __GITEA_BASE__ 卻沒給 GITEA_BASE 就當場斷。萃取鏈要的是『Gitea 形狀的 contents API』，Artifacts／AHub 都沒有那種端點，demo 站要自備後端——本來也只該如此。"
+    },
+    "scripts/github-publish-sanitize.py": {
+      "status": "已換",
+      "reason": "判準重想過：『叫讀者 clone 自架 Gitea／指向 Leo/arcrun-rag』兩條對舊家仍成立，保留；新增同款一條——叫讀者 clone Cloudflare Artifacts（artifacts.cloudflare.net，私有，外部人必 404）也擋。"
+    },
+    "system-dev/scripts/install.sh": {
+      "status": "待決",
+      "reason": "system-dev-template 的 vendored 副本（update.sh 每次會被模板蓋回），真身在 inkstone/system-dev-template；在這裡改一份，下次 update 就被蓋掉。",
+      "decision": "總管：切換後 system-dev-template 的『匿名可讀 raw 網址』是什麼？Artifacts 沒有匿名 raw。定案後在模板 repo 改一次，這裡隨 update 同步。"
+    },
+    "system-dev/scripts/update.sh": {
+      "status": "待決",
+      "reason": "同 install.sh（vendored 副本）。",
+      "decision": "同 system-dev/scripts/install.sh。"
+    },
+    "workflows/feedback-report.yaml": {
+      "status": "已換",
+      "reason": "Gitea 版保留作回退：切換日部署同目錄 feedback-report.ahub.yaml（同名工作流 feedback_report），回退就把這一份重新部署回去。兩份的 prep 共用段由 feedback-report-contract.test.mjs 釘住不得分叉。"
+    },
+    "workflows/tests/feedback-report-contract.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（Gitea 回應長相）。"
+    },
+    "installer/ship-report.json": {
+      "status": "不必換",
+      "reason": "歷史落帳（過去每一趟出貨寫下的 release 網址），事實不改寫。"
+    },
+    "installer/scripts/bundle-push-scope.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本。"
+    },
+    "installer/scripts/fetch-retry.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（假 fetch 的網址）。"
+    },
+    "installer/scripts/line-source-repo.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（remote 網址正規化、授權簽章的輸入）。"
+    },
+    "installer/scripts/main-push-guard.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（remote 網址正規化、授權簽章的輸入）。"
+    },
+    "installer/scripts/org-namespace-gate.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：證明閘會擋舊 owner。"
+    },
+    "installer/scripts/release-line-gate.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（登錄簿宣告的 baseUrl）。"
+    },
+    "installer/scripts/secret-redact.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：證明帶帳密的 remote 網址會被遮蔽。"
+    },
+    "installer/scripts/stage-dist.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：證明 publicBase 指回舊家會被擋。"
+    },
+    "installer/scripts/verify-download-dist.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（stage pin 網址）。"
+    },
+    "installer/scripts/verify-download.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本（stage pin 網址）。"
+    },
+    "workflows/tests/feedback-report-ahub-contract.test.mjs": {
+      "status": "不必換",
+      "reason": "測試：斷言 AHub 版模板不含舊址（樣本字串）。"
+    }
+  }
+}
