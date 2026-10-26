@@ -183,6 +183,18 @@ type FolderErrorItem struct {
 	Name string `json:"name"` // 檔名（含副檔名）
 	Kind string `json:"kind"`
 	Why  string `json:"why"` // ≤6 字短標籤
+	// Detail＝上一次失敗的真因（LastError 截短、單行）。只有「重試中」三個字時，
+	// 使用者和回報的人都看不出卡在哪、也不知道它其實一直在燒額度——畫面放進 hover 與那一列。
+	Detail string `json:"detail,omitempty"`
+}
+
+// errorItemDetail 把 manifest 的 LastError 收成畫面放得下的一句：壓成單行、最多 120 字。
+func errorItemDetail(lastError string) string {
+	d := strings.Join(strings.Fields(lastError), " ")
+	if r := []rune(d); len(r) > 120 {
+		d = string(r[:120]) + "…"
+	}
+	return d
 }
 
 // maxErrorItemsPerNode：一層最多帶幾份出錯檔的細節（數字 ErrorFiles 仍是全量）。
@@ -335,7 +347,7 @@ func BuildFolderTree(absRoot, library string, dirs map[string]*dirStat, entries 
 			if one := (&Manifest{Entries: map[string]*ManifestEntry{rel: e}}).Progress(); one.Stuck+one.Failing > 0 {
 				n.ErrorFiles++
 				if len(n.ErrorItems) < maxErrorItemsPerNode {
-					it := FolderErrorItem{Rel: rel, Name: path.Base(rel)}
+					it := FolderErrorItem{Rel: rel, Name: path.Base(rel), Detail: errorItemDetail(e.LastError)}
 					switch fk := FixableKind(e.LastError); {
 					case fk != "":
 						it.Kind, it.Why = "fixable", fk
