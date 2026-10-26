@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -107,7 +109,11 @@ func ConvertToText(path string, data []byte) (string, error) {
 func ConvertToTextReport(path string, data []byte) (string, *PDFReadReport, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if IsPlainText(path) {
-		return normalizeText(string(data)), nil, nil
+		txt, err := decodePlainText(data)
+		if err != nil {
+			return "", nil, err
+		}
+		return normalizeText(txt), nil, nil
 	}
 
 	if ex, ok := preNormExtractors[ext]; ok {
@@ -145,6 +151,55 @@ func ConvertToTextReport(path string, data []byte) (string, *PDFReadReport, erro
 		return "", rep, ErrNoText
 	}
 	return txt, rep, nil
+}
+
+// ErrNotUTF8：純文字檔不是 UTF-8（Windows 上常見：記事本／Excel 存成 Big5「ANSI」）。
+// 以前照樣當 UTF-8 讀，中文全變成亂碼送去給 AI，萃出來的東西沒有意義、還會一直重試燒額度。
+var ErrNotUTF8 = fmt.Errorf("檔案的文字編碼不是 UTF-8（可能是 Big5／ANSI），請用記事本「另存新檔」把編碼選成 UTF-8 再放回來")
+
+// decodePlainText 把純文字檔的位元組變成字串：
+//   - 去掉 UTF-8 BOM（Windows 記事本常帶，留著會變成檔頭一個看不見的字元）
+//   - 帶 BOM 的 UTF-16（記事本的「Unicode」）轉成 UTF-8——以前直接當 UTF-8 讀，中文全毀
+//   - 大量不是 UTF-8 的位元組（Big5 等）⇒ ErrNotUTF8，不把亂碼送去萃取
+//
+// 只有零星幾個壞位元組的檔照舊放行（跟以前一樣），不讓一個壞字元擋住整份檔。
+func decodePlainText(data []byte) (string, error) {
+	switch {
+	case len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF:
+		data = data[3:]
+	case len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE:
+		return decodeUTF16(data[2:], false), nil
+	case len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF:
+		return decodeUTF16(data[2:], true), nil
+	}
+	if utf8.Valid(data) {
+		return string(data), nil
+	}
+	bad, runes := 0, 0
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		if r == utf8.RuneError && size == 1 {
+			bad++
+		}
+		runes++
+		i += size
+	}
+	if bad*20 >= runes { // 5% 以上不是 UTF-8 ⇒ 整份是別的編碼
+		return "", ErrNotUTF8
+	}
+	return string(data), nil
+}
+
+func decodeUTF16(b []byte, bigEndian bool) string {
+	u := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		if bigEndian {
+			u = append(u, uint16(b[i])<<8|uint16(b[i+1]))
+		} else {
+			u = append(u, uint16(b[i+1])<<8|uint16(b[i]))
+		}
+	}
+	return string(utf16.Decode(u))
 }
 
 // normalizeText 做兩件事，兩件都是實測後才加的：

@@ -430,11 +430,14 @@ func TestFolderTreeErrorItems(t *testing.T) {
 		byPath[n.Path] = n
 	}
 	root, sub := byPath[""], byPath["sub"]
-	if len(root.ErrorItems) != 1 || root.ErrorItems[0] != (FolderErrorItem{Rel: "big.pdf", Name: "big.pdf", Kind: "fixable", Why: "讀不出字"}) {
+	if len(root.ErrorItems) != 1 || root.ErrorItems[0] != (FolderErrorItem{Rel: "big.pdf", Name: "big.pdf", Kind: "fixable", Why: "讀不出字", Detail: "轉檔失敗"}) {
 		t.Fatalf("根的出錯檔：%+v", root.ErrorItems)
 	}
 	if len(sub.ErrorItems) != 2 || sub.ErrorItems[0].Kind != "unsolvable" || sub.ErrorItems[1].Kind != "retry" {
 		t.Fatalf("子層的出錯檔：%+v", sub.ErrorItems)
+	}
+	if sub.ErrorItems[1].Detail != "HTTP 500 暫時的" {
+		t.Fatalf("「重試中」那一列要帶上次失敗的真因，不能只有三個字：%+v", sub.ErrorItems[1])
 	}
 	if root.ErrorFiles != len(root.ErrorItems) || sub.ErrorFiles != len(sub.ErrorItems) {
 		t.Fatalf("清單筆數要與 ErrorFiles 同一把尺")

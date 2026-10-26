@@ -504,10 +504,13 @@ function errItemHtml(root, it, ind) {
   if (it.kind === 'fixable') act = `<button class="ftinc" data-openurl="${FAQ_URL}" title="怎麼處理" aria-label="怎麼處理">FAQ</button>`;
   else if (it.kind === 'unsolvable') act = done ? `<span class="ftdone" title="已回報" aria-label="已回報">✓</span>`
     : `<button class="ftinc" data-fprob="${ai}" data-froot="${esc(root)}" data-frel="${esc(it.rel)}" title="回報給 Arcrun" aria-label="回報給 Arcrun">回報</button>`;
-  const tip = it.kind === 'fixable' ? (FIX_HINT[it.why] || it.why) : (it.kind === 'retry' ? '自動重試中，不用處理' : '我們還沒有這類問題的解法');
+  const base = it.kind === 'fixable' ? (FIX_HINT[it.why] || it.why) : (it.kind === 'retry' ? '會自動重試（間隔越拉越長，連續失敗 8 次就停）' : '我們還沒有這類問題的解法');
+  // 只寫「重試中」看不出卡在哪：把上一次失敗的真因（detail）帶上，hover 看得到、那一列也寫一小段。
+  const tip = it.detail ? `${base}\n上次失敗的原因：${it.detail}` : base;
+  const detail = it.detail ? `<span class="why detail" title="${esc(it.detail)}">${esc(it.detail)}</span>` : '';
   return `<div class="fterr ${esc(it.kind)}" data-errrow="${esc(key)}" style="padding-left:${ind}px">`
     + `<span class="bang">!</span><span class="nm" title="${esc(it.rel)}">${esc(it.name)}</span>`
-    + `<span class="why" title="${esc(tip)}">${esc(it.why)}</span>${act}</div>`;
+    + `<span class="why" title="${esc(tip)}">${esc(it.why)}</span>${detail}${act}</div>`;
 }
 
 // 「!N」被按下：帶到出錯的位置。folder 空字串＝整個帳號（展開每個有出錯的資料夾），

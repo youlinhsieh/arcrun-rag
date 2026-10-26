@@ -226,6 +226,9 @@ func extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText string
 
 	quotaHit := false
 	var quotaErr error
+	// stopErr＝這輪停下來的那一段的真因（不是額度用完）。用來分辨「有進度、這段晚點再試」
+	// 和「這輪一段都沒前進」——後者見迴圈後面的說明。
+	var stopErr error
 	processedThisCall := 0
 	for progress.Done < total && processedThisCall < maxChunksPerInvocation {
 		chunk := srcText[progress.ChunkBounds[progress.Done]:progress.ChunkBounds[progress.Done+1]]
@@ -245,6 +248,7 @@ func extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText string
 			if progress.Done > 0 {
 				// 已經有部分進度：這一段暫時失敗（多半是暫時性網路/上游錯誤），
 				// 不要把之前的進度也賠進去——停在這裡，下一輪從同一段重試。
+				stopErr = callErr
 				break
 			}
 			// 連第一段都還沒成功過：跟原本「一次讀不完就整份失敗」的行為一致，
@@ -263,6 +267,7 @@ func extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText string
 		ex, perr := parseWikiExtractJSON(output)
 		if perr != nil {
 			if progress.Done > 0 {
+				stopErr = perr
 				break // 保住已有進度，這段下一輪重試
 			}
 			return nil, fmt.Errorf("整理第 %d／%d 段時：%w", progress.Done+1, total, perr)
@@ -274,6 +279,16 @@ func extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText string
 		if err := saveExtractProgress(absRoot, node, nodeKey, base, progress); err != nil {
 			return nil, fmt.Errorf("書籤存檔失敗：%w", err)
 		}
+	}
+
+	// 🔴 這輪一段都沒前進、又不是額度用完 ⇒ 是失敗，不是「有進度的分次整理」。
+	// 以前這裡照樣回 partial：partial 不記退避、不進 8 次暫停，下一輪（幾秒後）又從同一段重打，
+	// 同一段若每次都失敗（例如模型回的 JSON 每次都解析不了），就會無限重打、一直燒 AI 額度，
+	// 畫面上只看得到「! 重試中」。改成回錯誤 ⇒ 呼叫端走 MarkFailed：退避 1m→5m→15m→1h→6h、
+	// 連續 8 次暫停，書籤（已完成的段落）照樣留著，下次成功就從同一段接著讀。
+	if processedThisCall == 0 && !quotaHit && stopErr != nil {
+		return nil, fmt.Errorf("整理第 %d／%d 段時（前 %d 段已完成，下次從這段接著讀）：%w",
+			progress.Done+1, total, progress.Done, stopErr)
 	}
 
 	complete := progress.Done >= total
