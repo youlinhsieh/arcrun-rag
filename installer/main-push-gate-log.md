@@ -321,3 +321,8 @@
 | 2026-10-23 16:08:26 | github.com/youlinhsieh/arcrun-port | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-port，這一趟剩 19 次） |
 | 2026-10-23 21:57:01 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 584cc11→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-10-23 23:49:44 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 36e1062→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-24 00:46:03 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-10-24 00:51:12 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-10-24 23:22:06 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward c1fced7→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-26 02:48:59 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 0d7a245→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-10-26 02:53:57 | gitea | arcrun-hand/325-kbdb-placement | ✅ 放行 | 目標不是 main／master |

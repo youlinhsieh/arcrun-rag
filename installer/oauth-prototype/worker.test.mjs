@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, landingBase, resolveInstanceTenant,
+  deployBundledWorker, placementRegionForD1, landingBase, resolveInstanceTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -5529,4 +5529,64 @@ test('#268 端到端：已裝過的帳號換信箱重裝 ⇒ 租戶沿用原本�
   assert.equal(v.CONSOLE_TENANT, 'yuga3bse');
   assert.equal(v.ARCRUN_NAMESPACE, 'yuga3bse', '安裝器不管的 var 不能被清掉');
   assert.equal(v.MULTI_TENANT, 'false');
+});
+
+
+// inkstone/Arcrun#325：KBDB 放到自己那顆 D1 旁邊（各帳號 D1 區域不同，不寫死；重部不洗掉）
+test('#325 placementRegionForD1：依 D1 區域換算，未知不猜', () => {
+  assert.equal(placementRegionForD1('WNAM'), 'aws:us-west-2');
+  assert.equal(placementRegionForD1('weur'), 'aws:eu-west-1');
+  assert.equal(placementRegionForD1('MARS'), null);
+  assert.equal(placementRegionForD1(undefined), null);
+});
+
+test('#325 deployBundledWorker：arcrun-kbdb 的 metadata 帶讀回來的 D1 區域；其他 worker 不帶', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let meta = null;
+  const calls = installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && /\/d1\/database\/db-1$/.test(url)) return cfOk({ running_in_region: 'WEUR' });
+    if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) {
+      meta = JSON.parse(await init.body.get('metadata').text());
+      return cfOk({});
+    }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const kbdb = { ...baseEntry, name: 'arcrun-kbdb', requires: { kv: [], d1: [{ binding: 'DB' }], vars: {} } };
+    await deployBundledWorker(env, 'tok', 'acct-123', kbdb, { kv: {}, d1Id: 'db-1' }, baseInject);
+    assert.deepEqual(meta.placement, { region: 'aws:eu-west-1' });
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    assert.equal('placement' in meta, false, '非 KBDB 的 worker 不帶 placement');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#325 deployBundledWorker：D1 區域讀不到 → 沿用現有 targeted region（不洗掉）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let meta = null;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && /\/d1\/database\//.test(url)) return new Response('{"success":false,"errors":[{"message":"x"}]}', { status: 500 });
+    if (method === 'GET' && /\/scripts\/arcrun-kbdb\/settings$/.test(url)) {
+      return cfOk({ placement: { mode: 'targeted', target: [{ id: 2, region: 'aws:us-west-2', type: 'region' }] } });
+    }
+    if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) {
+      meta = JSON.parse(await init.body.get('metadata').text());
+      return cfOk({});
+    }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    const kbdb = { ...baseEntry, name: 'arcrun-kbdb', requires: { kv: [], d1: [{ binding: 'DB' }], vars: {} } };
+    await deployBundledWorker(env, 'tok', 'acct-123', kbdb, { kv: {}, d1Id: 'db-1' }, baseInject);
+    assert.deepEqual(meta.placement, { region: 'aws:us-west-2' });
+  } finally {
+    restoreFetch();
+  }
 });

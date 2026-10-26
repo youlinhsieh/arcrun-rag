@@ -2207,6 +2207,8 @@ const STEPS = [
   shLive('npm', ['run', 'build'], cwd, Object.keys(buildEnv).length ? buildEnv : undefined);
   // dist/ 是 astro 的建置輸出；wrangler.toml 的 [assets] directory 指 ./deploy（含 docs/
   // 子目錄，對齊 astro base:'/docs'）——用 rsync --delete 鏡射，不留舊檔殘骸。
+  // deploy/ 是 gitignored ⇒ 新 clone（雲端出貨）裡沒有它，rsync 不會自己建上層目錄（2026-10-26 雲端出 1.4.118 實撞）
+  mkdirSync(join(cwd, 'deploy', 'docs'), { recursive: true });
   shLive('rsync', ['-a', '--delete', join(cwd, 'dist') + '/', join(cwd, 'deploy', 'docs') + '/'], cwd);
   const args = ['wrangler', 'deploy', '--config', D.config];
   if (D.wranglerEnv) args.push('--env', D.wranglerEnv);   // prod 走預設環境，沒有 env 名

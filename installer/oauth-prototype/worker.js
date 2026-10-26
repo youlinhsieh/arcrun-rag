@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8a41f2b8087c3b380d8f8a7279bcefe570b3c5d3';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@3054758889556094f36240ceb21fc9b2bf8c3e68';
 const BUNDLE_BUILT = '2026-10-23'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2827,6 +2827,47 @@ export async function resolveInstanceTenant(token, accountId, emailTenant) {
   return { tenant: emailTenant, source: 'email', from: null, emailTenant };
 }
 
+/**
+ * KBDB 放置位置（inkstone/Arcrun#325）：讓 arcrun-kbdb 跑在自己那顆 D1 旁邊。
+ *
+ * 為什麼：KBDB 一次查詢依序打 5～8 句 D1，每句都跨區來回；youlin 實測放到 D1 同區後
+ * 單次查詢伺服器端 0.8 → 0.3 秒。
+ * 🔴 各帳號的 D1 區域不同 ⇒ 不寫死，用 D1 自己回的 `running_in_region` 換算。
+ * 🔴 PUT /scripts 的 metadata 會整個覆寫 settings（實測：重傳不帶 placement ＝ 設定被洗掉），
+ *    所以每次部署都要帶。與 Arcrun 的 `acr update`（cli/src/lib/bundle-deploy.ts）同一張表、同一個判準。
+ * 放置只是優化：任何一步查不到都回 null（維持 CF 預設），絕不擋住安裝。
+ */
+const PLACEMENT_WORKERS = new Set(['arcrun-kbdb']);
+const D1_REGION_TO_PLACEMENT = {
+  WNAM: 'aws:us-west-2',
+  ENAM: 'aws:us-east-1',
+  WEUR: 'aws:eu-west-1',
+  EEUR: 'aws:eu-central-1',
+  APAC: 'aws:ap-southeast-1',
+  OC: 'aws:ap-southeast-2',
+};
+function placementRegionForD1(region) {
+  return D1_REGION_TO_PLACEMENT[String(region || '').toUpperCase()] || null;
+}
+async function resolveWorkerPlacement(token, accountId, scriptName, d1Id) {
+  try {
+    if (d1Id) {
+      const db = await cfFetch(token, `/accounts/${accountId}/d1/database/${d1Id}`);
+      const r = placementRegionForD1(db && db.running_in_region);
+      if (r) return r;
+    }
+  } catch (_) { /* 查不到就往下沿用現況 */ }
+  try {
+    const s = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(scriptName)}/settings`);
+    const p = s && s.placement;
+    if (p && p.mode === 'targeted') {
+      const hit = (p.target || []).find((t) => t && typeof t === 'object' && t.region);
+      if (hit) return hit.region;
+    }
+  } catch (_) { /* 沒有就沒有 */ }
+  return null;
+}
+
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
   const base = bundleBase(env);
   // 1. 抓主模組 + wasm 模組（fetchBundleAsset：3 次重試 + GitHub raw 備援）
@@ -3011,11 +3052,18 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   }
 
   // 3. multipart PUT /scripts
+  const placementRegion = PLACEMENT_WORKERS.has(entry.name)
+    ? await resolveWorkerPlacement(
+        token, accountId, entry.name,
+        resolvedFor('d1', (entry.requires?.d1?.[0]?.binding) || 'DB') || resources.d1Id,
+      )
+    : null;
   const metadata = {
     main_module: entry.main_module,
     compatibility_date: entry.compat_date || COMPAT_DATE,
     compatibility_flags: entry.compat_flags || [],
     bindings,
+    ...(placementRegion ? { placement: { region: placementRegion } } : {}),
   };
   const form = new FormData();
   form.append('metadata', new File([JSON.stringify(metadata)], 'metadata.json', { type: 'application/json' }));
@@ -3238,7 +3286,7 @@ async function seedSkillsTo(cypherBase, ns) {
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
   installPage, INSTALL_SCRIPT,
-  fetchBundleManifest, deployBundledWorker, bundleBase, landingBase, mailRelayBase,
+  fetchBundleManifest, deployBundledWorker, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
