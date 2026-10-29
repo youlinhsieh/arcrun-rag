@@ -35,7 +35,7 @@ import { execFileSync } from 'node:child_process';
 
 import {
   repoForLine, hostForLine, livesInOwnRepo, declarationProblems, syncSourceRepo, repoExists, normRemote, expandHome,
-  copyTrackedFiles, destIgnored,
+  copyTrackedFiles, destIgnored, isArtifactsRemote, artifactsGitAuth,
 } from './line-source-repo.mjs';
 
 /** 真的跑 git（⑩ 那組要的是真行為，不是假的 runner——漏洞就出在真實的 git 語意上）。 */
@@ -425,4 +425,101 @@ test('真的 ship.targets.json：有 releaseRecord 的目標，宣告全部齊�
     if (!t.releaseRecord) continue;
     assert.deepEqual(declarationProblems(LINES, t.releaseRecord), [], `${name} 的 lineRepos 宣告不完整`);
   }
+});
+
+// ── InkStoneCo#249 第 8 格：小幫手源碼同步目的地搬到 Artifacts ───────────────────
+const ART = 'https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/InkStoneCo/arcrun-collector.git';
+const ART_ORIGIN = 'https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net';
+
+test('⑬ isArtifactsRemote：只認 Artifacts 網址，Gitea／GitHub 不認', () => {
+  assert.equal(isArtifactsRemote(ART), true);
+  assert.equal(isArtifactsRemote('https://git.uncle6.me/inkstone/arcrun-collector.git'), false);
+  assert.equal(isArtifactsRemote('https://github.com/x/y.git'), false);
+});
+
+test('⑬b artifactsGitAuth：先清空 helper 再指定那把；網址不含帳密；找不到 helper ⇒ 丟，不退回無認證', () => {
+  const a = artifactsGitAuth(ART, { env: { ARTIFACTS_CREDENTIAL_HELPER: '/x/helper', HOME: '/h' } });
+  assert.deepEqual(a.prefix.slice(0, 2), ['-c', 'credential.helper=']);
+  assert.ok(a.prefix.includes(`credential.${ART_ORIGIN}.helper=/x/helper`));
+  assert.ok(a.prefix.includes(`credential.${ART_ORIGIN}.useHttpPath=true`));
+  assert.ok(a.env.CLAUDE_PROJECT_DIR);
+  // 從來源 repo 的 git config 讀
+  const b = artifactsGitAuth(ART, { srcRoot: '/src', env: {}, runner: (args) => ({ out: args.includes(`credential.${ART_ORIGIN}.helper`) ? '/cfg/helper' : '' }) });
+  assert.ok(b.prefix.includes(`credential.${ART_ORIGIN}.helper=/cfg/helper`));
+  assert.throws(() => artifactsGitAuth(ART, { srcRoot: '/src', env: {}, runner: () => ({ out: '' }) }), /credential helper/);
+});
+
+test('⑬c Artifacts 同步：每個 git 指令都帶 helper 設定與環境、網址不含帳密、推完 fetch origin 讓遠端追蹤分支追上', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lsr-'));
+  try {
+    mkdirSync(join(dir, 'work', '.git'), { recursive: true });
+    const seen = [];
+    const runner = (args, cwd, o = {}) => {
+      seen.push({ args, env: o.env });
+      const cmd = args.filter((x, i) => !(x === '-c' || args[i - 1] === '-c'))[0];
+      if (cmd === 'remote') return { status: 0, out: ART };
+      if (cmd === 'status') return { status: 0, out: ' M a.go' };
+      if (cmd === 'rev-parse' && args.includes('--verify')) return { status: 0, out: 'abc' };
+      if (cmd === 'rev-parse') return { status: 0, out: 'cafebabecafebabe' };
+      return { status: 0, out: '' };
+    };
+    const guardOpts = {
+      grants: new Map([[normRemote(ART), 1]]),
+      logPath: join(dir, 'gate-log.md'), pendingDir: join(dir, 'pending'), stampPath: join(dir, 'stamp'),
+    };
+    const prev = process.env.ARTIFACTS_CREDENTIAL_HELPER;
+    process.env.ARTIFACTS_CREDENTIAL_HELPER = '/x/helper';
+    try {
+      const r = syncSourceRepo({
+        srcRoot: dir, sourceDir: 'collector', workDir: join(dir, 'work'), remoteUrl: ART, message: 'sync: x',
+        runner, copyTracked: () => ({ copied: 3, skipped: [] }), guardOpts,
+      });
+      assert.equal(r.changed, true);
+    } finally { if (prev === undefined) delete process.env.ARTIFACTS_CREDENTIAL_HELPER; else process.env.ARTIFACTS_CREDENTIAL_HELPER = prev; }
+    for (const c of seen) {
+      assert.deepEqual(c.args.slice(0, 2), ['-c', 'credential.helper='], `缺清空 helper：${c.args.join(' ')}`);
+      assert.ok(c.env && c.env.CLAUDE_PROJECT_DIR);
+      assert.ok(!c.args.some((x) => /\/\/[^/@\s]+:[^/@\s]+@/.test(x)), '網址不准內嵌帳密');
+    }
+    const iPush = seen.findIndex((c) => c.args.includes('push'));
+    assert.ok(iPush >= 0);
+    assert.ok(seen.slice(iPush + 1).some((c) => c.args.includes('fetch') && c.args.includes('origin')), '推完要 fetch origin');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('⑬d 登錄簿：stage 的 daemon 線 remote 指 Artifacts、workDir 不沿用舊 Gitea 工作區', () => {
+  const t = loadTargets();
+  const d = t.targets.stage.releaseRecord.lineRepos.daemon;
+  assert.equal(isArtifactsRemote(d.remote), true);
+  assert.ok(!/arcrun-collector$/.test(d.workDir), '舊工作區的 origin 是 Gitea，沿用會被 origin 不符擋下');
+});
+
+test('⑬e 閘的 ls-remote（stage 機械檢查）也帶 Artifacts 認證；網址原樣、不改大小寫', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lsr-'));
+  try {
+    mkdirSync(join(dir, 'work', '.git'), { recursive: true });
+    const seen = [];
+    const runner = (args, cwd, o = {}) => {
+      seen.push({ args, env: o.env });
+      const cmd = args.filter((x, i) => !(x === '-c' || args[i - 1] === '-c'))[0];
+      if (cmd === 'remote') return { status: 0, out: ART };
+      if (cmd === 'status') return { status: 0, out: ' M a.go' };
+      if (cmd === 'ls-remote') return { status: 0, out: '' };   // 遠端還沒有 main
+      if (cmd === 'rev-parse' && args.includes('--verify')) return { status: 0, out: 'abc' };
+      if (cmd === 'rev-parse') return { status: 0, out: 'cafebabe' };
+      return { status: 0, out: '' };
+    };
+    const guardOpts = { policy: 'mechanical', logPath: join(dir, 'log.md'), pendingDir: join(dir, 'pending'), stampPath: join(dir, 'stamp') };
+    const prev = process.env.ARTIFACTS_CREDENTIAL_HELPER;
+    process.env.ARTIFACTS_CREDENTIAL_HELPER = '/x/helper';
+    try {
+      syncSourceRepo({ srcRoot: dir, sourceDir: 'collector', workDir: join(dir, 'work'), remoteUrl: ART, message: 'x',
+        runner, copyTracked: () => ({ copied: 1, skipped: [] }), guardOpts });
+    } finally { if (prev === undefined) delete process.env.ARTIFACTS_CREDENTIAL_HELPER; else process.env.ARTIFACTS_CREDENTIAL_HELPER = prev; }
+    const lr = seen.find((c) => c.args.includes('ls-remote'));
+    assert.ok(lr, '閘應該做過 ls-remote');
+    assert.deepEqual(lr.args.slice(0, 2), ['-c', 'credential.helper=']);
+    assert.ok(lr.env && lr.env.CLAUDE_PROJECT_DIR);
+    assert.ok(lr.args.includes(ART), 'ls-remote 的網址要原樣（含 InkStoneCo 大小寫）');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

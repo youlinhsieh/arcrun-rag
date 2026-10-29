@@ -181,8 +181,8 @@ export function declarationProblems(lines, releaseRecord) {
 }
 
 /** 預設的 git 執行器。分出來只為了讓測試注入假的。 */
-export function defaultRunner(args, cwd, { allowFail = false } = {}) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+export function defaultRunner(args, cwd, { allowFail = false, env } = {}) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env: { ...process.env, ...env } } : {}) });
   if (r.status !== 0 && !allowFail) {
     // D36：git 會把內嵌帳密的網址回聲出來（2026-08-16 實撞）⇒ 遮掉再往外丟。
     const msg = `${r.stdout || ''}\n${r.stderr || ''}`.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, '//***:***@');
@@ -190,6 +190,40 @@ export function defaultRunner(args, cwd, { allowFail = false } = {}) {
       + msg.trim().split('\n').filter(Boolean).slice(-6).join('\n     '));
   }
   return { status: r.status, out: (r.stdout || '').trim() };
+}
+
+/** 這個網址是不是 Cloudflare Artifacts 的 git 網址（InkStoneCo#234：Gitea 退役後的 git 家）。 */
+export function isArtifactsRemote(url) {
+  return /^https:\/\/[0-9a-f]{32}\.artifacts\.cloudflare\.net\/git\//i.test(String(url || ''));
+}
+
+/**
+ * Artifacts 的 git 不收帳密，只收 credential helper 現換的短效 token（D36：值不進網址、不落檔）。
+ * 回傳 `{prefix, env}`：prefix 是放在每一個 git 子指令前面的 `-c`，env 是 helper 要的環境變數。
+ *
+ * 🔴 `credential.helper=` 先清空：macOS 的 osxkeychain 裡常躺著過期的舊 token，
+ *   不清會先吃到它 ⇒ 403「Invalid or expired token」（2026-10-28 地端實撞，inkstone/InkStoneCo#249）。
+ * helper 路徑不寫死（ISEP 版本號在路徑裡會變）：優先 `ARTIFACTS_CREDENTIAL_HELPER`，
+ * 否則讀來源 repo 的 git config（`credential.<origin>.helper`，ISEP 裝的）。讀不到就丟——不退回無認證。
+ */
+export function artifactsGitAuth(remoteUrl, { srcRoot, env = process.env, runner = defaultRunner } = {}) {
+  const m = String(remoteUrl).match(/^(https:\/\/[0-9a-f]{32}\.artifacts\.cloudflare\.net)\//i);
+  if (!m) throw new Error(`不是 Artifacts 網址：${normRemote(remoteUrl)}`);
+  const origin = m[1];
+  let helper = env.ARTIFACTS_CREDENTIAL_HELPER || '';
+  if (!helper && srcRoot) {
+    helper = runner(['config', '--get', `credential.${origin}.helper`], srcRoot, { allowFail: true }).out || '';
+  }
+  if (!helper) {
+    throw new Error(
+      `找不到 Artifacts 的 credential helper：環境變數 ARTIFACTS_CREDENTIAL_HELPER 沒設，\n` +
+      `     ${srcRoot || '(來源 repo)'} 的 git config 也沒有 credential.${origin}.helper。\n` +
+      `     不退回無認證、也不把 token 塞進網址 ⇒ 請先裝好 ISEP 的 git-credential-artifacts（見 cutover-234 手冊）。`);
+  }
+  return {
+    prefix: ['-c', 'credential.helper=', '-c', `credential.${origin}.helper=${helper}`, '-c', `credential.${origin}.useHttpPath=true`],
+    env: { CLAUDE_PROJECT_DIR: env.CLAUDE_PROJECT_DIR || join(env.HOME || '', 'Documents/tech_projects/InkStoneCo'), GIT_TERMINAL_PROMPT: '0' },
+  };
 }
 
 /**
@@ -217,6 +251,14 @@ export function syncSourceRepo({
   guard = assertPushAllowed, guardOpts = {},
 }) {
   const dir = expandHome(workDir);
+
+  // Artifacts：git 子指令全部帶 helper 設定（網址乾淨、不含帳密）；其他主機維持原狀。
+  const artifacts = isArtifactsRemote(remoteUrl);
+  if (artifacts) {
+    const auth = artifactsGitAuth(remoteUrl, { srcRoot, runner });
+    const base = runner;
+    runner = (args, cwd, o = {}) => base([...auth.prefix, ...args], cwd, { ...o, env: auth.env });
+  }
 
   // ① 準備工作區。沒有就 clone；有就先確認它真的是我們要的那個 repo，再拉到最新。
   //    🔴 不「有目錄就當它對」：一個殘留的舊工作區會讓同步安靜地推去別的地方。
@@ -281,8 +323,14 @@ export function syncSourceRepo({
   //   放行的憑證與殼層閘同一枚戳記（綁目的地、單次、15 分鐘失效）。
   //   commit 先建好沒關係：**被擋下時遠端一個 commit 都不會動**，本機這一筆下次重跑照用。
   const pushArgs = ['push', remoteUrl, `HEAD:refs/heads/${branch}`];
-  guard({ args: pushArgs, cwd: dir, remoteUrl, who: 'ship 出貨線／line-source-repo 同步', ...guardOpts });
+  // 閘的 ls-remote（stage 機械檢查）也得走同一組認證，否則 Artifacts 回 403 ⇒ 「查不到遠端 main」擋下
+  // （2026-10-28 stage 真跑 22/23 站撞到，inkstone/InkStoneCo#249）。網址原樣傳，不改大小寫。
+  const authGit = artifacts ? { gitRun: (a, c) => runner(a, c, { allowFail: true }) } : {};
+  guard({ args: pushArgs, cwd: dir, remoteUrl, who: 'ship 出貨線／line-source-repo 同步', ...authGit, ...guardOpts });
   runner(pushArgs, dir);
+  // 推到網址不會更新 origin/<branch> 這條遠端追蹤分支；ahub 模式的 commitExists 就是問它
+  // （release-forge.mjs localRemoteContains）。fetch 一次＝同時**向伺服器確認那顆 commit 真的到了**。
+  if (artifacts) runner(['fetch', 'origin'], dir);
   return { sha: runner(['rev-parse', 'HEAD'], dir).out, changed: true, files, skipped };
 }
 

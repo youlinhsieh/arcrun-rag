@@ -157,6 +157,22 @@
       flag、相容性設定、功能開關、程式路徑、資源形狀一律不准差。
       見 installer/scripts/env-parity-gate.mjs）
 
+  - id: unmerged-fixes
+    名字: 點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）
+    用什麼: 本機
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      這一站要讀「來源 repo 的 git 遠端分支與祖先關係」（`git ls-remote`／`merge-base`／`cherry`）
+      再對照票的留言——git 那一半現在只有本機工作區做得到（Arcrun 的 worker 沒有 git 歷史可讀）。
+      要搬需要：Arcrun 工作流能對 Artifacts 上的 Arcrun repo 做「某分支是不是某 commit 的祖先」的查詢。
+    理由: 判斷依據是來源 repo 的 git 歷史（本機有完整 clone），Worker 讀不到。
+    驗法: |
+      inkstone/InkStoneCo#139 c1793004568975163：在 `fix/310-*`／`arcrun-hand/310-*` 還沒併進來源，票標緊急（p/high 或本文有「緊急」）或交回後放超過 3 天時
+      跑 stage 切版，必須被點名且被擋；併進去後同一指令放行；
+      `--skip-unmerged-fix <分支>=<理由>` 放行且理由留在出貨報告與 installer/unmerged-fix-gate-log.md；
+      installer/unmerged-fix-ignore.json 可標掉已作廢的舊分支（綁頂端 sha）。
+      演練：`node --test installer/scripts/unmerged-fix-gate.test.mjs`。
+
   - id: public-docs
     名字: 掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）
     用什麼: 本機

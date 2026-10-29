@@ -124,6 +124,8 @@ import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bund
 import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
 import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL } from './daemon-freshness.mjs';
+// inkstone/InkStoneCo#139（leo 2026-10-26）：切版前點名「已交回卻沒進這一版來源」的修正分支。
+import { requireNoUnmergedFixes } from './unmerged-fix-gate.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
@@ -153,7 +155,7 @@ import {
 // D95：每條版本線發到**自己的 repo**（桌面小幫手不再疊進雲端引擎的歷史）。
 // #169：`hostForLine` ＝ 連**哪台主機**都是逐條線的屬性（安裝器只發內部 Gitea）。
 import {
-  declarationProblems, repoForLine, hostForLine, livesInOwnRepo, syncSourceRepo, repoExists,
+  declarationProblems, repoForLine, hostForLine, livesInOwnRepo, syncSourceRepo, repoExists, isArtifactsRemote,
 } from './line-source-repo.mjs';
 // #169：安裝器那筆**內部版本物件**長什麼樣（純函式，測得動）。
 import {
@@ -174,6 +176,7 @@ import {
   readInstallerLine, installerChangelogSection, readInstallerSrcSha,
   INSTALLER_CHANGELOG_REL, INSTALLER_SRC_REL, INSTALLER_VERSION_REL,
 } from './installer-line.mjs';
+import { prepareShipEnv } from './ship-env.mjs';
 import { fill as fillCredentials, describeSources, missingCredentialError } from './credential-store.mjs';
 // 部署 Cloudflare 的鑰匙由登錄簿指名（inkstone/arcrun-rag#212）——不再靠家目錄的 wrangler 登入態，
 // 地端與雲端走同一條路（cloudflareDeployEnv 顯式塞 CLOUDFLARE_API_TOKEN，蓋過任何 ambient 登入態）。
@@ -197,6 +200,10 @@ const REPO_ROOT = resolve(join(import.meta.dirname, '..', '..'));
 // 🔴 版本發佈紀錄（release／附件／commit 存在檢查）住哪一家，只看 installer/forge.conf 的 TICKET_FORGE
 //   （inkstone/InkStoneCo#234）：gitea ＝ 原樣打 Gitea；ahub ＝ 打 AHub 的 release 路由，附件先寫 R2 再登記指標。
 //   函式名仍叫 gitea* 是因為這一站的 prose 與測試都用這些名字；它們現在是「目前這一家」的函式。
+// 🔴 inkstone/InkStoneCo#249 第 3 格：出貨需要的 AHub／Artifacts 認證由管線自己取（只碰名字，D36），
+//   指令前面不必再帶 export 前綴（帶了會被 Claude Code 權限規則判成 [Production Deploy] 擋下）。
+//   必須在 releaseForgeApi 之前：它與 ARM 核對都讀 process.env。
+const SHIP_ENV = prepareShipEnv({ repoRoot: REPO_ROOT, forgeKind: ticketForge().kind });
 const RELEASE_FORGE = releaseForgeApi({ repoDir: REPO_ROOT });
 const giteaWriteCredentialsFromRemote = (dir) => RELEASE_FORGE.writeCredentials(dir);
 const giteaReleaseExists = (...a) => RELEASE_FORGE.releaseExists(...a);
@@ -886,7 +893,7 @@ const STEPS = [
       } else {
         ctx.armTicketResolved = at;
         lines.push(`ARM 會去這張票找：inkstone/${at.repo}#${at.issue}（${at.source === 'flag' ? '--ship-ticket' : '登錄簿後備'}）——`
-          + `leo 要在那張票留獨立一行 \`ARM: <版本號>\`（作者必須是 Leo、版號必須一致）；`
+          + `人閘＝AHub 簽核：你在那張票留【簽核請求】＋\`版本：<版本號>\`，leo 按「簽核…」同意，畫面以 Leo 身分寫下 \`ARM: <版本號>\`（作者必須是 Leo、版號必須一致；別叫他手打、別叫他跑 github-arm.sh）；`
           + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
         const forge = ticketForge();
         lines.push(`票的正本：${forge.label}（installer/forge.conf 的 TICKET_FORGE，切換日只翻那一格）`);
@@ -968,6 +975,7 @@ const STEPS = [
           `     這個 clone 的 gitea remote 不存在，或網址沒有帶帳密。`);
       }
       lines.push(`發佈紀錄目的地：${RELEASE_FORGE.kind === 'ahub' ? RELEASE_FORGE.label : 'Gitea'} ${R.repoSlug}（寫入權杖已就位：${redactToken(cred)}）`);
+      for (const l of SHIP_ENV.lines) lines.push(`認證自取：${l}`);
     }
 
     // (a3) 🔴 **每條版本線宣告的 repo，此刻真的存在嗎**（D95，2026-08-18，InkStoneCo#40）
@@ -1316,6 +1324,31 @@ const STEPS = [
       lines.push(`線上現況（Arcrun ship_check_live 去看的）：release ${ctx.liveBefore.release}｜pin ${ctx.liveBefore.pin}｜installer_sha ${String(ctx.liveBefore.installerSrcHash || '(無)').slice(0, 12)}`);
     } catch (e) { lines.push(`線上現況：讀不到（${e.message}）`); }
   }
+  return { status: 'done', detail: lines };
+}},
+
+// ── 1.1 unmerged-fixes：切版之前，「已交回、標示修好」卻沒進這一版來源的分支一定被看見 ──
+//
+// inkstone/InkStoneCo#139（leo 2026-10-26：「有必要，因為這種事情發生太多次了」）。
+// 實例：inkstone/Arcrun#310（MCP 無故要求重新授權，緊急、客戶已受影響）的兩條修正
+// 10-17 交回「地端併入下個候選」，之後 1.4.110～1.4.118 數個版本都沒帶上——因為
+// **切版這個動作從來沒有問過「有沒有交回了、卻沒進這一版的分支」**。
+// 判法、放行方式（`--skip-unmerged-fix <分支>=<理由>`／installer/unmerged-fix-ignore.json）
+// 與邊界全文見 unmerged-fix-gate.mjs 檔頭。
+//
+// 擺在 preflight 之後（要用它解好的 ctx.arcrunRepo／worktree），mutates:false ⇒ 預演也會跑，
+// 而且判定與 --confirm 同樣嚴格：緊急的沒進版，預演就是紅的。
+// 只在切版當下查一次，不輪詢、不排程；全程唯讀。selftest（不推不部署）照其他閘的慣例免除。
+{ id: 'unmerged-fixes', title: '點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）', mutates: false, async run() {
+  if (T.allowDirtySource) {
+    return { status: 'skip', detail: ['本目標允許髒工作區（selftest：不推、不部署、沒有人會拿到東西）⇒ 免除'] };
+  }
+  const ticketRepo = (cfg.source && cfg.source.ticketRepo) || 'Arcrun';
+  const { lines } = await requireNoUnmergedFixes({
+    repo: ctx.arcrunRepo, repoRoot: REPO_ROOT, ticketRepo, argv, targetName: TARGET_NAME,
+    headSha: ctx.arcrunHeadSha || undefined,
+    maxAgeDays: cfg.source && cfg.source.unmergedFixMaxAgeDays,
+  });
   return { status: 'done', detail: lines };
 }},
 
@@ -2753,7 +2786,10 @@ const STEPS = [
       if (livesInOwnRepo(t.entry)) {
         // 同步過去。**權杖只在這裡組進網址，不落地、不印出**（D36）——
         // remote 宣告在登錄簿是不帶帳密的乾淨網址，帳密從本機 gitea remote 取。
-        const authed = t.entry.remote.replace(/^https:\/\//, `https://${cred.login}:${cred.token}@`);
+        // Artifacts（git 家）不收帳密、由 credential helper 現換短效 token ⇒ 網址維持乾淨（InkStoneCo#249）。
+        const authed = isArtifactsRemote(t.entry.remote)
+          ? t.entry.remote
+          : t.entry.remote.replace(/^https:\/\//, `https://${cred.login}:${cred.token}@`);
         const sync = syncSourceRepo({
           srcRoot: REPO_ROOT,
           sourceDir: t.entry.sourceDir,

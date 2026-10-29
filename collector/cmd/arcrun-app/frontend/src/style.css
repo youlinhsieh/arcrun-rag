@@ -899,6 +899,7 @@ button.icbtn.plain:hover { background: var(--well); color: var(--ink); }
 .fterr.retry .bang { color: rgba(var(--ink-rgb), .4); }
 .fterr .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fterr .why { flex: none; color: rgba(var(--ink-rgb), .6); }
+.fterr .why.detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(var(--ink-rgb), .45); font-size: 11.5px; }
 .fterr .ftinc { margin-left: 0; }
 .fterr.flash { animation: errflash 2.4s ease-out 1; }
 @keyframes errflash { 0%, 40% { background: rgba(var(--amber-rgb), .22); } 100% { background: transparent; } }

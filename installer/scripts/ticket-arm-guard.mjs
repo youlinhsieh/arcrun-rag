@@ -105,7 +105,7 @@ export function findArmMatch(comments, version) {
  * 到本次撰寫時已有 138 則 ⇒ 不能只抓第一頁）。有界：最多 `maxPages` 頁，
  * 避免票異常肥大時無限迴圈——真的超過上限，判定為「查不完整」，fail-closed。
  */
-async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl, maxPages = 20, pageSize = 50, hint = '' }) {
+export async function fetchAllComments({ owner, repo, issue, token, baseUrl, fetchImpl, maxPages = 20, pageSize = 50, hint = '' }) {
   const out = [];
   for (let page = 1; page <= maxPages; page++) {
     const url = `${baseUrl}/api/v1/repos/${owner}/${repo}/issues/${issue}/comments?limit=${pageSize}&page=${page}`;
@@ -210,16 +210,21 @@ export async function checkTicketArmed({
         `${APPROVER_LOGIN} 帳號、內含這種宣告的留言。\n` +
         `     🔴 只認 login 精確等於 \`${APPROVER_LOGIN}\` 的留言——別的帳號（含總管／claude-code）\n` +
         `        寫出一模一樣的文字都不算數，這是紅線「不准 AI 產生任何放行憑證」的機械版。\n` +
-        `     → 請 leo 在該票回一行（獨立一行，前後不要加別的字）：\n\n` +
-        `         ARM: ${version}\n`);
+        `     → 怎麼請 leo 簽（AHub 簽核，2026-10-25 起；**別叫他手打 ARM:、別叫他跑 github-arm.sh**）：\n` +
+        `       ① 你（AI）在 ${ticketUrl} 留一則簽核請求，內含兩個獨立行：\n` +
+        `            【簽核請求】<這一版要上 prod 的標題>\n` +
+        `            版本：${version}\n` +
+        `          下面寫要簽的內容與 stage 實證。\n` +
+        `       ② 請 leo 在 AHub 打開那張票，按「簽核…」→ 選這則 → 勾同意。\n` +
+        `          畫面會以 Leo 的身分寫下 \`ARM: ${version}\`，出貨線照舊認這一行。\n`);
     }
     throw new Error(
       `${ticketUrl} 上有 ${APPROVER_LOGIN} 簽過 ARM，但版本對不上：leo 簽的是 ` +
       `${m.signedVersions.map((v) => `\`${v}\``).join('、')}，這次實際要出的是 \`${version}\`。\n` +
       `     🔴 版本號由出貨線自己從 manifest 讀出（不接受呼叫端傳入），對不上就是對不上——\n` +
       `        不會因為「反正都是同一票」就放行差一個版本號的東西。\n` +
-      `     → 若這確實是要出的下一版，請 leo 在該票補一行：\n\n` +
-      `         ARM: ${version}\n`);
+      `     → 若這確實是要出的下一版：在該票留一則新的簽核請求（獨立一行 \`【簽核請求】<標題>\`＋獨立一行 \`版本：${version}\`），\n` +
+      `       請 leo 在 AHub 按「簽核…」選它、勾同意（別叫他手打 ARM:、別叫他跑 github-arm.sh）。\n`);
   }
 
   return {

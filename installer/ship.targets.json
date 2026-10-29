@@ -44,6 +44,8 @@
   "source": {
     "_": "產物來源（所有目標共用；目標只決定「送到哪」，不決定「從哪來」）",
     "arcrunRepo": "../../matrix/arcrun",
+    "ticketRepo": "Arcrun",
+    "unmergedFixMaxAgeDays": 3,
     "uiDir": "console-ui/public"
   },
 
@@ -258,8 +260,8 @@
             ],
             "repoSlug": "inkstone/arcrun-collector",
             "sourceDir": "collector",
-            "remote": "https://git.uncle6.me/inkstone/arcrun-collector.git",
-            "workDir": "~/.arcrun-ship/arcrun-collector",
+            "remote": "https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/InkStoneCo/arcrun-collector.git",
+            "workDir": "~/.arcrun-ship/arcrun-collector-artifacts",
             "branch": "main",
             "_destOwned": [
               "🔴 2026-08-18 第一次真的同步之後補的——**它炸掉的就是這道閘自己**。",
@@ -274,7 +276,7 @@
               "  是「它們根本不該被同步」。列在這裡的路徑：不覆蓋、不刪除，",
               "  而且同步前會檢查它們還在不在（不見了＝先前某次同步蓋掉了，當場停）。"
             ],
-            "destOwned": ["README.md", ".gitignore"]
+            "destOwned": ["README.md", ".gitignore", "CLAUDE.md"]
           },
           "installer": {
             "_": [

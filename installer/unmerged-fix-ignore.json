@@ -1,0 +1,5 @@
+{
+  "arcrun-hand/284-stage-with-283": { "tip": "a6bdd14", "reason": "已放棄：內容另走 #283 進版，留 archive/ tag（inkstone/InkStoneCo#139 分類）" },
+  "feat/222-execution-log-out-of-kbdb": { "tip": "a3262d7", "reason": "已放棄：#222 改走 v2 分支，留 archive/ tag（inkstone/InkStoneCo#139 分類）" },
+  "feat/311-trigger-compact-trace": { "tip": "7d89bba", "reason": "已放棄：留 archive/ tag（inkstone/InkStoneCo#139 分類）" }
+}
