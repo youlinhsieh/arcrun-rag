@@ -18135,8 +18135,8 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
@@ -18201,7 +18201,7 @@
    ],
    "sourceCommit": "Arcrun@4aa20fe03c94",
    "machine": "b603c18c637e",
-   "ts": 1793449402643
+   "ts": 1793450896188
   }
  }
 }
