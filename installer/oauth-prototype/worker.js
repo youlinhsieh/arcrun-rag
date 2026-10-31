@@ -4730,7 +4730,24 @@ ${noticeHtml}
   <button class="btn" type="submit" title="釘點 ${escapeHtml(bundleCommitOf(env))}／建置 ${escapeHtml(bundleBuiltOf(env))}">開始安裝／更新<span style="opacity:.75;font-size:12px;font-weight:400;margin-left:8px">版本：${escapeHtml(bundleVer)}｜安裝器 ${escapeHtml(INSTALLER_VERSION)}</span></button>
   <p class="hint" style="text-align:center;margin-top:8px">第一次裝、或要更新到最新版，都是按這裡。</p>
   <p class="hint" style="text-align:center;margin-top:14px">按下後會跳到 Cloudflare 的官方頁面請你確認授權，確認完會自動跳回來。</p>
+  <p class="hint" style="text-align:center;margin-top:6px">Cloudflare 頁面上若有「Sensitive scopes（敏感權限）」開關，請打開——那是安裝器替你建一把只管 Workers 的專用 token 要用的，更新時也一樣。這個開關是 Cloudflare 自己的頁面控制，我們無法替你預先打開。</p>
 </form>
+<!-- 回訪者預設勾選同意：同意過一次就記在這個瀏覽器（localStorage），下次進來預設勾上，
+     使用者仍可取消；伺服器端 handleAuthStart 仍要求 agree=1，行為不變。
+     授權條款改版時把 key 的版本尾碼加一，舊的記憶就失效、會重新要求勾選。 -->
+<script>
+(function () {
+  var K = 'arcrun_license_agreed_v1';
+  var cb = document.getElementById('agree');
+  if (!cb) return;
+  try {
+    if (localStorage.getItem(K) === '1') cb.checked = true;
+    cb.form.addEventListener('submit', function () {
+      try { if (cb.checked) localStorage.setItem(K, '1'); else localStorage.removeItem(K); } catch (e) {}
+    });
+  } catch (e) {}
+})();
+</script>
 
 <div class="card" id="update-card">
   <h3>已經裝過了？想更新到最新版</h3>
