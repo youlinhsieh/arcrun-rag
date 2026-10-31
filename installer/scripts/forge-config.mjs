@@ -112,6 +112,8 @@ export const AHUB_ROUTES = [
   ['POST', '/repos/:owner/:repo/issues/:index/labels', 'ahub__issue_labels_add'],
   ['GET', '/repos/:owner/:repo', 'ahub__repo_get'],
   ['GET', '/user', 'ahub__whoami'],
+  // 簽核看板（Arcrun AHub 0.8.0，inkstone/Arcrun#328）：出貨閘只問它「這一版放行了沒」，不自己讀留言判格式。
+  ['GET', '/repos/:owner/:repo/issues/:index/signoffs', 'ahub__signoff_status'],
   // 版本發佈紀錄（Arcrun AHub 0.4.0，arcrun-hand/234-ahub-release）。
   // 附件只記指標 {name,size,sha256,url,r2_key}，不收檔案本體——檔案先寫 R2（release-forge.mjs）。
   ['POST', '/repos/:owner/:repo/releases', 'ahub__release_create'],
@@ -190,6 +192,8 @@ export function makeAhubFetch({ cypherUrl, ns, fetchImpl = fetch }) {
     try { js = JSON.parse(text); } catch { js = text; }
     const un = r.status === 200 ? unwrapWorkflowReply(js) : null;
     if (un) return jsonResponse(un.status, un.body);
+    // 引擎回 404 ＝ 這台 AHub 沒有這條工作流（版本太舊）——不是暫時性的，回 404＋code，不讓重試白打一次
+    if (r.status === 404) return jsonResponse(404, { message: `這台 AHub 沒有 ${m.workflow}（版本太舊）`, code: 'workflow_missing', workflow: m.workflow });
     return jsonResponse(502, {
       message: `AHub 工作流沒有回 {status, body}（HTTP ${r.status}）`,
       detail: (typeof js === 'string' ? js : JSON.stringify(js)).slice(0, 600),

@@ -28,7 +28,7 @@ import { checkTicketArmed } from './ticket-arm-guard.mjs';
  *
  * 取代 `checkArmed()`＋`.github-armed` 檔那條路的**單一動作版**：leo 不必等總管跑
  * `gitea-arm-request.sh`／`gitea-arm-check.sh` 那組來回，直接在「該版本所在里程碑的
- * InkStoneCo 載體票」留一行 `ARM: <版本號>`，這支就認得出來。
+ * InkStoneCo 載體票」放行 `<版本號>`（2026-10-29 起由 AHub 的簽核看板判定，Arcrun#328），這支就認得出來。
  *
  * 核對邏輯（誰算 leo、版本要不要對上）全部住在 `ticket-arm-guard.mjs`——這支只是
  * 把它跟 `checkArmed()` 放在同一個檔案裡，方便呼叫端一次看到「D20 有哪幾條放行的路」。

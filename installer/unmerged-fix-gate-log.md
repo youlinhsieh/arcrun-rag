@@ -137,3 +137,101 @@
 | 2026-10-28 14:57Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（18 天前）；交回後放著 18 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手Windows重試修正(arcrun-rag#287)，本分支依InkStoneCo#139分類另行處理 |
 | 2026-10-28 14:57Z | prod | 點名 | arcrun-hand/326-portal-links | c1792994044369951 已交回（2 天前） |
 | 2026-10-28 14:57Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-29 12:01Z | prod | ⛔ 擋下 | arcrun-hand/326-portal-links | c1792994044369951 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天） |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（18 天前）；交回後放著 18 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（10 天前）；交回後放著 10 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（17 天前）；交回後放著 17 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（14 天前）；交回後放著 14 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（13 天前）；交回後放著 13 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（13 天前）；交回後放著 13 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:01Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（18 天前）；交回後放著 18 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（10 天前）；交回後放著 10 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | arcrun-hand/326-portal-links | c1792994044369951 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（17 天前）；交回後放著 17 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（14 天前）；交回後放著 14 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（13 天前）；交回後放著 13 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（13 天前）；交回後放著 13 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:05Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（18 天前）；交回後放著 18 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（10 天前）；交回後放著 10 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | arcrun-hand/326-portal-links | c1792994044369951 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（17 天前）；交回後放著 17 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（14 天前）；交回後放著 14 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（14 天前）；交回後放著 14 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（13 天前）；交回後放著 13 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶小幫手修正(arcrun-rag#287)，依InkStoneCo#139另行處理 |
+| 2026-10-29 12:25Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-31 08:04Z | stage | ⛔ 擋下 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（7 天前）；交回後放著 7 天沒進版（門檻 3 天） |
+| 2026-10-31 08:04Z | stage | ⛔ 擋下 | arcrun-hand/326-portal-links | c1792994044369951 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天） |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（12 天前）；交回後放著 12 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（16 天前）；交回後放著 16 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（24 天前）；交回後放著 24 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:04Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（12 天前）；交回後放著 12 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（7 天前）；交回後放著 7 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | arcrun-hand/326-portal-links | c1792994044369951 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（16 天前）；交回後放著 16 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（24 天前）；交回後放著 24 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:06Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（12 天前）；交回後放著 12 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（7 天前）；交回後放著 7 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | arcrun-hand/326-portal-links | c1792994044369951 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（16 天前）；交回後放著 16 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（24 天前）；交回後放著 24 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:08Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | arcrun-hand/301-entry-type-retire | c19318 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（12 天前）；交回後放著 12 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | arcrun-hand/319-console-setup-owner-proof | c1792818853192484 已交回（7 天前）；交回後放著 7 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | arcrun-hand/326-portal-links | c1792994044369951 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | feat/217-b-stage-kbdb-upgrade | c19701 已交回（19 天前）；交回後放著 19 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | feat/222-exec-log-v2 | c18360 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（16 天前）；交回後放著 16 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | feat/298-brake-covers-ai | c18706 已交回（21 天前）；交回後放著 21 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | fix/309-single-lockfile | c20716 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（15 天前）；交回後放著 15 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（24 天前）；交回後放著 24 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（20 天前）；交回後放著 20 天沒進版（門檻 3 天）；理由：緊急版只帶MCP更新修正，本分支依InkStoneCo#139另行處理 |
+| 2026-10-31 08:10Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |

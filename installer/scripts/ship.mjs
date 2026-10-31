@@ -874,7 +874,7 @@ const STEPS = [
   //   真正的防呆沒有變弱：所有 `mutates:true` 的步驟本來就只在 `CONFIRM` 才執行
   //   （見下面主迴圈），所以拿掉的只是「連看都要先解保險」，不是「連做都不用解保險」。
   // 🔴 2026-09-22（inkstone/ISEP#30 comment 10739）：`T.armTicket` 配置時走新路——
-  //   leo 在載體票留一行 `ARM: <版本號>` 就能放行，不必再等總管跑
+  //   簽核人在載體票放行 `<版本號>` 就能放行（2026-10-29 起由 AHub 的簽核看板判定，inkstone/Arcrun#328），不必再等總管跑
   //   `gitea-arm-request.sh`／`gitea-arm-check.sh`、也不必貼 `.github-armed`。
   //   但版本號要等 `version` 站重打完才知道（`ctx.release`）⇒ 這裡**不能**在 preflight
   //   就做那個核對——這一段只做「有沒有配置載體票」的靜態檢查，真正的簽名核對
@@ -893,7 +893,7 @@ const STEPS = [
       } else {
         ctx.armTicketResolved = at;
         lines.push(`ARM 會去這張票找：inkstone/${at.repo}#${at.issue}（${at.source === 'flag' ? '--ship-ticket' : '登錄簿後備'}）——`
-          + `人閘＝AHub 簽核：你在那張票留【簽核請求】＋\`版本：<版本號>\`，leo 按「簽核…」同意，畫面以 Leo 身分寫下 \`ARM: <版本號>\`（作者必須是 Leo、版號必須一致；別叫他手打、別叫他跑 github-arm.sh）；`
+          + `人閘＝AHub 簽核：照 AHub 的簽核 guide 為這一版請簽核（Arcrun MCP 的 arcrun_ahub_request_signoff），簽核人在 AHub 畫面簽；出貨線問 AHub 的簽核看板放行了沒（inkstone/Arcrun#328）；`
           + `版本號要等下面 version 站重打完才知道，真正的核對在那一站`);
         const forge = ticketForge();
         lines.push(`票的正本：${forge.label}（installer/forge.conf 的 TICKET_FORGE，切換日只翻那一格）`);

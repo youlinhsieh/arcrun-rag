@@ -5590,3 +5590,41 @@ test('#325 deployBundledWorker：D1 區域讀不到 → 沿用現有 targeted re
     restoreFetch();
   }
 });
+
+// ── Arcrun#310：MCP 自己說落後就要推（2026-10-31 leo21c：cypher 1.4.121、MCP 停在 1.4.118 連三版沒推）──
+
+import { probeMcpLagging } from './worker.js';
+
+const fakeHealth = (body, ok = true) => async () => ({ ok, json: async () => body });
+
+test('Arcrun#310 舊 MCP（沒有 build_source）報的版本 ≠ 這次要裝的 ⇒ 落後', async () => {
+  // leo21c 2026-10-31 實測原文
+  const r = await probeMcpLagging({ healthUrl: 'x', wantVer: '1.4.121',
+    fetchImpl: fakeHealth({ ok: true, service: 'arcrun-mcp', auth: 'portal-login', build: '1.4.118', oauth_store: 'kbdb' }) });
+  assert.deepEqual(r, { lagging: true, reported: '1.4.118' });
+});
+
+test('Arcrun#310 新 MCP 跟 cypher 走：沒有 mcp_build_var＝自己也是這一版 ⇒ 不落後；有且不同 ⇒ 落後', async () => {
+  const fresh = await probeMcpLagging({ healthUrl: 'x', wantVer: '1.4.121',
+    fetchImpl: fakeHealth({ build: '1.4.121', build_source: 'cypher-executor' }) });
+  assert.equal(fresh.lagging, false);
+  const drift = await probeMcpLagging({ healthUrl: 'x', wantVer: '1.4.122',
+    fetchImpl: fakeHealth({ build: '1.4.122', build_source: 'cypher-executor', mcp_build_var: '1.4.121' }) });
+  assert.deepEqual(drift, { lagging: true, reported: '1.4.121' });
+});
+
+test('Arcrun#310 讀不到 ⇒ null（問不到不是落後，交回既有判準）', async () => {
+  assert.equal((await probeMcpLagging({ healthUrl: 'x', wantVer: '1.4.121', fetchImpl: fakeHealth(null, false) })).lagging, null);
+  assert.equal((await probeMcpLagging({ healthUrl: 'x', wantVer: '1.4.121', fetchImpl: async () => { throw new Error('net'); } })).lagging, null);
+});
+
+test('Arcrun#310 自己回報落後 ⇒ 帳本說 sha 一樣也不准跳；沒回報落後 ⇒ 照舊', () => {
+  assert.equal(canSkipWorker({ name: 'arcrun-mcp', entrySha: SEEN, prevSha: SEEN, scope: 'none', selfReportsStale: true }), false);
+  assert.equal(canSkipWorker({ name: 'arcrun-mcp', entrySha: SEEN, prevSha: SEEN, scope: 'none', selfReportsStale: null }), true);
+  assert.equal(canSkipWorker({ name: 'arcrun-mcp', entrySha: SEEN, prevSha: SEEN, scope: 'none', selfReportsStale: false }), true);
+});
+
+test('Arcrun#310 整批跳過的快路徑也要先問 MCP（不然 cypher 新、帳本指紋一致就整批略過）', () => {
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.match(src, /!force && !instanceStale && mcpLagging !== true && accountAllPresent/);
+});

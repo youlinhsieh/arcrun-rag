@@ -1,5 +1,14 @@
 /**
- * ticket-arm-guard.mjs — leo 在載體票留一行 `ARM: <版本號>`，出貨線就認得出來
+ * ticket-arm-guard.mjs — 這一版在出貨票上有沒有被簽核人放行
+ *
+ * ── 2026-10-29 起（inkstone/Arcrun#328）：問 AHub，不自己判 ─────────────────────
+ * 簽核的格式、誰是簽核人（租戶在 AHub 畫面的「設定」填）、怎樣才算放行，只有 AHub 一份
+ * （Arcrun workflows/ahub/lib/signoff.js）。這支先打 `GET …/issues/{n}/signoffs?version=<版本>`，
+ * 照看板的 `version.approved` 放行或擋；擋的訊息只叫人「照 AHub 的簽核 guide 做」。
+ * 下面那套「讀留言、只認 Leo 的 ARM 行」是**過渡舊路**：後端還沒有簽核端點（AHub < 0.8.0
+ * 的 workflow_missing，或 forge 翻回 gitea）才走。leo21c 升到 0.8.0 後可刪。
+ *
+ * ── 以下是舊路的來歷 ─────────────────────────────────────────────────────────
  *
  * ── 為什麼需要這支（inkstone/ISEP#30 comment 10739，2026-09-22，總管交辦）───────
  * 舊機制（`d20-guard.mjs` 的 `checkArmed()` + `.github-armed`）要 leo：
@@ -199,32 +208,45 @@ export async function checkTicketArmed({
   const hint = forge.kind === 'ahub'
     ? `\n     票的正本在 ${forge.label}（installer/forge.conf）。401 ＝ 缺或錯的 AHUB_TOKEN（只拿名字，值在環境）；404 ＝ 那張票在 AHub 上不存在。`
     : '';
+  const ticketUrl = `${baseUrl}/${OWNER}/${repo}/issues/${issue}`;
+
+  // ① 問 AHub（inkstone/Arcrun#328）：誰是簽核人、怎樣才算放行，只有 AHub 知道——這裡不自己讀留言判格式。
+  const viaAhub = await askSignoffStatus({ owner: OWNER, repo, issue, version: normVersion(version), token, baseUrl, fetchImpl, hint });
+  if (viaAhub) {
+    const v = viaAhub.version || {};
+    if (v.approved) {
+      return {
+        armed: true,
+        mission: `ARM: ${version}（${v.by} 在 AHub 簽核，${ticketUrl}#issuecomment-${v.comment_id}，${v.at}）`,
+        comment: { id: v.comment_id, user: { login: v.by }, created_at: v.at },
+        ticketUrl,
+      };
+    }
+    throw new Error(
+      `${ticketUrl}：這一版 \`${version}\` 還沒有簽核人放行。` +
+      (viaAhub.configured === false ? '（這台 AHub 還沒設簽核人。）' : '') + '\n' +
+      `     → 照 AHub 的簽核 guide 做（Arcrun MCP：arcrun_app_tools({app:"ahub"}) 的 signoff；工具 arcrun_ahub_request_signoff），\n` +
+      `       版本填 \`${version}\`。不要自己寫簽核格式、不要請人手打。\n`);
+  }
+
+  // ② 過渡：這台 AHub 還沒有簽核端點（< 0.8.0），或票的後端翻回了 gitea ⇒ 照舊讀留言、只認 Leo。
+  //    leo21c 的 AHub 升到 0.8.0 之後就不會走到這裡；走到了訊息會說是舊路。
   const comments = await fetchAllComments({ owner: OWNER, repo, issue, token, baseUrl, fetchImpl, hint });
   const m = findArmMatch(comments, version);
-  const ticketUrl = `${baseUrl}/${OWNER}/${repo}/issues/${issue}`;
+  const legacy = `     （這台票後端還沒有 AHub 的簽核端點，走舊的核對：只認 ${APPROVER_LOGIN} 寫的 \`ARM: <版本>\`。先把 AHub 更新到 0.8.0。）\n`;
 
   if (!m.ok) {
     if (m.reason === 'no-arm-by-leo') {
       throw new Error(
-        `需要 ${APPROVER_LOGIN} 在載體票留一行 \`ARM: ${version}\`，但 ${ticketUrl} 上沒有任何一則來自 ` +
-        `${APPROVER_LOGIN} 帳號、內含這種宣告的留言。\n` +
-        `     🔴 只認 login 精確等於 \`${APPROVER_LOGIN}\` 的留言——別的帳號（含總管／claude-code）\n` +
-        `        寫出一模一樣的文字都不算數，這是紅線「不准 AI 產生任何放行憑證」的機械版。\n` +
-        `     → 怎麼請 leo 簽（AHub 簽核，2026-10-25 起；**別叫他手打 ARM:、別叫他跑 github-arm.sh**）：\n` +
-        `       ① 你（AI）在 ${ticketUrl} 留一則簽核請求，內含兩個獨立行：\n` +
-        `            【簽核請求】<這一版要上 prod 的標題>\n` +
-        `            版本：${version}\n` +
-        `          下面寫要簽的內容與 stage 實證。\n` +
-        `       ② 請 leo 在 AHub 打開那張票，按「簽核…」→ 選這則 → 勾同意。\n` +
-        `          畫面會以 Leo 的身分寫下 \`ARM: ${version}\`，出貨線照舊認這一行。\n`);
+        `需要簽核人放行 \`${version}\`，但 ${ticketUrl} 上沒有任何一則來自 ${APPROVER_LOGIN} 帳號、內含 \`ARM: ${version}\` 的留言。\n` +
+        `     🔴 AI 帳號寫出一模一樣的文字不算數（紅線：不准 AI 產生任何放行憑證）。\n` +
+        `     → 照 AHub 的簽核 guide 做。\n` + legacy);
     }
     throw new Error(
-      `${ticketUrl} 上有 ${APPROVER_LOGIN} 簽過 ARM，但版本對不上：leo 簽的是 ` +
+      `${ticketUrl} 上有 ${APPROVER_LOGIN} 簽過 ARM，但版本對不上：簽的是 ` +
       `${m.signedVersions.map((v) => `\`${v}\``).join('、')}，這次實際要出的是 \`${version}\`。\n` +
-      `     🔴 版本號由出貨線自己從 manifest 讀出（不接受呼叫端傳入），對不上就是對不上——\n` +
-      `        不會因為「反正都是同一票」就放行差一個版本號的東西。\n` +
-      `     → 若這確實是要出的下一版：在該票留一則新的簽核請求（獨立一行 \`【簽核請求】<標題>\`＋獨立一行 \`版本：${version}\`），\n` +
-      `       請 leo 在 AHub 按「簽核…」選它、勾同意（別叫他手打 ARM:、別叫他跑 github-arm.sh）。\n`);
+      `     🔴 版本號由出貨線自己從 manifest 讀出，對不上就是對不上。\n` +
+      `     → 照 AHub 的簽核 guide 為 \`${version}\` 再請一次簽核。\n` + legacy);
   }
 
   return {
@@ -233,6 +255,26 @@ export async function checkTicketArmed({
     comment: m.comment,
     ticketUrl,
   };
+}
+
+/**
+ * 問 AHub 的簽核看板（GET …/issues/{n}/signoffs?version=）。
+ * 回看板內容；這個後端沒有簽核端點（舊 AHub 的 workflow_missing、Gitea 的 404）⇒ 回 null，呼叫端走舊路。
+ * 其餘錯（401、票不存在以外的失敗）直接丟——fail-closed。
+ */
+export async function askSignoffStatus({ owner, repo, issue, version, token, baseUrl, fetchImpl, hint = '' }) {
+  const url = `${baseUrl}/api/v1/repos/${owner}/${repo}/issues/${issue}/signoffs?version=${encodeURIComponent(version)}`;
+  const headers = { accept: 'application/json' };
+  if (token) headers.authorization = `token ${token}`;
+  const r = await fetchImpl(url, { headers });
+  let js = null;
+  try { js = await r.json(); } catch { js = null; }
+  if (r.ok && js && typeof js === 'object' && !Array.isArray(js) && js.version && typeof js.version === 'object') return js;
+  if (js && js.code === 'workflow_missing') return null;
+  if (String(baseUrl).startsWith('ahub://') && r.status !== 404) {
+    throw new Error(`讀 ${owner}/${repo}#${issue} 的簽核看板失敗：HTTP ${r.status}${js && js.message ? `（${js.message}）` : ''}${hint}`);
+  }
+  return null;
 }
 
 /** 供其他模組（例如需要自訂重試次數）直接複用同一套有界重試策略。 */

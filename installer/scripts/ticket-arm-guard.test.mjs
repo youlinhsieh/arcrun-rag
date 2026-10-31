@@ -16,6 +16,7 @@ function fakeFetch(pages) {
   // pages: array of comment-arrays, one per expected page fetch (in order)
   let call = 0;
   return async (url) => {
+    if (/\/signoffs\?/.test(url)) return { ok: false, status: 404, json: async () => ({}) }; // 沒有簽核看板的後端 ⇒ 舊路
     const body = pages[call] ?? [];
     call += 1;
     return { ok: true, status: 200, json: async () => body };
@@ -172,6 +173,7 @@ import { resolveArmTicket } from './ticket-arm-guard.mjs';
 /** 依 URL 裡的票號回不同留言：模擬「ARM 只在某一張票上」。 */
 function ticketFetch(byIssue) {
   return async (url) => {
+    if (/\/signoffs\?/.test(url)) return { ok: false, status: 404, json: async () => ({}) };
     const n = Number(/\/issues\/(\d+)\/comments/.exec(url)[1]);
     return { ok: true, status: 200, json: async () => byIssue[n] || [] };
   };

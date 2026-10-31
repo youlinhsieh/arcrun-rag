@@ -359,7 +359,7 @@
         "coversMainPush": true,
         "_": [
           "2026-09-22（inkstone/ISEP#30 comment 10739，總管交辦）：leo 只要在這張載體票",
-          "留一行 `ARM: <版本號>`，出貨線就認得出來——不必再等總管跑",
+          "留一行 `ARM: <版本號>`，出貨線就認得出來——不必再等總管跑（2026-10-29 起改問 AHub 的簽核看板，inkstone/Arcrun#328；見 ticket-arm-guard.mjs）",
           "gitea-arm-request.sh／gitea-arm-check.sh，也不必貼 .github-armed 或",
           "/tmp/.main-push-ok。核對邏輯見 installer/scripts/ticket-arm-guard.mjs；",
           "owner 寫死 inkstone（不接受覆蓋，安全邊界同 scripts/lib/gitea-arm-common.sh）。",

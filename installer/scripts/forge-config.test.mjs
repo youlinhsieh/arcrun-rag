@@ -148,8 +148,10 @@ test('makeAhubFetch：沒有的端點 ⇒ 404 並指向真身；不是 /api/v1 �
 // ── ②′ 翻到 ahub，出貨線的 ARM 核對 ─────────────────────────────────────────
 
 /** AHub 上的一張票：留言由 comments 給；用 comment_list 工作流的回應形狀。 */
+// 舊 AHub（< 0.8.0）：沒有簽核看板那條工作流 ⇒ 引擎回 404，出貨閘走舊的讀留言
 function ahubWithComments(comments) {
   return fakeArcrun((req) => {
+    if (req.url.includes('/ahub__signoff_status/')) return { http: 404, json: { error: '找不到 workflow "ahub__signoff_status"' } };
     if (req.envelope.params.index === '999') return { json: { success: true, data: { status: 404, body: { message: 'issue not found' } } } };
     if (!req.envelope.token) return { json: { success: true, data: { status: 401, body: { message: 'token is required' } } } };
     const { limit = '30', page = '1' } = req.envelope.query;
@@ -170,7 +172,8 @@ test('翻到 ahub（注入底層 fetch）：放行／AI 簽不算／簽錯版擋
   const armed = await ok.run('1.4.115');
   assert.equal(armed.armed, true);
   assert.match(armed.mission, /ahub:\/\/ns1\/inkstone\/InkStoneCo\/issues\/234#issuecomment-1/);
-  assert.equal(ok.under.seen[0].url, 'https://cy.example.dev/webhooks/named/ns1/ahub__comment_list/query');
+  assert.equal(ok.under.seen[0].url, 'https://cy.example.dev/webhooks/named/ns1/ahub__signoff_status/query', '先問簽核看板');
+  assert.equal(ok.under.seen[1].url, 'https://cy.example.dev/webhooks/named/ns1/ahub__comment_list/query', '舊 AHub 沒有 ⇒ 讀留言');
 
   await assert.rejects(mk([ai('ARM: 1.4.115')]).run('1.4.115'), /沒有任何一則來自 Leo/);
   await assert.rejects(mk([leo('ARM: 1.4.114')]).run('1.4.115'), /版本對不上/);
@@ -191,7 +194,56 @@ test('翻到 ahub：分頁——ARM 在第二頁也讀得到（AHub 的 limit／
   const forge = ticketForge({ env: {}, conf: AHUB_CONF, fetchImpl: under });
   const r = await checkTicketArmed({ version: '1.4.115', repo: 'InkStoneCo', issue: 234, token: 'T', baseUrl: forge.baseUrl, fetchImpl: forge.fetchImpl });
   assert.equal(r.armed, true);
-  assert.equal(under.seen.length, 2);
+  assert.equal(under.seen.length, 3, '看板一次（舊 AHub 沒有）＋留言兩頁');
+});
+
+test('makeAhubFetch：引擎說沒有這條工作流（404）⇒ 404＋code=workflow_missing（舊 AHub；不當暫時性錯誤重試）', async () => {
+  const under = fakeArcrun({ http: 404, json: { error: '找不到 workflow' } });
+  const f = makeAhubFetch({ cypherUrl: 'https://cy.example', ns: 'ns1', fetchImpl: under });
+  const r = await f('ahub://ns1/api/v1/repos/inkstone/InkStoneCo/issues/1/signoffs?version=1.0.0', { headers: { authorization: 'token T' } });
+  assert.equal(r.status, 404);
+  assert.deepEqual(await r.json(), { message: '這台 AHub 沒有 ahub__signoff_status（版本太舊）', code: 'workflow_missing', workflow: 'ahub__signoff_status' });
+});
+
+// ── ②b AHub 0.8.0：出貨閘只問簽核看板（inkstone/Arcrun#328）─────────────────
+
+function ahubWithBoard(board, comments = []) {
+  return fakeArcrun((req) => {
+    if (!req.envelope.token) return { json: { success: true, data: { status: 401, body: { message: 'token is required' } } } };
+    if (req.url.includes('/ahub__signoff_status/')) return { json: { success: true, data: { success: true, status: 200, body: board(req.envelope.query.version) } } };
+    return { json: { success: true, data: { success: true, status: 200, body: comments } } };
+  });
+}
+const boardOf = (approved, extra = {}) => (ver) => ({ issue: 'inkstone/InkStoneCo#234', approvers: ['alice'], configured: true, requests: [],
+  version: approved ? { version: ver, approved: true, by: 'alice', at: '2026-10-29T10:00:00Z', comment_id: '77' } : { version: ver, approved: false, by: null, at: null, comment_id: null }, ...extra });
+
+test('AHub 0.8.0：看板說放行 ⇒ 過，署名是租戶設的簽核人（不是寫死的 Leo）；版本照實際要出的去問', async () => {
+  const under = ahubWithBoard(boardOf(true));
+  const forge = ticketForge({ env: {}, conf: AHUB_CONF, fetchImpl: under });
+  const r = await checkTicketArmed({ version: 'v1.4.200', repo: 'InkStoneCo', issue: 234, token: 'T', baseUrl: forge.baseUrl, fetchImpl: forge.fetchImpl });
+  assert.equal(r.armed, true);
+  assert.match(r.mission, /alice 在 AHub 簽核/);
+  assert.equal(under.seen.length, 1, '只問看板，不讀留言');
+  assert.equal(under.seen[0].envelope.query.version, '1.4.200');
+});
+
+test('AHub 0.8.0：看板說沒放行 ⇒ 擋；留言裡就算有 Leo 的 ARM 也不算（判讀只在 AHub）；訊息只叫人照簽核 guide', async () => {
+  const under = ahubWithBoard(boardOf(false), [leo('ARM: 1.4.200')]);
+  const forge = ticketForge({ env: {}, conf: AHUB_CONF, fetchImpl: under });
+  const err = await checkTicketArmed({ version: '1.4.200', repo: 'InkStoneCo', issue: 234, token: 'T', baseUrl: forge.baseUrl, fetchImpl: forge.fetchImpl }).catch((e) => e);
+  assert.ok(err instanceof Error);
+  assert.match(err.message, /簽核 guide/);
+  assert.doesNotMatch(err.message, /【簽核請求】|github-arm/, '不再自己教格式');
+  const none = ahubWithBoard(boardOf(false, { configured: false, approvers: [] }));
+  const f2 = ticketForge({ env: {}, conf: AHUB_CONF, fetchImpl: none });
+  await assert.rejects(checkTicketArmed({ version: '1.4.200', repo: 'InkStoneCo', issue: 234, token: 'T', baseUrl: f2.baseUrl, fetchImpl: f2.fetchImpl }), /還沒設簽核人/);
+});
+
+test('AHub 0.8.0：沒 token ⇒ 看板回 401 直接斷（不退回讀留言）', async () => {
+  const under = ahubWithBoard(boardOf(true));
+  const forge = ticketForge({ env: {}, conf: AHUB_CONF, fetchImpl: under });
+  await assert.rejects(checkTicketArmed({ version: '1.4.200', repo: 'InkStoneCo', issue: 234, token: null, baseUrl: forge.baseUrl, fetchImpl: forge.fetchImpl }), /簽核看板失敗：HTTP 401/);
+  assert.equal(under.seen.length, 1);
 });
 
 // ── ③ 回退：翻回 gitea ──────────────────────────────────────────────────────
@@ -204,8 +256,9 @@ test('翻回 gitea（回退演練）：同一組呼叫打的是 Gitea 形狀 /ap
   assert.equal(forge.baseUrl, 'https://git.example');
   const r = await checkTicketArmed({ version: '1.4.115', repo: 'InkStoneCo', issue: 234, token: 'GT', baseUrl: forge.baseUrl, fetchImpl: forge.fetchImpl });
   assert.equal(r.armed, true);
-  assert.match(calls[0].url, /^https:\/\/git\.example\/api\/v1\/repos\/inkstone\/InkStoneCo\/issues\/234\/comments\?/);
-  assert.equal(calls[0].init.headers.authorization, 'token GT');
+  const c = calls.find((x) => /\/comments\?/.test(x.url));
+  assert.match(c.url, /^https:\/\/git\.example\/api\/v1\/repos\/inkstone\/InkStoneCo\/issues\/234\/comments\?/);
+  assert.equal(c.init.headers.authorization, 'token GT');
 });
 
 // ── ④ token ─────────────────────────────────────────────────────────────────

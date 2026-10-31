@@ -292,8 +292,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@7643ba9e92f56435a4b298251daaf1f865686088';
-const BUNDLE_BUILT = '2026-10-26'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@ae1aa864fbc01c11ae7d4bb88bef014ff4187f24';
+const BUNDLE_BUILT = '2026-10-28'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -2767,9 +2767,40 @@ export function missingFromAccount(wantNames, present) {
  * @param {{name:string, entrySha:string, prevSha:string, scope:'none'|'stamp'|'all', presentOnAccount?:boolean|null}} o
  * @returns {boolean} true＝這顆可以略過（內容沒變、沒被強迫重推、且帳號上確實有它）
  */
-export function canSkipWorker({ name, entrySha, prevSha, scope, presentOnAccount }) {
+/**
+ * MCP 這顆自己說的版本落後了沒（inkstone/Arcrun#310，2026-10-31 leo21c 實撞）。
+ *
+ * MCP 身上也有版本印記（`MCP_BUILD`，`/health.build`），但它**不是** isStampTarget，
+ * 而「這台舊不舊」只問 cypher ⇒ cypher 一旦是新版（leo21c：1.4.121），整批跳過那條快路徑就成立，
+ * MCP 永遠停在帳本以為它已經是的那一版——實測 leo21c 的 MCP 從 1.4.118 起連三版沒被推過，
+ * 修 claude.ai「無故要求重新登入」的 #310 程式碼一直沒上身，連帶 `?force=1` 也救不回來
+ * （force 只活在網址列，OAuth 回來落在 /install 就沒了——見 handleAuthCallback）。
+ *
+ * 判法（只看 MCP 自己回的，不猜）：
+ *   · 舊程式（沒有 `build_source`）：`build` 就是 MCP_BUILD ⇒ 跟這次要裝的版本不同＝落後
+ *   · 新程式（#310 起 `build` 跟 cypher 走）：靠 `mcp_build_var`（只有和 cypher 不同時才出現）判斷
+ *   · 讀不到／沒有版本欄位 ⇒ 回 null（「這次問不到」不是「落後」，交給既有判準）
+ *
+ * @returns {Promise<{lagging:boolean|null, reported:string}>}
+ */
+export async function probeMcpLagging({ healthUrl, wantVer, timeoutMs = 10000, fetchImpl = fetch }) {
+  try {
+    const r = await fetchImpl(healthUrl, { signal: AbortSignal.timeout(timeoutMs) });
+    const j = r.ok ? await r.json().catch(() => null) : null;
+    if (!j || typeof j.build !== 'string' || !j.build) return { lagging: null, reported: '(讀不到)' };
+    if (!j.build_source) return { lagging: j.build !== wantVer, reported: j.build };
+    const own = typeof j.mcp_build_var === 'string' && j.mcp_build_var ? j.mcp_build_var : j.build;
+    return { lagging: own !== wantVer, reported: own };
+  } catch {
+    return { lagging: null, reported: '(讀不到)' };
+  }
+}
+
+export function canSkipWorker({ name, entrySha, prevSha, scope, presentOnAccount, selfReportsStale }) {
   // #179：帳號現實優先於帳本。Cloudflare 明說沒有這顆 ⇒ 不管帳本怎麼寫都要推。
   if (presentOnAccount === false) return false;
+  // Arcrun#310：這顆自己回報的版本落後 ⇒ 帳本說什麼都不准跳（帳本會說謊，它自己說的才是現況）。
+  if (selfReportsStale === true) return false;
   // 帳本沒記過這顆／manifest 沒給 sha ⇒ 沒有「沒變」的證據，只能推。
   if (!prevSha || !entrySha || prevSha !== entrySha) return false;
   if (scope === 'all') return false;                       // 帳本整份不可信
@@ -3936,6 +3967,16 @@ async function runInstall(env, sid, progress, force) {
         progress.result.uiFingerprint = probe.uiFingerprint;
         progress.result.staleReason = probe.reason;
       }
+      // Arcrun#310：MCP 自己的版本另外問一次（cypher 是新的不代表 MCP 也是）
+      let mcpLagging = null;
+      if (!force) {
+        const wantMcp = manifest.release ? String(manifest.release) : '';
+        if (wantMcp) {
+          const mp = await probeMcpLagging({ healthUrl: `https://arcrun-mcp.${subdomain}.workers.dev/health`, wantVer: wantMcp });
+          mcpLagging = mp.lagging;
+          progress.result.mcpReported = mp.reported; // 除錯用：MCP 這次自報是哪一版
+        }
+      }
       // 🔴 #179：整批跳過**多一個前提**——帳號上真的每一顆都在。
       //    舊條件只有「沒 force、實例不舊、指紋一致」三項，全部都是問帳本；
       //    而那天 youlin 三項全成立、帳號上卻少七顆 ⇒ 直接跳到「都沒有變動，直接沿用」。
@@ -3947,7 +3988,7 @@ async function runInstall(env, sid, progress, force) {
         // 留痕：這一輪為什麼沒有整批跳過。少了什麼要看得見，不是安靜地多推幾顆。
         progress.result.accountMissingAtStart = missingAll;
       }
-      if (!force && !instanceStale && accountAllPresent && prevFingerprint && prevFingerprint === manifestFingerprint) {
+      if (!force && !instanceStale && mcpLagging !== true && accountAllPresent && prevFingerprint && prevFingerprint === manifestFingerprint) {
         progress.result.deployedNames = manifest.core.map((c) => c.name);
         progress.result.deployed = progress.result.deployedNames.length;
         progress.result.skippedAll = true;
@@ -4007,7 +4048,7 @@ async function runInstall(env, sid, progress, force) {
         //    t146 那道保險**沒有被關掉**——cypher 是印記載體，版號一落後它一定會被重推。
         //    🔴 #179 三修：再多問一句「它在不在帳號上」——sha 與 scope 問的都是帳本，
         //    而缺的那七顆正是「sha 沒變、又不是印記載體」⇒ 舊判準必定放它們過。
-        if (canSkipWorker({ name: entry.name, entrySha: entry.sha256, prevSha, scope: staleScope, presentOnAccount: accountHas(entry.name) })) {
+        if (canSkipWorker({ name: entry.name, entrySha: entry.sha256, prevSha, scope: staleScope, presentOnAccount: accountHas(entry.name), selfReportsStale: entry.name === 'arcrun-mcp' ? mcpLagging : null })) {
           const s2skip = progress.steps.find((x) => x.id === 'deploy');
           if (s2skip) s2skip.note = `${progress.result.deployedNames.length + 1}/${manifest.core.length}：${entry.name}（未變動，略過）`;
           progress.result.deployedNames.push(entry.name);
