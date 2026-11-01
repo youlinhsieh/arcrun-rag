@@ -60,6 +60,7 @@ import worker, {
   internalOnlyWarnings,
   // arcrun-rag#215 c11101：migration 分批容錯，別把 61 句都逐句打
   applyMigrations,
+  applyExecLogMigrations,
   MIGRATION_ALTER_ADD_COLUMN,
   // arcrun-rag#215 comment 11172：世代探針＋按世代切句，已經套過的代不再重送
   detectMigrationGeneration,
@@ -1940,7 +1941,7 @@ assert.ok(DEPLOY_BUDGET_PER_RUN >= 1, 'worker.js 應有 DEPLOY_BUDGET_PER_RUN �
 // `recordDeploys`＝把每次 PUT 上去的 bindings 記進 `state.deployed`，讓這個假帳號
 // 在**下一趟**看起來真的「已經裝過了」（資源規則的 update 模式就是讀 /settings 的 bindings）。
 // 預設關著：既有那些測試不需要它，也不該因為多了一個狀態而換行為。
-function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2, names = null, state: givenState = null, recordDeploys = false } = {}) {
+function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2, names = null, state: givenState = null, recordDeploys = false, execLog = false } = {}) {
   const core = [];
   if (names) coreCount = names.length;
   for (let i = 1; i <= coreCount; i++) {
@@ -1953,7 +1954,12 @@ function installStallFixFetch({ coreCount = DEPLOY_BUDGET_PER_RUN + 2, names = n
       compat_flags: [],
       // 第一顆帶真實的資源需求。**不能全部 requires:{}**——那樣整包 manifest 一項資源
       // 需求都沒有，共用規則會照規約停手（「不確定要裝什麼」），而真實 bundle 不長那樣。
-      requires: i === 1 ? { kv: ['EXEC_CONTEXT'], d1: [{ binding: 'DB' }] } : {},
+      requires: i === 1
+        ? { kv: ['EXEC_CONTEXT'], d1: execLog
+            // inkstone/Arcrun#222：kbdb 另帶一顆執行紀錄庫（database_name 不同 ⇒ 另開一組，不被黏成一顆）
+            ? [{ binding: 'DB', database_name: 'arcrun-kbdb' }, { binding: 'EXEC_LOG_DB', database_name: 'arcrun-exec-log' }]
+            : [{ binding: 'DB' }] }
+        : {},
     });
   }
   const manifest = { core };
@@ -2628,9 +2634,9 @@ test('skills：seedSkillsTo 空庫 → 每支 skill 都 POST 進 cypher /kbdb/en
   assert.ok(sk.created.includes('write_intent_workflow'), '必含 write_intent_workflow（AI 的第一支必讀）');
   assert.ok(sk.created.includes('INDEX'), '必含 INDEX（全館導航）');
   assert.ok(!sk.created.includes('README'), 'README 不 seed');
-  // 寫入形態＝讀取端 arcrun_list_skills 查得到的形態（entry_type=agent-skill + page_name=skill-{slug}）
+  // 寫入形態＝讀取端 arcrun_list_skills 查得到的形態（template=agent-skill + page_name=skill-{slug}）
   const body = JSON.parse(posts[0].body);
-  assert.equal(body.entry_type, 'agent-skill');
+  assert.equal(body.template, 'agent-skill');
   assert.match(body.page_name, /^skill-/);
   assert.ok(body.content && body.content.length > 100, 'content 應為 md 全文');
   const meta = JSON.parse(body.metadata_json);
@@ -5374,7 +5380,7 @@ test('263: /download/mac 與 /download/win 回應 cache-control 不得長快取'
   } finally { globalThis.fetch = realFetch; }
 });
 
-// ===========================================================================
+// ====================================================================
 // inkstone/arcrun-rag#268：換信箱重裝，帳號落點（租戶）不能被換掉；安裝器不管的 var 不能被清掉
 // ===========================================================================
 
@@ -5627,4 +5633,70 @@ test('Arcrun#310 自己回報落後 ⇒ 帳本說 sha 一樣也不准跳；沒�
 test('Arcrun#310 整批跳過的快路徑也要先問 MCP（不然 cypher 新、帳本指紋一致就整批略過）', () => {
   const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   assert.match(src, /!force && !instanceStale && mcpLagging !== true && accountAllPresent/);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// inkstone/Arcrun#222 c18362：安裝器要把 kbdb/migrations-exec-log 套到執行紀錄庫
+// 沒套 ⇒ 實例有庫沒表 ⇒ kbdb /health 503（與「漏收 0014」同一個病）
+// ═════════════════════════════════════════════════════════════════════════════
+
+import EXEC_LOG_SHIPPED from './exec-log-migrations.json' with { type: 'json' };
+
+/** 從 calls 抽出「打到某顆 D1 的 query」的 SQL。 */
+const d1Sqls = (calls, uuid) => calls
+  .filter((c) => c.method === 'POST' && c.url.includes(`/d1/database/${uuid}/query`))
+  .map((c) => JSON.parse(c.body).sql);
+
+test('#222 出貨檔：exec-log-migrations.json 有帶、且就是執行紀錄那幾張表', () => {
+  assert.deepEqual(EXEC_LOG_SHIPPED.source, ['0001_execution_log_init.sql']);
+  const all = EXEC_LOG_SHIPPED.statements.join('\n');
+  for (const t of ['execution_log', 'execution_log_usage', 'execution_log_retention_config']) {
+    assert.match(all, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}\\b`), `少了 ${t}`);
+  }
+  assert.ok(EXEC_LOG_SHIPPED.statements.every((x) => /IF NOT EXISTS/i.test(x)), '每句都要冪等（每次更新都整批重送）');
+});
+
+test('#222 applyExecLogMigrations：有庫 → 整批一次送；沒庫（舊 manifest）→ 一句都不送、不報錯', async () => {
+  const sent = [];
+  const runSql = async (sql) => { sent.push(sql); };
+  const r = await applyExecLogMigrations(runSql, 'db-exec');
+  assert.equal(r.skipped, false);
+  assert.equal(sent.length, 1, '整批一次，不逐句');
+  assert.match(sent[0], /CREATE TABLE IF NOT EXISTS execution_log\b/);
+
+  sent.length = 0;
+  const r2 = await applyExecLogMigrations(runSql, null);
+  assert.equal(r2.skipped, true);
+  assert.equal(sent.length, 0, '沒有執行紀錄庫就不該打任何 D1（Arcrun#133：既有實例升級不能壞）');
+});
+
+test('#222 runInstall：manifest 帶 EXEC_LOG_DB → 執行紀錄的表建在「那顆」庫上，知識庫那顆不會收到', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-exec-log';
+  await seedInstallSession(env, sid, 'execlog@test.example');
+  const { calls } = installStallFixFetch({ coreCount: 2, execLog: true });
+  try { await startInstallAndDrain(env, sid, {}); } finally { restoreFetch(); }
+  const p = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.ok(p.result.execLogDatabaseId, '執行紀錄庫要解到一顆');
+  assert.notEqual(p.result.execLogDatabaseId, p.result.databaseId, '不能跟知識庫黏成同一顆');
+  const execSqls = d1Sqls(calls, p.result.execLogDatabaseId);
+  assert.ok(execSqls.some((q) => /CREATE TABLE IF NOT EXISTS execution_log\b/.test(q)),
+    '執行紀錄庫沒有收到 CREATE TABLE execution_log——實例會 /health 503');
+  assert.ok(execSqls.every((q) => !/\bentries\b/.test(q)), '知識庫的 migration 不該送進執行紀錄庫');
+  const kbSqls = d1Sqls(calls, p.result.databaseId);
+  assert.ok(kbSqls.length > 0, '知識庫自己的 migration 照送');
+  assert.ok(kbSqls.every((q) => !/CREATE TABLE IF NOT EXISTS execution_log_usage/.test(q)), '執行紀錄的表不該建在知識庫裡');
+  assert.match(p.result.execLogSchema, /已套用 \d+ 句/);
+});
+
+test('#222 runInstall：舊版 manifest（沒有 EXEC_LOG_DB）→ 安裝照走、不報錯、不打任何執行紀錄庫', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const sid = 'sid-no-exec-log';
+  await seedInstallSession(env, sid, 'noexeclog@test.example');
+  const { calls } = installStallFixFetch({ coreCount: 2 });
+  try { await startInstallAndDrain(env, sid, {}); } finally { restoreFetch(); }
+  const p = await env.INSTALLER_KV.get(`prog:${sid}`, 'json');
+  assert.equal(p.result.execLogDatabaseId, null);
+  assert.notEqual(p.error && p.error.step, 'schema', 'schema 步不該因為沒有執行紀錄庫而失敗');
+  assert.ok(!calls.some((c) => /CREATE TABLE IF NOT EXISTS execution_log_usage/.test(String(c.body || ''))), '沒有執行紀錄庫就不該送執行紀錄庫的建表 SQL');
 });

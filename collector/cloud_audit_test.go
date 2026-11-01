@@ -329,7 +329,7 @@ func TestCloudCardPresent_RequestShapeAndParsing(t *testing.T) {
 	if got.Get("source") != "kb://docs/小果被AFTEE詐貸.pdf#0" {
 		t.Fatalf("source 鍵不對：%q", got.Get("source"))
 	}
-	if got.Get("library") != "mylib" || got.Get("entry_type") != "block" {
+	if got.Get("library") != "mylib" || got.Get("template") != "block" {
 		t.Fatalf("庫／型別 filter 不對：%v", got)
 	}
 	if got.Get("limit") != "10" || got.Get("offset") != "0" {
@@ -392,11 +392,11 @@ func TestCloudCardPresent_NoConnectionInfo(t *testing.T) {
 // ── inkstone/arcrun-rag#275：對帳不能把「已下架（deprecated）的殘留 block」讀成「卡還在」 ──
 
 func liveBlock() map[string]any {
-	return map[string]any{"id": "b-live", "entry_type": "block", "metadata_json": `{"source":"kb://x#0","status":"active"}`}
+	return map[string]any{"id": "b-live", "template": "block", "metadata_json": `{"source":"kb://x#0","status":"active"}`}
 }
 
 func deprecatedBlock(id string) map[string]any {
-	return map[string]any{"id": id, "entry_type": "block", "metadata_json": `{"source":"kb://x#0","status":"deprecated"}`}
+	return map[string]any{"id": id, "template": "block", "metadata_json": `{"source":"kb://x#0","status":"deprecated"}`}
 }
 
 // fakeEntries 模擬 KBDB `GET /entries`：沒有 deprecated 謂詞（total 含殘留），依 limit／offset 分頁，
@@ -446,18 +446,18 @@ func TestCloudCardPresent_LiveBlockAmongDeprecatedIsPresent(t *testing.T) {
 }
 
 // 只剩 triplet／entity、沒有 block ⇒ block 查詢 total=0 ⇒ 不在；
-// 且查詢一律限定 entry_type=block（不會拿殘留的 triplet／entity 當「卡還在」）。
+// 且查詢一律限定 template=block（不會拿殘留的 triplet／entity 當「卡還在」）。
 func TestCloudCardPresent_OnlyTripletsLeftIsMissing(t *testing.T) {
 	var seen []url.Values
-	srv := fakeEntries(t, nil, &seen) // block 一列都沒有（triplet 在別的 entry_type，查不到）
+	srv := fakeEntries(t, nil, &seen) // block 一列都沒有（triplet 在別的 template，查不到）
 	defer srv.Close()
 	present, ok, err := cloudCardPresent(&DirectConfig{CypherURL: srv.URL, APIKey: "ns"}, "lib", "a+b.pdf")
 	if err != nil || !ok || present {
 		t.Fatalf("沒有 block 應判 missing，實得 present=%v ok=%v err=%v", present, ok, err)
 	}
 	for _, q := range seen {
-		if q.Get("entry_type") != "block" {
-			t.Fatalf("對帳必須只認 block，實際查了 entry_type=%q", q.Get("entry_type"))
+		if q.Get("template") != "block" {
+			t.Fatalf("對帳必須只認 block，實際查了 template=%q", q.Get("template"))
 		}
 	}
 }

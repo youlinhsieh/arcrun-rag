@@ -2,7 +2,7 @@
 /**
  * compile-skills.mjs — 打包期（非 runtime）把 Arcrun registry/skills/*.md（agent skill playbook）
  * 預編成 src/skills.json + oauth-prototype/skills.json，讓安裝器 worker 裝機時能把 skills
- * 種進新實例的 kbdb（entry_type=agent-skill）——沒有這步，新實例的 AI 拿不到
+ * 種進新實例的 kbdb（template=agent-skill）——沒有這步，新實例的 AI 拿不到
  * 「怎麼寫意圖工作流」等 playbook（arcrun_get_skill 全空）。
  *
  * ⚠️ 不重寫 skill：只把 md 原文搬成 JSON（{slug, title, content}）。

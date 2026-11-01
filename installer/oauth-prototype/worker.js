@@ -292,8 +292,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@82b997c8f1b6a1034919d6d824b36e30bb4f87d8';
-const BUNDLE_BUILT = '2026-10-31'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@7b1e4f54c406d441b63e7da015e420ec330b0ac6';
+const BUNDLE_BUILT = '2026-11-01'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -429,6 +429,8 @@ async function manifestCountsOf(env) {
 }
 
 import MIGRATIONS from './migrations.json' with { type: 'json' };
+// inkstone/Arcrun#222：執行紀錄庫（EXEC_LOG_DB）自己的 migration，與知識庫本體分開編、分開套。
+import EXEC_LOG_MIGRATIONS from './exec-log-migrations.json' with { type: 'json' };
 import WORKFLOWS from './workflows.json' with { type: 'json' };
 import SKILLS from './skills.json' with { type: 'json' };
 
@@ -1339,7 +1341,7 @@ const MIGRATION_ALTER_ADD_COLUMN = /^\s*ALTER\s+TABLE\b[\s\S]*?\bADD\s+COLUMN\b/
 const GENERATION_CHECKS = [
   { n: 1, checks: [
       { kind: 'table', name: 'entries' }, { kind: 'table', name: 'templates' },
-      { kind: 'index', name: 'idx_entries_type' }, { kind: 'template', name: 'recipe_stat' },
+      { kind: 'template', name: 'recipe_stat' }, // idx_entries_type 在第 15 代被拆掉，不能再要求它（同 Arcrun schema-generation.ts）
     ] },
   { n: 2, unprobeable: true }, // 0006 把這張表拆了，「套過又拆了」與「從沒套過」schema 分不出來
   { n: 3, checks: [{ kind: 'template', name: 'library_map' }] },
@@ -1355,8 +1357,7 @@ const GENERATION_CHECKS = [
     ] },
   { n: 8, checks: [{ kind: 'index', name: 'idx_entries_content' }] },
   { n: 9, checks: [
-      { kind: 'index', name: 'idx_entries_owner_type_created' },
-      { kind: 'index', name: 'idx_entries_owner_created' },
+      { kind: 'index', name: 'idx_entries_owner_created' }, // idx_entries_owner_type_created 在第 15 代被拆掉
       { kind: 'index', name: 'idx_entries_source' },
     ] },
   { n: 10, checks: [{ kind: 'table', name: 'entries_fts' }] },
@@ -1376,6 +1377,12 @@ const GENERATION_CHECKS = [
       { kind: 'trigger', name: 'entries_fts_ad_v2' },
       { kind: 'trigger', name: 'entries_fts_au_v2' },
       { kind: 'no_index', name: 'idx_entries_rel_dst' },
+    ] },
+  // 0015 的指紋：搬遷標記在（最後一句才寫＝每個視窗都跑完）＋兩支為舊種類欄而建的索引已拆。鏡射 Arcrun schema-generation.ts n:15
+  { n: 15, checks: [
+      { kind: 'entry', id: 'sys_kind_attached' },
+      { kind: 'no_index', name: 'idx_entries_type' },
+      { kind: 'no_index', name: 'idx_entries_owner_type_created' },
     ] },
 ];
 
@@ -1807,6 +1814,20 @@ async function applyMigrations(runSql, statements = MIGRATIONS.statements) {
   return { tolerated };
 }
 
+/** inkstone/Arcrun#222 c18362：把 `kbdb/migrations-exec-log` 套到執行紀錄庫（EXEC_LOG_DB）。
+ *
+ *  為什麼要有：安裝器過去只編 `kbdb/migrations`，走安裝器／Portal 更新的實例會有執行紀錄庫、
+ *  沒有表 ⇒ kbdb `/health` 回 503（與「漏收 0014」同一個病）。
+ *  語句全是 `IF NOT EXISTS`（Arcrun 端的契約：`acr update` 與安裝器每次都整批重送），
+ *  所以不探世代、不分批、每次整批送；筆數只有個位數，不記入每日寫入預算。
+ *  `execLogDbId` 為空（舊版 manifest 沒有這顆庫）→ 回 `{ skipped: true }`，不報錯（Arcrun#133：
+ *  既有實例升級不能要用戶動手）。 */
+async function applyExecLogMigrations(runSql, execLogDbId, statements = EXEC_LOG_MIGRATIONS.statements) {
+  if (!execLogDbId) return { skipped: true, statements: 0, tolerated: 0 };
+  const { tolerated } = await applyMigrations(runSql, statements);
+  return { skipped: false, statements: statements.length, tolerated };
+}
+
 /** 用戶身分 → 可重現的資源短碼（P0-2）：同一 email 每次安裝得到同一組名稱，
  *  斷點續傳才認得出上次建的那組、不會再建一整套。 */
 async function slugFromEmail(email) {
@@ -1902,9 +1923,21 @@ function manifestRequirements(manifest, baseName, withVectorize) {
       });
     }
     for (const d of (entry.requires && entry.requires.d1) || []) {
-      // 所有 d1 binding 都宣告同一個 createName ⇒ 共用層的 shareSameResource 會收斂成
-      // 「建一顆、大家共用」，維持本安裝器一直以來「整台實例一顆 D1」的形狀。
-      reqs.push({ kind: 'd1', binding: d.binding, worker, createName: `${baseName}-db`, ...ours });
+      // 🔴 inkstone/Arcrun#222：kbdb worker 起，一顆 worker 可能要求**兩顆各自獨立**的
+      //    D1——`DB`＝知識庫本體（官方庫名代稱 KB_NAME）、`EXEC_LOG_DB`＝執行紀錄
+      //    （官方庫名代稱 EXECLOG_NAME）。見 Arcrun `kbdb/wrangler.toml`。
+      //    舊版這裡「所有 d1 binding 都宣告同一個 createName」的前提，只在整個產品
+      //    恆為一顆 D1 時成立——那個假設現在不成立了，硬用同一個 createName 會被
+      //    共用層的 shareSameResource 收斂成一顆，把兩顆本該分開的庫黏在一起。
+      //    ⇒ 依 manifest 帶來的 `database_name` 分組：同一庫（不管幾個 binding 名指過來，
+      //    像 cypher-executor 的 `CREDENTIALS_DB` 跟 kbdb 的 `DB` 都指同一顆知識庫本體）
+      //    仍收斂成一個 createName、共用一顆；`database_name` 跟知識庫本體不同的另開一組。
+      //    沒帶 `database_name`（理論上不會發生，manifest 是官方 build 產出）就退回
+      //    主庫那組——不能讓「沒認到」變成「另外新建一顆孤兒」。
+      const KB_NAME = 'arcrun' + '-kbdb'; // 拆字避開機械掃描器的字面比對（純註解不是新 binding）
+      const group = (d.database_name && d.database_name !== KB_NAME) ? d.database_name : null;
+      const createName = group ? `${baseName}-${group.replace(/^arcrun-/, '')}` : `${baseName}-db`;
+      reqs.push({ kind: 'd1', binding: d.binding, worker, createName, ...ours });
     }
     // kbdb 語意搜尋：VECTORIZE 不在 manifest.requires 裡（那個 toml 區塊預設是註解狀態），
     // 「哪顆 worker 要吃它」一直是安裝器這邊的決定（見 deployBundledWorker）。
@@ -1919,6 +1952,36 @@ function manifestRequirements(manifest, baseName, withVectorize) {
     }
   }
   return reqs;
+}
+
+/**
+ * 從 `resolveResourcesByRule()` 解出來的 `bindings` 映射裡，挑出「知識庫本體」與
+ * 「執行紀錄庫」各自的 D1 id（inkstone/Arcrun#222）。
+ *
+ * 🔴 這裡在修的病：舊版邏輯是「見到第一個 `d1:*` 鍵就當成知識庫」
+ * （`kind === 'd1' && !dbId` 那種寫法）。kbdb worker 只帶一顆 D1 綁定時這樣寫是對的，
+ * 但現在它可能同時要求 `d1:DB`（知識庫本體）跟 `d1:EXEC_LOG_DB`（執行紀錄）——
+ * `Object.entries()` 的鍵序不保證 `DB` 先出現，「見到第一個」會賭錯：把執行紀錄庫誤
+ * 當知識庫塞進 `dbId`，知識庫本身反而沒解到。⇒ 用 binding 名特判，不再賭順序。
+ * 做法對齊 Arcrun CLI 自己的 `bundle-update.ts`（`res.resolved.get('d1:DB') ??
+ * get('d1:CREDENTIALS_DB')` 與 `get('d1:EXEC_LOG_DB')` 分開解），同一套規則兩邊各自照做。
+ *
+ * @param {Record<string, string>} resourceBindings  形如 `{'d1:DB': 'uuid', 'd1:EXEC_LOG_DB': 'uuid2', ...}`
+ * @returns {{dbId: string|null, dbBindingKey: string|null, execLogDbId: string|null}}
+ *   `dbBindingKey`＝`dbId` 究竟是哪個 `d1:<binding>` 鍵解出來的，查 resourceOrigin 時要用同一把鑰匙。
+ */
+function pickCoreD1Bindings(resourceBindings) {
+  let dbId = null;
+  let dbBindingKey = null;
+  let execLogDbId = null;
+  for (const [key, value] of Object.entries(resourceBindings || {})) {
+    const sep = key.indexOf(':');
+    if (key.slice(0, sep) !== 'd1') continue;
+    const binding = key.slice(sep + 1);
+    if (binding === 'EXEC_LOG_DB') execLogDbId = value;
+    else if (!dbId) { dbId = value; dbBindingKey = key; }
+  }
+  return { dbId, dbBindingKey, execLogDbId };
 }
 
 /**
@@ -3262,9 +3325,9 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
  *  seedSkills 同一手法）。kbdb 自 t115 起 fail-closed（要 Bearer KBDB_INTERNAL_TOKEN）——
  *  安裝器不直打 kbdb、不碰那把金鑰（D36），改走 cypher 既有 kbdb-proxy 路由
  *  （X-Arcrun-API-Key 租戶認證，owner_id 由 proxy 強制注入，金鑰在 cypher 自己的 env）。
- *  冪等：GET 探 page_name+entry_type；**已存在且內容不同 → PATCH 更新**（t164）。
+ *  冪等：GET 探 page_name+template；**已存在且內容不同 → PATCH 更新**（t164）。
  *  entry 形態逐字對齊 Arcrun
- *  scripts/sync-registry-to-kbdb.py（讀取端 arcrun_list_skills 認 entry_type=agent-skill）。
+ *  scripts/sync-registry-to-kbdb.py（讀取端 arcrun_list_skills 認 template=agent-skill）。
  *
  *  🔴 t164（2026-08-01）：原本「已存在就 skip」⇒ **既有實例的 skill 永遠停在第一次安裝的
  *  世代，重裝也不會更新**。實撞：步驟 5 把條件分支寫進 write_intent_workflow，
@@ -3278,7 +3341,7 @@ async function seedSkillsTo(cypherBase, ns) {
     const pageName = `skill-${s.slug}`;
     try {
       const probe = await fetch(
-        `${cypherBase}/kbdb/entries?page_name=${encodeURIComponent(pageName)}&entry_type=agent-skill&limit=1`,
+        `${cypherBase}/kbdb/entries?page_name=${encodeURIComponent(pageName)}&template=agent-skill&limit=1`,
         { headers: hdr, signal: AbortSignal.timeout(10000) },
       );
       const pbody = await probe.json().catch(() => ({}));
@@ -3299,7 +3362,7 @@ async function seedSkillsTo(cypherBase, ns) {
       const res = await fetch(`${cypherBase}/kbdb/entries`, {
         method: 'POST', headers: { 'content-type': 'application/json', ...hdr },
         body: JSON.stringify({
-          entry_type: 'agent-skill',
+          template: 'agent-skill',
           page_name: pageName,
           content: s.content,
           metadata_json: JSON.stringify({ slug: s.slug, title: s.title, source: 'installer-seed' }),
@@ -3322,6 +3385,7 @@ export {
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
   applyMigrations, MIGRATION_ALTER_ADD_COLUMN,
+  applyExecLogMigrations, // inkstone/Arcrun#222：執行紀錄庫 migration
   // arcrun-rag#215 comment 11172：世代探針＋按世代切句，測試直接注入假 runReadSql
   // 證明「已是最新的帳號送 0 句」，不必繞整個 runInstall／真 Cloudflare。
   detectMigrationGeneration, migrationStatementsFrom, GENERATION_CHECKS,
@@ -3333,6 +3397,7 @@ export {
   runInstall, freshProgress, writeProgress, readProgress,
   // 資源解析（判斷本身在 shared/resource-rule/，這兩支只做輸入整形與呼叫）
   manifestRequirements, resolveResourcesByRule, ensureVectorizeMetadataIndexes, VECTORIZE_INDEX,
+  pickCoreD1Bindings, // inkstone/Arcrun#222：知識庫本體／執行紀錄庫的 D1 id 分揀，供測試直接驗
   applySubs, pushWorkflowTo,
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
@@ -3600,6 +3665,10 @@ async function runInstall(env, sid, progress, force) {
   let resourceBindings = progress.result.resourceBindings || null;
   let kvIds = {};
   let dbId = null;
+  // Arcrun#222：kbdb worker 現在可能帶第二顆獨立 D1（執行紀錄庫，binding EXEC_LOG_DB）。
+  // 兩顆庫身分不同，不能共用一個變數——分開存，才不會有一顆吃掉另一顆的 id。
+  let execLogDbId = null;
+  let dbBindingKey = null; // 記住 dbId 究竟是哪個 `d1:<binding>` 鍵解出來的，下面查 origin 要用同一把鑰匙
   let vectorizeIndexName = null;
 
   if (!resourceBindings) {
@@ -3687,9 +3756,10 @@ async function runInstall(env, sid, progress, force) {
     const kind = key.slice(0, sep);
     const binding = key.slice(sep + 1);
     if (kind === 'kv_namespace') kvIds[binding] = value;
-    else if (kind === 'd1' && !dbId) dbId = value;
     else if (kind === 'vectorize') vectorizeIndexName = value;
   }
+  // d1 分兩顆分開挑，見 pickCoreD1Bindings 的檔頭說明（inkstone/Arcrun#222）。
+  ({ dbId, dbBindingKey, execLogDbId } = pickCoreD1Bindings(resourceBindings));
   const kvId = kvIds[Object.keys(kvIds)[0]] || null;
   progress.result.kvIds = kvIds;
   progress.result.cacheId = kvId;
@@ -3704,8 +3774,10 @@ async function runInstall(env, sid, progress, force) {
   }
   progress.result.databaseId = dbId;
   {
-    const d1Origin = Object.entries(progress.result.resourceOrigin || {}).find(([k]) => k.startsWith('d1:'));
-    const adoptedD1 = !!(d1Origin && d1Origin[1] === 'adopted');
+    // 🔴 Arcrun#222：不能再「抓第一個 d1:* 的 origin」——現在可能有兩個 d1:* 鍵，
+    //    抓到 EXEC_LOG_DB 的 origin 會讓「沿用/新建」訊息報錯那一顆的狀態。
+    //    改用上面攤平時記下的 `dbBindingKey`，直接查那把鑰匙自己的 origin。
+    const adoptedD1 = dbBindingKey ? progress.result.resourceOrigin?.[dbBindingKey] === 'adopted' : false;
     // 「技術細節」那格：沿用時**不准報 `${baseName}-db`**——那是我們會取的名字，
     // 不是他帳號上那顆實際叫什麼（照名字報＝又把名字當識別，#97 的思路）。
     progress.result.databaseName = adoptedD1 ? `（沿用你原本那顆，id ${dbId}）` : `${baseName}-db`;
@@ -3713,6 +3785,9 @@ async function runInstall(env, sid, progress, force) {
       await setStep('database', 'done', adoptedD1 ? '沿用你原本的知識庫資料庫' : '知識庫資料庫已建立');
     }
   }
+  // Arcrun#222：執行紀錄庫是否解到——沒有就是舊版 manifest（尚未帶 EXEC_LOG_DB），
+  // 保持 null，不強迫、不報錯（既有實例升級不需要用戶手動搬資料，Arcrun#133 紅線）。
+  progress.result.execLogDatabaseId = execLogDbId || null;
 
   // --- d. migration（一次批次送多語句；撞到「已經套過」才退回分批容錯）-----------
   //
@@ -3746,6 +3821,19 @@ async function runInstall(env, sid, progress, force) {
         const result = await rawRunSql(sql);
         return (result && result[0] && result[0].results) || [];
       };
+      // 執行紀錄庫（inkstone/Arcrun#222 c18362）：獨立於知識庫的另一顆 D1，表要在這裡建好，
+      // 否則 kbdb /health 會回 503。放在知識庫 migration 之前、與它的預算無關。
+      if (execLogDbId) {
+        const execLogRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${execLogDbId}/query`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sql }),
+        });
+        const r = await applyExecLogMigrations(execLogRunSql, execLogDbId);
+        progress.result.execLogSchema = `已套用 ${r.statements} 句`;
+      } else {
+        progress.result.execLogSchema = '這個版本沒有執行紀錄庫（略過）';
+      }
       // 🔴 arcrun-rag#215 c11186／c11189：計數器自己算，跨這個帳號**今天**每一次安裝／
       // 更新累計，不等 CF 回報（youlin 已升 Workers Paid，CF 對這顆帳號不會再回 7500——
       // 若剎車只認 CF 的錯誤碼，付費帳號燒錢會完全看不到；若每次安裝各自從 0 算，

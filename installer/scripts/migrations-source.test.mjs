@@ -81,3 +81,47 @@ test('世代表：對真的 Arcrun 1.4.88 候選與目前 worker.js ⇒ 一致',
   const here = dn(new URL(import.meta.url).pathname);
   assert.match(assertGenerationChecksInSync(join(here, '..', 'oauth-prototype'), real)[0], /一致/);
 });
+
+// ── inkstone/Arcrun#222 c18362：安裝器帶的 ＝ 來源裡「所有」migration 目錄 ──────────────
+import { mkdirSync as mk2, writeFileSync as wf2 } from 'node:fs';
+
+function arcrunWithExecLog(kb, exec) {
+  const d = arcrun(kb);
+  mk2(join(d, 'kbdb', 'migrations-exec-log'), { recursive: true });
+  for (const f of exec) wf2(join(d, 'kbdb', 'migrations-exec-log', f), '-- x');
+  return d;
+}
+function installerBoth(kbSource, execSource) {
+  const d = installer(kbSource);
+  if (execSource) wf2(join(d, 'exec-log-migrations.json'), JSON.stringify({ source: execSource }));
+  return d;
+}
+
+test('#222：來源有 migrations-exec-log、安裝器沒帶 exec-log-migrations.json ⇒ 擋下（/health 503 的成因）', () => {
+  const wt = arcrunWithExecLog(['0001_a.sql'], ['0001_execution_log_init.sql']);
+  assert.throws(() => assertMigrationsComplete(installerBoth(['0001_a.sql'], null), wt), /exec-log-migrations\.json/);
+});
+
+test('#222：exec-log 帶了但少一支 ⇒ 擋下', () => {
+  const wt = arcrunWithExecLog(['0001_a.sql'], ['0001_x.sql', '0002_y.sql']);
+  assert.throws(() => assertMigrationsComplete(installerBoth(['0001_a.sql'], ['0001_x.sql']), wt), /0002_y\.sql/);
+});
+
+test('#222：兩個目錄都帶齊 ⇒ 通過，且兩個都有回報', () => {
+  const wt = arcrunWithExecLog(['0001_a.sql'], ['0001_x.sql']);
+  const lines = assertMigrationsComplete(installerBoth(['0001_a.sql'], ['0001_x.sql']), wt);
+  assert.equal(lines.length, 2);
+  assert.match(lines.join('\n'), /知識庫本體全部 1 支/);
+  assert.match(lines.join('\n'), /執行紀錄庫.*全部 1 支/);
+});
+
+test('#222：舊版來源（沒有 migrations-exec-log）⇒ 不要求，不擋', () => {
+  const wt = arcrun(['0001_a.sql']);
+  assert.doesNotThrow(() => assertMigrationsComplete(installerBoth(['0001_a.sql'], null), wt));
+});
+
+test('#222：來源長出安裝器不認得的新 migration 目錄 ⇒ 擋下，不安靜略過', () => {
+  const wt = arcrun(['0001_a.sql']);
+  mk2(join(wt, 'kbdb', 'migrations-ledger'), { recursive: true });
+  assert.throws(() => assertMigrationsComplete(installerBoth(['0001_a.sql'], null), wt), /migrations-ledger/);
+});

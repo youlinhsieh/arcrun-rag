@@ -227,7 +227,7 @@ config:
     headers:
       Content-Type: "application/json"
     body_json:
-      entry_type: "block"
+      template: "block"
       content: "{{block.content}}"
       owner_id: "__NAMESPACE__"
       page_name: "{{block.page_name}}"

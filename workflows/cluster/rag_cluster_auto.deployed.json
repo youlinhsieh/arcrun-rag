@@ -476,7 +476,7 @@
       "Content-Type": "application/json"
      },
      "body_json": {
-      "entry_type": "block",
+      "template": "block",
       "page_name": "00-INDEX",
       "owner_id": "__NAMESPACE__",
       "content": "- [[{{decide.data.item_page_name}}]] {{decide.data.item_summary}}",
@@ -559,7 +559,7 @@
       "Content-Type": "application/json"
      },
      "body_json": {
-      "entry_type": "block",
+      "template": "block",
       "page_name": "00-INDEX",
       "owner_id": "__NAMESPACE__",
       "content": "- [[{{finalize_hub_card.data.hub_title}}]] {{finalize_hub_card.data.hub_summary}}（收 {{hub_editor.data.member_count}} 篇）",
@@ -574,7 +574,7 @@
     "label": "get_index_lines",
     "data": {
      "method": "GET",
-     "url": "__KBDB_BASE__/entries?page_name=00-INDEX&library={{decide.data.library}}&owner_id=__NAMESPACE__&entry_type=block&limit=500",
+     "url": "__KBDB_BASE__/entries?page_name=00-INDEX&library={{decide.data.library}}&owner_id=__NAMESPACE__&template=block&limit=500",
      "headers": {
       "Authorization": "Bearer {{credential.kbdb_internal_token}}"
      }
@@ -624,7 +624,7 @@
       "Content-Type": "application/json"
      },
      "body_json": {
-      "entry_type": "block",
+      "template": "block",
       "page_name": "{{finalize_hub_card.data.hub_title}}",
       "owner_id": "__NAMESPACE__",
       "content": "{{build_hub_card_content.data.hub_card_content}}",

@@ -20,7 +20,7 @@
 #   __NAMESPACE__ / __CYPHER_BASE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
 #   （LLM 走這台雲端自己的 /portal/daemon/extract＝管理員在 portal 設的 AI，免金鑰、免模型佔位；inkstone/arcrun-rag#58）
 #
-# 與既有鏈的關係：blocks/triplets 的寫法（entry_type=block、page_name、metadata source/
+# 與既有鏈的關係：blocks/triplets 的寫法（template=block、page_name、metadata source/
 #   source_path/embed；triplet template）與 rag_ingest 逐欄一致 → rag_chat 一視同仁檢索得到。
 #   source_uri 語意＝kb://<path>（同 rag_ingest v3）；removed 下架仍走 rag_ingest 的 removed
 #   分支（daemon direct 模式的刪檔打 rag_ingest 的 removed 事件——見 collector direct.go）。
@@ -152,7 +152,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "block"
+      template: "block"
       content: "{{block.content}}"
       owner_id: "__NAMESPACE__"
       page_name: "{{block.page_name}}"

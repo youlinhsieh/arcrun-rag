@@ -147,12 +147,12 @@ config:
   #    caller 拿到 200＋一整頁資料，看起來完全正常，只是裡面沒有它要的東西。
   #    那面牆已經吞過兩次參數：`q`／`search`（Arcrun#3 發現①）與 `exclude_kind`（Arcrun#44）。
   #    ⇒ 「一致性」在這裡聽起來像好事，實際上是**把現在能跑的東西改壞**。
-  #    真要改走 cypher，先確認 proxy 白名單有 `library`／`exclude_kind`／`limit`／`entry_type`
+  #    真要改走 cypher，先確認 proxy 白名單有 `library`／`exclude_kind`／`limit`／`template`
   #    這四格，且未來每加一個參數都要記得同步那面牆。
   fetch_pages:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&entry_type=block&limit=60&exclude_kind=library_map{{pick_libs.data.lib_param}}"
+    url: "__KBDB_BASE__/entries?owner_id=__NAMESPACE__&template=block&limit=60&exclude_kind=library_map{{pick_libs.data.lib_param}}"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"

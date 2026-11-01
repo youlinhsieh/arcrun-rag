@@ -21,7 +21,7 @@
 name: rag_wiki_digest
 description: >
   對指定 page_name 的 blocks 做 LLM 精耕：撈 blocks → 組 prompt → 這台雲端設定的 AI 生成 wiki 摘要
-  （繁中、含要點與關鍵實體）→ 寫回 KBDB（entry_type=wiki，page_name=wiki-{原頁名}）。
+  （繁中、含要點與關鍵實體）→ 寫回 KBDB（template=wiki，page_name=wiki-{原頁名}）。
   「知識庫自己長 wiki」——mira wiki_synthesis 本質的產品包版，換源＝換 recipe 不換引擎。
 
 flow:
@@ -36,7 +36,7 @@ config:
   fetch_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?entry_type=block&page_name={{input.page_name}}&owner_id=__NAMESPACE__&limit=50"
+    url: "__KBDB_BASE__/entries?template=block&page_name={{input.page_name}}&owner_id=__NAMESPACE__&limit=50"
     headers:
       Accept: "application/json"
 
@@ -97,7 +97,7 @@ config:
       timeout_ms: 3000
       max_output_bytes: 2097152
 
-  # 5) 寫回 KBDB（entry_type=wiki；精耕產物與 raw block 分型，查詢兩者都命中）。
+  # 5) 寫回 KBDB（template=wiki；精耕產物與 raw block 分型，查詢兩者都命中）。
   write_wiki:
     component: "__HTTP_REQ_URL__"
     method: POST
@@ -105,7 +105,7 @@ config:
     headers:
       Content-Type: "application/json"
     body_json:
-      entry_type: "wiki"
+      template: "wiki"
       content: "{{extract_text.data.wiki_md}}"
       owner_id: "__NAMESPACE__"
       page_name: "wiki-{{input.page_name}}"

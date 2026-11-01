@@ -99,7 +99,7 @@ test('④ 最新那支的特徵語句真的在 statements 裡（只比檔名不�
   //   原本只認 ALTER TABLE／CREATE INDEX 的規則在這支上找不到特徵而炸——補上這兩種寫法，
   //   不是放寬判準，是這支測試原本就該認得的 migration 語句類型。
   const m = lastSql.match(
-    /^\s*(ALTER TABLE \w+ ADD COLUMN \w+|CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? \w+|CREATE VIRTUAL TABLE(?: IF NOT EXISTS)? \w+|CREATE TRIGGER(?: IF NOT EXISTS)? \w+)/mi,
+    /^\s*(ALTER TABLE \w+ ADD COLUMN \w+|CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? \w+|CREATE VIRTUAL TABLE(?: IF NOT EXISTS)? \w+|CREATE TRIGGER(?: IF NOT EXISTS)? \w+|DROP INDEX(?: IF EXISTS)? \w+)/mi,
   );
   assert.ok(m, `${last} 裡找不到可當特徵的 ALTER／CREATE INDEX／CREATE VIRTUAL TABLE／CREATE TRIGGER——請更新本測試的取樣方式`);
   const needle = m[1].replace(/\s+/g, ' ').trim();
@@ -115,7 +115,9 @@ test('切句法的前提仍成立：字串常值裡沒有 ; 或 --', (t) => {
   if (!root) return t.skip('找不到 Arcrun repo');
   const dir = join(root, 'kbdb', 'migrations');
   for (const f of readdirSync(dir).filter((x) => /^\d{4}_.+\.sql$/.test(x))) {
-    for (const lit of readFileSync(join(dir, f), 'utf8').match(/'[^']*'/g) ?? []) {
+    // 先剝 `--` 註解再找字串常值：註解裡的撇號會把相隔很遠的兩個撇號湊成假常值（0015 就是）
+    const code = readFileSync(join(dir, f), 'utf8').split('\n').map((l) => { const i = l.indexOf('--'); return i >= 0 && !/'/.test(l.slice(0, i)) ? l.slice(0, i) : l; }).join('\n');
+    for (const lit of code.match(/'[^']*'/g) ?? []) {
       assert.ok(
         !lit.includes(';') && !lit.includes('--'),
         `${f} 的字串常值 ${lit.slice(0, 40)} 含 ; 或 --，compile-migrations 的切句法會切錯`,
@@ -149,4 +151,24 @@ test('⑥ 每一支 CREATE TRIGGER 都是完整一句（BEGIN…END 沒被 ; 切
       );
     }
   }
+});
+
+// ── inkstone/Arcrun#222 c18362：執行紀錄庫那一目錄也要帶齊 ───────────────────────────
+// 上一輪漏的是 kbdb/migrations 的第 14 支；這一輪漏的是整個 kbdb/migrations-exec-log 目錄。
+// 同一個病：閘只認一個寫死的目錄。
+test('⑦ 安裝器帶的 exec-log-migrations.json ＝ kbdb/migrations-exec-log/ 底下全部', (t) => {
+  if (!root) return t.skip('找不到 Arcrun repo');
+  const dir = join(root, 'kbdb', 'migrations-exec-log');
+  if (!existsSync(dir)) return t.skip('這份 Arcrun 來源還沒有 migrations-exec-log（舊版本）');
+  const onDisk = readdirSync(dir).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
+  const execShipped = JSON.parse(readFileSync(join(installerDir, 'exec-log-migrations.json'), 'utf8'));
+  assert.deepEqual(execShipped.source, onDisk,
+    '執行紀錄庫的 migration 沒帶齊——走安裝器的實例會有庫沒表，/health 503');
+  assert.ok(execShipped.statements.length > 0);
+});
+
+test('⑧ worker.js 真的 import exec-log-migrations.json 並在 schema 步套用', () => {
+  const src = readFileSync(join(installerDir, 'worker.js'), 'utf8');
+  assert.match(src, /import\s+EXEC_LOG_MIGRATIONS\s+from\s+'\.\/exec-log-migrations\.json'/);
+  assert.match(src, /applyExecLogMigrations\(execLogRunSql,\s*execLogDbId\)/, 'schema 步沒有呼叫 applyExecLogMigrations');
 });

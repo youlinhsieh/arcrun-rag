@@ -238,7 +238,7 @@ config:
   list_old_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=0"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=0"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -246,7 +246,7 @@ config:
   list_old_blocks_p2:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=60"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=60"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -254,7 +254,7 @@ config:
   list_old_blocks_p3:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=120"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=120"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -262,7 +262,7 @@ config:
   list_old_blocks_p4:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=180"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=180"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -270,7 +270,7 @@ config:
   list_old_blocks_p5:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=240"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=240"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -278,7 +278,7 @@ config:
   list_old_blocks_p6:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=300"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=300"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -286,7 +286,7 @@ config:
   list_old_blocks_p7:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=360"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=360"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -294,7 +294,7 @@ config:
   list_old_blocks_p8:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=420"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=420"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -302,7 +302,7 @@ config:
   list_old_blocks_p9:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=480"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=480"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -310,7 +310,7 @@ config:
   list_old_blocks_p10:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&entry_type=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=540"
+    url: "__KBDB_BASE__/entries?page_name={{prep.data.page_enc}}&owner_id=__NAMESPACE__&template=block&view=identity&origin_path={{prep.data.path_enc}}&limit=60&offset=540"
     headers:
       Accept: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
@@ -584,7 +584,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "block"
+      template: "block"
       content: "{{block.content}}"
       owner_id: "__NAMESPACE__"
       page_name: "{{block.page_name}}"
@@ -608,7 +608,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "value"
+      template: "value"
       content: "{{prep.data.trip_src_uri}}"
       owner_id: "__NAMESPACE__"
 
@@ -620,7 +620,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "value"
+      template: "value"
       # status 對三元組永遠是字面常數 'active'（與 parse_card 的 rel.status 一致），
       # 不必等任何節點算，直接寫死。
       content: "active"
@@ -634,7 +634,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "value"
+      template: "value"
       content: "{{prep.data.const_library}}"
       owner_id: "__NAMESPACE__"
 
@@ -646,7 +646,7 @@ config:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"
     body_json:
-      entry_type: "value"
+      template: "value"
       content: "{{prep.data.const_machine}}"
       owner_id: "__NAMESPACE__"
 

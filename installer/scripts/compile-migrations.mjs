@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MIGRATION_TARGETS, discoverMigrationDirs } from './migrations-source.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // 🔴 2026-08-25：這裡原本寫到 `installer/src/migrations.json`，**而 worker.js import 的是
@@ -41,7 +42,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 //   真正上線的是一份 2026-08-05 手抄的舊副本（16 句 vs 應有的 41 句）。
 //   兩份同名檔並存 ⇒ 必然漂移，而且漂移時**完全沒有症狀**。
 //   ⇒ 只留 worker 真的 import 的那一份，並在下面機械複驗它確實被 import。
-const outPath = join(here, '..', 'oauth-prototype', 'migrations.json');
+const outDir = join(here, '..', 'oauth-prototype');
 
 function findArcrunRoot() {
   // 出貨設了 ARCRUN_SOURCE_WORKTREE 時，編譯與 ship.mjs 的 migration 閘必須讀同一份（Arcrun#293 c18325）
@@ -97,7 +98,10 @@ function splitStatements(sql) {
 
 /** 切句法的前提：字串常值裡不能有 `;` 或 `--`。有就中止——寧可打不出來，不要打出壞的。 */
 function assertSafeToSplit(file, sql) {
-  for (const lit of sql.match(/'[^']*'/g) ?? []) {
+  // 只看剝掉 `--` 註解後的 SQL：註解裡的撇號（例如「①a' 引擎自己會寫…」）會把相隔很遠的
+  // 兩個撇號湊成一個假的「字串常值」，把正常的 migration 誤判成不安全（0015 就這樣被擋）。
+  const code = sql.split('\n').map(stripLineComment).join('\n');
+  for (const lit of code.match(/'[^']*'/g) ?? []) {
     if (lit.includes(';') || lit.includes('--')) {
       throw new Error(
         `${file} 的字串常值裡有 ; 或 --（${lit.slice(0, 40)}）——` +
@@ -108,46 +112,65 @@ function assertSafeToSplit(file, sql) {
 }
 
 const root = findArcrunRoot();
-const migDir = join(root, 'kbdb', 'migrations');
 
-// 🔴 目錄裡有幾支就收幾支，依檔名排序。**不准寫死清單**（見檔頭 2026-08-25 那段）。
-const files = readdirSync(migDir)
-  .filter((f) => /^\d{4}_.+\.sql$/.test(f))
-  .sort();
-if (files.length === 0) throw new Error(`${migDir} 底下找不到任何 NNNN_*.sql`);
+// 🔴 inkstone/Arcrun#222 c18362：來源裡**所有** `kbdb/migrations*` 目錄都要編，不只 `migrations`。
+//   表在 migrations-source.mjs（閘與編譯端共用同一張）；來源出現表上沒有的目錄 → 中止，不安靜略過。
+const dirs = discoverMigrationDirs(root);
+const unknown = dirs.filter((d) => !MIGRATION_TARGETS.some((t) => t.dir === d));
+if (unknown.length) {
+  throw new Error(`Arcrun 來源有安裝器不認得的 migration 目錄：${unknown.join('、')}——先到 migrations-source.mjs 的 MIGRATION_TARGETS 登記`);
+}
 
-// 編號要連續：缺號代表有人刪了或漏推，那會讓某個世代永遠補不上（本次事故的形狀）。
-const nums = files.map((f) => Number(f.slice(0, 4)));
-for (let i = 0; i < nums.length; i++) {
-  if (nums[i] !== i + 1) {
-    throw new Error(`migration 編號不連續：第 ${i + 1} 支應是 ${String(i + 1).padStart(4, '0')}_*，實際是 ${files[i]}`);
+// 機械複驗：worker.js 真的 import 我們寫的這幾份嗎？（防止下一次又寫到沒人讀的地方）
+const workerSrc = readFileSync(join(here, '..', 'oauth-prototype', 'worker.js'), 'utf8');
+for (const t of MIGRATION_TARGETS) {
+  const re = new RegExp(`from\\s+'\\./${t.out.replace(/\./g, '\\.')}'`);
+  if (!re.test(workerSrc)) {
+    throw new Error(
+      `worker.js 沒有 import './${t.out}'——` +
+        '本腳本的輸出位置與它實際讀的位置對不上，改對了再打包（2026-08-25 就是這樣漂掉的）。',
+    );
   }
 }
 
-const statements = [];
-// 🔴 arcrun-rag#215 comment 11172：每個世代（migration 檔）的第一句在 statements
-// 陣列裡的 index——讓 worker.js 能「已經套過的世代永遠不再重跑」，只送
-// `generationStarts[actualGeneration]` 之後的句子，不必每次都把全部 61 句
-// （含早就套過、甚至早就被後面世代刪掉的舊索引）重新送一次。
-const generationStarts = [];
-for (const f of files) {
-  const p = join(migDir, f);
-  const sql = readFileSync(p, 'utf8');
-  assertSafeToSplit(f, sql);
-  const stmts = splitStatements(sql);
-  generationStarts.push(statements.length);
-  for (const s of stmts) statements.push(s);
-  console.log(`  · ${f} → ${stmts.length} 句`);
-}
+for (const t of MIGRATION_TARGETS) {
+  const migDir = join(root, 'kbdb', t.dir);
+  if (!dirs.includes(t.dir)) {
+    // 主目錄一定要有；其他目錄（執行紀錄庫）舊版 Arcrun 沒有，沿用已編好的出貨檔，不覆蓋成空的。
+    if (t.dir === 'migrations') throw new Error(`${migDir} 不存在`);
+    console.log(`  · kbdb/${t.dir} 來源沒有（舊版 Arcrun）→ 保留既有 ${t.out}，不動`);
+    continue;
+  }
+  // 🔴 目錄裡有幾支就收幾支，依檔名排序。**不准寫死清單**（見檔頭 2026-08-25 那段）。
+  const files = readdirSync(migDir)
+    .filter((f) => /^\d{4}_.+\.sql$/.test(f))
+    .sort();
+  if (files.length === 0) throw new Error(`${migDir} 底下找不到任何 NNNN_*.sql`);
 
-// 機械複驗：worker.js 真的 import 我們寫的這一份嗎？（防止下一次又寫到沒人讀的地方）
-const workerSrc = readFileSync(join(here, '..', 'oauth-prototype', 'worker.js'), 'utf8');
-if (!/import\s+MIGRATIONS\s+from\s+'\.\/migrations\.json'/.test(workerSrc)) {
-  throw new Error(
-    "worker.js 沒有 `import MIGRATIONS from './migrations.json'`——" +
-      '本腳本的輸出位置與它實際讀的位置對不上，改對了再打包（2026-08-25 就是這樣漂掉的）。',
-  );
-}
+  // 編號要連續：缺號代表有人刪了或漏推，那會讓某個世代永遠補不上（本次事故的形狀）。
+  const nums = files.map((f) => Number(f.slice(0, 4)));
+  for (let i = 0; i < nums.length; i++) {
+    if (nums[i] !== i + 1) {
+      throw new Error(`${t.dir} 編號不連續：第 ${i + 1} 支應是 ${String(i + 1).padStart(4, '0')}_*，實際是 ${files[i]}`);
+    }
+  }
 
-writeFileSync(outPath, JSON.stringify({ source: files, statements, generationStarts }, null, 2) + '\n', 'utf8');
-console.log(`✓ 共 ${statements.length} 句 → ${outPath}`);
+  const statements = [];
+  // 🔴 arcrun-rag#215 comment 11172：每個世代（migration 檔）的第一句在 statements
+  // 陣列裡的 index——讓 worker.js 能「已經套過的世代永遠不再重跑」，只送
+  // `generationStarts[actualGeneration]` 之後的句子，不必每次都把全部 61 句
+  // （含早就套過、甚至早就被後面世代刪掉的舊索引）重新送一次。
+  // （執行紀錄庫的語句全 IF NOT EXISTS 且極少，worker 端每次整批送，不用這欄。）
+  const generationStarts = [];
+  for (const f of files) {
+    const sql = readFileSync(join(migDir, f), 'utf8');
+    assertSafeToSplit(f, sql);
+    const stmts = splitStatements(sql);
+    generationStarts.push(statements.length);
+    for (const s of stmts) statements.push(s);
+    console.log(`  · ${t.dir}/${f} → ${stmts.length} 句`);
+  }
+  const out = join(outDir, t.out);
+  writeFileSync(out, JSON.stringify({ source: files, statements, generationStarts }, null, 2) + '\n', 'utf8');
+  console.log(`✓ ${t.label}：共 ${statements.length} 句 → ${out}`);
+}

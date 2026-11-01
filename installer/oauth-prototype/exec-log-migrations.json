@@ -1,0 +1,15 @@
+{
+  "source": [
+    "0001_execution_log_init.sql"
+  ],
+  "statements": [
+    "CREATE TABLE IF NOT EXISTS execution_log (\n  id TEXT PRIMARY KEY,\n  workflow_id TEXT NOT NULL,\n  owner_id TEXT,\n  verdict TEXT NOT NULL,           \n  duration_ms INTEGER NOT NULL DEFAULT 0,\n  message TEXT NOT NULL DEFAULT '',\n  target TEXT,\n  kbdb_rows_written INTEGER,       \n  kbdb_rows_read INTEGER,\n  created_at INTEGER NOT NULL      \n)",
+    "CREATE INDEX IF NOT EXISTS idx_execution_log_workflow ON execution_log (workflow_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_execution_log_owner_created ON execution_log (owner_id, created_at)",
+    "CREATE TABLE IF NOT EXISTS execution_log_usage (\n  day TEXT PRIMARY KEY,            \n  writes INTEGER NOT NULL DEFAULT 0\n)",
+    "CREATE TABLE IF NOT EXISTS execution_log_retention_config (\n  owner_id TEXT PRIMARY KEY,\n  retention_days INTEGER,          \n  updated_at INTEGER NOT NULL\n)"
+  ],
+  "generationStarts": [
+    0
+  ]
+}

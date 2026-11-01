@@ -21,7 +21,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { manifestRequirements, resolveResourcesByRule } from './worker.js';
+import { manifestRequirements, resolveResourcesByRule, pickCoreD1Bindings } from './worker.js';
 import { makeAccount, SCENARIOS, WORKER_NEEDS, KV_BINDINGS } from './shared/resource-rule/tests/fixture-account.mjs';
 
 const BASE_NAME = 'arcrun-rag-yuga3bse';
@@ -203,4 +203,74 @@ test('#123 對照組：安裝器若沒聲明 createNameIsOurs → 停手，且�
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// inkstone/Arcrun#222 —— kbdb worker 起可能同時要求兩顆各自獨立的 D1：
+// `DB`＝知識庫本體、`EXEC_LOG_DB`＝執行紀錄（見 Arcrun `kbdb/wrangler.toml`）。
+//
+// 這裡在防兩個舊病復發：
+//   ① `manifestRequirements()` 曾經讓「所有 d1 binding 都宣告同一個 createName」，
+//      兩顆庫會被共用規則收斂成一顆——本該分開的黏在一起。
+//   ② 從 `resourceBindings` 攤平 `dbId` 時曾經「見到第一個 d1:* 就當知識庫」，
+//      物件鍵序不保證 `DB` 先出現，賭錯了知識庫反而沒解到。
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** 疊一顆 EXEC_LOG_DB 到 fixture 的 kbdb 需求上，模擬 #222 之後的 bundle manifest 形狀。
+ *  `database_name` 特意保留（`manifestFromFixture()` 為了配合舊測試把它拿掉了，
+ *  這裡要驗的正是「manifest 帶 database_name 分組」那條路，所以自己重組一份）。 */
+function manifestWithExecLogDb() {
+  return {
+    core: Object.entries(WORKER_NEEDS).map(([name, need]) => {
+      const d1 = need.d1.map((d) => ({ binding: d.binding, database_name: d.database_name }));
+      if (name === 'arcrun-kbdb') d1.push({ binding: 'EXEC_LOG_DB', database_name: 'arcrun-exec-log' });
+      return { name, requires: { kv: need.kv, d1 } };
+    }),
+  };
+}
+
+test('#222 fresh：kbdb 多帶一顆 EXEC_LOG_DB → 兩顆各自獨立建立，不被黏成一顆', async () => {
+  const account = makeAccount('fresh');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = account.fetch;
+  try {
+    const reqs = manifestRequirements(manifestWithExecLogDb(), BASE_NAME, true);
+    const r = await resolveResourcesByRule('fake-token', 'fake-account', reqs, 'init');
+    assert.equal(r.blocked, false, r.blockers.join('\n'));
+
+    // 知識庫本體：DB 與 CREDENTIALS_DB 仍收斂成同一顆——這條舊行為不能被這次改動破壞。
+    assert.equal(r.bindings['d1:DB'], r.bindings['d1:CREDENTIALS_DB']);
+    // 執行紀錄庫：自成一顆，跟知識庫本體是不同 id（這正是 #222 修的東西）。
+    assert.ok(r.bindings['d1:EXEC_LOG_DB'], 'EXEC_LOG_DB 應該解到一顆資源，不是空的');
+    assert.notEqual(r.bindings['d1:EXEC_LOG_DB'], r.bindings['d1:DB'],
+      '執行紀錄庫不能跟知識庫本體變成同一顆——舊版的 bug 就是這裡被黏住');
+
+    // 帳號上總共建了兩顆 D1：不是黏成一顆（舊 bug），也不是三個 binding 各建一顆變三顆。
+    assert.equal(account.created.d1.length, 2, account.created.d1.join('、'));
+    assert.deepEqual(account.created.d1.slice().sort(), [`${BASE_NAME}-db`, `${BASE_NAME}-exec-log`]);
+
+    // pickCoreD1Bindings 要選對——即使 EXEC_LOG_DB 的鍵在物件裡先出現，也不能被誤當知識庫
+    // （這正是 #222 修的第二個病：舊版「見到第一個 d1:* 就當知識庫」賭鍵序）。
+    const swapped = { 'd1:EXEC_LOG_DB': r.bindings['d1:EXEC_LOG_DB'], 'd1:DB': r.bindings['d1:DB'] };
+    const picked = pickCoreD1Bindings(swapped);
+    assert.equal(picked.dbId, r.bindings['d1:DB'], 'EXEC_LOG_DB 先出現也不能被當成知識庫');
+    assert.equal(picked.execLogDbId, r.bindings['d1:EXEC_LOG_DB']);
+    assert.equal(picked.dbBindingKey, 'd1:DB');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('#222 pickCoreD1Bindings：舊版 bundle（沒有 EXEC_LOG_DB）不強迫、不報錯', () => {
+  // 既有實例升級不能要用戶手動搬資料（Arcrun#133 紅線）——manifest 還沒帶 EXEC_LOG_DB
+  // 的舊 bundle，execLogDbId 就該乖乖是 null，不是掉進某個奇怪的預設值。
+  const picked = pickCoreD1Bindings({ 'd1:DB': 'd1id-kbdb', 'd1:CREDENTIALS_DB': 'd1id-kbdb' });
+  assert.equal(picked.dbId, 'd1id-kbdb');
+  assert.equal(picked.dbBindingKey, 'd1:DB');
+  assert.equal(picked.execLogDbId, null);
+});
+
+test('#222 pickCoreD1Bindings：空／缺 d1 的 resourceBindings 不炸，回傳全 null', () => {
+  assert.deepEqual(pickCoreD1Bindings({}), { dbId: null, dbBindingKey: null, execLogDbId: null });
+  assert.deepEqual(pickCoreD1Bindings(undefined), { dbId: null, dbBindingKey: null, execLogDbId: null });
 });
