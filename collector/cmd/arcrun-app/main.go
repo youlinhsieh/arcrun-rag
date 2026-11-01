@@ -116,6 +116,9 @@ func main() {
 			hideDockIcon()
 			resizeToScreenFraction(ctx) // 視窗＝螢幕 70%，置中（leo 08-06 照 Google Drive）
 			startSupervisor()           // 🔴 daemon 本體：不啟動就不會同步
+			// 🔴 背景自動檢查更新（每 24 小時）：定義了卻從沒被呼叫，小幫手因此從不自己下載新版，
+			//    leo 的 Mac 在 0.18.117 上 prod 後停在 0.18.116 約 43 小時（inkstone/arcrun-collector#1）。
+			startUpdateWatcher()
 			// 🔴 托盤必須在**主執行緒**建立（NSStatusItem 會 new NSWindow）。
 			//    OnStartup 不是主執行緒 ⇒ 直接呼叫會炸
 			//    「NSWindow should only be instantiated on the main thread!」（實測）。

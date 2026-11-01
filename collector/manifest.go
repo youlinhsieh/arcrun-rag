@@ -211,6 +211,16 @@ type Manifest struct {
 	// 存活判準（`daemon_active_libs` 48h TTL）——沒有它，靜止的資料夾會被
 	// ①那道雜湊閘永遠擋住，48h 後 portal 就會誤判小幫手斷線。
 	FolderTreeNextHeartbeat int64 `json:"folder_tree_next_heartbeat,omitempty"`
+	// FolderTreeDaemonVersion＝最後一次**成功送達雲端**的那份資料夾樹，帶的小幫手版號
+	// （`inkstone/arcrun-collector#1`）。與雲端「看得到哪一版」同一個來源：
+	// 它不等於現在的版號 ⇒ 版號還沒報上去，要在這一輪最前面先報（syncVersionBeacon），
+	// 不必等排在前面的大檔萃取跑完。
+	FolderTreeDaemonVersion string `json:"folder_tree_daemon_version,omitempty"`
+	// LedgerSig／LedgerNextRepeat＝最後一次成功送達的送件對帳摘要的簽章，與「還有沒送達的、下次該再報一次」的時間
+	//（ledger.go；inkstone/Arcrun#330）。簽章變了＝摘要有實質變動，要送；差的件數不為 0 時
+	// 每 ledgerRepeatInterval 重報一次，雲端才收得到「第二輪還是差這幾件」。
+	LedgerSig        string `json:"ledger_sig,omitempty"`
+	LedgerNextRepeat int64  `json:"ledger_next_repeat,omitempty"`
 }
 
 // QueueTakedown 記一筆「這個舊路徑（連同當時的頁名）還沒在雲端下架」的待辦。

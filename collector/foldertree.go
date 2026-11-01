@@ -246,6 +246,11 @@ type FolderTree struct {
 	// 把一個假版號當真的顯示；不送，雲端照實顯示「看不到」。舊版小幫手本來就不帶，同樣路徑。
 	// 🔴 進 Hash()：升級後版號變了，內容雜湊跟著變，下一輪就會補送，更新中心不必等 24h 心跳。
 	DaemonVersion string `json:"daemon_version,omitempty"`
+
+	// Ledger＝本機送件帳的摘要（`ledger_summary`，見 ledger.go；雲端那半 inkstone/Arcrun#330）。
+	// 🔴 `json:"-"`：只搭上雲這一發，不進本機快照（folder-trees.json）也不進 Hash()——
+	// 摘要的變動由 manifest.LedgerSig 另外管，才不會讓樹的雜湊因為 round_at 每輪都變。
+	Ledger *LedgerSummary `json:"-"`
 }
 
 // daemonVersion 回傳要回報給雲端的小幫手版號；沒經過打包注入（"dev"／空）回 ""。
@@ -541,7 +546,15 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 	// （見上方檔頭「升級情境」段）——兩者都要讓①的雜湊閘放行。
 	upgradedWithoutHeartbeat := m.FolderTreeNextHeartbeat == 0 && m.FolderTreeHash != ""
 	heartbeatDue := (m.FolderTreeNextHeartbeat != 0 && now.Unix() >= m.FolderTreeNextHeartbeat) || upgradedWithoutHeartbeat
-	if h != "" && h == m.FolderTreeHash && !heartbeatDue {
+	// 送件帳摘要（ledger_summary）有實質變動、或「還有沒送達的」已久沒報：也要送，
+	// 否則樹沒變的時候，雲端永遠看不到差了幾件（Arcrun#330）。仍受②③退避與最小間隔保護。
+	ledgerSig, ledgerDue := "", false
+	if tree.Ledger != nil {
+		ledgerSig = tree.Ledger.Sig()
+		ledgerDue = ledgerSig != m.LedgerSig ||
+			(tree.Ledger.Gap() > 0 && m.LedgerNextRepeat != 0 && now.Unix() >= m.LedgerNextRepeat)
+	}
+	if h != "" && h == m.FolderTreeHash && !heartbeatDue && !ledgerDue {
 		return nil // ①內容沒變，且心跳還沒到期
 	}
 	if h != "" && h == m.FolderTreeFailHash && now.Unix() < m.FolderTreeNextRetry {
@@ -584,6 +597,10 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 	if tree.DaemonVersion != "" {
 		body["daemon_version"] = tree.DaemonVersion
 	}
+	// 送件對帳摘要（Arcrun#330）：舊雲端不認得這個欄位會直接忽略；沒算（nil）就不帶。
+	if tree.Ledger != nil {
+		body["ledger_summary"] = tree.Ledger
+	}
 	status, _, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
 	res.HTTPStatus = status
 	if err != nil {
@@ -598,23 +615,88 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		// free allocation of 10,000 neurons"}`——技術上正確，人話上是零。
 		// 分類走 inventory.go 早就在用的 `isQuotaExhausted`（InkStoneCo#43 立的那支），
 		// 不另造第二套判斷。
-		if isQuotaExhausted(err.Error()) {
+		if isCaptivePortalErr(err) {
+			// 公眾 Wi-Fi 的登入頁（captiveportal.go）：使用者要做的是去登入，不是等。
+			res.Error = captivePortalSentence
+		} else if isQuotaExhausted(err.Error()) {
 			res.Error = "雲端今天的額度用完了，資料夾結構會稍後自動補送（不影響檔案同步）"
 		} else {
 			res.Error = "資料夾結構這次沒送上去，稍後會自動再試（不影響檔案同步）"
 		}
-		m.FolderTreeFailHash = h
-		m.FolderTreeNextRetry = now.Add(folderTreeRetryDelay).Unix()
+		// 這一發根本沒離開這台電腦（登入頁攔下／斷網）⇒ 不必退避 10 分鐘：
+		// 使用者一登入、網路一通，下一輪就該補送（版號尤其如此）。
+		if !isLocalNetworkErr(err) {
+			m.FolderTreeFailHash = h
+			m.FolderTreeNextRetry = now.Add(folderTreeRetryDelay).Unix()
+		}
 		return res
 	}
 	res.Status = "ingested"
 	m.FolderTreeHash = h
+	m.FolderTreeDaemonVersion = tree.DaemonVersion
+	if tree.Ledger != nil {
+		m.LedgerSig = ledgerSig
+		m.LedgerNextRepeat = 0
+		if tree.Ledger.Gap() > 0 {
+			m.LedgerNextRepeat = now.Add(ledgerRepeatInterval).Unix()
+		}
+	}
 	m.FolderTreeFailHash = ""
 	m.FolderTreeNextRetry = 0
 	m.FolderTreeNextSend = now.Add(folderTreeMinInterval).Unix()
 	// 不管這次是內容真的變了、還是心跳到期才送的，都重新起算下一次心跳——
 	// 心跳要的是「收端多久沒收到就會過期」，起算點永遠是**最後一次成功送達**。
 	m.FolderTreeNextHeartbeat = now.Add(folderTreeHeartbeatInterval).Unix()
+	return res
+}
+
+// syncVersionBeacon＝**一輪最前面**先把「小幫手現在是哪一版」報上去
+//（`inkstone/arcrun-collector#1`，2026-10-31 leo 實測：升級到 0.18.117 後更新中心仍寫 0.18.116）。
+//
+// 病：版號只搭資料夾樹的便車（daemon_version 與樹同一筆），而樹要排在一整串前置工作之後——
+// 雲端對帳、原文位置修復、掃描、總覽卡、目錄卡，每一發 24〜57 秒；多個資料夾又是一個接一個，
+// 前一個資料夾的大檔萃取（實測一份大 PDF 跑 50 分鐘）會把後面所有資料夾的樹一起擋住。
+// 於是升級後第一輪「有算、有送的打算」，卻要等到萃取收工才真的送出去。
+//
+// 解：在逐資料夾處理之前，用**上一輪落地的本機樹快照**（folder-trees.json）蓋上現在的版號先送一發，
+// 不掃描、不萃取、不碰檔案。只在「版號跟上次成功送出的不一樣」時才送（升級後那一次），
+// 所以平常每輪零成本、零額外請求；送失敗（登入頁攔下／斷網）下一輪自動再來。
+//
+// 沒有快照（新資料夾、剛裝）、沒有 manifest、或快照屬於別的知識庫帳號 ⇒ 不送，交給正常流程
+//（那時整棵樹本來就是這一輪第一次算出來，沒有舊的可以先頂）。
+// 送出走的是同一個 syncFolderTree，雜湊閘／退避／最小間隔全部照舊，不另開一條路。
+func syncVersionBeacon(cfg *DirectConfig, root string, now time.Time) *DirectResult {
+	v := daemonVersion()
+	if v == "" || cfg.Manifest == "" {
+		return nil
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	absManifest, err := filepath.Abs(cfg.manifestPathFor(absRoot))
+	if err != nil {
+		return nil
+	}
+	if _, serr := os.Stat(absManifest); serr != nil {
+		return nil // 還沒有帳本＝從沒同步過，走正常流程
+	}
+	m, err := LoadManifest(absManifest, absRoot)
+	if err != nil || m.FolderTreeDaemonVersion == v {
+		return nil
+	}
+	store, _ := LoadFolderTreeStore(FolderTreeStorePath(cfg.Manifest))
+	tree, ok := store.Trees[root]
+	if !ok || len(tree.Nodes) == 0 || tree.Library != cfg.libraryFor(absRoot) {
+		return nil
+	}
+	res := syncFolderTree(cfg, absRoot, m, tree.StampDaemonVersion(v).StampLedger(m.Entries, now), false, now)
+	if res != nil {
+		if serr := m.Save(absManifest); serr != nil && res.Status != "failed" {
+			res = &DirectResult{Type: "folder_tree", Path: absRoot, Status: "failed",
+				Error: "小幫手版號報上去了，但記不下來（帳本存檔失敗）：" + serr.Error()}
+		}
+	}
 	return res
 }
 

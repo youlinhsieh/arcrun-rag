@@ -353,3 +353,5 @@
 | 2026-10-31 12:46:25 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 466d11b→HEAD，1 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-10-31 14:44:51 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
 | 2026-10-31 14:46:29 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-11-01 12:53:58 | git.uncle6.me/inkstone/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 4930050→HEAD，1 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-01 13:02:45 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6964b10→HEAD，14 個檔有變、沒有刪檔、.gitignore 沒變短 |

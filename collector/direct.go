@@ -555,16 +555,25 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 	req.Header.Set("X-Arcrun-API-Key", c.APIKey)
 	resp, err := directHTTP.Do(req)
 	if err != nil {
+		// 公眾 Wi-Fi 的登入頁攔 HTTPS 時憑證對不上 ⇒ 講成人話（captiveportal.go），且不算雲端的錯。
+		if cp := captivePortalFromTransport(err); cp != nil {
+			return 0, "", cp
+		}
 		cloudRoutes.record(url, directNow(), 0, err, retry) // #121：連不上／逾時也算這條路失敗
 		return 0, "", gate.record(err)
 	}
 	gate.ok() // #153：回來了就把「連續逾時」的計數歸零——否則「連續」兩個字是假的
 	defer resp.Body.Close()
-	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記一次失敗，2xx 歸零
 	// 🔴 讀 64KB 而不是 1KB：觸發端點的回應是一層外殼包著工作流的輸出，
 	// 而**失敗的證據住在殼裡面**（見 triggeroutcome.go）。1KB 會把 JSON 切斷 ⇒
 	// 永遠解析不了 ⇒ 每一次失敗都被讀成「看不出來」⇒ 下面那道閘等於不存在。
 	full, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	// 這一發是被登入頁攔下的（回應是網頁／被導去別的網址／511）：沒到雲端，
+	// 不記進斷路器（既不算失敗也不算通）。在讀完 body 之後判斷，因為「2xx 卻是 HTML」要看內容。
+	if cp := captivePortalFromResponse(instanceHostOf(url), resp, full); cp != nil {
+		return resp.StatusCode, "", cp
+	}
+	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記一次失敗，2xx 歸零
 	snippet := full
 	if len(snippet) > 1024 {
 		snippet = snippet[:1024]
@@ -650,6 +659,9 @@ func networkDownNote(cfg *DirectConfig, err error) string {
 	who := strings.TrimSpace(cfg.InstanceName)
 	if who == "" {
 		who = instanceHostOf(cfg.CypherURL)
+	}
+	if isCaptivePortalErr(err) {
+		return captivePortalSentence // 不是「網路沒通」，是「要先登入」——使用者要做的事不同
 	}
 	return fmt.Sprintf("這台電腦現在連不上知識庫「%s」（網路沒通或找不到網址），這份還沒送出，不算失敗；1 分鐘後重試｜原因：%s",
 		who, err.Error())
@@ -883,6 +895,22 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 		accCfg := cfg.makeAccountSubConfig(acc)
 		accHost := instanceHostOf(acc.CypherURL)
 		cfg.guard.enterFolder(accHost, "") // #200：帳號層的事（探測雲端 AI、查版本）也要講得出在誰身上
+
+		// 🔴 `inkstone/arcrun-collector#1`：版號先報，排在所有資料夾的萃取之前（見 syncVersionBeacon）。
+		// 失敗不擋後面的同步；登入頁攔下（公眾 Wi-Fi）會把人話寫進結果，使用者看得到該做什麼。
+		if !dryRun {
+			for _, root := range accCfg.Folders() {
+				cfg.guard.enterFolder(accHost, root)
+				if br := syncVersionBeacon(accCfg, root, now); br != nil {
+					br.Account = accHost
+					br.Root = root
+					one := []DirectResult{*br}
+					stampResults(one)
+					results = append(results, one...)
+				}
+			}
+		}
+
 
 		// t103：per-account 雲端版本偵測
 		cloudVer, cloudOK := cloudVersionThrottled(accCfg.CypherURL, cfg.ForceSync) // #121：一分鐘問一次，見 cloudcheck.go
@@ -1912,7 +1940,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 卡片那條路（folderindex／inventory／sourcerepair）用的是同一個 cfg.machineIdentity()，
 	// 同一輪只解析一次，兩條路送上去的值必然相同。
 	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
-		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion())
+		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()).StampLedger(m.Entries, runNow)
 	if !dryRun {
 		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
 	}
@@ -1951,7 +1979,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			}
 		}
 		latestTree = BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, entries,
-			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion())
+			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()).StampLedger(entries, runNow)
 		PublishFolderTreeNow(cfg.Manifest, root, latestTree, runNow)
 		cfg.guard.fileFinished(root, outcome, m.Progress())
 	}
@@ -1991,7 +2019,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 再加第四個**只屬於它**的：**空資料夾一個事件都不會有**（arcrun-rag#106 的情境本身），
 	// 所以它不能被任何「有事件才做」的閘擋住——分子分母都由現況算出，靜止時
 	// 內容雜湊自然擋住重送，不需要事件當第二道閘。
+	treeSendFailed := false
 	if treeRes := syncFolderTree(cfg, absRoot, m, tree, dryRun, runNow); treeRes != nil {
+		treeSendFailed = treeRes.Status == "failed"
 		results = append(results, *treeRes)
 		if treeRes.Status != "planned" {
 			saveManifest() // 記住 folder_tree_hash／失敗退避
@@ -2742,6 +2772,16 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 不受「有事件才做」的閘限制——靜止時雜湊擋重送，失敗的卡靠這裡到點重試。
 	if ixRes := syncWikiIndexCards(cfg, absRoot, m, dryRun, runNow); len(ixRes) > 0 {
 		results = append(results, ixRes...)
+	}
+
+	// 🔴 每輪**結束**時再報一次送件帳（inkstone/arcrun-collector#1／Arcrun#330）：
+	// 開頭那一發送的是萃取之前的帳，這一輪送成幾份、失敗幾份，要等這裡才是最終數字。
+	// 走同一個 syncFolderTree，雜湊閘／最小間隔／退避照舊——沒變就不送；
+	// 開頭那一發才剛失敗（斷網、登入頁）就不再撞第二次。
+	if !dryRun && !treeSendFailed {
+		if endRes := syncFolderTree(cfg, absRoot, m, latestTree, false, directNow()); endRes != nil {
+			results = append(results, *endRes)
+		}
 	}
 
 	if !dryRun {

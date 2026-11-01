@@ -251,19 +251,24 @@ func downloadUpdate(rel *daemonRelease) (string, error) {
 func prepareUpdateInBackground() {
 	st := checkForUpdate()
 	if !st.Available {
+		appLog("自動檢查更新：沒有新版（最新 %s；%s）", st.Latest, st.Err)
 		return
 	}
 	rel, err := fetchLatestRelease()
 	if err != nil {
+		appLog("自動檢查更新：查不到最新版（%v）", err)
 		return
 	}
+	appLog("自動檢查更新：最新版 %s，準備下載", rel.Version)
 	zip, err := downloadUpdate(rel)
 	if err != nil {
 		currentUpdate.Err = "自動下載失敗：" + err.Error()
+		appLog("自動檢查更新：下載 %s 失敗（%v）", rel.Version, err)
 		return
 	}
 	currentStaged = stagedUpdate{Version: rel.Version, ZipPath: zip, Ready: true}
 	saveStaged(currentStaged)
+	appLog("自動檢查更新：%s 已下載備妥，等使用者按「重新啟動以完成更新」", rel.Version)
 }
 
 // startUpdateWatcher 啟動背景更新檢查（每日一次；啟動後先等 1 分鐘避免搶開機資源）。

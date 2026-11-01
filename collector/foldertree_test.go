@@ -17,6 +17,7 @@ package collector
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -378,9 +379,18 @@ func TestSyncFolderTree首次不受最小間隔限制(t *testing.T) {
 }
 
 func TestSyncFolderTree失敗退避(t *testing.T) {
+	// 🔴 要用「真的打到雲端、雲端回錯」的情形測退避。
+	// 原本用 https://x.invalid：在有 DNS 的機器上那是 *net.DNSError ⇒ isLocalNetworkErr
+	// ⇒ 依 inkstone/arcrun-collector#1（dfa8d4d）刻意**不退避**，於是這支在 Mac 上失敗、
+	// 只在 DNS 被代理吃掉的雲端沙盒裡碰巧通過。沒離開本機的那種另由下一支測。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"success":false,"error":"boom"}`))
+	}))
+	defer srv.Close()
 	root := t.TempDir()
 	tree := buildTreeFromDisk(t, root)
-	cfg := &DirectConfig{CypherURL: "https://x.invalid", APIKey: "demo"}
+	cfg := &DirectConfig{CypherURL: srv.URL, APIKey: "demo"}
 	m := &Manifest{Root: root, Entries: map[string]*ManifestEntry{}}
 	now := time.Unix(1786900000, 0)
 	res := syncFolderTree(cfg, root, m, tree, false, now)
@@ -393,6 +403,28 @@ func TestSyncFolderTree失敗退避(t *testing.T) {
 	// 退避窗口內同一份內容不重撞
 	if again := syncFolderTree(cfg, root, m, tree, false, now.Add(time.Minute)); again != nil {
 		t.Errorf("退避窗口內不該重試：%+v", again)
+	}
+}
+
+// inkstone/arcrun-collector#1：這一發根本沒離開這台電腦（連不上／登入頁攔下）⇒ 不退避，
+// 網路一通下一輪就補送（版號尤其如此）。
+func TestSyncFolderTree沒離開本機不退避(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // 關掉 ⇒ 連線被拒（dial 錯）
+	root := t.TempDir()
+	tree := buildTreeFromDisk(t, root)
+	cfg := &DirectConfig{CypherURL: "http://" + addr, APIKey: "demo"}
+	m := &Manifest{Root: root, Entries: map[string]*ManifestEntry{}}
+	res := syncFolderTree(cfg, root, m, tree, false, time.Unix(1786900000, 0))
+	if res == nil || res.Status != "failed" {
+		t.Fatalf("應失敗：%+v", res)
+	}
+	if m.FolderTreeFailHash != "" || m.FolderTreeNextRetry != 0 {
+		t.Errorf("沒離開本機的失敗不該退避：%+v", m)
 	}
 }
 

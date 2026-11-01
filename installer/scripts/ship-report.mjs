@@ -16,7 +16,8 @@
  *     機器產的表沒得挑。
  *
  * ── 資料存哪裡 ────────────────────────────────────────────────────────────
- * `installer/ship-report.json`：以 release 版本號為 key 的小型 ledger，每個目標
+ * `installer/ship-report.json`：以「這次出貨」為 key 的小型 ledger（雲端號碼＋小幫手＋安裝器，
+ * 見 `shipmentKey`；2026-11-01 以前的舊紀錄只有雲端號碼），每個目標
  * 記一次「這次跑過哪些 id、各自什麼狀態、來源 commit、時間」。是主 repo（不是
  * bundle repo）裡的一份小檔案，跟著 git 走——所以「上一次幾站」有據可查，
  * 不必去讀程式碼，也不必去問哪一輪聊天記錄。
@@ -36,6 +37,30 @@ export function ledgerPath(repoRoot) {
 
 export function reportPath(repoRoot) {
   return join(repoRoot, 'installer', 'ship-report.md');
+}
+
+/**
+ * 帳本的鍵＝「這一次出貨」是哪一份東西，不只是雲端零件包的號碼。
+ *
+ * ── 為什麼（inkstone/arcrun-collector#1 c1793509571257537，2026-11-01 總管裁決）──
+ * 交付面有三條版本線：雲端 `1.4.x`、小幫手 `0.18.x`、安裝器 `1.0.x`。
+ * 只動小幫手（或只動安裝器）時，雲端號碼**刻意不動**（內容沒變就不准跳號）。
+ * 帳本原本只拿雲端號碼當鍵 ⇒ 「1.4.124＋小幫手 0.18.117」與「1.4.124＋小幫手 0.18.118」
+ * 被當成同一次出貨 ⇒ 0.18.118 在 Mac 出 stage 時，被拿去跟雲端那台出的 1.4.124 prod
+ * 比機器指紋而誤擋，而且之後在任何一台都記不進去。
+ * ⇒ 鍵改成三條線的版號一起寫。同一份東西在 stage／prod 算出同一個鍵（兩邊照同一份
+ *   manifest 算），同機閘與來源閘比的就是「這一份東西自己的另一欄」——換機器接力照樣擋。
+ *
+ * 小幫手／安裝器版號都沒有（舊帳本、只驗收模式拿不到）⇒ 退回只用雲端號碼，舊鍵照讀。
+ */
+export function shipmentKey({ release, daemonVersion = null, installerVersion = null }) {
+  if (!release) throw new Error('shipmentKey 需要 release');
+  if (!daemonVersion && !installerVersion) return release;
+  return [
+    release,
+    daemonVersion ? `小幫手 ${daemonVersion}` : null,
+    installerVersion ? `安裝器 ${installerVersion}` : null,
+  ].filter(Boolean).join('／');
 }
 
 /** 讀 ledger；不存在或壞掉就當作空的（第一次出貨沒有歷史可比，不是錯誤）。 */

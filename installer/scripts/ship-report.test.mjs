@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordRun, renderComparisonTable, readLedger, assertSourceParity } from './ship-report.mjs';
+import { recordRun, renderComparisonTable, readLedger, assertSourceParity, shipmentKey, releaseCountsVerdict } from './ship-report.mjs';
 
 function tempRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'ship-report-test-'));
@@ -258,5 +258,46 @@ test('🔴 表格那一格仍是裸 ⬜，原因印在表外（b998df4 定的：
     assert.match(row, /⬜/, '格子要維持裸 ⬜');
     assert.ok(!row.includes('已與遠端同步'), '原因不准塞進格子裡（那會讓它看起來像做完了）');
     assert.match(table, /push：已與遠端同步，沒有要推的/, '原因要印在表外');
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// ── inkstone/arcrun-collector#1（2026-11-01）：帳本的鍵要分得出「只出小幫手」的那一版 ──
+const R = [{ id: 'preflight', title: '對齊目標', status: 'done' }];
+
+test('shipmentKey：三條線一起寫；沒有小幫手／安裝器版號時退回舊的只有雲端號碼', () => {
+  assert.equal(shipmentKey({ release: '1.4.124', daemonVersion: '0.18.118', installerVersion: '1.0.66' }), '1.4.124／小幫手 0.18.118／安裝器 1.0.66');
+  assert.equal(shipmentKey({ release: '1.4.124' }), '1.4.124');
+  assert.equal(shipmentKey({ release: '1.4.124', daemonVersion: '0.18.118' }), '1.4.124／小幫手 0.18.118');
+  assert.throws(() => shipmentKey({ daemonVersion: '0.18.118' }));
+});
+
+test('🔴 只出小幫手時不撞雲端版那一格：1.4.124 的 prod 在雲端那台出過，0.18.118 在 Mac 出 stage 照樣記得進去', () => {
+  const repo = tempRepo();
+  try {
+    // 舊帳本：1.4.124（小幫手 0.18.117）兩欄都是雲端那台出的
+    recordRun(repo, { release: '1.4.124', target: 'stage', results: R, sourceCommit: 'Arcrun@4aa', machine: 'cloud0000000' });
+    recordRun(repo, { release: '1.4.124', target: 'prod', results: R, sourceCommit: 'Arcrun@4aa', machine: 'cloud0000000' });
+    const key = shipmentKey({ release: '1.4.124', daemonVersion: '0.18.118', installerVersion: '1.0.66' });
+    recordRun(repo, { release: key, target: 'stage', results: R, sourceCommit: 'Arcrun@4aa', machine: 'mac000000000' });
+    // 之後在 Mac 出這一份的 prod：比對的是它自己的 stage 那一格（Mac），放行
+    recordRun(repo, { release: key, target: 'prod', results: R, sourceCommit: 'Arcrun@4aa', machine: 'mac000000000' });
+    const l = readLedger(repo);
+    assert.equal(l[key].stage.machine, 'mac000000000');
+    assert.equal(l[key].prod.machine, 'mac000000000');
+    assert.equal(l['1.4.124'].prod.machine, 'cloud0000000', '舊那一筆不能被動到');
+    assert.ok(renderComparisonTable(repo, key).includes(`release ${key}`));
+    assert.equal(releaseCountsVerdict(repo, key).ok, true);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('🔴 換機器接力照樣擋：同一份小幫手版在兩台機器各出一邊 ⇒ 丟例外、不寫入', () => {
+  const repo = tempRepo();
+  try {
+    const key = shipmentKey({ release: '1.4.124', daemonVersion: '0.18.118', installerVersion: '1.0.66' });
+    recordRun(repo, { release: key, target: 'stage', results: R, sourceCommit: 'Arcrun@4aa', machine: 'mac000000000' });
+    assert.throws(
+      () => recordRun(repo, { release: key, target: 'prod', results: R, sourceCommit: 'Arcrun@4aa', machine: 'cloud0000000' }),
+      /不在同一台機器上/);
+    assert.equal(readLedger(repo)[key].prod, undefined, '擋下時不准寫入');
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

@@ -3289,15 +3289,18 @@ for (const r of results) {
 // 不寫進 ledger（否則「上次幾站」會被預演污染，變得不可信）。
 // 即使斷在某一步也要記——斷在哪、記到哪，這正是報告要讓人一眼看到的東西。
 if (CONFIRM && !VERIFY_ONLY && ctx.release) {
-  const { recordRun, renderComparisonTable, reportPath, releaseCountsVerdict } = await import('./ship-report.mjs');
+  const { recordRun, renderComparisonTable, reportPath, releaseCountsVerdict, shipmentKey } = await import('./ship-report.mjs');
+  // 帳本的鍵＝三條版本線一起（雲端／小幫手／安裝器），不只雲端號碼——
+  //   只出小幫手時雲端號碼不動，單用它當鍵會把兩次不同的出貨混成一筆（inkstone/arcrun-collector#1）。
+  const shipKey = shipmentKey({ release: ctx.release, daemonVersion: ctx.daemonVersion, installerVersion: ctx.installerVersion });
   recordRun(REPO_ROOT, {
-    release: ctx.release, target: TARGET_NAME, results,
+    release: shipKey, target: TARGET_NAME, results,
     sourceCommit: ctx.sourceCommit || null,
     // 機器指紋：`#72` 揭露 build 不可跨機器重現、驗證章綁機器 ⇒ `#77` 宣告單機走完。
     // recordRun 內部會拿它跟同一版另一個目標比對，不同就丟例外、不寫入、不放行。
     machine: machineId(),
   });
-  const table = renderComparisonTable(REPO_ROOT, ctx.release);
+  const table = renderComparisonTable(REPO_ROOT, shipKey);
   console.log('\n' + table + '\n');
   writeFileSync(reportPath(REPO_ROOT), table + '\n');
   console.log(`📋 已寫入 installer/ship-report.md ＋ installer/ship-report.json（全程成功時由檔尾「出貨落帳」自動進版控，#47）`);
@@ -3306,7 +3309,7 @@ if (CONFIRM && !VERIFY_ONLY && ctx.release) {
   // 「暫存站有的，上架也有」——只印一行字讓人自己看，跟沒有是一樣的
   //   （同 arcrun-rag#73 缺②的教訓：「只做到看得到，沒做到不一致就斷」）。
   // 只出過一邊不算對不齊（另一邊還沒跑），那是 countsVerdict 自己的判準。
-  const cv = releaseCountsVerdict(REPO_ROOT, ctx.release);
+  const cv = releaseCountsVerdict(REPO_ROOT, shipKey);
   if (!cv.ok) {
     console.log(`\n❌ 出貨報告的兩欄件數對不齊：${cv.note}`);
     console.log(`   一次出貨是一個版本，兩個理貨員的清單長度不同 ⇒ 有一邊少走了一站，不放行。`);

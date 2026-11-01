@@ -143,6 +143,9 @@ func isLocalNetworkErr(err error) bool {
 	if isStallError(err) {
 		return false
 	}
+	if isCaptivePortalErr(err) {
+		return true // 登入頁攔下的那一發也沒到雲端（captiveportal.go）
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return true
@@ -165,6 +168,7 @@ func isLocalNetworkText(msg string) bool {
 		"no route to host",
 		"connection refused",
 		"server misbehaving", // 本機 DNS 伺服器回壞答案
+		"這個網路需要先登入",         // 舊病歷裡的登入頁攔截（captiveportal.go）
 	} {
 		if strings.Contains(msg, mark) {
 			return true
