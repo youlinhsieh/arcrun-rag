@@ -1,0 +1,98 @@
+{
+  "_why": "inkstone/InkStoneCo#252：雲端 session 出 prod 時 GitHub 回 403（session 類型不准建 release），這五版的版本發佈物件要在地端補建。每一版的事實都從當時的出貨落帳讀出；release-backfill-github.mjs 會逐格回頭查證，對不上就擋。",
+  "repoSlug": "youlinhsieh/arcrun-rag",
+  "bundlesSlug": "youlinhsieh/arcrun-rag-bundles",
+  "daemonSlug": "youlinhsieh/arcrun-port",
+  "versions": [
+    {
+      "version": "1.4.118",
+      "bundlePin": "11b3f8a879c502fefe9d637df121a80820cc03b4",
+      "mirrorTarget": "b8255ab",
+      "sourceCommit": "b71347a",
+      "shipDate": "2026-10-26",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag b57526b（prod 落帳，釘子 11b3f8a）；鏡像 b8255ab＝snapshot b71347a（#252 開票內文）"
+    },
+    {
+      "version": "1.4.119",
+      "bundlePin": "7643ba9e92f56435a4b298251daaf1f865686088",
+      "mirrorTarget": "92edd0c",
+      "sourceCommit": "1e0e285",
+      "shipDate": "2026-10-26",
+      "armTicket": {
+        "repo": "Arcrun",
+        "issue": 310
+      },
+      "evidence": "arcrun-rag 6772ef4（prod 落帳，wrangler.toml BUNDLE_BASE 換成 7643ba9）；鏡像 92edd0c＝snapshot 1e0e285，與 bundle push 同一分鐘"
+    },
+    {
+      "version": "1.4.122",
+      "bundlePin": "f88241b",
+      "mirrorTarget": "8879fa4",
+      "sourceCommit": "76f676d",
+      "shipDate": "2026-10-31",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag c548e56（prod 落帳，釘子 f88241b）；鏡像 8879fa4＝snapshot 76f676d，bundle push 後 2 分鐘"
+    },
+    {
+      "version": "1.4.123",
+      "bundlePin": "a5e9575",
+      "mirrorTarget": "dc380a1",
+      "sourceCommit": "d33036b",
+      "shipDate": "2026-10-31",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag 01c607f（prod 落帳，釘子 a5e9575）；鏡像 dc380a1＝snapshot d33036b，bundle push 前 10 秒（之後的 2c3ec3a／96366f7 是 1.4.124 換 changelog 的快照）"
+    },
+    {
+      "version": "1.4.124",
+      "bundlePin": "82b997c",
+      "mirrorTarget": "ae1b282",
+      "sourceCommit": "460a15b",
+      "shipDate": "2026-10-31",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag 57e1721（prod 落帳，釘子 82b997c）；鏡像 ae1b282＝snapshot 460a15b，bundle push 前 13 秒"
+    },
+    {
+      "version": "0.18.118",
+      "line": "daemon",
+      "bundlePin": "7b1e4f54c406d441b63e7da015e420ec330b0ac6",
+      "mirrorTarget": "015550c",
+      "sourceCommit": "a151455",
+      "shipDate": "2026-11-01",
+      "armVersion": "1.4.125",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "prodDownloads": {
+        "mac": "https://install.arcrun.dev/download/mac",
+        "win": "https://install.arcrun.dev/download/win"
+      },
+      "evidence": "1.4.125 那一趟 prod（arcrun-rag 8a43dd8，釘子 7b1e4f5）帶到小幫手 0.18.118；release-record 站已把 collector/ 同步到 arcrun-port 015550c（訊息「同步自 youlinhsieh/arcrun-rag@a151455（桌面小幫手 0.18.118）」，2026-11-01 16:22 臺北），之後建 release 被雲端 session 擋（403）"
+    },
+    {
+      "version": "1.4.125",
+      "bundlePin": "7b1e4f54c406d441b63e7da015e420ec330b0ac6",
+      "mirrorTarget": "0950098",
+      "sourceCommit": "a151455",
+      "shipDate": "2026-11-01",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag 8a43dd8（prod 落帳，釘子 7b1e4f5）；鏡像 0950098＝snapshot a151455（2026-11-01 16:17 臺北，prod 出貨那一趟）"
+    }
+  ]
+}
