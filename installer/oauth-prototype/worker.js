@@ -292,8 +292,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@07fed7dccb8be10e3a329d5660ebac19a28d7e83';
-const BUNDLE_BUILT = '2026-11-01'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@62be76a078b1f76fbf34148dc1a80284e70087e4';
+const BUNDLE_BUILT = '2026-11-04'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -1404,6 +1404,13 @@ const GENERATION_CHECKS = [
       { kind: 'entry', id: 'sys_kind_attached' },
       { kind: 'no_index', name: 'idx_entries_type' },
       { kind: 'no_index', name: 'idx_entries_owner_type_created' },
+    ] },
+  { n: 16, checks: [
+      { kind: 'table', name: 'field_value_index_spec' },
+      { kind: 'table', name: 'field_value_index' },
+      { kind: 'trigger', name: 'field_value_index_ai' },
+      { kind: 'trigger', name: 'field_value_index_au' },
+      { kind: 'trigger', name: 'field_value_index_ad' },
     ] },
 ];
 

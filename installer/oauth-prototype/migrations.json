@@ -14,7 +14,8 @@
     "0012_entries_write_amplification.sql",
     "0013_embed_pending_index.sql",
     "0014_card_write_trim.sql",
-    "0015_kind_is_template.sql"
+    "0015_kind_is_template.sql",
+    "0016_field_value_index.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -137,7 +138,14 @@
     "UPDATE entries SET content = NULL WHERE id >= 'lmapo_' AND id < 'lmapo`' AND content IS NOT NULL",
     "DROP INDEX IF EXISTS idx_entries_type",
     "DROP INDEX IF EXISTS idx_entries_owner_type_created",
-    "INSERT OR IGNORE INTO entries (entry_type, id, content) VALUES ('', 'sys_kind_attached', 'kind-attached')"
+    "INSERT OR IGNORE INTO entries (entry_type, id, content) VALUES ('', 'sys_kind_attached', 'kind-attached')",
+    "CREATE TABLE IF NOT EXISTS field_value_index_spec (\n  rel_id TEXT PRIMARY KEY,          \n  template_id TEXT NOT NULL,\n  slot TEXT NOT NULL,\n  state TEXT NOT NULL DEFAULT 'building',  \n  cursor_created INTEGER,           \n  cursor_rowid INTEGER,\n  created_at INTEGER DEFAULT (unixepoch()),\n  ready_at INTEGER\n) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS field_value_index (\n  rel_row TEXT PRIMARY KEY,         \n  rel_id TEXT NOT NULL,             \n  value TEXT NOT NULL,              \n  owner TEXT NOT NULL,              \n  seq INTEGER NOT NULL,             \n  record_id TEXT NOT NULL,\n  cell_id TEXT NOT NULL\n) WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS idx_fvi_lookup ON field_value_index(rel_id, value, owner, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_fvi_cell ON field_value_index(cell_id)",
+    "CREATE TRIGGER IF NOT EXISTS field_value_index_ai AFTER INSERT ON entries\n  WHEN new.rel_id IS NOT NULL AND new.dst_id IS NOT NULL\n   AND EXISTS (SELECT 1 FROM field_value_index_spec s WHERE s.rel_id = new.rel_id)\nBEGIN\n  INSERT OR REPLACE INTO field_value_index (rel_row, rel_id, value, owner, seq, record_id, cell_id)\n  SELECT new.id, new.rel_id, v.content, COALESCE(new.owner_id, ''),\n         COALESCE((SELECT r.rowid FROM entries r WHERE r.id = new.src_id), new.rowid), new.src_id, v.id\n    FROM entries v WHERE v.id = new.dst_id AND v.content IS NOT NULL;\nEND",
+    "CREATE TRIGGER IF NOT EXISTS field_value_index_au AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content\n   AND EXISTS (SELECT 1 FROM field_value_index f WHERE f.cell_id = new.id)\nBEGIN\n  UPDATE field_value_index SET value = new.content WHERE cell_id = new.id AND new.content IS NOT NULL;\n  DELETE FROM field_value_index WHERE cell_id = new.id AND new.content IS NULL;\nEND",
+    "CREATE TRIGGER IF NOT EXISTS field_value_index_ad AFTER DELETE ON entries\n  WHEN EXISTS (SELECT 1 FROM field_value_index f WHERE f.rel_row = old.id OR f.cell_id = old.id)\nBEGIN\n  DELETE FROM field_value_index WHERE rel_row = old.id;\n  DELETE FROM field_value_index WHERE cell_id = old.id;\nEND"
   ],
   "generationStarts": [
     0,
@@ -154,6 +162,7 @@
     43,
     51,
     53,
-    60
+    60,
+    121
   ]
 }
