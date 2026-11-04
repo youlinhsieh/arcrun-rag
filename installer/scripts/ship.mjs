@@ -183,7 +183,7 @@ import { fill as fillCredentials, describeSources, missingCredentialError } from
 import { cloudflareDeployEnv } from './cf-credential.mjs';
 // inkstone/arcrun-rag#266：登錄簿宣告了 `dist` 的目標（今天只有 stage），桌面安裝檔與「最新版」
 // 指標放 R2、不進 git 歷史、不在 Gitea 網址上（細節見 stage-dist.mjs 檔頭）。
-import { publishDist, ensureLocalExclude, assertDistDeclared, downloadSection } from './stage-dist.mjs';
+import { publishDist, ensureLocalExclude, assertDistDeclared, downloadSection, bundleDirUrl } from './stage-dist.mjs';
 // 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
 //   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
 //   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
@@ -365,6 +365,21 @@ for (const [name, t] of Object.entries(cfg.targets)) {
       console.error(`❌ 登錄簿矛盾：目標 \`${name}\` 宣告了 dist，delivery.movingPointer 卻還在 git.uncle6.me（${mp}）。`);
       process.exit(2);
     }
+    // 零件包也在 R2（dist.bundlePrefix）：釘點樣板必須落在 R2 零件包目錄，bundle repo 的 remote 也不准還在 git.uncle6.me
+    //（inkstone/arcrun-rag#266 的另一半——Gitea 退場後 stage 的 push／下載都不能再碰它）。
+    if (t.dist.bundlePrefix) {
+      const want = `${String(t.dist.publicBase).replace(/\/+$/, '')}/${String(t.dist.bundlePrefix).replace(/^\/+|\/+$/g, '')}/{sha7}`;
+      const tpl = t.pin && t.pin.template;
+      if (tpl !== want) {
+        console.error(`❌ 登錄簿矛盾：目標 \`${name}\` 的 dist.bundlePrefix 要求 pin.template 是 ${want}，實際是 ${tpl}。`);
+        process.exit(2);
+      }
+      const rem = t.bundles && t.bundles.remote;
+      if (/git\.uncle6\.me/i.test(String(rem || ''))) {
+        console.error(`❌ 登錄簿矛盾：目標 \`${name}\` 的零件包在 R2，bundles.remote 卻還指 git.uncle6.me（${rem}）。`);
+        process.exit(2);
+      }
+    }
   }
 }
 
@@ -507,8 +522,18 @@ function shLive(cmd, args, cwd, env) {
 function publishToR2() {
   const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
   const cred = cloudflareDeployEnv({ cfg, accountId: T.dist.accountId, startDir: REPO_ROOT });
+  // 零件包也放 R2 的目標：釘點樣板必須正好等於「R2 零件包目錄」，否則 pin 站寫進 wrangler.toml 的網址
+  // 會指到沒人放東西的地方（inkstone/arcrun-rag#266 的另一半）。
+  const bundle = T.dist.bundlePrefix ? { sha7: ctx.headSha.slice(0, 7) } : undefined;
+  if (bundle) {
+    const want = bundleDirUrl(T.dist, bundle.sha7);
+    const got = T.pin.template.replace('{sha7}', bundle.sha7).replace('{sha40}', ctx.headSha);
+    if (got !== want) {
+      throw new Error(`登錄簿的 pin.template（${got}）≠ R2 零件包目錄（${want}）。\n     → 兩者必須相同，安裝器才讀得到這次放上去的零件包。`);
+    }
+  }
   const r = publishDist({
-    dist: T.dist, manifest, bundlesDir: ctx.bundlesDir,
+    dist: T.dist, manifest, bundlesDir: ctx.bundlesDir, bundle,
     // cwd 用 bundle 工作區：r2 object put 是帳號層級指令，不需要任何 worker 設定；
     //   在 installer/oauth-prototype 底下跑時 wrangler 會往上讀到 installer/wrangler.jsonc
     //   （安裝器範本，KV id 是空的）而整條設定檢查失敗（2026-10-14 地端實撞）。

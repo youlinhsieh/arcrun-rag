@@ -110,6 +110,15 @@ function makeMemoryKv(stateFile) {
   };
 }
 
+async function stageBundleBase() {
+  const url = (process.env.STAGE_INSTALLER_BASE || 'https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev') + '/api/latest';
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`讀不到 ${url}（HTTP ${r.status}）——請自己給 BUNDLE_BASE 環境變數`);
+  const j = await r.json();
+  if (!j.bundle || !j.bundle.base) throw new Error(`${url} 沒有 bundle.base——請自己給 BUNDLE_BASE 環境變數`);
+  return j.bundle.base;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const token = process.env.CLOUDFLARE_API_TOKEN;
@@ -127,7 +136,8 @@ async function main() {
     INSTALLER_KV,
     PEER_INSTALLER_KV,
     DEPLOY_ENV: 'local-install-check',
-    BUNDLE_BASE: process.env.BUNDLE_BASE || 'https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/branch/main',
+    // inkstone/arcrun-rag#266：預設取 youlin stage 安裝器此刻公告的零件包釘點（/api/latest 的 bundle.base，在 R2），不再讀 Gitea。
+    BUNDLE_BASE: process.env.BUNDLE_BASE || await stageBundleBase(),
     BUNDLE_BUILT: new Date().toISOString().slice(0, 10),
     LANDING_BASE: process.env.LANDING_BASE || 'https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev',
     SITE_BASE: process.env.SITE_BASE || 'https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev',

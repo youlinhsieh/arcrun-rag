@@ -106,17 +106,23 @@
     },
 
     "stage": {
-      "label": "stage（封測驗證場：Gitea staging bundle repo ＋ staging 安裝器）",
+      "label": "stage（封測驗證場：Artifacts staging bundle repo ＋ R2 發佈 ＋ youlin staging 安裝器）",
       "publish": false,
       "requiresArm": false,
       "allowDirtySource": false,
       "bundles": {
+        "_": [
+          "inkstone/arcrun-rag#266（2026-11-02，Gitea 退場）：stage 的 bundle repo 從 Gitea 搬到 Artifacts（leo21c，InkStoneCo namespace）。",
+          "它現在只剩『版控歷史＋算出釘點 sha』的用途：用戶下載的零件包與安裝檔都在 R2（見 dist），不經過這個 git 主機。",
+          "安裝檔（dmg／exe／msix）不進這個 repo（.git/info/exclude）；Gitea 上的舊 repo 唯讀保留，是回退保險，不刪。"
+        ],
         "dir": "~/.arcrun-ship/bundles-stage",
-        "remote": "git.uncle6.me/inkstone/arcrun-rag-bundles-staging",
+        "remote": "https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/InkStoneCo/arcrun-rag-bundles-staging.git",
         "branch": "main"
       },
       "pin": {
-        "template": "https://git.uncle6.me/inkstone/arcrun-rag-bundles-staging/raw/commit/{sha7}",
+        "_": "釘點 ＝ R2 的零件包目錄 `<dist.publicBase>/<dist.bundlePrefix>/<sha7>`（ship.mjs 放 R2 前會核對兩者相同）。不再是 git.uncle6.me 的 raw 網址。",
+        "template": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/{sha7}",
         "shaLen": 7
       },
       "installer": {
@@ -191,11 +197,16 @@
           "    wrangler.toml 拿掉 DIST 綁定；舊歷史還在，可回。",
           "  · 切換前部署的 stage 安裝器 worker 讀的是釘死的 Gitea commit（BUNDLE_BASE），在 worker 重新部署前照舊可用。",
           "",
-          "沒包含（另記）：零件包本體（wasm／js，體積小）仍在 bundle repo，隨 gitea-ops#4 的 git 搬家一起走；",
+          "2026-11-02 補（#266 的另一半）：零件包本體（wasm／js）也放同一顆 R2，`bundle/<sha7>/…`（登錄簿 dist.bundlePrefix），",
+   "安裝器釘點 BUNDLE_BASE 指它；/api/latest 的 bundle.base、stage 實例的 acr update／新裝全程不碰 git.uncle6.me。",
+   "bundle repo 本身（版控歷史）搬到 Artifacts（targets.stage.bundles.remote）。",
+   "",
+   "（以下是 2026-10-11 第一版的說法，已被上面取代）零件包本體（wasm／js，體積小）仍在 bundle repo，隨 gitea-ops#4 的 git 搬家一起走；",
           "版本發佈紀錄（Gitea release）仍是內部簽收鏈（票→PR→commit→version）的一環，隨 Gitea→AHub 搬，",
           "但已不再掛安裝檔本體，內文改連 R2 下載網址（見 releaseRecord.attachAssets）。"
         ],
         "kind": "r2",
+        "bundlePrefix": "bundle",
         "bucket": "arcrun-stage-dist",
         "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
         "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"

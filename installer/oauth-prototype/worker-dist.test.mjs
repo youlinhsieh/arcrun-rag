@@ -100,3 +100,39 @@ test('R2 指標不存在 ⇒ /download 給人話 503；指標在但檔不在 ⇒
     assert.equal((await call(env({ 'manifest.json': MANIFEST }), '/download/win')).status, 502);
   } finally { restore(); }
 });
+
+// ── 零件包本體（inkstone/arcrun-rag#266 的另一半）：釘點也在 R2，bundle/<sha>/… ─────────────
+const BUNDLE_MANIFEST = JSON.stringify({ release: '7.7.7', built: '2026-11-02', core: [], daemon: { version: '9.9.9' } });
+const benv = (extra) => ({
+  INSTALLER_KV: kv(),
+  DIST_BASE: 'https://inst.test/dist',
+  BUNDLE_BASE: 'https://inst.test/dist/bundle/abc1234',
+  DIST: fakeR2({
+    'manifest.json': MANIFEST,
+    'bundle/abc1234/manifest.json': BUNDLE_MANIFEST,
+    'bundle/abc1234/tier2/ui/index.js': 'UI-JS',
+    ...(extra || {}),
+  }),
+});
+
+test('/dist/bundle/<sha>/…：釘點目錄從 R2 串出；非 hex 目錄、.. 、缺檔一律 404', async () => {
+  const e = benv();
+  const ok = await call(e, '/dist/bundle/abc1234/tier2/ui/index.js');
+  assert.equal(ok.status, 200);
+  assert.equal(await ok.text(), 'UI-JS');
+  for (const p of ['/dist/bundle/abc1234/', '/dist/bundle/zzz/manifest.json', '/dist/bundle/abc1234/..%2f..%2fmanifest.json',
+    '/dist/bundle/abc1234/nope.js', '/dist/bundle//abc1234/manifest.json', '/dist/bundle/abc1234/a//b']) {
+    assert.equal((await call(e, p)).status, 404, p);
+  }
+});
+
+test('/api/latest：零件包釘點在 R2 時，release／pin／bundle.base 都對，且全程不打網路（含 git.uncle6.me、自己的網址）', async () => {
+  banNetwork();
+  try {
+    const j = await (await call(benv(), '/api/latest')).json();
+    assert.equal(j.release, '7.7.7');
+    assert.equal(j.pin, 'abc1234');
+    assert.equal(j.bundle.base, 'https://inst.test/dist/bundle/abc1234');
+    assert.ok(!/uncle6/.test(JSON.stringify(j)), '回應全文不得出現 uncle6');
+  } finally { restore(); }
+});

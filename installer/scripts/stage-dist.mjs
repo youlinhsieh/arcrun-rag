@@ -17,6 +17,12 @@
  *   · 安裝器 worker（youlin-stage）綁 R2、自己服務 `/dist/*`，並從 R2 讀指標算下載網址
  *     ⇒ 不新增網域、不碰 DNS（見 worker.js distHandle／daemonOf）。
  *
+ * ── 零件包本體也離開 Gitea（#266 的另一半，2026-11-02）────────────────────────
+ * 登錄簿 `dist.bundlePrefix` 有宣告時，這一版 bundle repo 裡**版控內**的檔案（除 daemon/ 與 *.bak*）
+ * 也放進 R2：`<prefix>/<sha7>/<相對路徑>`。一個 sha 目錄寫好就不再變 ⇒ 可長快取，
+ * 安裝器的釘點（BUNDLE_BASE）就是 `<publicBase>/<prefix>/<sha7>`，由 worker 的 /dist 路由服務。
+ * 順序：零件包 → 安裝檔 → 最新版指標（最後才翻）。
+ *
  * 這支只放「純計算＋可注入的外部呼叫」，好讓 stage-dist.test.mjs 用假 wrangler／假檔案演練，
  * 與 ship.mjs 真跑的是同一份實作（同 verify-download.mjs 的做法）。
  *
@@ -25,6 +31,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 /** manifest.daemon 底下哪幾個鍵是安裝檔（與 ship.mjs daemon-sync 的 wanted 一致）。 */
 export const DAEMON_ASSET_KEYS = ['mac', 'win', 'msix'];
@@ -38,6 +45,10 @@ const CONTENT_TYPES = {
   '.msix': 'application/vnd.ms-appx',
   '.zip': 'application/zip',
   '.json': 'application/json; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.md': 'text/markdown; charset=utf-8',
 };
 export function contentTypeOf(name) {
   const m = String(name).toLowerCase().match(/\.[a-z0-9]+$/);
@@ -55,6 +66,19 @@ export function assertDistDeclared(dist) {
   if (/git\.uncle6\.me/i.test(String(dist.publicBase))) {
     throw new Error(`dist.publicBase 指到 git.uncle6.me（${dist.publicBase}）——這張票就是要離開那裡（inkstone/arcrun-rag#266）。`);
   }
+}
+
+/** 零件包在 R2 的目錄（相對 key）：`<prefix>/<sha7>`。 */
+export function bundleDir(dist, sha7) {
+  const prefix = String((dist && dist.bundlePrefix) || '').replace(/^\/+|\/+$/g, '');
+  if (!prefix) throw new Error('登錄簿 dist 沒有宣告 bundlePrefix，沒辦法決定零件包放哪。');
+  if (!/^[0-9a-f]{7,40}$/.test(String(sha7))) throw new Error(`零件包釘點 sha 不合法：${sha7}`);
+  return `${prefix}/${sha7}`;
+}
+
+/** 零件包目錄的公開網址（＝安裝器的釘點 BUNDLE_BASE）。 */
+export function bundleDirUrl(dist, sha7) {
+  return `${String(dist.publicBase).replace(/\/+$/, '')}/${bundleDir(dist, sha7)}`;
 }
 
 /** R2 物件 key → 使用者拿得到的網址。 */
@@ -91,6 +115,31 @@ export function planDaemonObjects(manifest, bundlesDir) {
     throw new Error('manifest.daemon 沒有任何安裝檔（mac／win／msix）可放進 R2——登錄簿宣告了 dist，卻沒有東西要發佈。');
   }
   return out;
+}
+
+/** bundle repo 裡**不**上 R2 零件包目錄的檔案：安裝檔（另有 daemon/ 的路）與備份殘檔。 */
+export function isBundleObject(rel) {
+  return !/^daemon\//.test(rel) && !/\.bak(-|$)/.test(basename(rel)) && !rel.includes('..') && !rel.startsWith('/');
+}
+
+function gitTrackedFiles(bundlesDir) {
+  return execFileSync('git', ['ls-files', '-z'], { cwd: bundlesDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\0').filter(Boolean);
+}
+
+/**
+ * 這一版要放進 R2 零件包目錄的檔案清單：bundle repo 的**版控內容**（＝這個 sha 的 tree）扣掉 daemon/ 與備份殘檔。
+ * 只認版控內的檔：工作區裡未追蹤的東西（上一輪中止的殘檔）不會被當成這個 sha 的內容。
+ */
+export function planBundleObjects({ dist, sha7, bundlesDir, listFiles = gitTrackedFiles }) {
+  const dir = bundleDir(dist, sha7);
+  const rels = listFiles(bundlesDir).filter(isBundleObject);
+  if (!rels.includes('manifest.json')) throw new Error(`版控內沒有 manifest.json，不上傳零件包（${bundlesDir}）。`);
+  return rels.map((rel) => {
+    const abs = join(bundlesDir, rel);
+    if (!existsSync(abs)) throw new Error(`版控內的 ${rel} 在 ${bundlesDir} 工作區裡不見了，不上傳半套零件包。`);
+    return { rel, key: `${dir}/${rel}`, path: abs, contentType: contentTypeOf(rel) };
+  });
 }
 
 /**
@@ -135,27 +184,43 @@ export function r2PutArgs({ bucket, key, file, contentType, cacheControl }) {
 }
 
 /**
- * 把這一版放進 R2：安裝檔先，manifest.json（指標）最後。
+ * 把這一版放進 R2：零件包 → 安裝檔 → manifest.json（指標）最後。
  *
  * @param {object} o
  * @param {object} o.dist       登錄簿的 dist（bucket／accountId／publicBase）
  * @param {object} o.manifest   要送出去的 manifest（與 bundle 工作區的 manifest.json 同一份）
  * @param {string} o.bundlesDir
+ * @param {{sha7:string}} [o.bundle]  這一版零件包的釘點（dist.bundlePrefix 有宣告時必給）
+ * @param {(dir:string)=>string[]} [o.listFiles]  測試注入：版控內檔案清單
  * @param {(args:string[], opts:{label:string})=>void} o.run  執行 `npx <args>`（呼叫端已帶好 env／cwd）
- * @returns {{objects: object[], pointerUrl: string, detail: string[]}}
+ * @returns {{objects: object[], bundleBase: string|null, pointerUrl: string, detail: string[]}}
  */
-export function publishDist({ dist, manifest, bundlesDir, run }) {
+export function publishDist({ dist, manifest, bundlesDir, run, bundle, listFiles }) {
   assertDistDeclared(dist);
-  const objects = planDaemonObjects(manifest, bundlesDir);
   const detail = [];
+  let bundleBase = null;
+  // ① 零件包（宣告了 bundlePrefix 才做）：整個 sha 目錄先到位，才輪得到下面的指標去翻
+  if (dist.bundlePrefix) {
+    if (!bundle || !bundle.sha7) throw new Error('登錄簿宣告了 dist.bundlePrefix，但呼叫端沒給這一版的釘點 sha7。');
+    const bobjs = planBundleObjects({ dist, sha7: bundle.sha7, bundlesDir, listFiles });
+    for (const o of bobjs) {
+      run(r2PutArgs({ bucket: dist.bucket, key: o.key, file: o.path, contentType: o.contentType,
+        cacheControl: 'public, max-age=31536000, immutable' }), { label: o.key });
+    }
+    bundleBase = bundleDirUrl(dist, bundle.sha7);
+    detail.push(`R2 ← 零件包 ${bobjs.length} 個檔 → ${bundleDir(dist, bundle.sha7)}/（釘點 ${bundleBase}）`);
+  }
+  // ② 安裝檔
+  const objects = planDaemonObjects(manifest, bundlesDir);
   for (const o of objects) {
     run(r2PutArgs({ bucket: dist.bucket, key: o.key, file: o.path, contentType: o.contentType,
       cacheControl: 'public, max-age=31536000, immutable' }), { label: o.key });
     detail.push(`R2 ← ${o.key}（${o.platform}，sha ${o.sha256.slice(0, 12)}…）`);
   }
+  // ③ 最新版指標，最後才翻
   const manifestPath = join(bundlesDir, 'manifest.json');
   run(r2PutArgs({ bucket: dist.bucket, key: 'manifest.json', file: manifestPath,
     contentType: contentTypeOf('manifest.json'), cacheControl: 'no-cache' }), { label: 'manifest.json' });
   detail.push('R2 ← manifest.json（最新版指標，最後才翻）');
-  return { objects, pointerUrl: distUrl(dist.publicBase, 'manifest.json'), detail };
+  return { objects, bundleBase, pointerUrl: distUrl(dist.publicBase, 'manifest.json'), detail };
 }

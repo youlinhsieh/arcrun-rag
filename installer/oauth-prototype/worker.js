@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@7b1e4f54c406d441b63e7da015e420ec330b0ac6';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@07fed7dccb8be10e3a329d5660ebac19a28d7e83';
 const BUNDLE_BUILT = '2026-11-01'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -301,7 +301,7 @@ function bundleBase(env) {
  *  D37：staging 用 env.BUNDLE_BASE 蓋掉釘點時，版本標記必須跟著 env 走，不能寫死 DEFAULT。 */
 function bundleCommitOf(env) {
   const b = bundleBase(env);
-  const m = b.match(/@([0-9a-f]{7,40})/) || b.match(/\/raw\/commit\/([0-9a-f]{7,40})/);
+  const m = b.match(/@([0-9a-f]{7,40})/) || b.match(/\/raw\/commit\/([0-9a-f]{7,40})/) || b.match(/\/dist\/bundle\/([0-9a-f]{7,40})$/);
   return m ? m[1].slice(0, 7) : 'unknown';
 }
 /** manifest.built 的顯示值——deploy 時由部署腳本從釘點 manifest 導出、以 env.BUNDLE_BUILT 注入
@@ -340,7 +340,7 @@ async function releaseOf(env) {
 
   let version;
   try {
-    const r = await fetch(base + '/manifest.json', { cf: { cacheTtl: 86400 } });
+    const r = await bundleFetch(env, base + '/manifest.json', { cf: { cacheTtl: 86400 } });
     if (r.ok) {
       const m = await r.json();
       version = m && m.release ? String(m.release) : null;
@@ -395,7 +395,7 @@ async function manifestCountsOf(env) {
 
   let counts = null;
   try {
-    const r = await fetch(base + '/manifest.json', { cf: { cacheTtl: 86400 } });
+    const r = await bundleFetch(env, base + '/manifest.json', { cf: { cacheTtl: 86400 } });
     if (r.ok) {
       const m = await r.json();
       if (m && Array.isArray(m.core)) {
@@ -781,16 +781,34 @@ class InstallError extends Error {
   }
 }
 
+/**
+ * 429 時等多久再試（毫秒）。inkstone/arcrun-rag#291：CF 回 429＝這一次**沒做**，重送是安全的
+ * （D1 `/query` 也一樣——被擋下的語句沒有執行）。照 `Retry-After`（秒），沒給就照預設節奏；
+ * 一次最多等 15 秒，避免單一呼叫把整輪的牆鐘吃掉。測試可設 `cfFetch.retryDelays` 換掉。
+ */
+const CF_429_RETRY_DELAYS = [3000, 10000];
+function cf429Delay(res, attempt, delays) {
+  const ra = Number(res && res.headers && res.headers.get && res.headers.get('retry-after'));
+  const base = Number.isFinite(ra) && ra > 0 ? ra * 1000 : delays[attempt];
+  return Math.min(base, 15000);
+}
+
 async function cfFetch(token, path, init = {}) {
   let res;
+  const delays = cfFetch.retryDelays || CF_429_RETRY_DELAYS;
   try {
-    res = await fetch(`${CF_API}${path}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(init.headers || {}),
-      },
-    });
+    for (let attempt = 0; ; attempt++) {
+      res = await fetch(`${CF_API}${path}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init.headers || {}),
+        },
+      });
+      // inkstone/arcrun-rag#291：429 不直接判死——先照 Retry-After 等一下再送，送滿次數才往下報錯。
+      if (res.status !== 429 || attempt >= delays.length) break;
+      await new Promise((r) => setTimeout(r, cf429Delay(res, attempt, delays)));
+    }
   } catch (e) {
     // 🔴 arcrun-rag#215 c11101：`fetch()` 在 Workers runtime 對「單次 invocation 的
     //   subrequest 額度用完」也是丟例外（不是 HTTP 回應），訊息形如
@@ -884,7 +902,10 @@ function cfErrorHint(status, code, msg) {
   //    403 的真相只有一個：**我們要的權限不夠**，那是我們這邊的事。
   if (status === 403) return '這是我們的授權範圍不夠，不是你的設定問題。'
     + '請按「重新安裝」再試一次；如果還是這樣，請把技術細節回報給我們，我們來處理。';
-  if (status === 429) return '請稍等一下再按「重新安裝」。';
+  // inkstone/arcrun-rag#291：429 多半是同一顆資料庫還在處理上一批工作，不是帳號被限制、
+  // 也不是額度用完（付費帳號一樣會遇到）。重按會先檢查已經做好的部分，不會重做。
+  if (status === 429) return '這通常是你的資料庫還在處理上一批工作，不是帳號被限制。'
+    + '請稍後再按「重新安裝」，已經做好的部分會先被認出來，不會重做。';
   if (code === CF_ERR_NAME_TAKEN) return '請按「重新安裝」，系統會換一組新的名稱重試。';
   return '請按「重新安裝」再試一次；若持續失敗，請把技術細節回報給我們。';
 }
@@ -1828,6 +1849,32 @@ async function applyExecLogMigrations(runSql, execLogDbId, statements = EXEC_LOG
   return { skipped: false, statements: statements.length, tolerated };
 }
 
+/** inkstone/arcrun-rag#291：長步驟的心跳間隔。要明顯短於 STALL_MS（5 分鐘），
+ *  CF 一次 KV 寫入的成本可以忽略，60 秒一次足夠。 */
+const HEARTBEAT_MS = 60000;
+
+/** 在一段長工作期間定期呼叫 `beat`（通常是 writeProgress，順手蓋新 updatedAt），回傳停止函式。
+ *  心跳自己失敗不影響主工作——那只是「讓別人知道我還活著」，不是工作本身。 */
+function startHeartbeat(beat, everyMs = HEARTBEAT_MS) {
+  const timer = setInterval(() => { Promise.resolve().then(beat).catch(() => {}); }, everyMs);
+  return () => clearInterval(timer);
+}
+
+/** inkstone/arcrun-rag#291：資料表那一步撞 429 之後，判斷「其實已經做完了沒有」。
+ *  執行紀錄庫的語句全是 IF NOT EXISTS、筆數個位數 ⇒ 直接重送一次；
+ *  知識庫照 detectMigrationGeneration 探世代，沒有待送語句才算到最新。
+ *  任何一步再出錯（例如還是 429）⇒ 回 false，照原本的失敗流程走。 */
+async function schemaCaughtUp(runReadSql, execLogRunSql, execLogDbId) {
+  try {
+    if (execLogRunSql) await applyExecLogMigrations(execLogRunSql, execLogDbId);
+    const { actualGeneration, probeFailed } = await detectMigrationGeneration(runReadSql);
+    if (probeFailed) return false;
+    return migrationStatementsFrom(actualGeneration).length === 0;
+  } catch (_) {
+    return false;
+  }
+}
+
 /** 用戶身分 → 可重現的資源短碼（P0-2）：同一 email 每次安裝得到同一組名稱，
  *  斷點續傳才認得出上次建的那組、不會再建一整套。 */
 async function slugFromEmail(email) {
@@ -2125,13 +2172,13 @@ function jsdelivrToGithubRaw(primaryUrl) {
  * - 重試用盡後嘗試 raw.githubusercontent.com 備援；備援也失敗才丟 InstallError
  * 回 { response, usedFallback }。
  */
-async function fetchBundleAsset(primaryUrl, what) {
+async function fetchBundleAsset(primaryUrl, what, env) {
   let lastErr = null;
   const retryDelays = [300, 900, 2700];
   for (let attempt = 0; attempt <= 3; attempt++) {
     if (attempt > 0) await new Promise(function(r) { setTimeout(r, retryDelays[attempt - 1]); });
     try {
-      const res = await fetch(primaryUrl);
+      const res = await bundleFetch(env, primaryUrl);
       if (res.ok) return { response: res, usedFallback: false };
       if (res.status === 404) {
         throw new InstallError('找不到 ' + what + '（HTTP 404）', {
@@ -2320,7 +2367,7 @@ async function syncManifestCrons(token, accountId, manifest, presentOnAccount) {
 
 /** 抓懶載 manifest（CI build-bundles.mjs 產出的 bundles/manifest.json）。 */
 async function fetchBundleManifest(env) {
-  const { response } = await fetchBundleAsset(bundleBase(env) + '/manifest.json', '安裝包清單');
+  const { response } = await fetchBundleAsset(bundleBase(env) + '/manifest.json', '安裝包清單', env);
   const manifest = await response.json();
   return reorderForServiceBindings(manifest);
 }
@@ -2966,12 +3013,12 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   const base = bundleBase(env);
   // 1. 抓主模組 + wasm 模組（fetchBundleAsset：3 次重試 + GitHub raw 備援）
   let usedFallback = false;
-  const { response: mainRes, usedFallback: mf } = await fetchBundleAsset(base + '/' + entry.main_file, entry.name + ' 主模組');
+  const { response: mainRes, usedFallback: mf } = await fetchBundleAsset(base + '/' + entry.main_file, entry.name + ' 主模組', env);
   if (mf) usedFallback = true;
   const mainSrc = await mainRes.text();
   const wasmBlobs = [];
   for (const m of entry.modules || []) {
-    const { response: wres, usedFallback: wf } = await fetchBundleAsset(base + '/' + m.file, entry.name + ' 模組 ' + m.name);
+    const { response: wres, usedFallback: wf } = await fetchBundleAsset(base + '/' + m.file, entry.name + ' 模組 ' + m.name, env);
     if (wf) usedFallback = true;
     wasmBlobs.push({ name: m.name, type: m.type || 'application/wasm', buf: await wres.arrayBuffer() });
   }
@@ -3386,6 +3433,7 @@ export {
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
   applyMigrations, MIGRATION_ALTER_ADD_COLUMN,
   applyExecLogMigrations, // inkstone/Arcrun#222：執行紀錄庫 migration
+  startHeartbeat, schemaCaughtUp, cf429Delay, // inkstone/arcrun-rag#291：資料表步驟不重入、429 先等再試
   // arcrun-rag#215 comment 11172：世代探針＋按世代切句，測試直接注入假 runReadSql
   // 證明「已是最新的帳號送 0 句」，不必繞整個 runInstall／真 Cloudflare。
   detectMigrationGeneration, migrationStatementsFrom, GENERATION_CHECKS,
@@ -3462,7 +3510,24 @@ export async function resolveWithStaleFallback(resolve, mode) {
  * 的名字，不再是「找不找得到既有資源」的判斷依據——這件事本身就是斷點續傳
  * 續得下去的原因：接力續跑靠的是 `progress.result`，不是靠猜資源名字。
  */
+/**
+ * 🔴 inkstone/arcrun-rag#291：整輪安裝期間持續回心跳（leo 2026-11-02：「所有的沒反應都要先看進度，不只資料庫」）。
+ *   STALL_MS 的判準是「progress 多久沒更新」，而任何一步只要有一次 CF 呼叫跑得久
+ *   （大庫的 migration、慢的部署、慢的種子），progress 就不會動 ⇒ cron／狀態頁把它判成卡住、
+ *   另起一輪 ⇒ 兩輪同時打同一批資源。2026-11-02 geek6688 大前實例就是撞在資料表這一步。
+ *   ⇒ 心跳掛在整輪外層，不掛在個別步驟：新加的步驟不必記得自己去掛。
+ *   心跳只證明「這次執行還活著」：執行被 Workers 砍掉時計時器一起消失，停滯偵測照樣成立。
+ */
 async function runInstall(env, sid, progress, force) {
+  const stopHeartbeat = startHeartbeat(() => writeProgress(env, sid, progress));
+  try {
+    return await runInstallSteps(env, sid, progress, force);
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+async function runInstallSteps(env, sid, progress, force) {
   // 可重現命名：用已驗證的 email 推導。P0-1 保證 email 必在；缺席＝閘被繞過的異常，
   // 直接失敗（不退回隨機命名——隨機會破壞斷點續傳、留下孤兒資源）。
   const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
@@ -3810,25 +3875,27 @@ async function runInstall(env, sid, progress, force) {
   // 已經套過的代不再重送——見 detectMigrationGeneration()／migrationStatementsFrom()
   // 檔頭那段「建了又刪」根因說明（上面 MIGRATION_ALTER_ADD_COLUMN 旁）。
   if (!stepDone('schema')) {
+    const rawRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sql }),
+    });
+    const runReadSql = async (sql) => {
+      const result = await rawRunSql(sql);
+      return (result && result[0] && result[0].results) || [];
+    };
+    const execLogRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${execLogDbId}/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sql }),
+    });
+    // 🔴 inkstone/arcrun-rag#291（2026-11-02 geek6688 大前實例實錯）：大庫的一批 migration
+    //   是**一次** `/query`，可能跑超過 STALL_MS——心跳由 runInstall 外層負責（見該處）。
     try {
       await setStep('schema', 'running');
-      const rawRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${dbId}/query`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sql }),
-      });
-      const runReadSql = async (sql) => {
-        const result = await rawRunSql(sql);
-        return (result && result[0] && result[0].results) || [];
-      };
       // 執行紀錄庫（inkstone/Arcrun#222 c18362）：獨立於知識庫的另一顆 D1，表要在這裡建好，
       // 否則 kbdb /health 會回 503。放在知識庫 migration 之前、與它的預算無關。
       if (execLogDbId) {
-        const execLogRunSql = (sql) => cfFetch(token, `/accounts/${accountId}/d1/database/${execLogDbId}/query`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sql }),
-        });
         const r = await applyExecLogMigrations(execLogRunSql, execLogDbId);
         progress.result.execLogSchema = `已套用 ${r.statements} 句`;
       } else {
@@ -3877,8 +3944,14 @@ async function runInstall(env, sid, progress, force) {
         await recordDailySpend(env.INSTALLER_KV, accountId, rowsWritten);
       }
     } catch (e) {
-      await fail('schema', e);
-      return;
+      // inkstone/arcrun-rag#291：429＝資料庫還在忙（多半正在跑上一輪送出的 migration）。
+      // 判失敗之前先重探一次：表其實已經到最新代就算完成，不要叫用戶重來。
+      if (e && e.status === 429 && await schemaCaughtUp(runReadSql, execLogDbId ? execLogRunSql : null, execLogDbId)) {
+        await setStep('schema', 'done', '資料表已就緒（資料庫剛才忙碌，確認後已是最新）');
+      } else {
+        await fail('schema', e);
+        return;
+      }
     }
   }
 
@@ -5620,10 +5693,30 @@ function distOn(env) {
 function distBaseOf(env) {
   return String(env.DIST_BASE).replace(/\/+$/, '');
 }
-/** 只開放這兩類 key：最新版指標、daemon/ 底下單層安裝檔。其餘（含 .. 與子目錄）一律 404。 */
+/** 只開放三類 key：最新版指標、daemon/ 底下單層安裝檔、bundle/<sha>/ 底下的零件包。其餘（含 ..）一律 404。 */
 function distKeyAllowed(key) {
+  if (key.includes('..') || key.includes('//')) return false;
   if (key === 'manifest.json') return true;
-  return /^daemon\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) && !key.includes('..');
+  // inkstone/arcrun-rag#266（零件包那一半）：stage 的零件包按釘點 sha 分目錄放在 bundle/<sha>/…，
+  // 一個 sha 目錄一旦寫好就不再變（立即可長快取）。路徑段只准一般檔名字元。
+  if (/^bundle\/[0-9a-f]{7,40}\/[A-Za-z0-9._][A-Za-z0-9._\/-]*$/.test(key)) return true;
+  return /^daemon\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key);
+}
+/**
+ * 抓 bundle 資源。釘點在自己的 R2（distOn）時直接讀 binding：
+ * Workers 打自己的 workers.dev 網址會被 CF 擋（self-fetch，1042／522），而且多繞一圈沒有意義。
+ * 其餘環境（prod jsDelivr、uncle6 staging Gitea raw）一字不變，照舊 fetch。
+ */
+async function bundleFetch(env, url, init) {
+  if (distOn(env) && String(url).startsWith(distBaseOf(env) + '/')) {
+    let key;
+    try { key = decodeURIComponent(String(url).slice(distBaseOf(env).length + 1).split('?')[0]); } catch (_) { return new Response('not found', { status: 404 }); }
+    if (!distKeyAllowed(key)) return new Response('not found', { status: 404 });
+    const obj = await env.DIST.get(key);
+    if (!obj) return new Response('not found', { status: 404 });
+    return new Response(obj.body, { status: 200 });
+  }
+  return fetch(url, init);
 }
 async function distHandle(request, env, pathname) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -5770,7 +5863,7 @@ async function daemonOf(env) {
 
   let out = null;
   try {
-    const r = await fetch(base + '/manifest.json', { cf: { cacheTtl: 86400 } });
+    const r = await bundleFetch(env, base + '/manifest.json', { cf: { cacheTtl: 86400 } });
     if (r.ok) {
       const m = await r.json();
       const d = m && m.daemon;

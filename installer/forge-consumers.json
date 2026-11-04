@@ -50,23 +50,17 @@
       "reason": "擋「舊 owner（Leo）的 Gitea 路徑」的閘；舊 owner 不會因為搬家變合法，留著。"
     },
     "installer/scripts/gitea-release.mjs": {
-    "status": "已換",
-    "reason": "TICKET_FORGE=gitea 時的後端，翻回舊家（回退）就是它。TICKET_FORGE=ahub 時 ship.mjs／release-line-gate.mjs／line-source-repo.mjs 改走 release-forge.mjs（建 release 打 AHub 的 release 路由、附件先寫 R2 再登記指標），這支不再被呼叫。預設主機仍是舊家，是翻回去時要的。"
-  },
-  "installer/ship.targets.json": {
-    "status": "待決",
-    "reason": "五處：①releaseRecord／installer 的 baseUrl（發佈紀錄主機）——已換：TICKET_FORGE=ahub 時 baseUrl 不再被使用（release-forge.mjs 直打 AHub），翻回 gitea 才照它 ②collector 線的 remote（git push 目的地，歸 gitea-ops#4）③bundles.remote＋pin.template（stage 的 bundle 倉，歸 arcrun-rag#266）④一段註解。",
-    "decision": "②③隨 gitea-ops#4／arcrun-rag#266 的新 remote 與下載指標；①已結案（總管裁定 InkStoneCo#234 c22852：發佈紀錄住 AHub，附件住 leo21c R2 gitea-lfs）。"
-  },
-    "installer/scripts/local-install-check.mjs": {
+      "status": "已換",
+      "reason": "TICKET_FORGE=gitea 時的後端，翻回舊家（回退）就是它。TICKET_FORGE=ahub 時 ship.mjs／release-line-gate.mjs／line-source-repo.mjs 改走 release-forge.mjs（建 release 打 AHub 的 release 路由、附件先寫 R2 再登記指標），這支不再被呼叫。預設主機仍是舊家，是翻回去時要的。"
+    },
+    "installer/ship.targets.json": {
       "status": "待決",
-      "reason": "本機安裝檢查的 BUNDLE_BASE 預設指 staging bundle 倉 raw（舊家）；環境變數 BUNDLE_BASE 可覆蓋。",
-      "decision": "arcrun-rag#266：stage 下載改走 R2 後，預設值跟著換成 R2 指標。依紅線不碰 arcrun-rag-bundles-staging。"
+      "reason": "剩三類：①releaseRecord／installer 的 baseUrl（發佈紀錄主機）——已換：TICKET_FORGE=ahub 時不再被使用，翻回 gitea 才照它 ②collector 線的 remote（git push 目的地，歸 gitea-ops#4）③註解／說明欄（『不准指回 git.uncle6.me』『舊址』）。stage 的 bundles.remote 與 pin.template 已於 2026-11-02 搬到 Artifacts／R2（arcrun-rag#266），不再含舊家。",
+      "decision": "②隨 gitea-ops#4 的新 remote；①已結案（總管裁定 InkStoneCo#234 c22852：發佈紀錄住 AHub，附件住 leo21c R2 gitea-lfs）。"
     },
     "installer/oauth-prototype/wrangler.toml": {
-      "status": "待決",
-      "reason": "stage 的 BUNDLE_BASE（:192、:284）仍指舊家 staging 倉 raw，與 :274 的註解互相矛盾。",
-      "decision": "arcrun-rag#266（工單明寫不在 #234 做）。"
+      "status": "不必換",
+      "reason": "只剩 uncle6 帳號底下舊 `[env.staging]` 的 BUNDLE_BASE（:192，已不在出貨線上，註解明寫不再部署）。youlin-stage 的 BUNDLE_BASE 已於 2026-11-02 指到自家 R2（arcrun-rag#266），不含舊家。"
     },
     "installer/oauth-prototype/worker.js": {
       "status": "不必換",

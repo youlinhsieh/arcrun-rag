@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
   planDaemonObjects, ensureLocalExclude, publishDist, r2PutArgs, distUrl, assertDistDeclared, contentTypeOf,
+  planBundleObjects, bundleDir, bundleDirUrl, isBundleObject,
 } from './stage-dist.mjs';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -119,4 +120,82 @@ test('小工具：distUrl 去重斜線、contentType、r2PutArgs', () => {
   assert.equal(contentTypeOf('A.DMG'), 'application/x-apple-diskimage');
   assert.equal(contentTypeOf('x.bin'), 'application/octet-stream');
   assert.deepEqual(r2PutArgs({ bucket: 'b', key: 'k', file: '/f' }), ['wrangler', 'r2', 'object', 'put', 'b/k', '--file', '/f', '--remote']);
+});
+
+// ── 零件包本體也在 R2（#266 的另一半）──────────────────────────────────────────
+const BDIST = { ...DIST, bundlePrefix: 'bundle' };
+const SHA7 = 'abc1234';
+
+/** 在 fixture 的 git 工作區裡再放幾個零件包檔，並 commit（只有版控內的檔才算這個 sha 的內容）。 */
+function bundleFixture() {
+  const f = fixture();
+  mkdirSync(join(f.dir, 'tier2', 'ui'), { recursive: true });
+  mkdirSync(join(f.dir, 'arcrun-set'), { recursive: true });
+  writeFileSync(join(f.dir, 'tier2', 'ui', 'index.js'), 'ui');
+  writeFileSync(join(f.dir, 'arcrun-set', 'component.wasm'), 'wasm');
+  writeFileSync(join(f.dir, 'manifest.json.bak-0826'), 'old');
+  ensureLocalExclude(f.dir);
+  execFileSync('git', ['add', '-A'], { cwd: f.dir });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'x'], { cwd: f.dir });
+  writeFileSync(join(f.dir, 'untracked-leftover.js'), 'stale'); // 工作區殘檔，不屬於這個 sha
+  return f;
+}
+
+test('bundleDir／bundleDirUrl：由登錄簿算出，釘點 sha 不合法就丟', () => {
+  assert.equal(bundleDir(BDIST, SHA7), 'bundle/abc1234');
+  assert.equal(bundleDirUrl(BDIST, SHA7), 'https://stage.example.workers.dev/dist/bundle/abc1234');
+  assert.throws(() => bundleDir(BDIST, 'XYZ'), /不合法/);
+  assert.throws(() => bundleDir(DIST, SHA7), /bundlePrefix/);
+});
+
+test('isBundleObject：daemon/ 與 .bak 殘檔不上零件包目錄', () => {
+  assert.equal(isBundleObject('tier1/set/index.js'), true);
+  assert.equal(isBundleObject('manifest.json'), true);
+  assert.equal(isBundleObject('daemon/Arcrun-1.0.0.dmg'), false);
+  assert.equal(isBundleObject('manifest.json.bak-0826'), false);
+  assert.equal(isBundleObject('../x'), false);
+});
+
+test('planBundleObjects：只取版控內的檔（不含工作區殘檔、安裝檔、.bak），key 帶釘點目錄', () => {
+  const { dir } = bundleFixture();
+  const objs = planBundleObjects({ dist: BDIST, sha7: SHA7, bundlesDir: dir });
+  assert.deepEqual(objs.map((o) => o.rel).sort(), ['arcrun-set/component.wasm', 'manifest.json', 'tier2/ui/index.js']);
+  assert.equal(objs.find((o) => o.rel === 'arcrun-set/component.wasm').key, 'bundle/abc1234/arcrun-set/component.wasm');
+  assert.equal(objs.find((o) => o.rel === 'arcrun-set/component.wasm').contentType, 'application/wasm');
+  assert.equal(objs.find((o) => o.rel === 'tier2/ui/index.js').contentType, 'text/javascript; charset=utf-8');
+  rmSync(dir, { recursive: true });
+});
+
+test('planBundleObjects：版控內沒有 manifest.json、或檔案在工作區不見了 ⇒ 丟，不上傳半套', () => {
+  const { dir } = bundleFixture();
+  assert.throws(() => planBundleObjects({ dist: BDIST, sha7: SHA7, bundlesDir: dir, listFiles: () => ['tier2/ui/index.js'] }), /manifest\.json/);
+  assert.throws(() => planBundleObjects({ dist: BDIST, sha7: SHA7, bundlesDir: dir, listFiles: () => ['manifest.json', 'gone.js'] }), /不見了/);
+  rmSync(dir, { recursive: true });
+});
+
+test('publishDist（含零件包）：順序＝零件包 → 安裝檔 → 指標；零件包目錄的 manifest 與根指標是兩個 key', () => {
+  const { dir, manifest } = bundleFixture();
+  const calls = [];
+  const r = publishDist({ dist: BDIST, manifest, bundlesDir: dir, bundle: { sha7: SHA7 }, run: (args, o) => calls.push({ args, o }) });
+  const labels = calls.map((c) => c.o.label);
+  assert.equal(labels.at(-1), 'manifest.json', '指標最後才翻');
+  const firstDaemon = labels.findIndex((l) => l.startsWith('daemon/'));
+  const lastBundle = Math.max(...labels.map((l, i) => (l.startsWith('bundle/') ? i : -1)));
+  assert.ok(lastBundle < firstDaemon, '零件包全部到位，才放安裝檔');
+  assert.ok(labels.includes('bundle/abc1234/manifest.json'));
+  assert.equal(labels.filter((l) => l.startsWith('bundle/')).length, 3);
+  assert.equal(r.bundleBase, 'https://stage.example.workers.dev/dist/bundle/abc1234');
+  assert.ok(!JSON.stringify(r).match(/git\.uncle6\.me/));
+  for (const c of calls) assert.ok(c.args.includes('--remote'));
+  rmSync(dir, { recursive: true });
+});
+
+test('publishDist：宣告了 bundlePrefix 卻沒給釘點 sha ⇒ 丟；零件包任一檔上傳失敗 ⇒ 安裝檔與指標都不動', () => {
+  const { dir, manifest } = bundleFixture();
+  assert.throws(() => publishDist({ dist: BDIST, manifest, bundlesDir: dir, run: () => {} }), /sha7/);
+  const seen = [];
+  assert.throws(() => publishDist({ dist: BDIST, manifest, bundlesDir: dir, bundle: { sha7: SHA7 },
+    run: (a, o) => { seen.push(o.label); if (o.label.endsWith('.wasm')) throw new Error('boom'); } }), /boom/);
+  assert.ok(!seen.some((l) => l.startsWith('daemon/') || l === 'manifest.json'));
+  rmSync(dir, { recursive: true });
 });

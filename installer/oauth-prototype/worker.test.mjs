@@ -64,6 +64,7 @@ import worker, {
   MIGRATION_ALTER_ADD_COLUMN,
   // arcrun-rag#215 comment 11172：世代探針＋按世代切句，已經套過的代不再重送
   detectMigrationGeneration,
+  startHeartbeat, schemaCaughtUp, cf429Delay, // inkstone/arcrun-rag#291
   migrationStatementsFrom,
   GENERATION_CHECKS,
   // arcrun-rag#215 c11182／c11186：可用優先於快的預算規劃＋自算計數器剎車
@@ -5699,4 +5700,91 @@ test('#222 runInstall：舊版 manifest（沒有 EXEC_LOG_DB）→ 安裝照走�
   assert.equal(p.result.execLogDatabaseId, null);
   assert.notEqual(p.error && p.error.step, 'schema', 'schema 步不該因為沒有執行紀錄庫而失敗');
   assert.ok(!calls.some((c) => /CREATE TABLE IF NOT EXISTS execution_log_usage/.test(String(c.body || ''))), '沒有執行紀錄庫就不該送執行紀錄庫的建表 SQL');
+});
+
+// ===========================================================================
+// inkstone/arcrun-rag#291（2026-11-02 geek6688 大前實例）：大庫的 migration 一次 /query
+// 跑超過 STALL_MS ⇒ 被判卡住、又起一輪 ⇒ 第二輪撞上還在忙的 D1 回 429 ⇒ 整步判失敗，
+// 而第一輪其實跑完了。三件修法各自一支測試。
+// ===========================================================================
+
+test('#291 cfFetch：429 會照節奏重送，第二次成功就回結果（不直接判死）', async () => {
+  cfFetch.retryDelays = [1, 1];
+  try {
+    const calls = installFetch((url, init, calls) => (calls.length === 1
+      ? { status: 429, json: { success: false, errors: [{ code: 7000, message: 'Too many requests' }] } }
+      : { json: { success: true, result: [{ results: [{ ok: 1 }] }] } }));
+    const r = await cfFetch('t', '/accounts/a/d1/database/d/query', { method: 'POST', body: '{}' });
+    assert.equal(calls.length, 2, '429 之後應該再送一次');
+    assert.deepEqual(r, [{ results: [{ ok: 1 }] }]);
+  } finally { delete cfFetch.retryDelays; }
+});
+
+test('#291 cfFetch：一直 429 ⇒ 送滿次數才報錯，錯誤仍帶 status 429 與新文案', async () => {
+  cfFetch.retryDelays = [1, 1];
+  try {
+    const calls = installFetch(() => ({ status: 429, json: { success: false, errors: [{ code: 7000, message: 'Too many requests' }] } }));
+    await assert.rejects(cfFetch('t', '/x'), (e) => {
+      assert.equal(e.status, 429);
+      assert.match(e.hint, /還在處理上一批工作/);
+      assert.match(e.hint, /不會重做/);
+      return true;
+    });
+    assert.equal(calls.length, 3, '第一次＋重試兩次');
+  } finally { delete cfFetch.retryDelays; }
+});
+
+test('#291 cf429Delay：照 Retry-After 秒數，且最多等 15 秒', () => {
+  const res = (v) => ({ headers: new Headers(v == null ? {} : { 'retry-after': String(v) }) });
+  assert.equal(cf429Delay(res(2), 0, [3000, 10000]), 2000);
+  assert.equal(cf429Delay(res(null), 1, [3000, 10000]), 10000);
+  assert.equal(cf429Delay(res(600), 0, [3000, 10000]), 15000);
+});
+
+test('#291 startHeartbeat：長工作期間一直蓋新 updatedAt，停掉之後不再寫', async () => {
+  let beats = 0;
+  const stop = startHeartbeat(async () => { beats++; }, 5);
+  await new Promise((r) => setTimeout(r, 40));
+  stop();
+  const seen = beats;
+  assert.ok(seen >= 3, `應該跳了好幾次心跳，實際 ${seen}`);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(beats, seen, '停掉之後不該再跳');
+});
+
+test('#291 startHeartbeat：心跳自己失敗不往外丟（不能把主工作弄壞）', async () => {
+  const stop = startHeartbeat(async () => { throw new Error('kv down'); }, 5);
+  await new Promise((r) => setTimeout(r, 20));
+  stop();
+});
+
+test('#291 schemaCaughtUp：知識庫已到最新代 ⇒ true；執行紀錄庫順手補齊（冪等）', async () => {
+  const kb = new DatabaseSync(':memory:');
+  kb.exec(MIGRATION_SQL); // kbdb-sql-ok：離線測試，模擬「上一輪其實已經跑完」
+  const log = new DatabaseSync(':memory:');
+  const logRun = async (sql) => log.exec(sql); // kbdb-sql-ok：離線測試對 :memory: SQLite
+  assert.equal(await schemaCaughtUp(sqliteReadSql(kb), logRun, 'exec-log-id'), true);
+  const tables = log.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name); // kbdb-sql-ok：離線測試
+  assert.ok(tables.includes('execution_log'), '執行紀錄庫的表要補上');
+  kb.close(); log.close();
+});
+
+test('#291 schemaCaughtUp：知識庫還沒到最新 ⇒ false（照原本流程判失敗，不假裝成功）', async () => {
+  const kb = new DatabaseSync(':memory:');
+  kb.exec(MIGRATIONS.statements.slice(0, MIGRATIONS.generationStarts[6]).join(';\n') + ';'); // kbdb-sql-ok：模擬只到第 6 代
+  assert.equal(await schemaCaughtUp(sqliteReadSql(kb), null, null), false);
+  kb.close();
+});
+
+test('#291 schemaCaughtUp：重探本身又出錯（例如還是 429）⇒ false，不吞成成功', async () => {
+  const boom = async () => { throw Object.assign(new Error('busy'), { status: 429 }); };
+  assert.equal(await schemaCaughtUp(boom, null, null), false);
+});
+
+test('#291 心跳掛在整輪安裝外層（不是只掛資料表那一步），新步驟不必自己記得掛', () => {
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  const m = src.match(/async function runInstall\(env, sid, progress, force\) \{([\s\S]*?)\n\}/);
+  assert.ok(m, '找不到 runInstall');
+  assert.match(m[1], /startHeartbeat\(/, 'runInstall 外層要起心跳');
+  assert.match(m[1], /finally\s*\{\s*stopHeartbeat\(\)/, '跑完（含失敗）要停心跳');
 });

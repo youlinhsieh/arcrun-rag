@@ -93,6 +93,18 @@
         "issue": 248
       },
       "evidence": "arcrun-rag 8a43dd8（prod 落帳，釘子 7b1e4f5）；鏡像 0950098＝snapshot a151455（2026-11-01 16:17 臺北，prod 出貨那一趟）"
+    },
+    {
+      "version": "1.4.127",
+      "bundlePin": "52034c03163b32b80512b935fc5c48938011e19d",
+      "mirrorTarget": "8a86b0b",
+      "sourceCommit": "8e2f773",
+      "shipDate": "2026-11-01",
+      "armTicket": {
+        "repo": "InkStoneCo",
+        "issue": 248
+      },
+      "evidence": "arcrun-rag 362fbcf（prod 落帳，釘子 52034c0）；鏡像 8a86b0b＝snapshot 8e2f773（2026-11-01 18:25 臺北，prod 出貨那一趟）。小幫手仍是 0.18.118，arcrun-port 那筆已在。"
     }
   ]
 }
