@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@62be76a078b1f76fbf34148dc1a80284e70087e4';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b9c83621b7f5c0030e68c316ac343f588b175500';
 const BUNDLE_BUILT = '2026-11-04'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -3333,6 +3333,36 @@ async function waitForWorkerLive(workerUrl, opts = {}) {
   return { ok: false, routed: false, attempts: maxAttempts, health, error: lastErr };
 }
 
+/** inkstone/Arcrun#335 後續（2026-11-04 leo21c 1.4.129「有 1 條 AI 工作流沒裝成」）：
+ *  leo21c 這種大實例寫一條工作流要 7–19 秒（youlin 同一份 2 秒），20 秒的上限一碰就斷，
+ *  而且伺服器那邊其實寫成功了——安裝器先放棄、再把它講成「沒裝成」。
+ *  三件事一起改：①內容沒變就不寫（重裝不再白寫六條，也就不會撞時間）
+ *  ②上限放寬到 60 秒 ③逾時或 5xx 之後回頭讀一次定義，真的已經寫進去就算成功。 */
+const WF_PUSH_TIMEOUT_MS = 60000;
+const WF_READ_TIMEOUT_MS = 15000;
+function canonJson(v) {
+  const sort = (x) => Array.isArray(x) ? x.map(sort)
+    : (x && typeof x === 'object') ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, sort(x[k])])) : x;
+  return JSON.stringify(sort(v));
+}
+async function readWorkflowDefinition(cypherBase, hdr, name) {
+  try {
+    const r = await fetch(`${cypherBase}/webhooks/named/${encodeURIComponent(name)}/definition`, {
+      headers: hdr, signal: AbortSignal.timeout(WF_READ_TIMEOUT_MS),
+    });
+    if (!r.ok) return null;
+    return await r.json().catch(() => null);
+  } catch (_) {
+    return null;
+  }
+}
+function definitionMatches(def, want) {
+  if (!def || typeof def !== 'object') return false;
+  return canonJson(def.graph) === canonJson(want.graph)
+    && canonJson(def.config ?? null) === canonJson(want.config ?? null)
+    && String(def.description ?? '').trim() === String(want.description ?? '').trim();
+}
+
 async function pushWorkflowTo(cypherBase, ns, subs, wf) {
   const name = wf.name;
   try {
@@ -3363,12 +3393,32 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
       if (Object.keys(params).length) n.data = { ...(node.data || {}), ...params };
       return n;
     });
-    const dres = await fetch(`${cypherBase}/webhooks/named`, {
-      method: 'POST', headers: hdr,
-      body: JSON.stringify({ name, graph: { id: name, name, nodes, edges: g.edges || [] }, config: cfg, description: wf.description || '' }),
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!dres.ok) return { name, ok: false, error: `/webhooks/named HTTP ${dres.status}${await briefBody(dres)}` };
+    const want = { graph: { id: name, name, nodes, edges: g.edges || [] }, config: cfg, description: wf.description || '' };
+    // ① 實例上已經是這一份 ⇒ 不寫（重裝冪等，也不吃寫入額度）
+    if (definitionMatches(await readWorkflowDefinition(cypherBase, hdr, name), want)) {
+      return { name, ok: true, unchanged: true };
+    }
+    let dres;
+    try {
+      dres = await fetch(`${cypherBase}/webhooks/named`, {
+        method: 'POST', headers: hdr,
+        body: JSON.stringify({ name, ...want }),
+        signal: AbortSignal.timeout(WF_PUSH_TIMEOUT_MS),
+      });
+    } catch (e) {
+      // ③ 逾時／連線斷：伺服器可能已經寫完，讀回來比對再下結論
+      if (definitionMatches(await readWorkflowDefinition(cypherBase, hdr, name), want)) {
+        return { name, ok: true, confirmedAfter: e instanceof Error ? e.message : String(e) };
+      }
+      throw e;
+    }
+    if (!dres.ok) {
+      const err = `/webhooks/named HTTP ${dres.status}${await briefBody(dres)}`;
+      if (dres.status >= 500 && definitionMatches(await readWorkflowDefinition(cypherBase, hdr, name), want)) {
+        return { name, ok: true, confirmedAfter: err };
+      }
+      return { name, ok: false, error: err };
+    }
     return { name, ok: true };
   } catch (e) {
     return { name, ok: false, error: e instanceof Error ? e.message : String(e) };

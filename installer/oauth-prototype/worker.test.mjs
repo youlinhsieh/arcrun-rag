@@ -1604,6 +1604,7 @@ test('t20④c pushWorkflowTo：編圖→合 config→部署（mock fetch 驗兩�
   const calls = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/definition')) return new Response('not found', { status: 404 });
     calls.push({ url: String(url), body: JSON.parse(init.body) });
     if (String(url).endsWith('/cypher/search')) {
       return new Response(JSON.stringify({ cypher: { nodes: [{ id: 'n1' }], edges: [] } }), { status: 200 });
@@ -1623,6 +1624,59 @@ test('t20④c pushWorkflowTo：編圖→合 config→部署（mock fetch 驗兩�
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// inkstone/Arcrun#335 後續（leo21c 1.4.129「有 1 條 AI 工作流沒裝成」）：
+// 大實例寫一條要 7–19 秒，20 秒上限一碰就斷、而伺服器其實已寫成功。
+const WF_PREBUILT = { name: 'wf2', graph: { nodes: [{ id: 'n1' }], edges: [] }, flow: [], config: { n1: { k: '__X__' } }, description: 'd2' };
+function storedDef() {
+  return { name: 'wf2', description: 'd2', created_at: 'x',
+    graph: { id: 'wf2', name: 'wf2', nodes: [{ id: 'n1', data: { k: 'y' } }], edges: [] },
+    config: { n1: { k: 'y' } } };
+}
+test('Arcrun#335 pushWorkflowTo：實例上已是同一份 ⇒ 不寫（unchanged）', async () => {
+  const realFetch = globalThis.fetch; const posts = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/definition')) return new Response(JSON.stringify(storedDef()), { status: 200 });
+    posts.push(String(url)); return new Response('{}', { status: 201 });
+  };
+  try {
+    const r = await pushWorkflowTo('https://cy.example', 'u1', { '__X__': 'y' }, WF_PREBUILT);
+    assert.equal(r.ok, true); assert.equal(r.unchanged, true); assert.equal(posts.length, 0, '內容相同不該寫');
+  } finally { globalThis.fetch = realFetch; }
+});
+test('Arcrun#335 pushWorkflowTo：寫入逾時但其實已寫進去 ⇒ 算成功', async () => {
+  const realFetch = globalThis.fetch; let reads = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/definition')) { reads++; return reads === 1 ? new Response('nf', { status: 404 }) : new Response(JSON.stringify(storedDef()), { status: 200 }); }
+    throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  };
+  try {
+    const r = await pushWorkflowTo('https://cy.example', 'u1', { '__X__': 'y' }, WF_PREBUILT);
+    assert.equal(r.ok, true, JSON.stringify(r)); assert.ok(r.confirmedAfter);
+  } finally { globalThis.fetch = realFetch; }
+});
+test('Arcrun#335 pushWorkflowTo：逾時且讀回來不是這一份 ⇒ 照實回失敗', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/definition')) return new Response('nf', { status: 404 });
+    throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  };
+  try {
+    const r = await pushWorkflowTo('https://cy.example', 'u1', { '__X__': 'y' }, WF_PREBUILT);
+    assert.equal(r.ok, false); assert.match(r.error, /timeout/);
+  } finally { globalThis.fetch = realFetch; }
+});
+test('Arcrun#335 pushWorkflowTo：4xx 不回頭讀、直接失敗', async () => {
+  const realFetch = globalThis.fetch; let reads = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/definition')) { reads++; return new Response('nf', { status: 404 }); }
+    return new Response('bad', { status: 400 });
+  };
+  try {
+    const r = await pushWorkflowTo('https://cy.example', 'u1', { '__X__': 'y' }, WF_PREBUILT);
+    assert.equal(r.ok, false); assert.equal(reads, 1);
+  } finally { globalThis.fetch = realFetch; }
 });
 
 // ===========================================================================
