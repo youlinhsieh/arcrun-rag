@@ -89,19 +89,20 @@ type DocExtract struct {
 // 鍵名 node/path 對齊 wiki-lint.py 的讀法（node＝"(根)" 或相對目錄、path＝該節點內檔名）。
 
 type wikiDoc struct {
-	Node     string   `json:"node"`
-	Path     string   `json:"path"`
-	DocID    string   `json:"doc_id"`
-	SHA256   string   `json:"sha256,omitempty"`
-	Status   string   `json:"status"` // extracted | no_concept
-	Reason   string   `json:"reason,omitempty"`
-	Card     string   `json:"card,omitempty"` // 文件卡名（＝H1）
-	Gloss    string   `json:"gloss,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-	Created  string   `json:"created,omitempty"`
-	Updated  string   `json:"updated,omitempty"`
-	Concepts []string `json:"concepts,omitempty"`
-	Cards    []string `json:"cards,omitempty"` // 本文件產出的卡（相對監看根）
+	Node     string     `json:"node"`
+	Path     string     `json:"path"`
+	DocID    string     `json:"doc_id"`
+	SHA256   string     `json:"sha256,omitempty"`
+	Status   string     `json:"status"` // extracted | no_concept
+	Reason   string     `json:"reason,omitempty"`
+	Card     string     `json:"card,omitempty"` // 文件卡名（＝H1）
+	Gloss    string     `json:"gloss,omitempty"`
+	Tags     []string   `json:"tags,omitempty"`
+	Created  string     `json:"created,omitempty"`
+	Updated  string     `json:"updated,omitempty"`
+	Concepts []string   `json:"concepts,omitempty"`
+	Cards    []string   `json:"cards,omitempty"`  // 本文件產出的卡（相對監看根）
+	Reader   *docReader `json:"reader,omitempty"` // 讀者欄層（wikireader.go）；原稿沒變就跨重萃保留
 }
 
 type wikiManifest struct {
@@ -815,6 +816,10 @@ func buildWikiDocLocked(absRoot, relPath, srcText string, ex *DocExtract, origin
 		Tags:    cleanTags(ex.Tags),
 		Created: created, Updated: todayOf(now),
 		Concepts: conceptNames,
+	}
+	// 讀者欄是另一層、另一個版本：重萃文件卡不動它；原稿改了才作廢（wikireader.go）。
+	if old != nil && old.Reader != nil && old.Reader.SHA == entry.SHA256 {
+		entry.Reader = old.Reader
 	}
 
 	// 雙向連結保證：概念間的邊收集成 pair，缺反向的機械補「相關」邊。
