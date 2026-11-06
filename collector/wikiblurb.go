@@ -111,9 +111,12 @@ func glossRestatesName(gloss, stem string) bool {
 
 func blurbsFor(absRoot, node string, docs []wikiDoc) map[string]string {
 	out := make(map[string]string, len(docs))
-	if absRoot == "" { // 沒有監看根＝讀不到原稿，維持 gloss
+	if absRoot == "" { // 沒有監看根＝讀不到原稿，維持 gloss（讀者欄在帳本裡，照附）
 		for _, d := range docs {
 			out[d.Path] = strings.TrimSpace(d.Gloss)
+			if readerUsable(d) {
+				out[d.Path] += readerTag(d.Reader)
+			}
 		}
 		return out
 	}
@@ -140,6 +143,9 @@ func blurbsFor(absRoot, node string, docs []wikiDoc) map[string]string {
 		e := get(d)
 		ex, form := e.text, e.form
 		if ex == "" {
+			if readerUsable(d) {
+				out[d.Path] += readerTag(d.Reader)
+			}
 			continue
 		}
 		weak := g == "" || generic[glossShape(g)] || glossRestatesName(g, pageNameOf(d.Path))
@@ -149,6 +155,11 @@ func blurbsFor(absRoot, node string, docs []wikiDoc) map[string]string {
 		errMsg := strings.HasPrefix(ex, "Error message：")
 		if weak || form || errMsg {
 			out[d.Path] = ex
+		}
+		// 有對得上原稿的讀者欄 ⇒ 用讀者欄（正體中文譯文＋讀者問法），不用逐詞對照（wikireader.go）。
+		if readerUsable(d) {
+			out[d.Path] += readerTag(d.Reader)
+			continue
 		}
 		// inkstone/arcrun-rag#264 c21860（應急補丁）：英文說明的行附統一中文譯名，中文症狀描述才搜得到。
 		if v := out[d.Path]; zhEnglishDominant(v) {
