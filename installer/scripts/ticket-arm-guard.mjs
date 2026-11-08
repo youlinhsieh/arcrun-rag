@@ -54,6 +54,7 @@
  */
 import { withRetry } from './fetch-retry.mjs';
 import { ticketForge, ticketToken, LEGACY_FORGE_URL } from './forge-config.mjs';
+import { verifyFallbackSignoff } from './fallback-signoff.mjs';
 
 /** 安全邊界：只認這個帳號名，不接受任何覆蓋——理由同 `scripts/lib/gitea-arm-common.sh`。 */
 export const APPROVER_LOGIN = 'Leo';
@@ -189,7 +190,7 @@ export function resolveArmTicket({ armTicket, shipTicket } = {}) {
  * @param {object} [o.conf] 測試用：注入 forge.conf 內容
  */
 export async function checkTicketArmed({
-  version, repo = 'InkStoneCo', issue, token, baseUrl, fetchImpl, env, conf,
+  version, repo = 'InkStoneCo', issue, token, baseUrl, fetchImpl, env, conf, fallbackVerify,
 }) {
   if (!version || typeof version !== 'string') {
     throw new Error('checkTicketArmed 缺 version（呼叫端必須傳自己 manifest 算出的版本號，不接受空值）。');
@@ -211,7 +212,21 @@ export async function checkTicketArmed({
   const ticketUrl = `${baseUrl}/${OWNER}/${repo}/issues/${issue}`;
 
   // ① 問 AHub（inkstone/Arcrun#328）：誰是簽核人、怎樣才算放行，只有 AHub 知道——這裡不自己讀留言判格式。
-  const viaAhub = await askSignoffStatus({ owner: OWNER, repo, issue, version: normVersion(version), token, baseUrl, fetchImpl, hint });
+  // 🔴 AHub「讀不到」（逾時／5xx／連線失敗／剎車）才改問備援驗證器（inkstone/InkStoneCo#262）；
+  //    AHub 明確回答「還沒簽」不走備援。備援也不放行 ⇒ 丟原錯誤＋備援原因（fail-closed）。
+  const viaFallback = async (cause) => {
+    const fb = await (fallbackVerify || verifyFallbackSignoff)({ repo, issue, version: normVersion(version), ...(env ? { env } : {}) });
+    if (fb.ok) {
+      return { armed: true, mission: `ARM: ${version}（備援簽核，AHub 讀不到：${cause.message}；${fb.signed}）`, comment: null, ticketUrl, fallback: true };
+    }
+    throw new Error(`${cause.message}\n     AHub 讀不到，已改問備援簽核：${fb.reason}`);
+  };
+  let viaAhub;
+  try {
+    viaAhub = await askSignoffStatus({ owner: OWNER, repo, issue, version: normVersion(version), token, baseUrl, fetchImpl, hint });
+  } catch (e) {
+    return viaFallback(e);
+  }
   if (viaAhub) {
     const v = viaAhub.version || {};
     if (v.approved) {
@@ -231,7 +246,12 @@ export async function checkTicketArmed({
 
   // ② 過渡：這台 AHub 還沒有簽核端點（< 0.8.0），或票的後端翻回了 gitea ⇒ 照舊讀留言、只認 Leo。
   //    leo21c 的 AHub 升到 0.8.0 之後就不會走到這裡；走到了訊息會說是舊路。
-  const comments = await fetchAllComments({ owner: OWNER, repo, issue, token, baseUrl, fetchImpl, hint });
+  let comments;
+  try {
+    comments = await fetchAllComments({ owner: OWNER, repo, issue, token, baseUrl, fetchImpl, hint });
+  } catch (e) {
+    return viaFallback(e);
+  }
   const m = findArmMatch(comments, version);
   const legacy = `     （這台票後端還沒有 AHub 的簽核端點，走舊的核對：只認 ${APPROVER_LOGIN} 寫的 \`ARM: <版本>\`。先把 AHub 更新到 0.8.0。）\n`;
 

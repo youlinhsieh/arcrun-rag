@@ -105,6 +105,8 @@ func lintSourceText(absRoot, relPath string, raw []byte) string {
 	if strings.TrimSpace(txt) == "" {
 		return string(raw)
 	}
+	// #294：萃取看到的是遮蔽後的文字，比對也要用同一份（卡上的指標才找得到出處）。
+	txt, _ = redactSecretText(txt, IsPlainText(relPath))
 	return txt
 }
 

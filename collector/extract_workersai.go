@@ -139,6 +139,8 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 	// 本地轉檔層與 gemma 路共用同一份（t73/t16）：任何格式在這裡變成純文字。
 	// **LLM 只會收到文字，永遠不會收到二進位**。刻意不吞錯——靜默略過正是 leo 撞過的病。
 	srcText, readRep, err := ConvertToTextReport(relPath, raw)
+	// #294：純文字檔的「原文保留」（plainTextReport）是從 srcText 切出來的，要在它之前遮。
+	srcText, secretRep := redactSecretText(srcText, IsPlainText(relPath))
 	pageName := pageNameOf(relPath)
 	url := workersAIExtractURL(cypherURL)
 	if err == nil && IsPlainText(relPath) {
@@ -165,11 +167,21 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		return nil, fmt.Errorf("轉檔失敗（%s）：%w", relPath, err)
 	}
 
+	// 🔴 inkstone/arcrun-rag#294：機敏值在**送出萃取之前**就在本機換成指標，原值不出這台電腦。
+	// 舊制是萃完才在卡上擋（H5 硬缺、整份 rejected）——那時原稿早已整份送上雲端了。
+	// 逐字段（表格、條列、段落、讀圖原文）不經 LLM、直接寫進卡，落卡後 direct.go 還會再掃一次卡。
+	srcText, imgSecretRep := redactSecretText(srcText, false) // 讀圖補進來的文字（第一道之後才有）
+	secretRep.merge(imgSecretRep)
+	notes := readRep.Notes()
+	if n := secretNote(secretRep, relPath); n != "" {
+		notes = append(notes, n)
+	}
+
 	// 🔴 arcrun-rag#213（leo 2026-09-22 定向）：原稿超過單發上限 ⇒ **不再拒收**，
 	// 改走一般化的「分段、本機存書籤、每天接著讀」機制（extract_resume.go）。
 	// 這是**任何**大檔的共通路，不綁定文件形狀（不做「查表型偵測」之類的特判）。
 	if len(srcText) > maxWorkersAIExtractBytes {
-		return extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText, origin, retry, readRep.VerbatimSections(), readRep.Notes()...)
+		return extractResumableWorkersAIWith(url, apiKey, absRoot, relPath, srcText, origin, retry, readRep.VerbatimSections(), notes...)
 	}
 
 	output, legacyCard, err := callWorkersAIExtract(workersAIHTTP, url, apiKey, pageName, srcText, extractRequestFor(srcText), retry)
@@ -185,7 +197,7 @@ func extractWithWorkersAI(cypherURL, apiKey, absRoot, relPath string, origin Sou
 		if perr != nil {
 			return nil, perr
 		}
-		ex.Unreadable = readRep.Notes() // #253：圖片表等讀不到的部分，文件卡明講
+		ex.Unreadable = notes // #253：圖片表等讀不到的部分，文件卡明講；#294：沒萃的機敏值也在這裡講
 		ex.Verbatim = readRep.VerbatimSections() // #253：文字層的表逐字存進文件卡，不經 LLM
 		cards, berr := BuildWikiDoc(absRoot, relPath, srcText, ex, origin, time.Now())
 		if berr != nil {

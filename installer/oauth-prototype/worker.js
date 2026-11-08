@@ -4646,7 +4646,11 @@ async function runInstallSteps(env, sid, progress, force) {
       if (sw) sw.note = `${wi + 1}/${WORKFLOWS.length}：${wf.name}`;
       progress.updatedAt = Date.now();
       await writeProgress(env, sid, progress);
-      pushed.push(await pushWorkflowTo(workerUrl, ns, subs, wf));
+      // inkstone/arcrun-rag#292：每條花幾毫秒記進結果，下次慢了有真實數字，不靠推測。
+      const wfT0 = Date.now();
+      const wfRes = await pushWorkflowTo(workerUrl, ns, subs, wf);
+      wfRes.ms = Date.now() - wfT0;
+      pushed.push(wfRes);
       progress.result.workflows = pushed;
       progress.updatedAt = Date.now();
       await writeProgress(env, sid, progress);
@@ -4681,7 +4685,7 @@ async function runInstallSteps(env, sid, progress, force) {
             `網址檢查：${live.routed
               ? `第 ${progress.result.routedAttempts} 次路由得到`
               : `分 ${progress.result.workflowsWaitRounds} 輪共探測 ${progress.result.routedAttempts} 次仍未路由到 worker（${live.error}）`}`,
-            ...bad.map((b) => `${b.name}: ${b.error}`),
+            ...bad.map((b) => `${b.name}: ${b.error}（${b.ms ?? '?'} ms）`),
           ].join('\n'),
         },
       );

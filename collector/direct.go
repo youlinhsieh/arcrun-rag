@@ -2403,6 +2403,13 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// 硬缺（H1/H2/H5）＝拒收、不 POST、標 failed（manifest 不回寫＝下輪重萃自癒）；
 				// 軟項（H3/H4/H6）＝照送但帶 quality:low＋quality_warnings（裁決 T4-C）。
 				// #251 c18987：個人證號（身分證／卡號）機器自己改寫成描述，不當成失敗；金鑰類照舊硬擋。
+				// #294：卡上若還帶機敏值（逐字表、讀圖原文、模型回聲），換成指標、不擋；原值不寫回、不記錄。
+				if red, srep := redactSecretText(string(cardData), false); srep.Count > 0 {
+					if werr := os.WriteFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)), []byte(red), 0o644); werr == nil {
+						cardData = []byte(red)
+					}
+					cardData = []byte(red) // 寫回失敗也只送遮過的版本
+				}
 				if red, nred := redactPersonalIDs(string(cardData)); nred > 0 {
 					if werr := os.WriteFile(filepath.Join(absRoot, filepath.FromSlash(cardRel)), []byte(red), 0o644); werr == nil {
 						cardData = []byte(red)
@@ -2463,13 +2470,17 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				// （細節與量測見 cardslice.go）。一段一發，**最後一段先送、第一段最後送**。
 				var status int
 				var perr error
-				for _, sl := range planCardSlices(string(cardData), cardIdx, pageName, cloudHasSlicedNotes(cfg.CloudVersion)) {
+				slices := planCardSlices(string(cardData), cardIdx, pageName, cloudHasSlicedNotes(cfg.CloudVersion))
+				for si, sl := range slices {
 					body := sl.body(cardBody)
 					stateMu.Unlock() // #297：同上，等雲端時不握鎖
 					status, _, perr = cfg.postJSONAs(stepIngestCard.on(ev.Path), cfg.triggerURL(cfg.CardIngestWF), body,
 						ownFailPost)
 					stateMu.Lock()
 					if perr != nil {
+						// #293：哪一段失敗要看得到。第一段（offset 0）連 block 都在它身上，
+						// 它是不是那個「每次都超時」的段，只有帳本上寫出來才分辨得開。
+						perr = sliceTagged(perr, si+1, len(slices), sl)
 						break
 					}
 				}
@@ -2986,4 +2997,26 @@ func healAccountKeyCrossover(accs []AccountConfig) bool {
 		}
 	}
 	return changed
+}
+
+// sliceErr＝在原錯誤後面補上「第幾發／共幾發、從第幾條關係起」。
+// 刻意附在**後面**並保留 Unwrap：既有的錯誤分類（isStallError／isLocalNetworkErr／
+// 以訊息開頭比對的那些）都照舊認得，只是帳本上多一截線索（inkstone/arcrun-rag#293）。
+type sliceErr struct {
+	err      error
+	n, total int
+	offset   int
+	scope    string
+}
+
+func (e *sliceErr) Error() string {
+	return fmt.Sprintf("%s｜送卡第 %d／%d 發（關係從第 %d 條起，scope=%q）", e.err.Error(), e.n, e.total, e.offset, e.scope)
+}
+func (e *sliceErr) Unwrap() error { return e.err }
+
+func sliceTagged(err error, n, total int, sl cardSlice) error {
+	if err == nil || total <= 1 {
+		return err
+	}
+	return &sliceErr{err: err, n: n, total: total, offset: sl.Offset, scope: sl.Scope}
 }
