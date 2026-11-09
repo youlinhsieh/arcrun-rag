@@ -2781,6 +2781,20 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 放在萃取迴圈**之後**：目錄只列「已經上雲的文件」，這輪剛送的卡要同一輪就進目錄。
 	// 失敗記進 manifest.wiki_index_fails（畫面 !N、退避到點自動重送），不安靜跳過；
 	// 不受「有事件才做」的閘限制——靜止時雜湊擋重送，失敗的卡靠這裡到點重試。
+	// 讀者欄收件匣（wikireader.go）：先併進帳本，這一輪的目錄卡就帶上讀者欄。
+	if !dryRun {
+		if rep, err := mergeReaderInbox(absRoot); err != nil {
+			results = append(results, DirectResult{Type: "reader", Status: "failed", Error: "讀者欄併入帳本失敗（收件匣的檔留著，下一輪重試）：" + err.Error()})
+		} else if rep != nil {
+			st := "ingested"
+			if len(rep.Errors) > 0 {
+				st = "failed"
+			}
+			results = append(results, DirectResult{Type: "reader", Status: st, Error: fmt.Sprintf(
+				"讀者欄：併入 %d、未變 %d、原稿已改丟棄 %d、帳本沒有 %d、格式壞 %d%s",
+				rep.Merged, rep.Unchanged, rep.Stale, rep.Missing, rep.Bad, strings.Join(append([]string{""}, rep.Errors...), "；"))})
+		}
+	}
 	if ixRes := syncWikiIndexCards(cfg, absRoot, m, dryRun, runNow); len(ixRes) > 0 {
 		results = append(results, ixRes...)
 	}
