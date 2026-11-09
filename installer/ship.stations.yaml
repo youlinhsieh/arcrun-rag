@@ -539,6 +539,12 @@
       演練：`node installer/scripts/ship.mjs --target stage --release-record-only`
            （禁用在 publish 目標 ⇒ 這個模式碰不到 GitHub，開閘儀式一步都繞不過）
     用什麼: 本機
+    也調用: [ship_github_release]
+    也調用說明: |
+      🔴 inkstone/arcrun-rag#298（leo 2026-11-09 選 B）：prod 那一半「建 GitHub release、掛文字成品」這**兩個寫入動作**
+      交給容器外的 Arcrun 工作流（雲端出口代理對 POST releases 一律 403，平台政策）。
+      進場條件＝出示 leo 對這一版的 AHub ARM 簽核；沒有就不建、不掛（呼叫端與工作流 gate 各守一側）。
+      stage（Gitea）那一半不經它。其餘（推鏡像、查存在、回頭查證）仍在出貨機上。
     為什麼不搬: 物理限制
     理由: |
       prod 那一半要用 GitHub 寫入憑證，且**受 D20 儀式管制**——它是整條線唯一一個

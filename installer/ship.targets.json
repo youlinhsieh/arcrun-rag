@@ -465,6 +465,14 @@
           "GITHUB_MIRROR_TOKEN，不落地不進版控——查 credentials-map.md）。"
         ],
         "host": "github",
+        "via": "arcrun",
+        "_via": [
+          "inkstone/arcrun-rag#298（leo 2026-11-09 裁定選 B）：GitHub release 的**寫入**走容器外的 Arcrun 工作流 `ship_github_release`",
+          "（見 installer/scripts/ship-github-release.mjs）。原因：雲端 session 的出口代理對 POST releases 一律 403（平台政策，與 token 無關）。",
+          "leo：「要讓雲端可以發佈 release，你出示 arm 同意就可以發佈。」⇒ 進場條件是這一版的 AHub ARM 簽核證據，沒有就不建、不掛。",
+          "mirror 推送、release 存在與否的查詢、掛檔後的回頭查證仍在出貨機上做（那些不被擋）。",
+          "不宣告 via（或寫 direct）＝照舊在出貨機上直接打 GitHub（地端）。"
+        ],
         "repoSlug": "youlinhsieh/arcrun-rag",
         "mirrorDir": ".github-public",
         "mirrorRemote": "https://github.com/youlinhsieh/arcrun-rag.git",

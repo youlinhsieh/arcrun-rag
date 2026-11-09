@@ -19,8 +19,8 @@
  * 這支模組刻意做成純函式＋可傳入 root 路徑，方便不用真的碰網路就能單元測試。
  */
 
-import { readFileSync, existsSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { checkTicketArmed } from './ticket-arm-guard.mjs';
 
 /**
@@ -101,6 +101,9 @@ export function checkArmed(inkstoneRoot, { now = Math.floor(Date.now() / 1000) }
 export function logGithubContact(inkstoneRoot, mission, detail) {
   const shortDetail = String(detail).slice(0, 500).replace(/\n/g, ' ');
   const line = `| ${tsNow()} | ${mission}（ship.mjs 自己留痕，非 hook 攔到——見 d20-guard.mjs） | \`${shortDetail}\` |\n`;
-  appendFileSync(contactLogPath(inkstoneRoot), line, 'utf8');
+  const logPath = contactLogPath(inkstoneRoot);
+  // 🔴 #298：目錄不在就建——舊版直接 append，頂層找錯位置時 ENOENT，push 已發生而留不下痕。
+  mkdirSync(dirname(logPath), { recursive: true });
+  appendFileSync(logPath, line, 'utf8');
   return line;
 }

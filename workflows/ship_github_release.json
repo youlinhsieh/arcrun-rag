@@ -1,0 +1,139 @@
+{
+  "name": "ship_github_release",
+  "description": "出貨線的 GitHub 版本發佈寫入（建 release、掛文字成品），**在容器外**執行，且**沒有 leo 的 ARM 簽核就不動作**。\n\n🔴 為什麼存在（inkstone/arcrun-rag#298，leo 2026-11-09）：雲端 session 的出口代理對 `POST /repos/*/releases` 回 403\n（「Creating, editing, or deleting releases is not permitted for this session type」，平台政策、與 token 無關）。\nleo 裁定走 B：「要讓雲端可以發佈 release，你出示 arm 同意就可以發佈。」\n⇒ 寫入搬到這支工作流（跑在 uncle6，同 ship_check_live／ship_refresh_cdn 的形狀），\n**進場條件是出貨線出示 leo 對這一版的 AHub ARM 簽核**：簽核人要是 Leo、ARM 版本要等於這趟出貨版本、要帶得出那則簽核留言的出處；缺一就拒絕，不呼叫 GitHub。\n\n這不是通用的 GitHub 代理：只准 ① `POST https://api.github.com/repos/youlinhsieh/<repo>/releases` ② `POST https://uploads.github.com/repos/youlinhsieh/<repo>/releases/<id>/assets`（文字成品、≤1.5MB）。其他一律在 gate 節點拒絕。\n\n金鑰：只寫名字 `{{credential.github_release_token}}`（D36），值由 credential 中心在執行前回填；定義裡沒有任何 token。\n\n輸出一律帶 `contract: \"v1\"`、`ok`、`refused`；成功時 `release{id,html_url,upload_url,tag_name}`／`asset{id,name,size,state}`。",
+  "graph": {
+    "id": "ship_github_release",
+    "name": "ship_github_release",
+    "nodes": [
+      {
+        "id": "input",
+        "type": "Input",
+        "componentId": "input",
+        "label": "input"
+      },
+      {
+        "id": "gate",
+        "type": "Component",
+        "componentId": "code",
+        "label": "gate",
+        "data": {
+          "input": {
+            "op": "{{input.op}}",
+            "ship_version": "{{input.ship_version}}",
+            "arm": "{{input.arm}}",
+            "repo_slug": "{{input.repo_slug}}",
+            "tag": "{{input.tag}}",
+            "name": "{{input.name}}",
+            "body": "{{input.body}}",
+            "target_commitish": "{{input.target_commitish}}",
+            "release_id": "{{input.release_id}}",
+            "asset_name": "{{input.asset_name}}",
+            "asset_content_type": "{{input.asset_content_type}}",
+            "asset_text": "{{input.asset_text}}"
+          },
+          "code": "function s(v) { return (typeof v === 'string' && !/^\\{\\{.*\\}\\}$/.test(v)) ? v : ''; }\nfunction normV(v) { return s(v).replace(/^[vV]/, ''); }\nvar errors = [];\nvar op = s(input.op);\nvar arm = (input.arm && typeof input.arm === 'object' && !Array.isArray(input.arm)) ? input.arm : {};\nvar shipVersion = normV(input.ship_version);\nif (!shipVersion) errors.push('缺 ship_version（這一趟出貨的版本號）');\nif (s(arm.by) !== 'Leo') errors.push('沒有 Leo 的 ARM 簽核（簽核人讀到：' + (s(arm.by) || '(空)') + '）——沒有 ARM 就不建、不掛');\nif (shipVersion && normV(arm.version) !== shipVersion) errors.push('ARM 簽的版本（' + (normV(arm.version) || '(空)') + '）對不上這趟出貨的版本（' + shipVersion + '）');\nif (!/issuecomment-[0-9]+$/.test(s(arm.ref))) errors.push('ARM 缺出處：ref 要指到那則簽核留言（…#issuecomment-<id>）');\nvar slug = s(input.repo_slug);\nif (!/^youlinhsieh\\/[A-Za-z0-9._-]+$/.test(slug)) errors.push('repo_slug 只准 youlinhsieh/<repo>（讀到：' + (slug || '(空)') + '）');\nvar url = '';\nvar body = '';\nvar contentType = 'application/json';\nif (op === 'create_release') {\n  var tag = s(input.tag);\n  var name = s(input.name);\n  var text = s(input.body);\n  var commit = s(input.target_commitish);\n  if (!/^[A-Za-z0-9._-]{1,64}$/.test(tag)) errors.push('tag 格式不合：' + (tag || '(空)'));\n  if (!name || name.length > 200) errors.push('name 空白或超過 200 字');\n  if (text.length > 120000) errors.push('body 超過 120000 字');\n  if (!/^[0-9a-f]{40}$/.test(commit)) errors.push('target_commitish 要是 40 碼 sha');\n  url = 'https://api.github.com/repos/' + slug + '/releases';\n  body = JSON.stringify({ tag_name: tag, name: name, body: text, target_commitish: commit });\n} else if (op === 'upload_asset') {\n  var rid = s(input.release_id);\n  var aname = s(input.asset_name);\n  var atext = (typeof input.asset_text === 'string') ? input.asset_text : '';\n  var act = s(input.asset_content_type);\n  if (!/^[0-9]{1,20}$/.test(rid)) errors.push('release_id 要是數字');\n  if (!/^[A-Za-z0-9._-]{1,100}$/.test(aname)) errors.push('asset_name 格式不合：' + (aname || '(空)'));\n  if (['application/json', 'text/plain', 'text/markdown'].indexOf(act) < 0) errors.push('asset_content_type 只准 json／純文字／markdown（二進位檔不經這條路）');\n  if (!atext) errors.push('asset_text 空白');\n  if (atext.length > 1500000) errors.push('asset_text 超過 1.5 MB（大檔不經這條路）');\n  url = 'https://uploads.github.com/repos/' + slug + '/releases/' + rid + '/assets?name=' + encodeURIComponent(aname);\n  body = atext;\n  contentType = act;\n} else {\n  errors.push('op 只認 create_release／upload_asset（讀到：' + (op || '(空)') + '）');\n}\nreturn {\n  go: errors.length === 0 ? 'yes' : 'no',\n  errors: errors,\n  op: op,\n  url: errors.length === 0 ? url : '',\n  content_type: contentType,\n  body: errors.length === 0 ? body : ''\n};"
+        }
+      },
+      {
+        "id": "armed",
+        "type": "Component",
+        "componentId": "if_control",
+        "label": "armed",
+        "data": {
+          "condition": "go == yes",
+          "input": {
+            "go": "{{gate.data.go}}"
+          }
+        }
+      },
+      {
+        "id": "send",
+        "type": "Component",
+        "componentId": "http_request",
+        "label": "send",
+        "data": {
+          "url": "{{gate.data.url}}",
+          "method": "POST",
+          "headers": {
+            "Authorization": "Bearer {{credential.github_release_token}}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "{{gate.data.content_type}}",
+            "User-Agent": "arcrun-rag-ship",
+            "X-GitHub-Api-Version": "2022-11-28"
+          },
+          "body": "{{gate.data.body}}"
+        }
+      },
+      {
+        "id": "shape_ok",
+        "type": "Component",
+        "componentId": "code",
+        "label": "shape_ok",
+        "data": {
+          "input": {
+            "send": "{{send}}",
+            "op": "{{gate.data.op}}"
+          },
+          "code": "var send = (input && input.send) || {};\nvar op = (typeof input.op === 'string') ? input.op : '';\nvar raw = (send.data && typeof send.data.body === 'string') ? send.data.body : '';\nvar parsed = null;\ntry { parsed = JSON.parse(raw); } catch (e) {}\nvar ok = send.success === true && !!parsed;\nvar out = { contract: 'v1', ok: ok, refused: false, op: op, http_error: ok ? null : String(send.error || 'send 失敗（沒有回應內容）').slice(0, 300) };\nif (ok && op === 'create_release') {\n  out.release = { id: parsed.id, html_url: parsed.html_url, upload_url: parsed.upload_url, tag_name: parsed.tag_name, target_commitish: parsed.target_commitish };\n  if (!parsed.id) { out.ok = false; out.http_error = '回應沒有 release id：' + raw.slice(0, 200); }\n} else if (ok && op === 'upload_asset') {\n  out.asset = { id: parsed.id, name: parsed.name, size: parsed.size, state: parsed.state };\n  if (!parsed.id) { out.ok = false; out.http_error = '回應沒有 asset id：' + raw.slice(0, 200); }\n}\nif (!out.ok && raw) out.response_body = raw.slice(0, 300);\nreturn out;"
+        }
+      },
+      {
+        "id": "shape_fail",
+        "type": "Component",
+        "componentId": "code",
+        "label": "shape_fail",
+        "data": {
+          "input": {
+            "send": "{{send}}",
+            "op": "{{gate.data.op}}"
+          },
+          "code": "var send = (input && input.send) || {};\nvar op = (typeof input.op === 'string') ? input.op : '';\nvar raw = (send.data && typeof send.data.body === 'string') ? send.data.body : '';\nvar parsed = null;\ntry { parsed = JSON.parse(raw); } catch (e) {}\nvar ok = send.success === true && !!parsed;\nvar out = { contract: 'v1', ok: ok, refused: false, op: op, http_error: ok ? null : String(send.error || 'send 失敗（沒有回應內容）').slice(0, 300) };\nif (ok && op === 'create_release') {\n  out.release = { id: parsed.id, html_url: parsed.html_url, upload_url: parsed.upload_url, tag_name: parsed.tag_name, target_commitish: parsed.target_commitish };\n  if (!parsed.id) { out.ok = false; out.http_error = '回應沒有 release id：' + raw.slice(0, 200); }\n} else if (ok && op === 'upload_asset') {\n  out.asset = { id: parsed.id, name: parsed.name, size: parsed.size, state: parsed.state };\n  if (!parsed.id) { out.ok = false; out.http_error = '回應沒有 asset id：' + raw.slice(0, 200); }\n}\nif (!out.ok && raw) out.response_body = raw.slice(0, 300);\nreturn out;"
+        }
+      },
+      {
+        "id": "refused",
+        "type": "Component",
+        "componentId": "code",
+        "label": "refused",
+        "data": {
+          "input": {
+            "errors": "{{gate.data.errors}}"
+          },
+          "code": "var errs = (input && Array.isArray(input.errors)) ? input.errors : [];\nreturn { contract: 'v1', ok: false, refused: true, errors: errs };"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "input",
+        "to": "gate",
+        "type": "ON_SUCCESS"
+      },
+      {
+        "from": "gate",
+        "to": "armed",
+        "type": "ON_SUCCESS"
+      },
+      {
+        "from": "armed",
+        "to": "send",
+        "type": "ON_TRUE"
+      },
+      {
+        "from": "armed",
+        "to": "refused",
+        "type": "ON_FALSE"
+      },
+      {
+        "from": "send",
+        "to": "shape_ok",
+        "type": "ON_SUCCESS"
+      },
+      {
+        "from": "send",
+        "to": "shape_fail",
+        "type": "ON_FAIL"
+      }
+    ]
+  }
+}

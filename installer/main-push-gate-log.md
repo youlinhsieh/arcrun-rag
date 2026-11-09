@@ -405,3 +405,5 @@
 | 2026-11-09 11:11:56 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 4ba4eb0→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-09 11:17:41 | gitea | arcrun-hand/351-ship-1.4.140 | ✅ 放行 | 目標不是 main／master |
 | 2026-11-09 11:24:01 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | arcrun-hand/351-ship-1.4.140 | ✅ 放行 | 目標不是 main／master |
+| 2026-11-09 11:45:00 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-11-09 11:46:25 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |

@@ -113,6 +113,8 @@ import { commitShipOutputs } from './worktree-commit.mjs';
 import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_CHANGELOG_REL, daemonReleasedReFor, ANY_RELEASED_RE, DAEMON_LINE_REL } from './daemon-notes.mjs';
 import { requireDaemonInBundle, GATE_LOG_REL as DAEMON_IN_BUNDLE_GATE_LOG_REL } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
+import { resolveInkstoneRoot } from './inkstone-root.mjs';
+import { armEvidenceFrom, createReleaseViaArcrun, uploadAssetViaArcrun } from './ship-github-release.mjs';
 import { resolveArmTicket } from './ticket-arm-guard.mjs';
 import { ticketForge, ticketToken, releaseForgeBase } from './forge-config.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
@@ -214,7 +216,7 @@ const giteaListAssets = (...a) => RELEASE_FORGE.listReleaseAssets(...a);
 const giteaListReleases = (...a) => RELEASE_FORGE.listReleases(...a);
 const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
 // InkStoneCo 頂層（.github-armed／github-contact-log.md 的真身都住在這裡，見 d20-guard.mjs 檔頭）
-const INKSTONE_ROOT = resolve(REPO_ROOT, '..', '..');
+const INKSTONE_ROOT = resolveInkstoneRoot(REPO_ROOT).root;   // #298：不再假設「往上兩層」（雲端工作樹不是那個形狀）
 // 桌面 App（daemon）打包產物落地處——`daemon-sync` 從這裡取，見該步驟檔頭。
 const DAEMON_DIST_REL = join('collector', 'cmd', 'arcrun-app', 'dist');
 
@@ -635,6 +637,7 @@ const ctx = {
   liveBefore: null,
   pinChanged: false, pushed: false,
   armMission: null, // D20 保險的任務描述（見 preflight），push 步驟留痕要用
+  armEvidence: null, // #298：{by,version,ref}，release-record 經 Arcrun 建 GitHub release 的進場條件
   mainPushGrants: null, // 推 main 的授權（preflight 一次領走，每次推 main 用掉一格，InkStoneCo#56）
   sourceCommit: null, // "Arcrun@<sha>"——出貨報告用來比對「兩個理貨員拿的是不是同一張訂單」（D65 二次補述）
   arcrunHeadSha: null, // 來源 repo 的完整 40 碼 HEAD（見 preflight／source-pin）——釘子分支比對用全碼，不用前綴
@@ -1877,11 +1880,15 @@ const STEPS = [
     // 這裡只是**讀**留言；InkStoneCo 是私有 repo，沒 token 一律 404（Gitea）／401（AHub）。
     const forge = ticketForge();
     const giteaCred = forge.kind === 'gitea' ? giteaWriteCredentialsFromRemote(REPO_ROOT) : null;
-    const { mission } = await checkArmedViaTicket({
+    const armResult = await checkArmedViaTicket({
       version: ctx.release, repo, issue,
       token: ticketToken(forge.kind, { fallback: giteaCred && giteaCred.token }),
     });
+    const { mission } = armResult;
     ctx.armMission = mission;
+    // #298：留一份「ARM 出示物」（誰簽、簽哪一版、哪則留言）——release-record 站要把它交給容器外的
+    // ship_github_release 工作流當進場條件。備援簽核沒有留言可指 ⇒ null ⇒ 該站會擋。
+    ctx.armEvidence = armEvidenceFrom(armResult, ctx.release);
     detail.push(`ticket-arm 核對過：${mission}`);
     // preflight 記下的目的地清單（僅當 `armTicket.coversMainPush` 時才會有值）
     // 現在才真的核發——見 main-push-guard.mjs 的 `assertPushAllowed`，`ctx.mainPushGrants`
@@ -3034,9 +3041,17 @@ const STEPS = [
   for (const t of todo) {
     if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
     const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await ghListBodies(t.slug), homeOf.get(t.slug));
-    const rel = await createRelease({
-      repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body, targetCommitish: targetOf.get(t.slug), token,
-    });
+    // #298：`releaseRecord.via: 'arcrun'` ＝ release 寫入走容器外的 Arcrun 工作流（雲端出口代理擋 POST releases），
+    //   進場條件是 leo 對這一版的 ARM 證據；沒宣告 via 的環境（地端）照舊直接打 GitHub。
+    const viaArcrun = G.via === 'arcrun';
+    const rel = viaArcrun
+      ? await createReleaseViaArcrun({
+          runWorkflow, repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body,
+          targetCommitish: targetOf.get(t.slug), shipVersion: ctx.release, arm: ctx.armEvidence,
+        })
+      : await createRelease({
+          repoSlug: t.slug, tag: t.line.tag, name: t.line.title, body, targetCommitish: targetOf.get(t.slug), token,
+        });
     try {
       logGithubContact(INKSTONE_ROOT, mission, `建立 release ${t.line.tag}（${t.line.product}） → ${rel.html_url}`);
     } catch (e) {
@@ -3045,7 +3060,14 @@ const STEPS = [
     // 把這一版的成品掛上去（理由與 gitea 那半一字不差：不留「點下去給錯東西」的版本頁）。
     // D20：這是寫入 GitHub ⇒ 與建 release 同一次保險（上面 checkArmed 已過）、同樣逐筆留痕。
     for (const a of t.assets) {
-      await ghUploadAsset({ uploadUrl: rel.upload_url, name: a.name, data: readFileSync(a.abs), token });
+      if (viaArcrun) {
+        await uploadAssetViaArcrun({
+          runWorkflow, repoSlug: t.slug, releaseId: rel.id, name: a.name, data: readFileSync(a.abs),
+          shipVersion: ctx.release, arm: ctx.armEvidence,
+        });
+      } else {
+        await ghUploadAsset({ uploadUrl: rel.upload_url, name: a.name, data: readFileSync(a.abs), token });
+      }
       try {
         logGithubContact(INKSTONE_ROOT, mission, `掛成品 ${a.name} → release ${t.line.tag}`);
       } catch (e) {
