@@ -1686,3 +1686,97 @@
 | 2026-11-10 08:55Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
 | 2026-11-10 08:55Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
 | 2026-11-10 08:55Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | ⛔ 擋下 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天） |
+| 2026-11-10 09:28Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 09:28Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 09:28Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#368 AHub 結構樹／#370 關聯格無關、交回後擱置的舊票分支，內容不在本次出貨範圍 |
+| 2026-11-10 09:29Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 09:29Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 09:29Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | ⛔ 擋下 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天） |
+| 2026-11-10 11:20Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:20Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:20Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:22Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:22Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:22Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:23Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:23Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:23Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:24Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:24Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:24Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:31Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:31Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:31Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（31 天前）；交回後放著 31 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：leo 11-10 決策卡准許這一次（inkstone/Arcrun#368 comment 1794309518568455），根因 inkstone/arcrun-rag#307 |
+| 2026-11-10 11:39Z | stage | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:39Z | stage | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:39Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:23Z | prod | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:23Z | prod | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:23Z | prod | 點名 | feat/arcrun-368-rebuild | c1794303048913328 已交回（0 天前） |
+| 2026-11-10 11:23Z | prod | 點名 | feat/arcrun-368-tree-r3 | c1794303048913328 已交回（0 天前） |
+| 2026-11-10 11:23Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | arcrun-hand/318-partial-update | c21851 已交回（22 天前）；交回後放著 22 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | feat/277-provider-list | c20581 已交回（26 天前）；交回後放著 26 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | fix/312-by-source-ghost | c20954 已交回（25 天前）；交回後放著 25 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | perf/290-app-action-roundtrips | c17865 已交回（34 天前）；交回後放著 34 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | stage/299-with-246fnum | c18825 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | ⚠️ 這次不帶 | stage/300-with-299-246fnum | c18843 已交回（30 天前）；交回後放著 30 天沒進版（門檻 3 天）；理由：這次不帶：與 Arcrun#371 AHub 0.16.1 手機簽核框無關、交回後擱置的舊分支（照 1.4.147／1.4.148 同理由） |
+| 2026-11-10 11:25Z | prod | 點名 | arcrun-345-sidebar | c1794229416662531 已交回（0 天前） |
+| 2026-11-10 11:25Z | prod | 點名 | arcrun-351-close | c1794211212620492 已交回（1 天前） |
+| 2026-11-10 11:25Z | prod | 點名 | feat/arcrun-368-rebuild | c1794303048913328 已交回（0 天前） |
+| 2026-11-10 11:25Z | prod | 點名 | feat/arcrun-368-tree-r3 | c1794303048913328 已交回（0 天前） |
+| 2026-11-10 11:25Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
