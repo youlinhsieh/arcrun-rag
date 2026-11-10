@@ -18,7 +18,24 @@
    "fingerprint": "b01e72f154cb5b7cb3579f77829be621dc919f42dbc0ea010320f78156db7c9b",
    "built": "2026-11-10",
    "shipped": {
-    "stage": "2026-11-10T07:33:37.821Z"
+    "stage": "2026-11-10T07:33:37.821Z",
+    "prod": "2026-11-10T08:13:55.870Z"
+   }
+  },
+  "1.4.148": {
+   "commit": "cc2d5df80c16dfb13eaa913d19e00cf595cdbe0d",
+   "fingerprint": "30c1fd2d35dce8192b5f21061f1fa2180645e06ebba1c4b45f7ffebbab578a2e",
+   "built": "2026-11-10",
+   "shipped": {
+    "stage": "2026-11-10T08:26:47.615Z"
+   }
+  },
+  "1.4.149": {
+   "commit": "f41dabe76498188598528830a1176b08865f7308",
+   "fingerprint": "668dc2df5f0c525f7b6a6f2f5e21b87071ab9450a96dd38b6d461efcb526e0cd",
+   "built": "2026-11-10",
+   "shipped": {
+    "stage": "2026-11-10T09:02:58.899Z"
    }
   }
  }

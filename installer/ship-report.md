@@ -1,8 +1,8 @@
-出貨報告　release 1.4.147／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.146／小幫手 0.18.118／安裝器 1.0.74）24 站　＋instance-update）
-來源（stage）＝Arcrun@5fa5fcf295df　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.149／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.148／小幫手 0.18.118／安裝器 1.0.74）25 站　無增減）
+來源（stage）＝Arcrun@c320ffc6909c　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝4759c3e91185；這版多帶 7 筆，票：inkstone/Arcrun#366 inkstone/Arcrun#362 inkstone/arcrun-rag#301
+🧾 stage 佇列：上一顆（線上當時）＝af12e6497c09；這版多帶 6 筆，票：inkstone/Arcrun#371 inkstone/Arcrun#369 inkstone/Arcrun#367
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |
@@ -29,10 +29,10 @@
 | 21 | 驗收（用戶端視角，不是部署訊息） | ✅ | （未出） |
 | 22 | 在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆） | ⬜ | （未出） |
 | 23 | 回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說） | ✅ | （未出） |
-| 24 | 讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）（🆕 本次新增） | ✅ | （未出） |
+| 24 | 讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit） | ✅ | （未出） |
 | 25 | 把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次） | ✅ | （未出） |
 
-真的做事的站：stage 18／25 站（上次 15 站）　｜　prod （未出）
+真的做事的站：stage 18／25 站（與上次相同）　｜　prod （未出）
 
 ⬜ 跳過的站（7 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
    · stage｜daemon-sync：bundle 已委任 0.18.118；內容是否真的到位由下一站 daemon-check 逐檔查證
@@ -40,7 +40,7 @@
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜pin：釘子沒動（built 2026-11-10）；安裝器原始碼指紋 10d3694c950c（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.147／pin d5e4ab5／安裝器原始碼 10d3694c950c 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜deploy：線上已是 1.4.149／pin f290f3f／安裝器原始碼 10d3694c950c 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜release-record：⏭ 內部版本物件｜安裝器 1.0.74 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.74
 
 件數：stage 25 站　｜　prod （未出）
