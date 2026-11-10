@@ -193,7 +193,7 @@ export function writeReleaseState(repoRoot, state) {
  * manifest.json——這樣不同 bundle repo、只要內容指紋相同，就會得到同一個號碼。
  * `sharedState: false`（預設，selftest 等本機臨時目標用）＝舊行為，只跟自己比。
  */
-export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false, sharedState = false } = {}) {
+export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false, sharedState = false, signed = null } = {}) {
   const mPath = join(bundlesDir, 'manifest.json');
   if (!existsSync(mPath)) throw new Error(`找不到 ${mPath}`);
   const m = JSON.parse(readFileSync(mPath, 'utf8'));
@@ -210,13 +210,23 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
   // #141：工作流／skill 也是「這台實例上有什麼」的一部分（見 instancePayloadFingerprint）。
   const payloadFingerprint = instancePayloadFingerprint(repoRoot);
   const fingerprint = contentFingerprint(core, payloadFingerprint);
-  const release = nextRelease(line, prevRelease, prevFingerprint, fingerprint);
-  const changed = release !== prevRelease;
+  // 🔴 inkstone/arcrun-rag#302：重出「已經簽核的舊版」（signed＝{release, fingerprint, built}，取自 release-ledger）。
+  //   這一趟的版號**不由共用狀態推算**（共用狀態已經走到比較新的版，照算會變成新的 patch、對不上簽核），
+  //   而是：內容指紋必須等於帳上那一版 ⇒ 版號就是那一版；對不上就丟錯（不出沒被簽的內容）。
+  //   而且**不寫回共用狀態**——它記的是「最新一版」，倒寫回去會讓下一次 stage 重用別人的號碼。
+  if (signed) {
+    if (fingerprint !== signed.fingerprint) {
+      throw new Error(
+        `重打出來的內容指紋（${fingerprint.slice(0, 12)}…）不是被簽的 ${signed.release}（${String(signed.fingerprint).slice(0, 12)}…）：不出沒被簽的內容。`);
+    }
+  }
+  const release = signed ? signed.release : nextRelease(line, prevRelease, prevFingerprint, fingerprint);
+  const changed = signed ? false : release !== prevRelease;
 
   // built：非共用狀態＝舊行為（每次重算成今天，2026-08-02 就是這樣，不動它）。
   // 共用狀態＝跟 release 同一條規矩：內容沒變就沿用（不然「同一份內容兩個建置日」，
   // 正是 08-09 #27 修過的那個病，這裡是同一個病在新機制下的翻版）。
-  const built = sharedState && state && state.fingerprint === fingerprint && state.built
+  const built = signed && signed.built ? signed.built : sharedState && state && state.fingerprint === fingerprint && state.built
     ? state.built
     : new Date().toISOString().slice(0, 10);
 
@@ -241,7 +251,7 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
     core,
   };
   writeFileSync(mPath, JSON.stringify(out, null, 1) + '\n');
-  if (sharedState) writeReleaseState(repoRoot, { fingerprint, release, built });
+  if (sharedState && !signed) writeReleaseState(repoRoot, { fingerprint, release, built });
 
   if (!quiet) {
     console.log(changed

@@ -1,0 +1,25 @@
+{
+ "_": [
+  "出貨紀錄：版號 → 當初出貨用的 Arcrun commit → 內容指紋（inkstone/arcrun-rag#302）。出貨線每趟成功落帳時自動寫入，不靠人記得。",
+  "prod 憑它出「leo 簽的那一版」：`ship.mjs --target prod --ship-version <版號>`，不受 stage 之後又出幾版影響。",
+  "1.4.145 這一筆是補登的（出貨線在這本帳出現之前出的）：commit 取自 ship-report.json 的 sourceCommit，指紋取自 release-state.json 當時的值。"
+ ],
+ "releases": {
+  "1.4.145": {
+   "commit": "ce73ff9739db",
+   "fingerprint": "9421d11c6f8ea3b285ed5aed3a7895e7bf5cda41308b06ed35c95476466995c2",
+   "built": "2026-11-10",
+   "shipped": {
+    "stage": "2026-11-10T04:26:25.000Z"
+   }
+  },
+  "1.4.147": {
+   "commit": "f42b177ccc5197c6ff30ce7f3e36516789b5b68c",
+   "fingerprint": "b01e72f154cb5b7cb3579f77829be621dc919f42dbc0ea010320f78156db7c9b",
+   "built": "2026-11-10",
+   "shipped": {
+    "stage": "2026-11-10T07:33:37.821Z"
+   }
+  }
+ }
+}

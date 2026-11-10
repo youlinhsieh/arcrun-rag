@@ -93,6 +93,10 @@
  *       --verify-only（只跑最後那步驗收；不建/不推/不部署/不蓋章，判定與 --confirm 一樣嚴）
  *       --delivery-only（只跑送達收斂那一站；禁用在 publish 目標）
  *       --release-record-only（只跑發佈紀錄那一站；禁用在 publish 目標 ⇒ 碰不到 GitHub）
+ *       --ship-version <被簽核的引擎版號>（有 requireSignedVersion 的目標＝prod：出貨那一版的內容取自出貨紀錄
+ *          `installer/release-ledger.json` 裡這個版號當初上 stage 的 Arcrun commit，**不是 stage 最近一次**——
+ *          別條線之後又出了幾版 stage 也不受影響。例 `--ship-version 1.4.145`。真的 --confirm 必填；預演不填會印提醒。
+ *          重打後版號與內容指紋要對上帳上那一筆，對不上就擋。inkstone/arcrun-rag#302。）
  *       --ship-ticket <票>（有 armTicket 的目標＝prod：這一版的出貨票，leo 的 `ARM: <版號>` 要簽在它底下。
  *          例 `--ship-ticket 235`／`InkStoneCo#235`；owner 只認 inkstone。真的 --confirm 必填；預演不填也能跑，
  *          預演輸出會印出「這次要去哪張票找 ARM」。別張票上的 ARM、非 Leo 的 ARM、版號對不上一律斷。
@@ -129,8 +133,11 @@ import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL
 // inkstone/InkStoneCo#139（leo 2026-10-26）：切版前點名「已交回卻沒進這一版來源」的修正分支。
 import { requireNoUnmergedFixes } from './unmerged-fix-gate.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
+import { readLedger, recordShipment, resolveSignedVersion, ensureSourceAt, checkSignedBuild, LEDGER_FILE } from './release-ledger.mjs';
 import { checkSourceNotOlder } from './source-regression-gate.mjs';
 import { checkStageQueue } from './stage-queue-gate.mjs';
+import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
+import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
 import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
@@ -143,6 +150,7 @@ import {
   listReleases as ghListReleases,
 } from './github-release.mjs';
 import { redactToken } from './gitea-release.mjs';
+import { resolveShipPushRemote, buildShipPush } from './ship-branch-push.mjs';
 import { releaseForgeApi } from './release-forge.mjs';
 
 import { pruneStrayDaemon, pendingPushBytes, describePushFailure, formatMB } from './bundle-push-scope.mjs';
@@ -427,6 +435,8 @@ const QUICK = flag('--quick');
 const ALLOW_DELETIONS = flag('--allow-deletions');
 // 🔴 inkstone/arcrun-rag#281：ARM 簽在「這一版自己的出貨票」，不再是登錄簿裡寫死的一張票。
 const SHIP_TICKET_ARG = opt('--ship-ticket');
+// 🔴 inkstone/arcrun-rag#302：出 prod 出的是「leo 簽的那個版號」當初上 stage 的內容，不是 stage 最近一次。
+const SHIP_VERSION_ARG = opt('--ship-version');
 
 // 🔴 --verify-only（2026-08-09，arcrun-rag#27）：**只跑最後那一步驗收，什麼都不改**。
 //   為什麼要有：verify 這道閘 08-09 在 prod 誤報一次（見 verify-download.mjs 檔頭），
@@ -548,29 +558,33 @@ function publishToR2() {
 }
 
 /**
- * 推出貨分支到 Gitea，且**不把權杖印出來**（D36：值不落地、不外洩）。
+ * 推出貨分支到 git 家（Cloudflare Artifacts；Gitea 2026-10-24 退役，inkstone/arcrun-rag#304），
+ * 且**不把權杖印出來**（D36：值不落地、不外洩）。
  *
- * 為什麼要專門寫一支而不是直接用 `sh('git', ['push', ...])`：
- * `gitea` remote 的網址**內嵌帳密**（credentials-map.md 記載的既有做法），而 git 會把
- * 解析後的完整網址回聲到 stderr——2026-08-16 實測，一句 LFS locking 的好心提示就把
- * `https://<帳號>:<token>@git.uncle6.me/...` 整條印在出貨輸出裡。
- * 而出貨輸出正是會被貼進票、貼進報告、留在終端記錄裡的東西 ⇒ 那把鑰匙就跟著散出去。
- * ⇒ 成功時什麼都不印；失敗時才把訊息帶出來，且先把 `//帳號:權杖@` 遮掉再丟。
+ * 目的地不寫死 remote 名：新容器 clone 下來只有 `origin`（就是 Artifacts），不必手補 `gitea` remote。
+ * 解析與認證見 ship-branch-push.mjs；認證走 credential helper，token 不進網址。
+ * 成功時什麼都不印；失敗時才把訊息帶出來，且先把 `//帳號:權杖@` 遮掉再丟。
  */
 function pushGiteaQuietly(branch) {
+  const remoteUrlOf = (name) => {
+    const r = spawnSync('git', ['remote', 'get-url', name], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return r.status === 0 ? r.stdout.trim() : null;
+  };
+  const dest = resolveShipPushRemote(remoteUrlOf);
+  const push = buildShipPush({ branch, ...dest, srcRoot: REPO_ROOT });
   // 🔴 人閘（InkStoneCo#56）：`branch` 是變數——它可以是 main。
   //   推出貨分支時這一行不會有任何感覺（目標不是 main ⇒ 直接放行並留痕）；
   //   哪天它變成 main，就需要一枚總管的戳記。
   assertPushAllowed({
-    args: ['push', 'gitea', `HEAD:refs/heads/${branch}`],
-    cwd: REPO_ROOT, who: 'ship.mjs／推出貨分支到 Gitea', ...pushGuardOpts(),
+    args: ['push', push.remote, `HEAD:refs/heads/${branch}`],
+    cwd: REPO_ROOT, who: 'ship.mjs／推出貨分支到 Artifacts', ...pushGuardOpts(),
   });
-  const r = spawnSync('git', ['push', 'gitea', `HEAD:refs/heads/${branch}`], {
-    cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+  const r = spawnSync('git', push.args, {
+    cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: push.env,
   });
   if (r.status !== 0) {
     const msg = `${r.stdout || ''}\n${r.stderr || ''}`.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, '//***:***@');
-    throw new Error(`把出貨分支推上 Gitea 失敗（exit ${r.status}）：\n     `
+    throw new Error(`把出貨分支推上 ${push.remote}（Artifacts）失敗（exit ${r.status}）：\n     `
       + msg.trim().split('\n').filter(Boolean).slice(-6).join('\n     '));
   }
 }
@@ -836,11 +850,11 @@ async function recordInternalReleases({ R, manifest }) {
           `     出貨線**不代推 main**（那道閘是人的同意，不能被腳本繞過）⇒ 請先把它併上去再出貨。`);
       }
       pushGiteaQuietly(branch);
-      detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
+      detail.push(`已把出貨分支交到 Artifacts：${branch} → ${headSha.slice(0, 7)}`);
       onServer = await giteaCommitExists(slug, headSha, opts);
       if (!onServer) throw new Error(`推完了，但 ${slug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本物件。`);
     } else {
-      detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}（${slug}）`);
+      detail.push(`出貨 commit 已在遠端（Artifacts）：${branch} @ ${headSha.slice(0, 7)}（${slug}）`);
     }
 
     const bundleRelease = typeof manifest.release === 'string' ? manifest.release : undefined;
@@ -1144,6 +1158,35 @@ const STEPS = [
     ctx.arcrunRepo = wtPath;
     lines.push(`來源改讀 worktree：${wtPath}（同一個 repo；乾淨度照驗，不放寬）`);
   }
+  // (b0) 出貨紀錄：prod 出「被簽的那一版」當初上 stage 的內容（inkstone/arcrun-rag#302）。
+  //   不再靠「ship/verified-stage 指著最近一次 stage」——那個釘子只在這台機器、而且別條線再出一版 stage 就會移走，
+  //   leo 簽的 1.4.145 就對不上而白簽。這裡改查進版控的出貨紀錄：版號 → commit → 內容指紋。
+  //   找不到／不一致都在**任何東西被改之前**擋下，預演就看得到。
+  if (T.requireSignedVersion) {
+    if (!SHIP_VERSION_ARG) {
+      const hint = `${TARGET_NAME} 要 --ship-version <被簽核的引擎版號>（例 \`--ship-version 1.4.145\`）：出貨的內容取自該版當初上 stage 的那一份，`
+        + `不是 stage 最近一次（inkstone/arcrun-rag#302）。出貨紀錄裡有：${Object.keys(readLedger(REPO_ROOT).releases).join('、') || '（空）'}`;
+      if (CONFIRM) throw new Error(hint);
+      lines.push(`⚠ ${hint}\n     （預演沒帶就退回舊的釘子分支核對；真的 --confirm 一定要帶）`);
+    } else {
+      const sv = resolveSignedVersion({ ledger: readLedger(REPO_ROOT), version: SHIP_VERSION_ARG });
+      if (!sv.ok) throw new Error(sv.message);
+      if (wt) {
+        const here = sh('git', ['rev-parse', 'HEAD'], ctx.arcrunRepo);
+        if (!here.startsWith(sv.entry.commit.slice(0, 12)) && !sv.entry.commit.startsWith(here.slice(0, 12))) {
+          throw new Error(`ARCRUN_SOURCE_WORKTREE（${ctx.arcrunRepo}）在 ${here.slice(0, 12)}，但被簽的 ${SHIP_VERSION_ARG} 是 Arcrun@${sv.entry.commit.slice(0, 12)}——`
+            + `用了 --ship-version 就不要再指別的來源 worktree（拿掉 ARCRUN_SOURCE_WORKTREE，出貨線會自己備好那一顆）。`);
+        }
+      } else {
+        const at = ensureSourceAt({ repo: ctx.arcrunRepo, commit: sv.entry.commit, worktreeDir: join(homedir(), '.arcrun-ship', 'signed-src', SHIP_VERSION_ARG) });
+        if (!at.ok) throw new Error(at.message);
+        ctx.arcrunRepo = at.repo;
+        lines.push(at.message);
+      }
+      ctx.signedEntry = { version: SHIP_VERSION_ARG, ...sv.entry };
+      lines.push(sv.message);
+    }
+  }
   const srcDirty = sh('git', ['status', '--porcelain'], ctx.arcrunRepo);
   const srcSha = sh('git', ['rev-parse', '--short', 'HEAD'], ctx.arcrunRepo);
   const srcShaFull = sh('git', ['rev-parse', 'HEAD'], ctx.arcrunRepo);
@@ -1175,6 +1218,21 @@ const STEPS = [
     lines.push(q.message);
   }
 
+  // (b1.6) stage 現況寫得進嗎（inkstone/arcrun-rag#301）：只唯讀探一次（GET /ahub/stage），**提示，不擋**。
+  //   總監裁決（2026-11-10）：AHub 寫不進去不能擋住 stage 出貨——否則 leo21c 升到 0.15.0 之前每條線都出不了 stage，
+  //   等於自己造一道新的洗法。寫不進去的處置在最後一站 stage-record：警告、存待補、照常出貨、報告寫明。
+  //   明講不寫：STAGE_RECORD_SKIP=<理由>（連探都不探，理由留在這一行與 stage-record 站的紀錄）。
+  if (T.stageQueue && process.env.STAGE_RECORD_SKIP) {
+    lines.push(`⚠️ AHub stage 現況：操作者明講跳過（STAGE_RECORD_SKIP＝${process.env.STAGE_RECORD_SKIP}）——這一版不會出現在 AHub 的 stage 現況`);
+  } else if (T.stageQueue && ticketForge().kind === 'ahub') {
+    const f = ticketForge();
+    const pr = await probeStageRecordReady({ fetchImpl: f.fetchImpl, token: ticketToken('ahub') });
+    lines.push(pr.ok
+      ? `AHub stage 現況：${pr.message}`
+      : `⚠️ AHub stage 現況寫不進去（${pr.message}）——**不擋出貨**：這一版照常上 stage，紀錄存成待補（node installer/scripts/stage-record.mjs --retry-pending），報告會寫明`
+        + (pr.code === 'workflow-missing' ? '；AHub App 要升到含 stage 現況的版本（Arcrun workflows/ahub 0.15.0）後才補得進去' : ''));
+  }
+
   // (b2) 釘子分支：**取代 promoteFrom**（2026-08-11，D65 三次補述，arcrun-rag#73 缺③，
   //   見 `source-pin.mjs` 檔頭）。leo：「我要的就是跟 github 一樣，先打到 stage 分支，
   //   無誤，就打到 main 分支，上架」——這裡就是那個「先打 stage、驗過才准動 main」的
@@ -1182,7 +1240,9 @@ const STEPS = [
   //   （含 verify 全過）的目標自己在檔尾移動（見檔尾），不是人手 touch。
   //   有宣告 `requireSourceBranch` 的目標（目前只有 prod）＝只准出貨這顆分支釘住的
   //   commit；沒宣告的目標（stage／selftest）不受這道閘管，可以打任何乾淨的 HEAD。
-  if (T.requireSourceBranch) {
+  if (ctx.signedEntry) {
+    lines.push(`釘子分支 \`${T.requireSourceBranch}\` 不參與：來源由出貨紀錄的 ${ctx.signedEntry.version} 決定（Arcrun@${srcSha} ＝ 帳上 ${ctx.signedEntry.commit.slice(0, 12)}）`);
+  } else if (T.requireSourceBranch) {
     const pin = checkSourcePin({ repo: ctx.arcrunRepo, branch: T.requireSourceBranch, currentSha: srcShaFull, currentShaShort: srcSha });
     if (!pin.ok) throw new Error(pin.message);
     lines.push(pin.message);
@@ -1850,7 +1910,16 @@ const STEPS = [
 //   只認內容指紋，不認是哪個 bundle repo——這樣才會拿到跟 build 步驟一樣的對稱。
 { id: 'version', title: '算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）', mutates: true, async run() {
   const shared = T.bundles.remote !== 'local-selftest'; // selftest 本機臨時目標，不進共用版本狀態
-  const { release } = syncManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT, quiet: true, sharedState: shared });
+  const { release, fingerprint: builtFingerprint } = syncManifest(ctx.bundlesDir, {
+    repoRoot: REPO_ROOT, quiet: true, sharedState: shared,
+    // #302：出被簽的舊版——版號取自出貨紀錄、不由共用狀態推算，也不寫回共用狀態（見 release.mjs）。
+    signed: ctx.signedEntry ? { release: ctx.signedEntry.version, fingerprint: ctx.signedEntry.fingerprint, built: ctx.signedEntry.built } : null,
+  });
+  ctx.contentFingerprint = builtFingerprint;
+  if (ctx.signedEntry) {
+    const chk = checkSignedBuild({ version: ctx.signedEntry.version, entry: ctx.signedEntry, builtRelease: release, builtFingerprint });
+    if (!chk.ok) throw new Error(chk.message);
+  }
   const problems = verifyManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT });
   if (problems.length) throw new Error('manifest 機械閘不過：\n' + problems.map((p) => `       • ${p}`).join('\n'));
   const m0 = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
@@ -1888,8 +1957,9 @@ const STEPS = [
   ctx.daemonVersion = m.daemon && m.daemon.version;
   ctx.built = m.built;   // 使用者在 /api/latest 看到的建置日；verify 會拿它跟線上對
   ctx.sourceCommit = m.source; // D65 二次補述：出貨報告要能比對「兩個理貨員拿的是不是同一張訂單」
-  const bumped = ctx.releaseBefore && ctx.releaseBefore !== release;
+  const bumped = !ctx.signedEntry && ctx.releaseBefore && ctx.releaseBefore !== release;
   const detail = [
+    ctx.signedEntry ? `版本 ${release}（出貨紀錄裡被簽的那一版，Arcrun@${ctx.signedEntry.commit.slice(0, 12)}；不推算、不動共用版本狀態）` :
     bumped ? `版本 ${ctx.releaseBefore} → ${release}（內容有變 ⇒ patch +1，${shared ? '跨目標共用狀態' : '本機獨立計數'}）`
            : `版本 ${release}（內容與上一版一致 ⇒ 不動）`,
     !inst.previous ? `安裝器 ${inst.version}（這條線第一次有號碼）`
@@ -2895,11 +2965,11 @@ const STEPS = [
             `     為什麼不放行：指到一顆別人看不到的 commit 的版本發佈，「票→PR→commit→version」那條鏈是斷的。`);
         }
         pushGiteaQuietly(branch);  // 不用 sh：git 會把內嵌帳密的網址回聲出來（D36）
-        detail.push(`已把出貨分支交到 Gitea：${branch} → ${headSha.slice(0, 7)}`);
+        detail.push(`已把出貨分支交到 Artifacts：${branch} → ${headSha.slice(0, 7)}`);
         onServer = await giteaCommitExists(t.slug, headSha, opts);
         if (!onServer) throw new Error(`推完了，但 ${t.slug} 還是查不到 commit ${headSha.slice(0, 7)}——不建指向看不到的 commit 的版本發佈。`);
       } else {
-        detail.push(`出貨 commit 已在 Gitea 上：${branch} @ ${headSha.slice(0, 7)}（${t.slug}）`);
+        detail.push(`出貨 commit 已在遠端（Artifacts）：${branch} @ ${headSha.slice(0, 7)}（${t.slug}）`);
       }
       targetOf.set(t.slug, headSha);
       homeOf.set(t.slug, { repoName: repoNameOf(t.slug), repoSlug: t.slug, commit: headShaFull });
@@ -3176,6 +3246,73 @@ const STEPS = [
       + result.sections.filter((s) => !s.ok).flatMap((s) => s.problems).map((p) => `     - ${p}`).join('\n'));
   }
   return { status: 'done', detail: result.sections.map((s) => `${s.skipped ? '⏭' : '✔'} ${s.name}：${s.detail}`) };
+}},
+
+// ── 讓 youlin 主實例真的跑在這一版上（inkstone/arcrun-rag#303）────────────────────
+// 以前出貨線只把零件包與安裝器發出去，實例本身沒人更新 ⇒ 出完 stage 安裝器是新版、實例 /health 還是舊版，
+// verify 判過、佇列閘拿舊版當基準。這一站跑 `acr update`，再**讀回** /health 的 bundle_version／bundle_commit：
+// 對不上就丟例外（紅燈），不准綠燈收工。只認登錄簿的 `instanceUpdate`（prod 沒宣告 ⇒ 整站跳過）。
+// 🔴 擺在 stage-record 之前：AHub 的 stage 現況只記「真的在實例上跑著」的那一版。
+// 🔴 鑰匙只碰名字（D36）：cloudflareDeployEnv 依登錄簿取進 acr 那一個子行程；輸出經 redact 才進報告。
+{ id: 'instance-update', title: '讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）', mutates: true, async run() {
+  const U = T.instanceUpdate;
+  if (!U) return { status: 'skip', detail: ['本目標沒宣告 instanceUpdate（不是 stage）：實例不由出貨線更新（prod 的 leo21c 由 leo 在 Portal 按「立即更新」）'] };
+  const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+  const expect = { version: ctx.release || manifest.release, commit: commitFromManifestSource(manifest.source) };
+  const namespace = process.env[U.namespaceEnv];
+  if (!namespace) throw new Error(`環境變數 ${U.namespaceEnv} 沒有值（acr update 要用它指到這台實例的知識命名空間；只寫名字，值由環境給）`);
+  const cred = cloudflareDeployEnv({ cfg, accountId: T.installer.accountId, startDir: REPO_ROOT });
+  const declared = resolve(REPO_ROOT, cfg.source.arcrunRepo);
+  const cliDirs = [process.env.ACR_CLI_DIR, join(declared, 'cli'), join(ctx.arcrunRepo, 'cli')];
+  let acr = findAcr(cliDirs);
+  if (acr.error && acr.buildable) {
+    console.log(`     acr 還沒編：在 ${acr.buildable} 跑 npm run build`);
+    shLive('npm', ['run', 'build'], acr.buildable);
+    acr = findAcr(cliDirs);
+  }
+  if (acr.error) throw new Error(acr.error + '\n     設 ACR_CLI_DIR 指到已編好的 Arcrun cli/ 目錄，或在其中 npm ci && npm run build。');
+  const env = acrEnv({ cfEnv: cred.env, namespace, cypherUrl: U.cypherUrl, mcpUrl: U.mcpUrl, releaseApi: U.releaseApi });
+  const r = await ensureInstanceOnRelease({
+    expect,
+    cypherUrl: env.ARCRUN_CYPHER_EXECUTOR_URL, // 檢查「真的會傳給 acr 的那個值」，不是登錄簿原文
+    readHealth: () => readInstanceHealth(U.cypherUrl),
+    runUpdate: () => defaultRunAcr({ entry: acr.entry, env }),
+    redact: redactSecrets,
+  });
+  return { status: 'done', detail: [`期望 ${expect.version}／Arcrun@${expect.commit}｜acr ${acr.entry}`, ...r.detail, ...cred.lines] };
+}},
+
+// ── 最後一站：把這一版寫進 AHub 的 stage 現況（inkstone/arcrun-rag#301，後端 inkstone/Arcrun#365）────
+// leo 2026-11-10：「stage 只有一個，各條線會互相洗掉」。佇列閘（preflight）保證後上的包含先上的；
+// 這一站是另一半——讓各條線在 AHub **看得到** stage 現在是哪一版、哪個 commit、含哪些票、誰出的，
+// 一張在等 stage 驗證的票打開就知道新版還含不含它的改動。
+// 🔴 只在出貨那一下寫一次：不輪詢、不排程、不對任何票留言。擺在 verify／release-check 之後＝
+//   「真的上去且驗過」才記；擺在最後也代表：前面任何一站斷了，AHub 的現況不會被寫成一個沒成功的版本。
+// 🔴 寫不進去不安靜：成品已經上 stage 了，但各線在 AHub 看不到 ⇒ 這一站紅燈、內容存 pending，
+//   補寫 `node installer/scripts/stage-record.mjs --retry-pending`（權杖只經 prepareShipEnv，D36）。
+{ id: 'stage-record', title: '把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）', mutates: true, async run() {
+  if (!T.stageQueue) return { status: 'skip', detail: ['本目標沒宣告 stageQueue（不是 stage）：不寫 stage 現況'] };
+  if (process.env.STAGE_RECORD_SKIP) return { status: 'skip', detail: [`⚠️ 操作者明講不寫 stage 現況（STAGE_RECORD_SKIP＝${process.env.STAGE_RECORD_SKIP}）：AHub 看不到這一版`] };
+  const forge = ticketForge();
+  if (forge.kind !== 'ahub') return { status: 'skip', detail: [`票住在 ${forge.kind}，不是 AHub：沒有 stage 現況可寫`] };
+  const by = process.env.AHUB_STATION || opt('--by') || 'arcrun-rag-hand';
+  const sessionUrl = process.env.SHIP_SESSION_URL || opt('--session-url') || '';
+  const q = ctx.stageQueue || {};
+  let r;
+  try {
+    r = await recordStageShipment({
+      repo: ctx.arcrunRepo, headSha: ctx.arcrunHeadSha, version: ctx.release, by, sessionUrl,
+      note: `arcrun-rag 出貨線 --target ${TARGET_NAME}｜來源 Arcrun@${String(ctx.arcrunHeadSha || '').slice(0, 7)}${q.status ? `｜佇列閘 ${q.status}` : ''}`,
+      discarded: q.discarded || null,
+      fetchImpl: forge.fetchImpl, token: ticketToken('ahub'),
+      workdir: join(homedir(), '.arcrun-ship', 'stage-record'),
+    });
+  } catch (e) {
+    r = { ok: false, payload: null, message: `寫入過程出錯：${e && e.message ? e.message : e}` };
+  }
+  // 總監裁決（2026-11-10）：寫不進去不擋、不讓這次出貨紅燈——警告、存待補、報告寫明（stageRecordOutcome）。
+  //   stage 已經換版是事實，把它變紅只會讓人重出貨（多換一個版號）；待補清單讓之後一個指令補上。
+  return stageRecordOutcome(r, { by, sessionUrl });
 }},
 ];
 
@@ -3491,6 +3628,7 @@ if (T.bundles.remote !== 'local-selftest') {
 if (T.bundles.remote !== 'local-selftest') {
   const ownedRel = [
     RELEASE_STATE_FILE,                       // installer/release-state.json（version 站）
+    LEDGER_FILE,                              // installer/release-ledger.json（版號→commit→指紋，#302）
     INSTALLER_VERSION_REL,                     // installer/oauth-prototype/version.mjs（version 站烙指紋）
     'installer/ship-report.json', 'installer/ship-report.md', // 稽核留痕（ship-report.mjs）
     DAEMON_IN_BUNDLE_GATE_LOG_REL, MAIN_PUSH_GATE_LOG_REL,     // 各 gate 擋下/放行都記一行
@@ -3500,6 +3638,17 @@ if (T.bundles.remote !== 'local-selftest') {
       join(T.installer.cwd, 'worker.js'),         // worker.js 常數（pin 站，鏡射目標才動）
     ] : []),
   ];
+  // #302：這一版當初用哪份內容出的，記進進版控的出貨紀錄（prod 之後憑它出「被簽的那一版」）。
+  //   與落帳同一個 commit；寫不進（版號撞到不同內容）＝帳被竄改或版號被重用，吵出來不吞。
+  try {
+    const rec = recordShipment(REPO_ROOT, {
+      release: ctx.release, fingerprint: ctx.contentFingerprint, commit: ctx.arcrunHeadSha, built: ctx.built, target: TARGET_NAME,
+    });
+    if (!rec.ok) { console.error(`\n❌ 出貨紀錄寫不進（${LEDGER_FILE}）：${rec.conflict}`); process.exit(1); }
+    console.log(`   📚 出貨紀錄 ${rec.changed ? '已記' : '已有'}：${ctx.release} → Arcrun@${String(ctx.arcrunHeadSha).slice(0, 12)}（${TARGET_NAME}）`);
+  } catch (e) {
+    console.error(`\n❌ 出貨已完成，但出貨紀錄寫入失敗：${e.message}`); process.exit(1);
+  }
   try {
     const pin7 = (ctx.headSha || '').slice(0, 7);
     const r = commitShipOutputs({

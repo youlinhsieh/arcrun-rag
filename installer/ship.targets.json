@@ -151,7 +151,19 @@
         "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
         "accountNote": "youlin（AI stage，#216 起；資料與帳密與 uncle6 staging／prod 完全分離）"
       },
-      "verify": {
+      "instanceUpdate": {
+        "_": [
+          "inkstone/arcrun-rag#303（總監 2026-11-10）：出貨線以前只把零件包與安裝器「發出去」，沒有任何一站更新 youlin 實例本身，",
+          "實例自己拉的路（POST /portal/admin/update）又回 501 fallback_to_installer ⇒ 出完 stage 時安裝器是新版、實例 /health 還是舊版。",
+          "`instance-update` 站在 stage 出貨尾端跑 `acr update`（吃安裝器同一份 bundle），讀回實例 /health 的 bundle_version／bundle_commit，對不上就紅燈。",
+          "只有宣告了本欄的目標生效；prod 沒有 ⇒ 整站跳過（leo21c 照舊由 leo 在 Portal 按「立即更新」）。cypherUrl 與 stageQueue.liveHealthUrl 同一個（改了要一起改）。",
+          "鑰匙走 cloudflareCredentials（只寫名字）；namespace 只寫環境變數名（namespaceEnv），值不進版控。"
+        ],
+        "cypherUrl": "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev",
+        "namespaceEnv": "ARCRUN_NS_YOULIN",
+        "releaseApi": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/api/latest"
+      },
+"verify": {
         "installerBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
       },
       "delivery": {
@@ -396,6 +408,13 @@
       },
       "allowDirtySource": false,
       "requireSourceBranch": "ship/verified-stage",
+      "requireSignedVersion": true,
+      "_requireSignedVersion": [
+        "2026-11-10（inkstone/arcrun-rag#302）：prod 出的是「leo 在 AHub 簽的那個版號」當初上 stage 的內容，不是 stage 最近一次。",
+        "真的 --confirm 必帶 `--ship-version <版號>`：來源 commit 取自 installer/release-ledger.json（進版控、不只在出貨那台機器），",
+        "重打後版號與內容指紋要對上帳上那一筆，對不上就擋；stage 之後又出幾版都不受影響。",
+        "有帶 --ship-version 時，上面 requireSourceBranch 的釘子分支不參與（避免「stage 最近一次」再次決定 prod 出什麼）。"
+      ],
       "_requireSourceBranch": [
         "2026-08-11 拆掉 promoteFrom，改成 git 分支模型（D65 三次補述，arcrun-rag#73 缺③）。",
         "leo：「10 次原始碼重建完全不是問題……你要改的只有內外不同的參數」",

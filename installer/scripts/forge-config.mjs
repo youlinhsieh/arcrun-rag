@@ -122,6 +122,11 @@ export const AHUB_ROUTES = [
   ['GET', '/repos/:owner/:repo/releases/:id', 'ahub__release_get'],
   ['POST', '/repos/:owner/:repo/releases/:id/assets', 'ahub__release_asset_add'],
   ['GET', '/repos/:owner/:repo/releases/:id/assets', 'ahub__release_asset_list'],
+  // stage 現況（Arcrun AHub 0.15.0，inkstone/Arcrun#365；本 repo 的 inkstone/arcrun-rag#301）：
+  // 出貨線每次上 stage 寫一筆（stage-record.mjs）；讀的兩條給驗收與診斷用。
+  ['POST', '/ahub/stage', 'ahub__stage_record'],
+  ['GET', '/ahub/stage', 'ahub__stage_get'],
+  ['GET', '/repos/:owner/:repo/issues/:index/stage', 'ahub__issue_stage'],
 ];
 
 export function matchAhubRoute(method, path, routes = AHUB_ROUTES) {
