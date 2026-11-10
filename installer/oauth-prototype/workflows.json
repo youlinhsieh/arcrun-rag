@@ -313,6 +313,10 @@
       "prep_entity_concept >> ON_SUCCESS >> trigger_entity_concept",
       "prep_entity_concept >> ON_FAIL >> entity_concept_absorb_prep_fail",
       "trigger_entity_concept >> ON_FAIL >> entity_concept_absorb_fail",
+      "parse_card >> ON_SUCCESS >> prep_entity_resolve",
+      "prep_entity_resolve >> ON_SUCCESS >> resolve_entities",
+      "prep_entity_resolve >> ON_FAIL >> entity_resolve_absorb_prep_fail",
+      "resolve_entities >> ON_FAIL >> entity_resolve_absorb_fail",
       "prep_cluster_wiki >> ON_FAIL >> wiki_cluster_absorb_prep_fail",
       "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail"
     ],
@@ -708,6 +712,52 @@
           "timeout_ms": 2000,
           "max_output_bytes": 4096
         }
+      },
+      "prep_entity_resolve": {
+        "component": "__CODE_URL__",
+        "input": {
+          "card": "{{input.card_content}}",
+          "page_name": "{{input.page_name}}",
+          "rel_offset": "{{prep.data.rel_offset}}",
+          "rel_limit": "{{prep.data.rel_limit}}"
+        },
+        "code": "function unresolvedTpl(v) { return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim()); }\nfunction intOpt(v) { if (v == null || unresolvedTpl(v)) return 0; var n = parseInt(v, 10); return n > 0 ? n : 0; }\nvar relOffset = intOpt(input.rel_offset);\nvar relLimit = intOpt(input.rel_limit);\nvar md = String(input.card == null ? '' : input.card);\nvar pageName = String(input.page_name || '');\nvar MAX_ITEMS = 50;\nvar rels = [];\nvar relSec = /##\\s*關聯\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\nif (relSec) {\n  var lines = relSec[1].split('\\n');\n  for (var i = 0; i < lines.length; i++) {\n    var m = /^\\s*(?:[-*]\\s*)?(.+?)\\s*>>\\s*(.+?)\\s*>>\\s*(.+?)\\s*$/.exec(lines[i]);\n    if (m) rels.push([String(m[1]).trim(), String(m[3]).trim()]);\n  }\n}\n// parse_card 在最後補一條 part_of（受詞 knowledge-base），名字不是 entity，不進歸併。\nvar slice = relLimit > 0 ? rels.slice(relOffset, relOffset + relLimit) : rels.slice(relOffset);\nvar descOf = {};\nvar order = [];\nfunction add(name) {\n  name = String(name || '').trim();\n  if (!name || name === 'knowledge-base' || unresolvedTpl(name)) return;\n  if (!Object.prototype.hasOwnProperty.call(descOf, name)) { descOf[name] = ''; order.push(name); }\n}\nif (relOffset === 0) {\n  var entSec = /##\\s*實體\\s*\\n([\\s\\S]*?)(?=\\n#{1,2}(?!#)\\s|\\n---|$)/.exec(md);\n  if (entSec) {\n    var el = entSec[1].split('\\n');\n    for (var j = 0; j < el.length; j++) {\n      var em = /^\\s*[-*]\\s*\\*\\*(.+?)\\*\\*\\s*(?:[（(][^）)]*[）)])?\\s*(?:[—–-]+\\s*(.*))?$/.exec(el[j]);\n      if (!em) continue;\n      var nm = String(em[1]).trim();\n      var ds = String(em[2] || '').trim();\n      if (ds === '（原稿未提供描述）') ds = '';\n      add(nm);\n      if (descOf[nm] === '' && ds) descOf[nm] = ds;\n    }\n  }\n}\nfor (var k = 0; k < slice.length; k++) { add(slice[k][0]); add(slice[k][1]); }\nif (order.length === 0) {\n  throw new Error('這一段沒有可歸併的 entity（沒有「## 關聯」三元組，也沒有「## 實體」段）');\n}\nvar items = [];\nfor (var n = 0; n < order.length && items.length < MAX_ITEMS; n++) {\n  var it = { name: order[n] };\n  if (descOf[order[n]]) it.description = descOf[order[n]];\n  items.push(it);\n}\nreturn { success: true, items: items, item_count: items.length, truncated: order.length - items.length, page_name: pageName };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 65536
+        }
+      },
+      "resolve_entities": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entities/resolve",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "owner_id": "__NAMESPACE__",
+          "items": "{{prep_entity_resolve.data.items}}"
+        }
+      },
+      "entity_resolve_absorb_fail": {
+        "component": "__CODE_URL__",
+        "code": "return { success: true, entity_resolve_skipped: true, reason: 'POST /entities/resolve failed or not available on this instance' };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "entity_resolve_absorb_prep_fail": {
+        "component": "__CODE_URL__",
+        "input": {
+          "prep_error": "{{prep_entity_resolve.error}}"
+        },
+        "code": "return { success: true, entity_resolve_skipped: true, reason: String(input.prep_error || 'no entities to resolve') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
       }
     },
     "placeholders": [
@@ -906,6 +956,30 @@
           "label": "entity_concept_absorb_fail"
         },
         {
+          "id": "prep_entity_resolve",
+          "type": "Component",
+          "componentId": "prep_entity_resolve",
+          "label": "prep_entity_resolve"
+        },
+        {
+          "id": "resolve_entities",
+          "type": "Component",
+          "componentId": "resolve_entities",
+          "label": "resolve_entities"
+        },
+        {
+          "id": "entity_resolve_absorb_prep_fail",
+          "type": "Component",
+          "componentId": "entity_resolve_absorb_prep_fail",
+          "label": "entity_resolve_absorb_prep_fail"
+        },
+        {
+          "id": "entity_resolve_absorb_fail",
+          "type": "Component",
+          "componentId": "entity_resolve_absorb_fail",
+          "label": "entity_resolve_absorb_fail"
+        },
+        {
           "id": "wiki_cluster_absorb_prep_fail",
           "type": "Component",
           "componentId": "wiki_cluster_absorb_prep_fail",
@@ -1075,6 +1149,26 @@
         {
           "from": "trigger_entity_concept",
           "to": "entity_concept_absorb_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "parse_card",
+          "to": "prep_entity_resolve",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_entity_resolve",
+          "to": "resolve_entities",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_entity_resolve",
+          "to": "entity_resolve_absorb_prep_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "resolve_entities",
+          "to": "entity_resolve_absorb_fail",
           "type": "ON_FAIL"
         },
         {
@@ -1519,6 +1613,117 @@
           "from": "deprecate_triplet",
           "to": "accept_triplet_gone",
           "type": "ON_FAIL"
+        }
+      ]
+    }
+  },
+  {
+    "file": "rag-ingest-passages.local.yaml",
+    "name": "rag_ingest_passages",
+    "description": "收小幫手切好的原稿段落 → 寫成 KBDB source_passage（標 embed，由 KBDB 嵌入向量）， 並按 delete_ids 刪除舊版多出的段落／下架。零 LLM、不產卡。（inkstone/arcrun-rag#296）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> prep",
+      "prep >> 對每個 put_item 並行 6 >> put_passage",
+      "prep >> 對每個 dead_item 並行 6 >> delete_passage"
+    ],
+    "config": {
+      "prep": {
+        "component": "__CODE_URL__",
+        "code": "function unresolved(v) { return /\\{\\{[^}]*\\}\\}/.test(String(v)); }\nfunction need(name, v) {\n  const s = String(v == null ? '' : v).trim();\n  if (!s) throw new Error('rag_ingest_passages 缺 ' + name + '，什麼都沒寫');\n  if (unresolved(s)) throw new Error('rag_ingest_passages 的 ' + name + ' 仍是未代換的佔位符（' + s + '），什麼都沒寫');\n  return s;\n}\nconst path = need('path', input.path);\nconst pageName = need('page_name', input.page_name);\nconst machine = need('machine', input.machine);\nconst library = String(input.library == null || unresolved(input.library) ? '' : input.library).trim() || 'kb';\nconst machineLabel = String(input.machine_label == null || unresolved(input.machine_label) ? '' : input.machine_label);\nconst sourceHash = String(input.source_hash == null || unresolved(input.source_hash) ? '' : input.source_hash);\nconst rev = Number(input.chunker_rev) || 0;\nconst total = Number(input.total) || 0;\nconst ID_RE = /^psg-[0-9a-f]{16}-\\d+$/;\nconst passages = Array.isArray(input.passages) ? input.passages : [];\nconst delIds = Array.isArray(input.delete_ids) ? input.delete_ids : [];\nif (passages.length > 40) throw new Error('一次最多 40 段（收到 ' + passages.length + '），什麼都沒寫');\nif (delIds.length > 80) throw new Error('一次最多刪 80 段（收到 ' + delIds.length + '），什麼都沒刪');\nconst srcUri = 'kb://' + path;\nconst put_item = passages.map(function (p) {\n  const id = String(p && p.id || '');\n  if (!ID_RE.test(id)) throw new Error('段落 id 格式不對（' + id + '），什麼都沒寫');\n  const content = String(p.content == null ? '' : p.content);\n  if (!content.trim()) throw new Error('段落內容為空（' + id + '），什麼都沒寫');\n  const idx = Number(p.idx);\n  return {\n    id: id,\n    page_name: pageName,\n    content: content,\n    metadata_json: JSON.stringify({\n      embed: true,\n      source: srcUri + '#p' + idx,\n      source_path: path,\n      source_hash: sourceHash,\n      library: library,\n      machine: machine,\n      machine_label: machineLabel,\n      chunk_idx: idx,\n      chunk_total: total,\n      heading: String(p.heading || ''),\n      chunker_rev: rev,\n    }),\n  };\n});\nconst dead_item = delIds.map(function (id) {\n  id = String(id || '');\n  if (!ID_RE.test(id)) throw new Error('要刪的 id 不是段落 id（' + id + '），什麼都沒刪');\n  return { id: id };\n});\nreturn { success: true, put_item: put_item, dead_item: dead_item, page_name: pageName,\n         put_count: put_item.length, delete_count: dead_item.length };\n",
+        "input": {
+          "path": "{{input.path}}",
+          "page_name": "{{input.page_name}}",
+          "library": "{{input.library}}",
+          "machine": "{{input.machine}}",
+          "machine_label": "{{input.machine_label}}",
+          "source_hash": "{{input.source_hash}}",
+          "chunker_rev": "{{input.chunker_rev}}",
+          "total": "{{input.total}}",
+          "passages": "{{input.passages}}",
+          "delete_ids": "{{input.delete_ids}}"
+        },
+        "limits": {
+          "timeout_ms": 3000,
+          "max_output_bytes": 1048576
+        }
+      },
+      "put_passage": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "PUT",
+        "url": "__KBDB_BASE__/entries/{{put_item.id}}",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "template": "source_passage",
+          "content": "{{put_item.content}}",
+          "owner_id": "__NAMESPACE__",
+          "page_name": "{{put_item.page_name}}",
+          "metadata_json": "{{put_item.metadata_json}}"
+        }
+      },
+      "delete_passage": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "DELETE",
+        "url": "__KBDB_BASE__/entries/{{dead_item.id}}",
+        "headers": {
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        }
+      }
+    },
+    "placeholders": [
+      "__CODE_URL__",
+      "__HTTP_REQ_URL__",
+      "__KBDB_BASE__",
+      "__NAMESPACE__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "prep",
+          "type": "Component",
+          "componentId": "prep",
+          "label": "prep"
+        },
+        {
+          "id": "put_passage",
+          "type": "Component",
+          "componentId": "put_passage",
+          "label": "put_passage"
+        },
+        {
+          "id": "delete_passage",
+          "type": "Component",
+          "componentId": "delete_passage",
+          "label": "delete_passage"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "prep",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep",
+          "to": "put_passage",
+          "type": "FOREACH",
+          "iterator": "put_item",
+          "concurrency": 6
+        },
+        {
+          "from": "prep",
+          "to": "delete_passage",
+          "type": "FOREACH",
+          "iterator": "dead_item",
+          "concurrency": 6
         }
       ]
     }

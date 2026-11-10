@@ -120,6 +120,16 @@
         "remote": "https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/InkStoneCo/arcrun-rag-bundles-staging.git",
         "branch": "main"
       },
+      "stageQueue": {
+        "_": [
+          "inkstone/arcrun-rag#271（leo 2026-11-10「stage 只有一個」「release 是排隊的，stage 就不會覆蓋」）：出貨線是 stage 唯一的發版佇列。",
+          "出貨前（預演就查）：Arcrun 來源必須在 mainRef 上，且是 youlin 線上現在跑的那一顆（liveHealthUrl 的 /health bundle_commit）本身或其後代。",
+          "線上那顆不在 main ⇒ 預設擋；真要丟掉：STAGE_QUEUE_DISCARD_LIVE=<那一顆 sha 前綴>，丟了什麼寫進出貨報告。判準與 Arcrun#364 一致。",
+          "liveHealthUrl 與 shared/instance-coordinates/instances.json 的 youlin.cypher_executor_url 同一個（那份在 Arcrun repo，這裡不 import；改了要一起改）。"
+        ],
+        "mainRef": "origin/main",
+        "liveHealthUrl": "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev"
+      },
       "pin": {
         "_": "釘點 ＝ R2 的零件包目錄 `<dist.publicBase>/<dist.bundlePrefix>/<sha7>`（ship.mjs 放 R2 前會核對兩者相同）。不再是 git.uncle6.me 的 raw 網址。",
         "template": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/{sha7}",

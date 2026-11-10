@@ -8,5 +8,7 @@
   "poll_interval_sec": 5,
   "max_removed_ratio": 0.4,
   "ingest_workflow": "rag_ingest_direct",
-  "removed_workflow": "rag_takedown_direct"
+  "removed_workflow": "rag_takedown_direct",
+  "narrative_route": "cards",
+  "critical_folders": []
 }

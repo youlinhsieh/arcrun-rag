@@ -112,6 +112,13 @@ type ManifestEntry struct {
 	// 現在雙胞胎先記帳，這一輪所有資料夾都處理完之後，每張本尊的卡只推一次（flushTwinOrigins）。
 	// 推成功才清；失敗留著下一輪再試。
 	TwinOriginPending bool `json:"twin_origin_pending,omitempty"`
+
+	// ── 敘述類先進向量層（inkstone/arcrun-rag#296，見 passages.go）────────────
+	// PassageMode＝這份檔走的是「切段進向量層」新路（沒有卡）。決定它改版／下架時怎麼清。
+	// PassageCount＝上一次送上雲的段落數（段落 id 由路徑＋序號決定，下架／縮短時靠它知道要刪到哪）。
+	// 🔴 跨輪要記住的欄位，scan.go 的 carry 必須帶上。
+	PassageMode  bool `json:"passage_mode,omitempty"`
+	PassageCount int  `json:"passage_count,omitempty"`
 }
 
 // IndexCardFail＝一張目錄卡送失敗的病歷。
@@ -168,6 +175,9 @@ type Manifest struct {
 	//    （見 sourcerepair.go）。這一格的存在是為了**修完就不再每輪掃全庫**——
 	//    沒有它，這個修復會變成一個永遠在跑的背景工作。
 	SourceOriginRepairedAt int64 `json:"source_origin_repaired_at,omitempty"`
+	// SecretRedactRev＝這個監看根的既有卡片，最後一次用哪一版機敏值遮蔽規則重掃過（0＝沒掃過；#294）。
+	// 低於 secretRedactRevision ⇒ 下一輪就地重掃（見 secretrescan.go）。Manifest 層欄位，Scan() 不會重建它。
+	SecretRedactRev int `json:"secret_redact_rev,omitempty"`
 
 	// PendingTakedowns＝改名／搬移後「舊路徑」在雲端知識庫裡還沒下架成功的待辦清單
 	// （key=舊相對路徑，value=該路徑當時導出的頁名）。InkStoneCo#44 ⑩：
@@ -183,6 +193,9 @@ type Manifest struct {
 	// 不在任何一邊的掃描結果裡，下一輪不會再有 renamed 事件把它帶出來。不記住它，
 	// 一次下架失敗（雲端剛好那幾秒掛掉）就永久遺失，舊卡從此不會再被清。
 	PendingTakedowns map[string]string `json:"pending_takedowns,omitempty"`
+	// PendingPassageTrims＝待下架路徑裡「走過向量層新路」的那幾份各有幾段（key＝路徑，value＝段數；#296）。
+	// 與 PendingTakedowns 一起排、一起清；卡片那條撤除路對它們是零命中的空打，段落要另外刪。
+	PendingPassageTrims map[string]int `json:"pending_passage_trims,omitempty"`
 
 	// CloudAuditAt＝這個資料夾最後一次跑雲端對帳批次的時間（unix 秒）。
 	// 純節流用（cloudAuditFolderInterval）：daemon 預設 5 秒一輪，沒有這道閘
@@ -235,6 +248,29 @@ func (m *Manifest) QueueTakedown(oldPath, pageName string) {
 // ClearTakedown 下架成功後從待辦清單移除。
 func (m *Manifest) ClearTakedown(oldPath string) {
 	delete(m.PendingTakedowns, oldPath)
+	delete(m.PendingPassageTrims, oldPath)
+}
+
+// QueueTakedownOf＝QueueTakedown ＋ 若那份檔走過向量層，另記它的段數（#296）。e 可為 nil。
+func (m *Manifest) QueueTakedownOf(oldPath, pageName string, e *ManifestEntry) {
+	m.QueueTakedown(oldPath, pageName)
+	if e != nil && e.PassageMode && e.PassageCount > 0 {
+		if m.PendingPassageTrims == nil {
+			m.PendingPassageTrims = map[string]int{}
+		}
+		m.PendingPassageTrims[oldPath] = e.PassageCount
+	}
+}
+
+// MarkPassagesIngested＝切段送上雲成功後的回寫：蓋章、記段數、標成「沒有卡」（雲端對帳別為它重萃）。
+func (m *Manifest) MarkPassagesIngested(path, sourceHash string, at int64, count int) bool {
+	if !m.MarkIngestedBy(path, sourceHash, at, "passages") {
+		return false
+	}
+	e := m.Entries[path]
+	e.PassageMode, e.PassageCount = true, count
+	e.NoCloudCard = true
+	return true
 }
 
 // newUUID 產生 RFC 4122 v4 UUID（純 stdlib）。

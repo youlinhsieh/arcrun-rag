@@ -1,0 +1,137 @@
+# rag_ingest_passages — 敘述類原稿「先切段進向量層、不先萃成卡」的雲端收口（inkstone/arcrun-rag#296）
+#
+# 來源：inkstone/InkStoneCo#275 的 ADR（知識按需沉澱）。敘述類文件入庫時不再呼叫 LLM 萃卡，
+# 小幫手只把「轉好的 md 切成的段落」送來；這支把每段寫成一筆 KBDB entry（template=source_passage，
+# metadata.embed=true），**嵌入由 KBDB 自己在寫入時做**（Workers AI／Ollama，重工作全在雲端，
+# 小幫手與這支都不碰任何模型金鑰）。零 LLM、零三元組、零卡。
+#
+# 🔴 這改了舊原則「向量只做 entity／關係詞排重」（ADR「要改的舊原則」第一列）：
+#   向量現在也是**建在原稿上、可整批重建的召回層**；知識正本仍是 wiki 卡。
+#   只有 source_passage 標 embed:true；卡的 block 仍不標（workflows/tests/no-block-embed.test.mjs 不變）。
+#
+# 觸發（daemon 一批一發，批次切法見 collector/passages.go）：
+#   POST {cypher}/webhooks/named/__NAMESPACE__/rag_ingest_passages/trigger
+#     -H "X-Arcrun-API-Key: __NAMESPACE__"
+#     -d '{"path":"手冊/報銷.md","page_name":"報銷","library":"kb","machine":"leo@Mac","machine_label":"Leo 的 Mac",
+#          "source_hash":"<原稿雜湊>","chunker_rev":1,"total":42,
+#          "passages":[{"id":"psg-<16hex>-0","idx":0,"heading":"報銷 › 差旅","content":"報銷 › 差旅\n…"}],
+#          "delete_ids":["psg-<16hex>-42"]}
+#   passages 與 delete_ids 都可以空；兩件都做。
+#
+# 段落 id 由（機器、庫、路徑、序號）決定、**與內容無關** ⇒ 原稿改版＝PUT 原地覆寫（冪等、不長副本），
+# 新版比舊版短時由 delete_ids 刪掉尾巴；下架＝刪 0..n-1。重送同一批結果一樣。
+#
+# 每筆 metadata（供引用比對、清除判斷、換模型重建，見 wiki 卡「原稿段落向量層」）：
+#   embed:true／source:kb://<path>#p<idx>／source_path／source_hash（原稿版本）／library／machine／machine_label／
+#   chunk_idx／chunk_total／heading／chunker_rev。
+#   embedding 模型版本不在這裡記：KBDB 嵌入時自己把現行模型名蓋在 entries.content_hash（世代戳記），
+#   換模型後 POST /embed/reconcile ＋ /embed/backfill 即可整批重嵌，entry 內容與卡、三元組都不動。
+#
+# 🔴 守門一律 throw（不是 return {success:false}）：code 零件把回傳值包成成功信封，ON_SUCCESS 照走。
+#
+# 佔位參數：__NAMESPACE__ / __KBDB_BASE__ / __HTTP_REQ_URL__ / __CODE_URL__
+
+name: rag_ingest_passages
+description: >
+  收小幫手切好的原稿段落 → 寫成 KBDB source_passage（標 embed，由 KBDB 嵌入向量），
+  並按 delete_ids 刪除舊版多出的段落／下架。零 LLM、不產卡。（inkstone/arcrun-rag#296）
+
+flow:
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> 對每個 put_item 並行 6 >> put_passage"
+  - "prep >> 對每個 dead_item 並行 6 >> delete_passage"
+
+config:
+  prep:
+    component: "__CODE_URL__"
+    code: |
+      function unresolved(v) { return /\{\{[^}]*\}\}/.test(String(v)); }
+      function need(name, v) {
+        const s = String(v == null ? '' : v).trim();
+        if (!s) throw new Error('rag_ingest_passages 缺 ' + name + '，什麼都沒寫');
+        if (unresolved(s)) throw new Error('rag_ingest_passages 的 ' + name + ' 仍是未代換的佔位符（' + s + '），什麼都沒寫');
+        return s;
+      }
+      const path = need('path', input.path);
+      const pageName = need('page_name', input.page_name);
+      const machine = need('machine', input.machine);
+      const library = String(input.library == null || unresolved(input.library) ? '' : input.library).trim() || 'kb';
+      const machineLabel = String(input.machine_label == null || unresolved(input.machine_label) ? '' : input.machine_label);
+      const sourceHash = String(input.source_hash == null || unresolved(input.source_hash) ? '' : input.source_hash);
+      const rev = Number(input.chunker_rev) || 0;
+      const total = Number(input.total) || 0;
+      const ID_RE = /^psg-[0-9a-f]{16}-\d+$/;
+      const passages = Array.isArray(input.passages) ? input.passages : [];
+      const delIds = Array.isArray(input.delete_ids) ? input.delete_ids : [];
+      if (passages.length > 40) throw new Error('一次最多 40 段（收到 ' + passages.length + '），什麼都沒寫');
+      if (delIds.length > 80) throw new Error('一次最多刪 80 段（收到 ' + delIds.length + '），什麼都沒刪');
+      const srcUri = 'kb://' + path;
+      const put_item = passages.map(function (p) {
+        const id = String(p && p.id || '');
+        if (!ID_RE.test(id)) throw new Error('段落 id 格式不對（' + id + '），什麼都沒寫');
+        const content = String(p.content == null ? '' : p.content);
+        if (!content.trim()) throw new Error('段落內容為空（' + id + '），什麼都沒寫');
+        const idx = Number(p.idx);
+        return {
+          id: id,
+          page_name: pageName,
+          content: content,
+          metadata_json: JSON.stringify({
+            embed: true,
+            source: srcUri + '#p' + idx,
+            source_path: path,
+            source_hash: sourceHash,
+            library: library,
+            machine: machine,
+            machine_label: machineLabel,
+            chunk_idx: idx,
+            chunk_total: total,
+            heading: String(p.heading || ''),
+            chunker_rev: rev,
+          }),
+        };
+      });
+      const dead_item = delIds.map(function (id) {
+        id = String(id || '');
+        if (!ID_RE.test(id)) throw new Error('要刪的 id 不是段落 id（' + id + '），什麼都沒刪');
+        return { id: id };
+      });
+      return { success: true, put_item: put_item, dead_item: dead_item, page_name: pageName,
+               put_count: put_item.length, delete_count: dead_item.length };
+    input:
+      path: "{{input.path}}"
+      page_name: "{{input.page_name}}"
+      library: "{{input.library}}"
+      machine: "{{input.machine}}"
+      machine_label: "{{input.machine_label}}"
+      source_hash: "{{input.source_hash}}"
+      chunker_rev: "{{input.chunker_rev}}"
+      total: "{{input.total}}"
+      passages: "{{input.passages}}"
+      delete_ids: "{{input.delete_ids}}"
+    limits:
+      timeout_ms: 3000
+      max_output_bytes: 1048576
+
+  # PUT＝以 id 整列覆寫（不存在就新建），寫入時 KBDB 對標了 embed:true 的 entry 自己嵌入向量。
+  put_passage:
+    component: "__HTTP_REQ_URL__"
+    method: PUT
+    url: "__KBDB_BASE__/entries/{{put_item.id}}"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      template: "source_passage"
+      content: "{{put_item.content}}"
+      owner_id: "__NAMESPACE__"
+      page_name: "{{put_item.page_name}}"
+      metadata_json: "{{put_item.metadata_json}}"
+
+  # 刪 entry（KBDB 同步連向量一起刪；不存在也回成功＝冪等）。
+  delete_passage:
+    component: "__HTTP_REQ_URL__"
+    method: DELETE
+    url: "__KBDB_BASE__/entries/{{dead_item.id}}"
+    headers:
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"

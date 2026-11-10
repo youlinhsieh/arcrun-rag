@@ -97,6 +97,14 @@ flow:
   - "prep_entity_concept >> ON_SUCCESS >> trigger_entity_concept"
   - "prep_entity_concept >> ON_FAIL >> entity_concept_absorb_prep_fail"
   - "trigger_entity_concept >> ON_FAIL >> entity_concept_absorb_fail"
+  # inkstone/arcrun-rag#300（W5，inkstone/Arcrun#294 ADR 4.4）：parse_card 成功後的第五條出邊
+  # （與上面各條互不牽連）。卡上三元組的主詞／受詞（加「## 實體」段的名字＋一句描述）送
+  # KBDB `POST /entities/resolve` 歸併：同義名字掛成別名、不另長一個實體。
+  # 失敗不擋卡：兩個節點都接 ON_FAIL 吸收（舊版 KBDB 沒有這個端點會 404，照舊寫卡）。
+  - "parse_card >> ON_SUCCESS >> prep_entity_resolve"
+  - "prep_entity_resolve >> ON_SUCCESS >> resolve_entities"
+  - "prep_entity_resolve >> ON_FAIL >> entity_resolve_absorb_prep_fail"
+  - "resolve_entities >> ON_FAIL >> entity_resolve_absorb_fail"
   # c14949：prep_cluster_wiki 拒收未代入樣板字串時的 ON_FAIL 邊（同下面
   # trigger_wiki_cluster 那條的精神——分群這條分支失敗不該波及外層 success，
   # 這裡用獨立的吸收節點而不是共用 wiki_cluster_absorb_fail，因為兩者失敗原因不同，
@@ -948,6 +956,114 @@ config:
       prep_error: "{{prep_entity_concept.error}}"
     code: |
       return { success: true, entity_concept_skipped: true, reason: String(input.prep_error || 'no entities extracted, entity/concept trigger skipped') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # ── inkstone/arcrun-rag#300（W5）：卡上實體送 KBDB 歸併 ───────────────────────────
+  # 要達成：同一個東西（黃仁勳／皮衣男）在庫裡只算一個正式 entity，別名掛在它身上。
+  # 一次呼叫送一批（`POST /entities/resolve` 的 items，KBDB 依序處理，同批後面的名字看得到
+  # 前面剛建好的）。送什麼：
+  #   · 這一段（rel_offset／rel_limit，與 parse_card 同一條公式）三元組的主詞／受詞；
+  #   · 第一段（rel_offset＝0）另加「## 實體」段的每個名字，描述＝該行「— 」後那句
+  #     （KBDB 用「名字：描述」比對向量，所以有描述才認得出「皮衣男」＝「黃仁勳」）。
+  #   · 不送 knowledge-base（機械補的 part_of 受詞）、空名字、重複名字。
+  #   · 一次最多 50 個（KBDB 上限）；超過的這一段不送，數字記在輸出 truncated。
+  # 沒有可送的名字時 throw ⇒ 走 ON_FAIL 吸收（同 prep_entity_concept 的做法：只有 throw
+  # 才會讓 code 節點外層失敗，return {success:false} 不算）。
+  prep_entity_resolve:
+    component: "__CODE_URL__"
+    input:
+      card: "{{input.card_content}}"
+      page_name: "{{input.page_name}}"
+      rel_offset: "{{prep.data.rel_offset}}"
+      rel_limit: "{{prep.data.rel_limit}}"
+    code: |
+      function unresolvedTpl(v) { return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim()); }
+      function intOpt(v) { if (v == null || unresolvedTpl(v)) return 0; var n = parseInt(v, 10); return n > 0 ? n : 0; }
+      var relOffset = intOpt(input.rel_offset);
+      var relLimit = intOpt(input.rel_limit);
+      var md = String(input.card == null ? '' : input.card);
+      var pageName = String(input.page_name || '');
+      var MAX_ITEMS = 50;
+      var rels = [];
+      var relSec = /##\s*關聯\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(md);
+      if (relSec) {
+        var lines = relSec[1].split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var m = /^\s*(?:[-*]\s*)?(.+?)\s*>>\s*(.+?)\s*>>\s*(.+?)\s*$/.exec(lines[i]);
+          if (m) rels.push([String(m[1]).trim(), String(m[3]).trim()]);
+        }
+      }
+      // parse_card 在最後補一條 part_of（受詞 knowledge-base），名字不是 entity，不進歸併。
+      var slice = relLimit > 0 ? rels.slice(relOffset, relOffset + relLimit) : rels.slice(relOffset);
+      var descOf = {};
+      var order = [];
+      function add(name) {
+        name = String(name || '').trim();
+        if (!name || name === 'knowledge-base' || unresolvedTpl(name)) return;
+        if (!Object.prototype.hasOwnProperty.call(descOf, name)) { descOf[name] = ''; order.push(name); }
+      }
+      if (relOffset === 0) {
+        var entSec = /##\s*實體\s*\n([\s\S]*?)(?=\n#{1,2}(?!#)\s|\n---|$)/.exec(md);
+        if (entSec) {
+          var el = entSec[1].split('\n');
+          for (var j = 0; j < el.length; j++) {
+            var em = /^\s*[-*]\s*\*\*(.+?)\*\*\s*(?:[（(][^）)]*[）)])?\s*(?:[—–-]+\s*(.*))?$/.exec(el[j]);
+            if (!em) continue;
+            var nm = String(em[1]).trim();
+            var ds = String(em[2] || '').trim();
+            if (ds === '（原稿未提供描述）') ds = '';
+            add(nm);
+            if (descOf[nm] === '' && ds) descOf[nm] = ds;
+          }
+        }
+      }
+      for (var k = 0; k < slice.length; k++) { add(slice[k][0]); add(slice[k][1]); }
+      if (order.length === 0) {
+        throw new Error('這一段沒有可歸併的 entity（沒有「## 關聯」三元組，也沒有「## 實體」段）');
+      }
+      var items = [];
+      for (var n = 0; n < order.length && items.length < MAX_ITEMS; n++) {
+        var it = { name: order[n] };
+        if (descOf[order[n]]) it.description = descOf[order[n]];
+        items.push(it);
+      }
+      return { success: true, items: items, item_count: items.length, truncated: order.length - items.length, page_name: pageName };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 送 KBDB 歸併。回應不用接（KBDB 端已把別名／正式 entity 寫好）；失敗由 ON_FAIL 吸收。
+  resolve_entities:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entities/resolve"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      owner_id: "__NAMESPACE__"
+      items: "{{prep_entity_resolve.data.items}}"
+
+  # 純吸收節點：舊版 KBDB 沒有 /entities/resolve（404）、額度用完（429）、網路失敗——
+  # 這條分支沒發生，卡片本身早在 parse_card 那兩條 FOREACH 寫完，不波及外層 success。
+  entity_resolve_absorb_fail:
+    component: "__CODE_URL__"
+    code: |
+      return { success: true, entity_resolve_skipped: true, reason: 'POST /entities/resolve failed or not available on this instance' };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # 接住 prep_entity_resolve 的 throw（這一段沒有可歸併的 entity）。沙箱把 throw 包成
+  # {success:false, error}（沒有 .data 那層），綁頂層 `.error`（同 entity_concept_absorb_prep_fail）。
+  entity_resolve_absorb_prep_fail:
+    component: "__CODE_URL__"
+    input:
+      prep_error: "{{prep_entity_resolve.error}}"
+    code: |
+      return { success: true, entity_resolve_skipped: true, reason: String(input.prep_error || 'no entities to resolve') };
     limits:
       timeout_ms: 2000
       max_output_bytes: 4096

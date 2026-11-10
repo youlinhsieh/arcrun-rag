@@ -48,6 +48,8 @@ const FILES = [
   'rag-chat.local.yaml',
   'rag-ingest-card.local.yaml',
   'rag-takedown-direct.local.yaml',
+  // inkstone/arcrun-rag#296：敘述類原稿先切段進向量層（零 LLM）。小幫手 narrative_route=passages 時打它。
+  'rag-ingest-passages.local.yaml',
   // inkstone/Arcrun#60：entity description ＋ 概念歸屬（LLM 判斷），由 rag_ingest_card
   // 內部呼叫。跟主鏈一起編圖／推送，才能讓 trigger_entity_concept 真的打得到（否則永遠
   // 走 ON_FAIL 吸收分支，功能形同沒接上——c15326 點名的病，不要再犯第二次）。

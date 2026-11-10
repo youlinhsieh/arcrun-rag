@@ -129,6 +129,8 @@ import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL
 // inkstone/InkStoneCo#139（leo 2026-10-26）：切版前點名「已交回卻沒進這一版來源」的修正分支。
 import { requireNoUnmergedFixes } from './unmerged-fix-gate.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
+import { checkSourceNotOlder } from './source-regression-gate.mjs';
+import { checkStageQueue } from './stage-queue-gate.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist } from './daemon-dist.mjs';
 import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
@@ -1154,6 +1156,25 @@ const STEPS = [
   lines.push(`來源：Arcrun@${srcSha}${srcDirty ? ' ⚠️(工作區不乾淨，本目標允許)' : ''}`);
   ctx.arcrunHeadSha = srcShaFull;
 
+  // (b1.5) stage 佇列（inkstone/arcrun-rag#271 擴大版，leo 2026-11-10「stage 只有一個」）：
+  //   出貨線是 stage 唯一的發版佇列——來源必須在 main 上，且包含 **youlin 線上現在真的在跑的那一顆**
+  //   （cypher /health 的 bundle_commit，不是「上一版出貨紀錄」：有人直推 youlin 時紀錄裡沒那一筆）。
+  //   擺在碰 bundle repo（clone／fetch）之前：那個 repo 很大，全量 fetch 會 HTTP 400。
+  //   預演就擋，不必 --confirm。登錄簿宣告 `stageQueue` 的目標才生效（目前只有 stage）。
+  if (T.stageQueue) {
+    // 先盡力把 main 與各分支抓到最新（失敗不致命：用本機現有的 ref，訊息會講 main 的 sha）
+    try { execFileSync('git', ['fetch', '-q', 'origin'], { cwd: ctx.arcrunRepo, stdio: 'ignore', timeout: 90_000 }); } catch { /* 離線／憑證：用現有 ref */ }
+    const q = await checkStageQueue({
+      repo: ctx.arcrunRepo, currentSha: srcShaFull,
+      mainRef: T.stageQueue.mainRef || 'origin/main',
+      liveHealthUrl: process.env.STAGE_QUEUE_LIVE_URL || T.stageQueue.liveHealthUrl,
+      discard: process.env.STAGE_QUEUE_DISCARD_LIVE || '',
+    });
+    if (!q.ok) throw new Error(q.message);
+    ctx.stageQueue = { status: q.status, live: q.live || null, carried: q.carried || null, discarded: q.discarded || null };
+    lines.push(q.message);
+  }
+
   // (b2) 釘子分支：**取代 promoteFrom**（2026-08-11，D65 三次補述，arcrun-rag#73 缺③，
   //   見 `source-pin.mjs` 檔頭）。leo：「我要的就是跟 github 一樣，先打到 stage 分支，
   //   無誤，就打到 main 分支，上架」——這裡就是那個「先打 stage、驗過才准動 main」的
@@ -1165,6 +1186,17 @@ const STEPS = [
     const pin = checkSourcePin({ repo: ctx.arcrunRepo, branch: T.requireSourceBranch, currentSha: srcShaFull, currentShaShort: srcSha });
     if (!pin.ok) throw new Error(pin.message);
     lines.push(pin.message);
+  }
+
+  // (b2.5) 來源不准退版（inkstone/arcrun-rag#271）：這次的 Arcrun 來源必須是同目標上一版
+  //   （bundle repo manifest.source）的本身或後代。預演就擋，不必 --confirm。
+  //   來歷：stage 1.4.106 用了 9ab17d2，比 1.4.105 的 331ce35 舊 26 筆，22 站全過。
+  {
+    let previousSource = null;
+    try { previousSource = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8')).source || null; } catch { /* 第一版 */ }
+    const reg = checkSourceNotOlder({ repo: ctx.arcrunRepo, previousSource, currentSha: ctx.arcrunHeadSha });
+    if (!reg.ok) throw new Error(reg.message);
+    lines.push(reg.message);
   }
 
   // (b3) 成品新鮮度：**送出去的執行檔是不是還算數**（Leo/Arcrun#93，2026-08-12）─────
@@ -3343,6 +3375,7 @@ if (CONFIRM && !VERIFY_ONLY && ctx.release) {
   recordRun(REPO_ROOT, {
     release: shipKey, target: TARGET_NAME, results,
     sourceCommit: ctx.sourceCommit || null,
+    queue: ctx.stageQueue || null, // 這一版相對 youlin 線上多帶了哪些票／丟了哪一顆（#271）
     // 機器指紋：`#72` 揭露 build 不可跨機器重現、驗證章綁機器 ⇒ `#77` 宣告單機走完。
     // recordRun 內部會拿它跟同一版另一個目標比對，不同就丟例外、不寫入、不放行。
     machine: machineId(),

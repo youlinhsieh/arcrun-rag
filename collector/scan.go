@@ -733,6 +733,7 @@ func Scan(root string, m *Manifest, opts ScanOptions) (*TriggerPayload, error) {
 			ne.CloudCheckedAt = carry.CloudCheckedAt
 			ne.CloudMissingAt = carry.CloudMissingAt
 			ne.NoCloudCard = carry.NoCloudCard
+			ne.PassageMode, ne.PassageCount = carry.PassageMode, carry.PassageCount // #296：漏 carry＝下架／縮短時不知道要刪幾段
 			ne.TwinRoot, ne.TwinPath = carry.TwinRoot, carry.TwinPath // #246 c18734：同內容併卡的指向，漏 carry 就每輪重萃
 			ne.TwinOriginPending = carry.TwinOriginPending            // #209 c10693：漏 carry＝本尊的出處永遠推不上去
 		}

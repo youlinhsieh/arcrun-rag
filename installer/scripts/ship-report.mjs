@@ -125,15 +125,26 @@ export function assertSourceParity(ledger, { release, target, sourceCommit }) {
  *   · `assertSameMachine`：兩個理貨員是不是**同一台機器**（arcrun-rag#77，見 ship-machine.mjs）
  *     ——`#72` 揭露 build 不可跨機器重現、驗證章綁機器，這條線因此宣告單機走完。
  */
-export function recordRun(repoRoot, { release, target, results, sourceCommit = null, machine = null, ts = Date.now() }) {
+export function recordRun(repoRoot, { release, target, results, sourceCommit = null, machine = null, queue = null, ts = Date.now() }) {
   if (!release || !target) throw new Error('recordRun 需要 release 與 target');
   const ledger = readLedger(repoRoot);
   assertSourceParity(ledger, { release, target, sourceCommit });
   assertSameMachine(ledger, { release, target, machine });
   if (!ledger[release]) ledger[release] = {};
-  ledger[release][target] = { results: results || [], sourceCommit, machine, ts };
+  ledger[release][target] = { results: results || [], sourceCommit, machine, ts, ...(queue ? { queue: slimQueue(queue) } : {}) };
   writeLedger(repoRoot, ledger);
   return ledger;
+}
+
+/** 佇列資訊瘦身成可進帳本的小物件：只留票號與 commit 的 sha／標題（#271）。 */
+function slimQueue(q) {
+  const slim = (cs) => (cs || []).slice(0, 200).map((c) => ({ sha: c.sha, subject: c.subject, tickets: c.tickets }));
+  return {
+    status: q.status, live: q.live ? q.live.slice(0, 12) : null,
+    carriedTickets: (q.carried && q.carried.tickets) || [],
+    carriedCommits: slim(q.carried && q.carried.commits),
+    ...(q.discarded ? { discarded: { sha: String(q.discarded.sha).slice(0, 12), tickets: q.discarded.tickets || [], commits: slim(q.discarded.commits), note: q.discarded.note || null } } : {}),
+  };
 }
 
 const ICON = { done: '✅', skip: '⬜', failed: '❌', 'not-run': '⛔', planned: '⏸' };
@@ -204,6 +215,17 @@ export function renderComparisonTable(repoRoot, release, { targets = ['stage', '
   lines.push(`出貨報告　release ${release}　共 ${order.length} 站（${deltaBits.filter(Boolean).join('　')}）`);
   lines.push(targets.map((t) => (entry[t] ? `來源（${t}）＝${entry[t].sourceCommit || '(未知)'}` : `來源（${t}）＝（未出）`)).join('　｜　'));
   lines.push(targets.map((t) => (entry[t] ? `機器（${t}）＝${entry[t].machine || '(未記錄)'}` : `機器（${t}）＝（未出）`)).join('　｜　'));
+  // ── stage 佇列：這一版相對 youlin 線上上一顆多帶了哪些票（#271）──────────
+  // 讓各條線查得到「stage 現在含不含我的改動」；丟掉別人的東西也在這裡現形，不靜默。
+  for (const t of targets) {
+    const q = entry[t] && entry[t].queue;
+    if (!q) continue;
+    lines.push('');
+    lines.push(`🧾 ${t} 佇列：上一顆（線上當時）＝${q.live || '(無)'}；這版多帶 ${q.carriedCommits.length} 筆，票：${q.carriedTickets.join(' ') || '（commit 訊息沒寫票號）'}`);
+    if (q.discarded) {
+      lines.push(`⚠️ ${t} 這版**明講丟掉**線上 ${q.discarded.sha}（不在 main）：被蓋掉的票 ${q.discarded.tickets.join(' ') || '無'}，共 ${q.discarded.commits.length} 筆${q.discarded.note ? `（${q.discarded.note}）` : ''}`);
+    }
+  }
   lines.push('');
   lines.push(`| 件次 | 項目 | ${targets.join(' | ')} |`);
   lines.push(`| --- | --- | ${targets.map(() => '---').join(' | ')} |`);

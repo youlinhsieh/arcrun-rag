@@ -284,8 +284,8 @@ bucket_name = "arcrun-stage-dist"
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
 DIST_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
-BUNDLE_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/914f995"
-BUNDLE_BUILT = "2026-11-09"
+BUNDLE_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/c8ad7f7"
+BUNDLE_BUILT = "2026-11-10"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。
 # 現在指向同一批本票新部署、住在 youlin 帳號的 landing／docs stage worker。

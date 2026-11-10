@@ -200,6 +200,13 @@ func repairSourceBlocksUnlessSaving(cfg *DirectConfig, absRoot string, m *Manife
 	return repairCardSourceBlocks(cfg, absRoot, m, dryRun, false, now)
 }
 
+func rescanSecretsUnlessSaving(cfg *DirectConfig, absRoot string, m *Manifest, dryRun bool, now time.Time) *secretRescanResult {
+	if cfg.SaverMode {
+		return nil
+	}
+	return rescanCardSecrets(cfg, absRoot, m, dryRun, now)
+}
+
 // BatteryNow 立刻向雲端問一次（略過 TTL），給「使用者打開帳號頁／回到視窗」這類人為動作用——
 // 不是輪詢：沒有人動手就不會呼叫。問不到時回上一次的好值（或 nil）。
 func BatteryNow(cypherURL, apiKey, account string) *Battery {

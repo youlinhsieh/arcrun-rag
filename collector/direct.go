@@ -89,6 +89,13 @@ type DirectConfig struct {
 	ExtractorExplicit bool    `json:"extractor_explicit,omitempty"`
 	ClaudeBin         string  `json:"claude_bin,omitempty"`           // claude 執行檔（空＝PATH 找 claude）
 	CardIngestWF      string  `json:"card_ingest_workflow,omitempty"` // 收卡 workflow（空＝rag_ingest_card）
+	// inkstone/arcrun-rag#296：敘述類原稿先切段進向量層、不先萃成卡（見 passages.go）。
+	// NarrativeRoute＝"passages"（新檔的敘述類走新路）／""或"cards"（與改版前一致，預設）。
+	// CriticalFolders＝被管理者宣告為關鍵的資料夾（絕對路徑或相對監看根），照舊預先編譯。
+	// PassageIngestWF＝收段落的 workflow 名（空＝rag_ingest_passages）。
+	NarrativeRoute  string   `json:"narrative_route,omitempty"`
+	CriticalFolders []string `json:"critical_folders,omitempty"`
+	PassageIngestWF string   `json:"passage_ingest_workflow,omitempty"`
 	PollSec           int     `json:"poll_interval_sec"`              // 輪詢間隔秒（空/0＝5）
 	MaxRemoved        float64 `json:"max_removed_ratio"`              // 大量刪除防呆門檻（空/0＝0.4）
 	// MaxEventsPerRun（2026-08-07 pacing task）：單輪最多處理幾個 added/modified/renamed/
@@ -1546,6 +1553,12 @@ func drainPendingTakedowns(
 			"machine_label": mach.Label,
 		})
 		res.HTTPStatus = status
+		if perr == nil {
+			// #296：走過向量層新路的檔，段落另外刪（卡片那條撤除對它們是零命中）。
+			if n := m.PendingPassageTrims[oldPath]; n > 0 {
+				perr = cfg.trimPassages(cfg.passagePoster(step, oldPath, false), oldPath, pageName, cfg.libraryFor(absRoot), mach.ID, mach.Label, n)
+			}
+		}
 		if perr != nil {
 			res.Status, res.Error = "failed", failPrefix+perr.Error()
 			exit = 1
@@ -1624,7 +1637,7 @@ func retireRootOnce(cfg *DirectConfig, root string, dryRun bool) (
 	if len(m.Entries) > 0 && !dryRun {
 		for path, e := range m.Entries {
 			if e != nil && strings.TrimSpace(e.IngestedHash) != "" {
-				m.QueueTakedown(path, pageNameOf(path))
+				m.QueueTakedownOf(path, pageNameOf(path), e)
 			}
 		}
 		m.Entries = map[string]*ManifestEntry{}
@@ -1635,7 +1648,7 @@ func retireRootOnce(cfg *DirectConfig, root string, dryRun bool) (
 	} else if dryRun {
 		for path, e := range m.Entries {
 			if e != nil && strings.TrimSpace(e.IngestedHash) != "" {
-				m.QueueTakedown(path, pageNameOf(path))
+				m.QueueTakedownOf(path, pageNameOf(path), e)
 			}
 		}
 	}
@@ -1869,6 +1882,24 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		saveManifest()
 	}
 
+	// 🔴 遮蔽規則升版 ⇒ 既有卡片就地重掃（inkstone/arcrun-rag#294）——升版才跑、掃完蓋章、零 LLM。
+	// 原檔內容沒變小幫手不會重萃，舊規則放過去的卡就永遠帶著原值；見 secretrescan.go。
+	if rr := rescanSecretsUnlessSaving(cfg, absRoot, m, dryRun, runNow); rr != nil {
+		if rr.Redacted > 0 {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: fmt.Sprintf("已把 %d 份筆記裡的機敏值（%d 處，%s）換成指標，雲端也已更新；要看原值請開原檔", rr.Redacted, rr.Count, strings.Join(rr.Labels, "、")),
+			})
+		}
+		if rr.Err != "" {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: "遮蔽舊筆記裡的機敏值時有一份沒成功（不影響同步，稍後自動再試）：" + rr.Err,
+			})
+		}
+		saveManifest()
+	}
+
 	// 2026-08-07 task 3：Scan() 會把 removed 的路徑從 m.Entries 整批拿掉（rebuild 語意，
 	// 見 scan.go 步驟 7）——但那只是「偵測到不見了」，不代表下架 POST 已經成功。
 	// 沒有這份快照的話，本輪只要有任何一個 added/modified 事件先觸發了下面的
@@ -2047,7 +2078,7 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// 上限（perRunCap）把它排除在外、或這輪下架失敗時就會永久遺失這個待辦。
 	for _, ev := range payload.Events {
 		if ev.Type == "renamed" && ev.OldPath != "" {
-			m.QueueTakedown(ev.OldPath, pageNameOf(ev.OldPath))
+			m.QueueTakedownOf(ev.OldPath, pageNameOf(ev.OldPath), preScanEntries[ev.OldPath])
 		}
 	}
 	if len(m.PendingTakedowns) > 0 && !dryRun {
@@ -2225,6 +2256,60 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 			res.Status = "planned"
 			out = append(out, res)
 			return
+		}
+		// 🔴 inkstone/arcrun-rag#296：敘述類的新檔先切段進向量層、不萃卡（passages.go）。
+		// 放在「同內容併卡」之前：走新路的檔沒有卡，不參與 twin 的本尊／雙胞胎記帳。
+		if cfg.Extractor != "" {
+			if ok, _ := cfg.passageRouteFor(absRoot, ev.Path, m.Entries[ev.Path]); ok {
+				if handled := func() bool {
+					ownFail := m.HasOwnFailure(ev.Path)
+					prevCount := 0
+					if e := m.Entries[ev.Path]; e != nil && e.PassageMode {
+						prevCount = e.PassageCount
+					}
+					stateMu.Unlock()
+					paceGate.Lock()
+					paceFor(cfg)
+					paceGate.Unlock()
+					n, kind, perr := cfg.ingestPassagesOf(stepIngestPassages.on(ev.Path), absRoot, ev.Path, content, ev.SourceHash, prevCount, ownFail)
+					stateMu.Lock()
+					if kind == docKindTable {
+						return false // 內文大半是表格：回到舊路，照舊預先編譯
+					}
+					if perr != nil {
+						if isQuotaExhausted(perr.Error()) || isStallError(perr) || strings.Contains(perr.Error(), "429") {
+							lane.pressure()
+						}
+						if isRouteBackoff(perr) || isLocalNetworkErr(perr) {
+							res.Status = "skipped"
+							res.Error = perr.Error()
+							if isLocalNetworkErr(perr) {
+								res.Error = networkDownNote(cfg, perr)
+								m.MarkNetworkUnavailable(ev.Path, now, perr.Error())
+							}
+						} else {
+							res.Status, res.Error = "failed", perr.Error()
+							res.Detail = upstreamDetail(perr)
+							m.MarkFailed(ev.Path, now, failureWithUpstream(res.Error, res.Detail))
+							exit = 1
+						}
+						saveManifest()
+						liveReport(res.Status)
+						out = append(out, res)
+						return true
+					}
+					res.Status = "ingested"
+					lane.good()
+					m.MarkPassagesIngested(ev.Path, ev.SourceHash, now, n)
+					qs.DailyCount++
+					saveManifest()
+					liveReport(res.Status)
+					out = append(out, res)
+					return true
+				}(); handled {
+					return
+				}
+			}
 		}
 		// 🔴 同內容的檔只萃一張卡（inkstone/arcrun-rag#246 c18722／c18734，細節見 contenttwin.go）：
 		// 內容（hash）和別份已上雲的檔一模一樣 ⇒ 不萃、不上雲，只在那張卡的「### 出處」多寫一行。
@@ -2597,6 +2682,29 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		res := DirectResult{Type: ev.Type, Path: ev.Path}
 		if dryRun {
 			res.Status = "planned"
+			out = append(out, res)
+			return
+		}
+		// #296：走過向量層新路的檔——沒有卡，下架＝把它的段落刪掉。
+		if e := m.Entries[ev.Path]; e != nil && e.PassageMode {
+			if note := cfg.routeNote(cfg.triggerURL(cfg.passageWF())); note != "" {
+				res.Status, res.Error = "skipped", note
+				out = append(out, res)
+				return
+			}
+			paceFor(cfg)
+			mach := cfg.machineIdentity()
+			if perr := cfg.trimPassages(cfg.passagePoster(stepTakedown, ev.Path, false), ev.Path, pageNameOf(ev.Path),
+				cfg.libraryFor(absRoot), mach.ID, mach.Label, e.PassageCount); perr != nil {
+				res.Status, res.Error = "failed", perr.Error()
+				exit = 1
+				out = append(out, res)
+				return
+			}
+			res.Status = "removed"
+			delete(m.Entries, ev.Path)
+			saveManifest()
+			liveReport("removed")
 			out = append(out, res)
 			return
 		}

@@ -301,3 +301,22 @@ test('🔴 換機器接力照樣擋：同一份小幫手版在兩台機器各出
     assert.equal(readLedger(repo)[key].prod, undefined, '擋下時不准寫入');
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
+
+test('#271 帳本記下佇列：多帶的票、明講丟掉的那一顆都現形在報告上', async () => {
+  const { mkdtempSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { recordRun, renderComparisonTable } = await import('./ship-report.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'rep-q-'));
+  mkdirSync(join(root, 'installer'), { recursive: true });
+  recordRun(root, {
+    release: '1.4.200', target: 'stage', results: [{ id: 'preflight', title: 't', status: 'done' }], sourceCommit: 'Arcrun@abc',
+    queue: { status: 'discarded', live: 'aa1369311c5b0000', carried: { tickets: ['#12'], commits: [{ sha: 'a1', subject: 'x #12', tickets: ['#12'] }] },
+      discarded: { sha: 'aa1369311c5b0000', tickets: ['#357'], commits: [{ sha: 'b2', subject: 'y #357', tickets: ['#357'] }] } },
+  });
+  const t = renderComparisonTable(root, '1.4.200');
+  assert.match(t, /stage 佇列/);
+  assert.match(t, /#12/);
+  assert.match(t, /明講丟掉/);
+  assert.match(t, /#357/);
+});

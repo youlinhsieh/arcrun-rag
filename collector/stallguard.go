@@ -82,6 +82,7 @@ const (
 var (
 	stepIngestDoc    = callStep{Name: "整理一份文件", Budget: writeBudget}
 	stepIngestCard   = callStep{Name: "送出一份筆記", Budget: writeBudget}
+	stepIngestPassages = callStep{Name: "送出一份文件的原稿段落", Budget: writeBudget}
 	stepExtractDoc   = callStep{Name: "請雲端讀一份文件", Budget: writeBudget}
 	stepRepairOrigin = callStep{Name: "更新舊筆記的原文位置", Budget: writeBudget}
 	stepTakedown     = callStep{Name: "把刪掉的檔案從雲端下架", Budget: writeBudget}
