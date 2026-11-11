@@ -15,7 +15,7 @@ func TestDismissedAlertsStayGone(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	mk := func(count int, fp string) UIState {
 		return UIState{
-			Stalls:   []UIStall{{Fingerprint: fp, Account: "geek", Count: count, Label: "x"}, {Fingerprint: "fp-rep", Account: "geek", Count: 9, Label: "y", Reported: true}},
+			Stalls:   []UIStall{{Fingerprint: fp, Account: "geek", Count: count, Label: "x"}, {Fingerprint: "fp-rep", Account: "geek", Count: 9, Label: "y", Reported: true, State: "reported"}},
 			Quota:    &collector.QuotaNotice{Kind: "d1_write", Account: "geek", ResumeAt: "2026-10-10T00:00:00Z"},
 			Accounts: []UIAccount{{Name: "geek", Host: "h", Battery: &UIBattery{Percent: 18, Level: "warn", Warning: "⚠ 用量 18%"}}},
 			Skipped:  &UISkipped{Files: []string{"a"}},
@@ -23,13 +23,14 @@ func TestDismissedAlertsStayGone(t *testing.T) {
 	}
 	st := mk(5, "fp1")
 	applyDismissals(&st)
-	if len(st.Stalls) != 1 || st.Stalls[0].Fingerprint != "fp1" {
-		t.Fatalf("已回報的停工不再亮，只剩 fp1：%+v", st.Stalls)
+	// #330：已通報的卡要留著（用戶要看得到「處理中」），只有 × 才會消失；兩張卡各有自己的鍵
+	if len(st.Stalls) != 2 || st.Stalls[0].Fingerprint != "fp1" || st.Stalls[1].DismissKey == st.Stalls[0].DismissKey {
+		t.Fatalf("問你要不要通報（fp1）與已通報（fp-rep）都在，鍵各自獨立：%+v", st.Stalls)
 	}
 	if st.Quota == nil || st.Accounts[0].Battery.Warning == "" || st.Skipped == nil {
 		t.Fatal("沒關閉前都該亮")
 	}
-	for _, k := range []string{st.Stalls[0].DismissKey, st.Quota.DismissKey, st.Accounts[0].Battery.DismissKey, st.Skipped.DismissKey} {
+	for _, k := range []string{st.Stalls[0].DismissKey, st.Stalls[1].DismissKey, st.Quota.DismissKey, st.Accounts[0].Battery.DismissKey, st.Skipped.DismissKey} {
 		if k == "" {
 			t.Fatal("每則警示都要帶可關閉的鍵")
 		}
@@ -58,7 +59,7 @@ func TestDismissKeyWithQuotesAndCommasRoundTrips(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	key := `stall:host.workers.dev|other:HTTP N：{"success":false,"data":{"x":1}}`
+	key := `stall:ask:host.workers.dev|other:HTTP N：{"success":false,"data":{"x":1}}`
 	st := UIState{Stalls: []UIStall{{Fingerprint: `host.workers.dev|other:HTTP N：{"success":false,"data":{"x":1}}`, Account: "geek", Count: 4, Label: "x"}}}
 	applyDismissals(&st)
 	if len(st.Stalls) != 1 || st.Stalls[0].DismissKey != key {

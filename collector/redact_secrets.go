@@ -39,6 +39,12 @@ var envAssignRe = regexp.MustCompile(`(\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD
 
 var assignValueRe = regexp.MustCompile(`(?i)((?:pass(?:word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(?:ate)?[_-]?key)[[:space:]]*[:=][[:space:]]*)([^[:space:]<>"'〔]{6,})`)
 
+// botTokenRe：Telegram bot token 只遮「數字:token」，留下網址裡的 `bot` 前綴（與 lint.go 同一條，多兩個分組）。
+var botTokenRe = regexp.MustCompile(`(\bbot|\b)([0-9]{6,12}:[A-Za-z0-9_-]{30,})`)
+
+// urlParamSecretRe：網址查詢參數只遮值，留下 `?鍵=`（與 lint.go「網址參數內的密鑰」同一條，多兩個分組）。
+var urlParamSecretRe = regexp.MustCompile(`(?i)([?&](?:secret|secret_token|client_secret|token|access_token|refresh_token|id_token|auth_token|api_?key|password|passwd|sig|signature)=)([^&#[:space:]"'<>{}$〔]{8,})`)
+
 // connCredRe：連線字串只遮「帳號:密碼」，留下協定與主機。
 var connCredRe = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)([^[:space:]:/@]+:[^[:space:]:/@]+)(@)`)
 
@@ -161,6 +167,16 @@ func redactSecretText(text string, withLineRefs bool) (string, secretRedaction) 
 			case "環境變數式密鑰賦值":
 				if envAssignRe.MatchString(line) {
 					line = envAssignRe.ReplaceAllString(line, "${1}"+mk)
+					rep.add(p.label, lineNo)
+				}
+			case "Telegram bot token":
+				if botTokenRe.MatchString(line) {
+					line = botTokenRe.ReplaceAllString(line, "${1}"+mk)
+					rep.add(p.label, lineNo)
+				}
+			case "網址參數內的密鑰":
+				if urlParamSecretRe.MatchString(line) {
+					line = urlParamSecretRe.ReplaceAllString(line, "${1}"+mk)
 					rep.add(p.label, lineNo)
 				}
 			case "連線字串內嵌帳密":

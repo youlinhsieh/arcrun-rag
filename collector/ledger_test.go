@@ -62,11 +62,19 @@ func TestLedgerReasonKind分類(t *testing.T) {
 		captivePortalSentence:                     LedgerKindLoginRequired,
 		"x509: certificate is valid for a, not b": LedgerKindOther, // 原文本身不分類；登入頁在送出時就被包成句子
 		"dial tcp: lookup h: no such host":        LedgerKindNetwork,
-		"connection reset by peer":                LedgerKindNetwork,
+		// #330：被中途切斷／等不到回應不是「這台電腦的網路壞了」——大檔的 AI 呼叫常這樣，
+		// 以前一律歸 network，Portal 就對用戶說「網路連不上雲端」。
+		"connection reset by peer": LedgerKindConnectionCut,
+		"unexpected EOF":           LedgerKindConnectionCut,
+		"連線在中途被切斷（Post x: EOF）":    LedgerKindConnectionCut,
+		"連不上你的知識庫：Post x: read tcp: connection reset by peer":                                  LedgerKindConnectionCut,
+		"連不上你的知識庫：Post x: dial tcp: lookup h: no such host":                                    LedgerKindNetwork,
+		"知識庫回得太慢，等不到回應（Post x: context deadline exceeded）":                                     LedgerKindCloudSlow,
+		"「送出一份筆記」等了 166 秒，知識庫「h」回得太慢；這一輪先跳過":                                                   LedgerKindCloudSlow,
 		"雲端萃取失敗（HTTP 429）：4006: you have used up your daily free allocation of 10,000 neurons": LedgerKindQuota,
-		"這份 PDF 沒有可抽取的文字層": LedgerKindUnreadable,
-		"萃取 JSON 解析失敗":     LedgerKindUnreadable,
-		"不知名的錯":            LedgerKindOther,
+		"這份 PDF 沒有可抽取的文字層":                                                                     LedgerKindUnreadable,
+		"萃取 JSON 解析失敗":                                                                         LedgerKindUnreadable,
+		"不知名的錯":                                                                                LedgerKindOther,
 	}
 	for in, want := range cases {
 		if got := ledgerReasonKind(in); got != want {

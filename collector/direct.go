@@ -1970,8 +1970,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 	// ——build 之後、Publish 與 sync 之前——所以**本機快照與上雲酬載必然是同一份身分**。
 	// 卡片那條路（folderindex／inventory／sourcerepair）用的是同一個 cfg.machineIdentity()，
 	// 同一輪只解析一次，兩條路送上去的值必然相同。
-	tree := BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
-		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()).StampLedger(m.Entries, runNow)
+	tree := cfg.stampLedger(BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, m.Entries,
+		payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()), m.Entries, runNow)
 	if !dryRun {
 		PublishFolderTreeNow(cfg.Manifest, root, tree, runNow)
 	}
@@ -2009,8 +2009,8 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				}
 			}
 		}
-		latestTree = BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, entries,
-			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()).StampLedger(entries, runNow)
+		latestTree = cfg.stampLedger(BuildFolderTree(absRoot, cfg.libraryFor(absRoot), payload.DirStats, entries,
+			payload.AllExcludedDirs, plan, runNow).StampMachine(cfg.machineIdentity()).StampDaemonVersion(daemonVersion()), entries, runNow)
 		PublishFolderTreeNow(cfg.Manifest, root, latestTree, runNow)
 		cfg.guard.fileFinished(root, outcome, m.Progress())
 	}

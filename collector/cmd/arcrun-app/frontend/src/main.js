@@ -217,7 +217,70 @@ function setLibTab(idx, tab) {
 //   · 同步、資料夾、App、用量、AI 與設定、停工回報，全部在各帳號分頁裡
 function pageHome(s) {
   if (!s.accounts || !s.accounts.length) return onboarding();
-  return statusStrip(s) + sectionMyApps(s);
+  return chatBox(s) + statusStrip(s) + sectionMyApps(s);
+}
+
+
+// ── 首頁問答框（inkstone/arcrun-rag#297）──
+// leo 2026-11-11：「小幫手很小不要再做一個右側邊欄，直接加在 App 頁」⇒ 放在首頁最上方。
+// 薄殼：問題只送主帳號（左欄第一個）的 /portal/data/ask，其他帳號由後端自動連、連結碼不出現在畫面。
+// 只有按「送出」才打網路，不輪詢。畫面暫存只活在這個視窗的記憶體裡。
+let chat = { q: '', busy: false, asked: '', history: [], res: null };
+function chatBox(s) {
+  const r = chat.res;
+  let out = '';
+  if (chat.busy) out = `<div class="d one">查詢中…</div>`;
+  else if (r) {
+    const bad = (r.accounts || []).filter((x) => !x.ok);
+    const logins = r.needsLogin ? [{ accIdx: 0, label: ((s.accounts || [])[0] || {}).name || '' }]
+      : bad.filter((x) => x.reason === 'needs_login' && x.accIdx >= 0);
+    out = `
+      ${r.answer ? `<pre class="chatans">${esc(r.answer)}</pre>` : ''}
+      ${r.error && !r.needsLogin ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}
+      ${(r.cards || []).length ? `<div class="chatsrc">${r.cards.map((c) => `
+        <span class="nm${c.cited ? ' cited' : ''}" title="${esc(c.excerpt || '')}">${c.n} · ${esc(c.account)} · ${esc(c.library)} · ${esc(c.pageName)}</span>`).join('')}</div>` : ''}
+      ${bad.length ? `<div class="chatsrc">${bad.map((x) => `<span class="nchip" title="${esc(x.detail || '')}">${esc(x.label)}<b>⚠</b></span>`).join('')}</div>` : ''}
+      ${logins.map((x) => `
+        <div class="chatlogin"><span class="nm">${esc(x.label)}</span>
+          <input type="password" class="chatpw" data-chatacc="${x.accIdx}" placeholder="密碼" aria-label="${esc(x.label)} 的密碼"/>
+          <button data-chatlogin="${x.accIdx}">登入</button></div>
+        ${r.needsLogin ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}`).join('')}`;
+  }
+  return `
+    <section class="chat" aria-label="問答">
+      <div class="chatrow">
+        <input type="text" id="chatQ" placeholder="問問你所有庫裡的知識" value="${esc(chat.q)}" ${chat.busy ? 'disabled' : ''}/>
+        <button class="primary" id="chatGo" ${chat.busy ? 'disabled' : ''}>送出</button>
+      </div>
+      ${out}
+    </section>`;
+}
+async function askChat() {
+  const q = chat.q.trim();
+  if (!q || chat.busy) return;
+  chat.busy = true; chat.asked = q; chat.res = null;
+  renderPage();
+  let res;
+  try { res = await go.AskLibraries(q, chat.history); }
+  catch (ex) { res = { error: errText(ex), cards: [], accounts: [] }; }
+  chat.busy = false; chat.res = res;
+  if (res.answer) {
+    chat.history = chat.history.concat([{ role: 'user', content: q }, { role: 'assistant', content: res.answer }]).slice(-6);
+    chat.q = '';
+    const cq = $('chatQ'); if (cq) cq.value = '';   // 輸入框有焦點時 morph 不會動它
+  }
+  renderPage();
+}
+async function chatLogin(btn) {
+  const idx = Number(btn.dataset.chatlogin);
+  const pw = btn.closest('.chatlogin').querySelector('.chatpw');
+  btn.disabled = true;
+  try { await go.PortalLogin(idx, pw.value); await askChat(); }
+  catch (ex) {
+    btn.disabled = false;
+    if (chat.res) chat.res.error = errText(ex);
+    renderPage();
+  }
 }
 
 // 狀態列只放符號加數字，不放句子（#240 c18290，leo：「如果你裡面顯示了一句話就要檢討是否不需要這句話」）。
@@ -336,25 +399,56 @@ function flashReported(account) {
 }
 
 function cardStalls(stalls, onlyAccount) {
-  const list = (stalls || []).filter((x) => !onlyAccount || x.account === onlyAccount);
-  if (!list.length) {
+  const all = (stalls || []).filter((x) => !onlyAccount || x.account === onlyAccount);
+  if (!all.length) {
     return onlyAccount && reportedFlash[onlyAccount] > Date.now()
-      ? `<div class="card alertcard okflash" role="status"><div class="nt">✓ 已回報</div></div>` : '';
+      ? `<div class="card alertcard okflash" role="status"><div class="nt">✓ 已通報</div></div>` : '';
   }
-  const total = list.reduce((t, x) => t + x.count, 0);
-  const lines = list.slice(0, 3).map((x) => `<div class="d one raw" title="${esc(Array.from(x.label).slice(0, 25).join(''))}">${esc(Array.from(x.label).slice(0, 12).join(''))} ${x.count}</div>`).join('');
+  // #330：小幫手先自己修；修不了才問你。三種狀態各一張卡：
+  //   ask       修不了 · 要通報嗎（先「看內容」，同意才寄，寄的就是你看到的那一份）
+  //   reported  已通報 · 處理中（帶票號）
+  //   fixed     已修好
   // 鍵可能含任何字元（逗號、引號）：一律用 JSON 陣列放在屬性裡，不用分隔字元拼接再切開
-  const fps = esc(JSON.stringify(list.map((x) => x.fingerprint)));
-  const keys = esc(JSON.stringify(list.map((x) => x.dismissKey)));
-  return `
+  const parts = [];
+  for (const st of ['ask', 'reported', 'fixed']) {
+    const list = all.filter((x) => (x.state || 'ask') === st);
+    if (!list.length) continue;
+    const total = list.reduce((t, x) => t + x.count, 0);
+    const lines = list.slice(0, 3).map((x) => `<div class="d one raw" title="${esc(Array.from(x.label).slice(0, 25).join(''))}">${esc(Array.from(x.label).slice(0, 12).join(''))}${x.count ? ' ' + x.count : ''}</div>`).join('');
+    const fps = esc(JSON.stringify(list.map((x) => x.fingerprint)));
+    const keys = esc(JSON.stringify(list.map((x) => x.dismissKey)));
+    const accidx = (state.accounts || []).findIndex((x) => x.name === list[0].account);
+    const tickets = Array.from(new Set(list.map((x) => x.ticket).filter(Boolean)));
+    const ticketLine = tickets.length ? `<div class="d mono" data-data="1">${esc(tickets.join(' '))}</div>` : '';
+    const close = `<button class="x" data-dismiss="${keys}" title="關閉" aria-label="關閉">×</button>`;
+    if (st === 'ask') {
+      parts.push(`
     <div class="card alertcard" role="alert" data-stall-card="1">
-      <button class="x" data-dismiss="${keys}" title="關閉" aria-label="關閉">×</button>
-      ${list.length > 1
-        ? `<details class="more"><summary>⚠ 停住 ${total}</summary>${lines}</details>`
-        : `<div class="nt" data-data="1" title="${esc(Array.from(list[0].label).slice(0, 25).join(''))}">⚠ 停住 ${total}</div>`}
-      <div class="acts"><button class="primary" data-stallall="${fps}" data-accidx="${(state.accounts || []).findIndex((x) => x.name === list[0].account)}">回報</button></div>
+      ${close}
+      <div class="nt" title="小幫手試過了 要開發團隊才能修">⚠ 修不了 · 要通報嗎 ${total}</div>
+      ${lines}
+      <pre class="stallpreview" data-preview style="display:none"></pre>
+      <div class="acts"><button class="primary" data-stallview="${fps}" data-accidx="${accidx}">看內容</button><button data-stalldecline="${fps}">不用了</button></div>
       <div class="d stallmsg" style="margin-top:6px"></div>
-    </div>`;
+    </div>`);
+    } else if (st === 'reported') {
+      parts.push(`
+    <div class="card alertcard" role="status" data-stall-card="1">
+      ${close}
+      <div class="nt" title="修好會放進新版 到更新頁看">✓ 已通報 · 處理中</div>
+      ${lines}${ticketLine}
+      <div class="acts"><button data-gopage="update">更新</button></div>
+    </div>`);
+    } else {
+      parts.push(`
+    <div class="card alertcard" role="status" data-stall-card="1">
+      ${close}
+      <div class="nt">✓ 已修好</div>
+      ${lines}${ticketLine}
+    </div>`);
+    }
+  }
+  return parts.join('');
 }
 
 // 「今天的 AI 額度用完了」卡（P8，2026-08-09）。
@@ -1587,6 +1681,13 @@ function wire(root) {
   on('uDocs', () => go.OpenURL('https://rag.arcrun.dev/docs/'));
   on('uDiag', exportDiagnostics);
   on('fbSend', submitFeedback);
+  on('chatGo', askChat);
+  const cq = root.querySelector('#chatQ');
+  if (cq) {
+    cq.oninput = () => { chat.q = cq.value; };
+    cq.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) askChat(); };
+  }
+  all('[data-chatlogin]').forEach((b) => { b.onclick = () => chatLogin(b); });
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
   on('obConnect', showConnect);
@@ -1605,16 +1706,37 @@ function wire(root) {
     };
   });
   all('[data-gohome]').forEach((b) => { b.onclick = () => goPage('home'); });
-  all('[data-stallall]').forEach((b) => {
+  all('[data-gopage]').forEach((b) => { b.onclick = () => goPage(b.dataset.gopage); });
+  // #330：「看內容」→ 顯示要寄出的完整內容 → 按鈕變「同意通報」→ 才寄。不同意就什麼都不寄。
+  all('[data-stallview]').forEach((b) => {
     b.onclick = async () => {
-      const fps = JSON.parse(b.dataset.stallall || '[]');
-      const msg = b.closest('.alertcard').querySelector('.stallmsg');
+      const fps = JSON.parse(b.dataset.stallview || '[]');
+      const card = b.closest('.alertcard');
+      const msg = card.querySelector('.stallmsg');
+      const pre = card.querySelector('[data-preview]');
       const account = ((state.accounts || [])[Number(b.dataset.accidx)] || {}).name || '';
+      if (!b.dataset.agree) {
+        b.disabled = true;
+        if (msg) msg.textContent = '…';
+        try {
+          const texts = [];
+          for (const fp of fps) texts.push(await go.StallPreview(fp));
+          pre.textContent = texts.join('\n\n');
+          pre.style.display = 'block';
+          b.dataset.agree = '1';
+          b.textContent = '同意通報';
+          if (msg) msg.textContent = '';
+        } catch (ex) {
+          if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 讀不到</summary><div class="d one raw">${esc(Array.from(errText(ex)).slice(0, 20).join(''))}</div></details>`;
+        }
+        b.disabled = false;
+        return;
+      }
       b.disabled = true;
       if (msg) msg.textContent = '…';
       try {
-        for (const fp of fps) await go.ReportStall(fp);   // 回報＝已處理，卡片與紅點隨之消失
-        flashReported(account);                             // 但先留一行 ✓ 已回報 讓用戶看見
+        for (const fp of fps) await go.ReportStall(fp);   // 同意才寄；寄出後卡片變「已通報」
+        flashReported(account);
         await tick();
       } catch (ex) {
         const t = errText(ex);
@@ -1623,6 +1745,14 @@ function wire(root) {
         // 真的失敗只留一行 `⚠ 沒送出`＋「重試」，原因點開才看
         if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 沒送出</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;
       }
+    };
+  });
+  all('[data-stalldecline]').forEach((b) => {
+    b.onclick = async () => {
+      const fps = JSON.parse(b.dataset.stalldecline || '[]');
+      b.disabled = true;
+      try { for (const fp of fps) await go.DeclineStall(fp); } catch (ex) { /* 記不下來就保留，下次再問 */ }
+      await tick();
     };
   });
   // × 關閉：記住鍵（重開 App 仍不亮），同一原因不再出現；份數變多不算新狀況

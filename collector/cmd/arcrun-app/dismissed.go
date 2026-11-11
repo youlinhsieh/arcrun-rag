@@ -58,11 +58,16 @@ func (a *App) Dismiss(key string) error {
 // applyDismissals 把已關閉（或已回報）的警示從要送給前端的狀態裡拿掉。
 // 每則留下來的警示都帶 DismissKey，前端的「×」就拿它呼叫 Dismiss。
 func applyDismissals(st *UIState) {
-	// 停工：已回報＝已處理（不再亮）；已關閉同理
+	// 停工：已關閉的不再亮
 	var stalls []UIStall
 	for _, s := range st.Stalls {
-		s.DismissKey = "stall:" + s.Fingerprint
-		if s.Reported || isDismissed(s.DismissKey) {
+		// #330：已通報／已修好的卡要留著（用戶要看得到「處理中」與「修好了」），只有用戶 × 掉才消失；
+		// 每個狀態各有自己的鍵——× 掉「問你要不要通報」不會連「已通報」一起藏起來。
+		if s.State == "" {
+			s.State = stallAsk
+		}
+		s.DismissKey = "stall:" + s.State + ":" + s.Fingerprint
+		if isDismissed(s.DismissKey) {
 			continue
 		}
 		stalls = append(stalls, s)

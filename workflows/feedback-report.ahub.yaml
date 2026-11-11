@@ -152,6 +152,25 @@ config:
       var version = clean(input.version, 100) || 'unknown';
       var instance = clean(input.instance, 200) || 'unknown';
       var os = clean(input.os, 50) || 'unknown';
+      // 事件鍵（inkstone/arcrun-rag#309）：同一個事件第二次起，AHub 不開新票、併成第一張的留言。
+      // 只收 AHub 認的字元與長度；不合就當沒帶（照舊開票），不讓一個壞 key 害回報送不出去。
+      var eventKey = clean(input.event_key, 120);
+      if (!/^[A-Za-z0-9_.:@\/~-]{1,120}$/.test(eventKey)) eventKey = '';
+      // 呼叫端沒帶鍵（Portal 回報等）：用「實例＋這段話」算一個，同一段話重送也併成同一張。
+      // （不能送空字串——引擎對空值的插值會留下字面 {{…}}，AHub 會當成壞 key 回 422。）
+      if (!eventKey) {
+        var norm = (instance + '|' + text).replace(/\s+/g, ' ').toLowerCase(), hh = 5381;
+        for (var i = 0; i < norm.length; i++) hh = ((hh * 33) ^ norm.charCodeAt(i)) >>> 0;
+        eventKey = 'auto:' + hh.toString(36) + '-' + norm.length;
+      }
+      // 逐張交代：AHub 開票前比對到相近的票時，呼叫端要點名每一張、各寫為什麼不是同一件事。
+      var compared = [];
+      var cmpIn = raw(input.compared);
+      if (Array.isArray(cmpIn)) {
+        cmpIn.slice(0, 10).forEach(function (c) {
+          if (c && typeof c === 'object') compared.push({ ref: clean(c.ref, 120), reason: clean(c.reason, 400) });
+        });
+      }
       var repo = String(raw(input.repo) || 'inkstone/arcrun-rag').trim().replace(/^\/+|\/+$/g, '');
       if (!/^[^\/\s]+\/[^\/\s]+$/.test(repo)) repo = 'inkstone/arcrun-rag';
 
@@ -189,6 +208,8 @@ config:
         title: title,
         body: body,
         reporter: reporter,
+        event_key: eventKey,
+        compared: compared,
         // FORGE-SPECIFIC-BEGIN ── 只有這一段會因票的正本換家而不同（feedback-report.yaml 同位置是 Gitea 版）。
         // 其餘 prep 全部共用，feedback-report-contract.test.mjs 逐字比對兩份。
         api_url: '__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__issue_create/query',
@@ -207,6 +228,8 @@ config:
       reporter: "{{input.reporter}}"
       diagnostics: "{{input.diagnostics}}"
       repo: "{{input.repo}}"
+      event_key: "{{input.event_key}}"
+      compared: "{{input.compared}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -229,6 +252,10 @@ config:
         title: "{{prep.data.title}}"
         body: "{{prep.data.body}}"
         labels: "{{prep.data.labels}}"
+        # AHub 0.18.0（inkstone/Arcrun#377）：同一個事件鍵第二次起回 200 merged、併成第一張的留言；
+        # 開票前比對到相近的票回 409，帶 compared（逐張交代）才開得出來。空字串／空陣列＝沒帶。
+        event_key: "{{prep.data.event_key}}"
+        compared: "{{prep.data.compared}}"
       token: "{{credential.ahub_token}}"
       params: "{{prep.data.params}}"
       base: "{{prep.data.base}}"
@@ -249,6 +276,25 @@ config:
       if (!inner || typeof inner !== 'object' || typeof inner.status !== 'number') {
         return { success: false, error: '開票失敗：AHub 沒有回 {status, body}' };
       }
+      // 🔴 inkstone/arcrun-rag#309：同一個事件鍵第二次起 AHub 回 200 {merged:true, merged_into, number}——
+      //    內容已經併成第一張票的留言、沒有開新票。對學員來說這就是「送出成功」，回的票號是第一張。
+      if (inner.status === 200 && inner.body && inner.body.merged === true && typeof inner.body.number === 'number') {
+        var mref = String(inner.body.merged_into || '');
+        var mm = /^([^\/\s]+\/[^\/\s#]+)#(\d+)$/.exec(mref);
+        var base = String(input.base || '').replace(/\/+$/, '');
+        return {
+          success: true,
+          merged: true,
+          number: inner.body.number,
+          html_url: mm && base ? base + '/' + mm[1] + '/issues/' + mm[2] : ''
+        };
+      }
+      // 🔴 409＝開票前比對到相近的票（沒開新票）。把候選票編進錯誤訊息（標記「重複候選=」），
+      //    由小幫手判斷：自動回報有事件鍵＝新事件，帶逐張交代重送一次；沒有就照實告訴學員沒送出去。
+      if (inner.status === 409 && inner.body && Array.isArray(inner.body.candidates)) {
+        var refs = inner.body.candidates.map(function (c) { return c && c.ref ? String(c.ref) : ''; }).filter(function (r) { return /^[^\/\s]+\/[^\/\s#]+#\d+$/.test(r); });
+        return { success: false, error: '開票前比對到相近的票，沒有開新票。重複候選=' + refs.join(' ') };
+      }
       if (inner.status !== 201) {
         var m = inner.body && inner.body.message ? String(inner.body.message) : '沒有說明';
         return { success: false, error: '開票失敗：HTTP ' + inner.status + ' ' + m };
@@ -264,6 +310,7 @@ config:
       };
     input:
       issue_raw: "{{create_issue.data.body}}"
+      base: "{{prep.data.base}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536

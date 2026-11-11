@@ -67,6 +67,7 @@ var EdgeCases = []EdgeCase{
 	{ID: "d1-write-quota", Detector: "d1QuotaKind"},
 	{ID: "subrequest-196", Detector: "isSubrequestLimitText"},
 	{ID: "local-network", Detector: "isLocalNetworkText"},
+	{ID: "cloud-call-cut", Detector: "cloudCallErr"},
 	{ID: "count-identity", Detector: "Errors"},
 	{ID: "claude-p-route", Detector: "claudeExtractTimeout"},
 }

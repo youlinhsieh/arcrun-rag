@@ -34,6 +34,10 @@ import (
 const (
 	LedgerKindLoginRequired = "network_login_required"
 	LedgerKindNetwork       = "network"
+	// #330：這兩個不是「這台電腦的網路壞了」——連線在長請求中途被切斷、或知識庫回得太慢。
+	// 以前都被歸成 network，Portal 就對用戶說「網路連不上雲端」。
+	LedgerKindConnectionCut = "connection_cut"
+	LedgerKindCloudSlow     = "cloud_slow"
 	LedgerKindQuota         = "quota"
 	LedgerKindUnreadable    = "unreadable"
 	LedgerKindOther         = "other"
@@ -49,6 +53,12 @@ type LedgerReason struct {
 	Kind   string `json:"kind"`
 	Count  int    `json:"count"`
 	Sample string `json:"sample"`
+	// 以下四欄是 #330 新增、全部選填（舊版小幫手沒有；雲端沒看到＝一律當「不提醒」）。
+	// 協定與 inkstone/Arcrun#378 對齊，處理方式的定義見 selfheal.go。
+	Handling   string `json:"handling,omitempty"`    // self_heal｜user_action｜asked｜reported
+	UserAction string `json:"user_action,omitempty"` // 只在 handling=user_action
+	Ticket     string `json:"ticket,omitempty"`      // 只在 handling=reported：inkstone/arcrun-rag#N
+	ReportedAt string `json:"reported_at,omitempty"` // 只在 handling=reported
 }
 
 type LedgerSummary struct {
@@ -58,6 +68,53 @@ type LedgerSummary struct {
 	Retrying  int            `json:"retrying"`
 	Stalled   int            `json:"stalled"`
 	Reasons   []LedgerReason `json:"reasons"`
+	// 以下三欄是 inkstone/Arcrun#378 的 Portal 讀的頂層形狀（#330 由 reasons[].handling 推出），全選填。
+	FixState   string            `json:"fix_state,omitempty"`   // trying｜cannot_fix｜asked｜reported
+	UserAction *LedgerUserAction `json:"user_action,omitempty"` // 只在用戶真的能動手
+	Report     *LedgerReport     `json:"report,omitempty"`      // 已通報：票號
+}
+
+type LedgerUserAction struct {
+	Kind string `json:"kind"` // network_login｜relogin｜start_daemon｜other
+	Text string `json:"text,omitempty"`
+}
+
+type LedgerReport struct {
+	Ticket string `json:"ticket"`
+	Status string `json:"status"` // open｜fixed
+}
+
+// deriveTopLevel 由各原因的處理方式推出整體狀態：用戶能動手 > 已通報 > 已問 > 自己修中。
+func (l *LedgerSummary) deriveTopLevel() {
+	if l.Gap() == 0 || len(l.Reasons) == 0 {
+		return
+	}
+	var asked, reported, trying bool
+	for _, r := range l.Reasons {
+		switch r.Handling {
+		case HandlingUserAction:
+			if l.UserAction == nil {
+				l.UserAction = &LedgerUserAction{Kind: "network_login", Text: "這個網路需要先登入，請打開瀏覽器完成登入"}
+			}
+		case HandlingReported:
+			reported = true
+			if l.Report == nil {
+				l.Report = &LedgerReport{Ticket: r.Ticket, Status: "open"}
+			}
+		case HandlingAsked:
+			asked = true
+		default:
+			trying = true
+		}
+	}
+	switch {
+	case reported:
+		l.FixState = "reported"
+	case asked:
+		l.FixState = "asked"
+	case trying:
+		l.FixState = "trying"
+	}
 }
 
 // Gap＝差幾件（還沒送達的）。
@@ -98,18 +155,30 @@ func ledgerReasonKind(lastErr string) string {
 		strings.Contains(lastErr, "無法讀取"), strings.Contains(lastErr, "格式不支援"):
 		return LedgerKindUnreadable
 	}
-	if k, _ := StallReason(lastErr); k == "network" {
+	switch k, _ := StallReason(lastErr); k {
+	case "network":
 		return LedgerKindNetwork
+	case "connection_cut":
+		return LedgerKindConnectionCut
+	case "cloud_slow":
+		return LedgerKindCloudSlow
 	}
 	return LedgerKindOther
 }
 
 // BuildLedgerSummary 由帳本條目算出摘要（純函式，不改 entries）。
 func BuildLedgerSummary(entries map[string]*ManifestEntry, now time.Time) *LedgerSummary {
+	return BuildLedgerSummaryFor(entries, now, "", nil)
+}
+
+// BuildLedgerSummaryFor＝BuildLedgerSummary ＋ 每個原因「現在由誰處理」（#330）。
+// host＋store 用來套用「用戶說過要通報／不用了」；store 為 nil 就只算診斷，不帶用戶的決定。
+func BuildLedgerSummaryFor(entries map[string]*ManifestEntry, now time.Time, host string, store *HelpStore) *LedgerSummary {
 	l := &LedgerSummary{RoundAt: now.UTC().Format(time.RFC3339), Reasons: []LedgerReason{}}
 	type acc struct {
-		count  int
-		sample string
+		count   int
+		sample  string
+		askable int
 	}
 	by := map[string]*acc{}
 	for p, e := range entries {
@@ -141,12 +210,17 @@ func BuildLedgerSummary(entries map[string]*ManifestEntry, now time.Time) *Ledge
 			by[k] = a
 		}
 		a.count++
+		if stalledEntry(e) && FixableKind(e.LastError) == "" { // 自己修不了的：續試也用完、又不是「不支援」那種告知就好的事
+			a.askable++
+		}
 		if b := filepath.Base(p); a.sample == "" || b < a.sample { // 取字典序最小：同一份帳本算出同一個樣本
 			a.sample = b
 		}
 	}
 	for k, a := range by {
-		l.Reasons = append(l.Reasons, LedgerReason{Kind: k, Count: a.count, Sample: a.sample})
+		r, _ := resolveHandling(host, k, a.askable, store, now)
+		r.Kind, r.Count, r.Sample = k, a.count, a.sample
+		l.Reasons = append(l.Reasons, r)
 	}
 	sort.Slice(l.Reasons, func(i, j int) bool {
 		if l.Reasons[i].Count != l.Reasons[j].Count {
@@ -154,6 +228,7 @@ func BuildLedgerSummary(entries map[string]*ManifestEntry, now time.Time) *Ledge
 		}
 		return l.Reasons[i].Kind < l.Reasons[j].Kind
 	})
+	l.deriveTopLevel()
 	return l
 }
 
@@ -161,4 +236,19 @@ func BuildLedgerSummary(entries map[string]*ManifestEntry, now time.Time) *Ledge
 func (t FolderTree) StampLedger(entries map[string]*ManifestEntry, now time.Time) FolderTree {
 	t.Ledger = BuildLedgerSummary(entries, now)
 	return t
+}
+
+// StampLedgerFor＝StampLedger ＋ 處理方式與用戶的決定（#330）。
+func (t FolderTree) StampLedgerFor(entries map[string]*ManifestEntry, now time.Time, host string, store *HelpStore) FolderTree {
+	t.Ledger = BuildLedgerSummaryFor(entries, now, host, store)
+	return t
+}
+
+// stampLedger＝依這份設定的知識庫與 help-state.json 蓋上對帳摘要。
+func (c *DirectConfig) stampLedger(t FolderTree, entries map[string]*ManifestEntry, now time.Time) FolderTree {
+	var store *HelpStore
+	if c.Manifest != "" {
+		store = LoadHelpStore(HelpStatePath(c.Manifest))
+	}
+	return t.StampLedgerFor(entries, now, instanceHostOf(c.CypherURL), store)
 }

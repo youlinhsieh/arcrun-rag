@@ -282,7 +282,7 @@ func postWorkersAIExtract(client *http.Client, url, apiKey string, retry bool, p
 	resp, err := client.Do(req)
 	if err != nil {
 		cloudRoutes.record(url, directNow(), 0, err, retry) // #121
-		return "", "", fmt.Errorf("連不上你的知識庫：%w", err)
+		return "", "", cloudCallErr(err)
 	}
 	defer resp.Body.Close()
 	cloudRoutes.record(url, directNow(), resp.StatusCode, nil, retry) // #121：5xx／429 記失敗，2xx 歸零

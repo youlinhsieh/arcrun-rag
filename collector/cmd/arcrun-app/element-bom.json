@@ -414,6 +414,16 @@
    "repeat": true
   },
   {
+   "id": "home.chat.input",
+   "sel": "#chatQ",
+   "asks": "怎麼一次問所有帳號的知識"
+  },
+  {
+   "id": "home.chat.send",
+   "sel": "#chatGo",
+   "asks": "怎麼把問題送出去"
+  },
+  {
    "id": "home.appadd",
    "sel": "#mappAdd",
    "asks": "怎麼加一個 App 到首頁"

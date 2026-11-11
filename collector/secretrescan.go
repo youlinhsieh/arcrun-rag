@@ -30,7 +30,8 @@ import (
 //
 //	1＝0.18.119（#294 首版）
 //	2＝827c8a2（加 Cloudflare／Anthropic 金鑰格式、環境變數式賦值）
-const secretRedactRevision = 2
+//	3＝網址裡的 token（Telegram bot token、`?secret_token=` 等查詢參數）
+const secretRedactRevision = 3
 
 // secretRescanBatch＝單輪最多處理幾份「有命中」的文件（含重推）。與 sourceRepairBatch 同一個精神。
 const secretRescanBatch = 20

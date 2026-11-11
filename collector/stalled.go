@@ -30,6 +30,7 @@ const stallExtraTries = 4
 type StalledGroup struct {
 	Host        string   `json:"host"`
 	Key         string   `json:"key"`   // 原因分類鍵（穩定，做「已回報」的鍵）
+	Kind        string   `json:"kind"`  // 送件帳的原因分類（ledger kind；用戶「通報／不用了」的決定記在這一格，見 selfheal.go）
 	Label       string   `json:"label"` // 給人看的一句原因
 	Count       int      `json:"count"`
 	Samples     []string `json:"samples"`   // 檔名（basename），最多 5 個
@@ -61,16 +62,25 @@ func StallReason(raw string) (key, label string) {
 		return "cloud_db_quota", "雲端資料庫今天的寫入額度用完"
 	case strings.Contains(raw, "4007:") || strings.Contains(raw, "4002:") || strings.Contains(raw, "雲端萃取失敗（HTTP 50"):
 		return "cloud_ai", "雲端 AI 暫時出錯"
-	case strings.Contains(raw, "connection reset") || strings.Contains(raw, "連不上你的知識庫") || strings.Contains(raw, "unexpected EOF"):
-		return "network", "連線中途被切斷"
+	// 🔴 #330：「網路」只留給這台電腦真的沒連上（DNS／無路由／被拒／要先登入）。
+	//    以前「連不上你的知識庫」「connection reset」「unexpected EOF」一律歸 network——
+	//    而那句話是萃取／讀圖把**所有**傳輸錯誤（逾時、被中途切斷）都套上去的（見 cloudcallerr.go），
+	//    大檔的 AI 呼叫被切斷就被講成「網路連不上雲端」，用戶完全沒辦法處理。
+	case isLocalNetworkText(raw):
+		return "network", "這台電腦連不上雲端"
+	case strings.Contains(raw, "回得太慢") || strings.Contains(raw, "等不到回應") || strings.Contains(raw, "沒有回應；稍後會自動恢復") ||
+		strings.Contains(raw, "context deadline exceeded") || strings.Contains(raw, "Client.Timeout") || strings.Contains(raw, "i/o timeout"):
+		return "cloud_slow", "知識庫回應太慢"
+	case strings.Contains(raw, "connection reset") || strings.Contains(raw, "連不上你的知識庫") || strings.Contains(raw, "unexpected EOF") ||
+		strings.Contains(raw, "連線在中途被切斷") || strings.Contains(raw, "broken pipe") || strings.Contains(raw, "TLS handshake timeout"):
+		// 舊版病歷裡「連不上你的知識庫：…」若連本機網路的特徵都沒有，多半是連線中途出事，不是網路沒通。
+		return "connection_cut", "連線中途被切斷"
 	case strings.Contains(raw, "卡片位置被佔用"):
 		return "card_name_taken", "卡片名稱和既有檔案撞名"
 	case strings.Contains(raw, "萃取 JSON 解析失敗"):
 		return "model_json", "AI 回的內容格式不對"
 	case strings.Contains(raw, "雲端沒有把這一份寫進"):
 		return "cloud_write", "雲端沒有把檔案寫進知識庫"
-	case strings.Contains(raw, "回得太慢"):
-		return "cloud_slow", "知識庫回應太慢"
 	}
 	// 🔴 鍵只由穩定的分類決定，**不含錯誤原文**（#240 c18374）：以前這裡把原文前 40 字
 	// 切進鍵裡（`other:HTTP N：{"success":false…`），原文帶引號／JSON，鍵會被截斷或被切成怪鍵，
@@ -107,6 +117,13 @@ func stalledEntry(e *ManifestEntry) bool {
 // StalledGroups 把一批 manifest（同一個知識庫 host 底下的各資料夾）裡的停工檔按原因分組，
 // 只回份數 ≥ StallMinFiles 的組；依份數由多到少。
 func StalledGroups(host string, manifests map[string]*Manifest) []StalledGroup {
+	return StalledGroupsMin(host, manifests, StallMinFiles)
+}
+
+// StalledGroupsMin＝StalledGroups，門檻由呼叫端定。
+// #330：「小幫手自己修不了、要問用戶要不要通報」一份就該問（NRI 就是 2 份），所以那條路用 1；
+// 舊的「≥3 份才跳卡」留給原本的呼叫端。
+func StalledGroupsMin(host string, manifests map[string]*Manifest, minFiles int) []StalledGroup {
 	byKey := map[string]*StalledGroup{}
 	for root, m := range manifests {
 		if m == nil {
@@ -119,7 +136,7 @@ func StalledGroups(host string, manifests map[string]*Manifest) []StalledGroup {
 			key, label := StallReason(e.LastError)
 			g := byKey[key]
 			if g == nil {
-				g = &StalledGroup{Host: host, Key: key, Label: label, RawError: e.LastError,
+				g = &StalledGroup{Host: host, Key: key, Kind: ledgerReasonKind(e.LastError), Label: label, RawError: e.LastError,
 					MinFails: e.FailCount, MaxFails: e.FailCount, Fingerprint: host + "|" + key}
 				byKey[key] = g
 			}
@@ -144,7 +161,7 @@ func StalledGroups(host string, manifests map[string]*Manifest) []StalledGroup {
 	}
 	var out []StalledGroup
 	for _, g := range byKey {
-		if g.Count >= StallMinFiles {
+		if g.Count >= minFiles {
 			sort.Strings(g.Samples)
 			out = append(out, *g)
 		}
@@ -165,6 +182,11 @@ func ManifestPathFor(manifestBase, cypherURL, absRoot string) string {
 
 // LoadStalledGroups 讀這個知識庫各資料夾的帳本，回停工分組。讀不到的資料夾略過（不為難畫面）。
 func LoadStalledGroups(manifestBase, cypherURL string, roots []string) []StalledGroup {
+	return LoadStalledGroupsMin(manifestBase, cypherURL, roots, StallMinFiles)
+}
+
+// LoadStalledGroupsMin＝LoadStalledGroups，門檻由呼叫端定（見 StalledGroupsMin）。
+func LoadStalledGroupsMin(manifestBase, cypherURL string, roots []string, minFiles int) []StalledGroup {
 	ms := map[string]*Manifest{}
 	for _, r := range roots {
 		abs, err := filepath.Abs(r)
@@ -179,7 +201,7 @@ func LoadStalledGroups(manifestBase, cypherURL string, roots []string) []Stalled
 			ms[r] = m
 		}
 	}
-	return StalledGroups(instanceHostOf(cypherURL), ms)
+	return StalledGroupsMin(instanceHostOf(cypherURL), ms, minFiles)
 }
 
 // StuckSamples 回這批資料夾裡「已停止重試」的檔名樣本（basename，最多 5 個）與其中一份的錯誤原文。
@@ -225,4 +247,34 @@ func FileLastError(manifestBase, cypherURL, root, rel string) string {
 		return e.LastError
 	}
 	return ""
+}
+
+// OpenFailureKinds 回這個知識庫的這批資料夾裡，「還有沒送達、而且有失敗紀錄」的檔，各落在哪些原因分類。
+// 給「已通報的問題現在沒了嗎」用（#330）：一個分類連一份有失敗紀錄的檔都沒有了，才說「已修好」。
+func OpenFailureKinds(manifestBase, cypherURL string, roots []string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range roots {
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		p := ManifestPathFor(manifestBase, cypherURL, abs)
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		m, err := LoadManifest(p, abs)
+		if err != nil {
+			continue
+		}
+		for _, e := range m.Entries {
+			if e == nil || e.FormatDupOf != "" || strings.TrimSpace(e.LastError) == "" {
+				continue
+			}
+			if e.IngestedHash != "" && e.IngestedHash == e.ContentHash {
+				continue
+			}
+			out[ledgerReasonKind(e.LastError)] = true
+		}
+	}
+	return out
 }

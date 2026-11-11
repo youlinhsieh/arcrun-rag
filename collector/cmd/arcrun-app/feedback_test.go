@@ -250,7 +250,7 @@ func TestSubmitFeedback_InstanceIsTheAccountReportedAbout(t *testing.T) {
 		"arcrun-cypher-executor.arcrun-fc9490d5.workers.dev": "geek6688",
 		"": "geek6688", // 不屬於任何一台＝第一個帳號
 	} {
-		if err := (&App{}).submitFeedbackFor("測試", false, host); err != nil {
+		if err := (&App{}).submitFeedbackFor("測試", false, host, ""); err != nil {
 			t.Fatalf("host=%q: %v", host, err)
 		}
 		if got := inbox.gotBody["instance"]; got != want {

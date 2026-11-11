@@ -690,7 +690,7 @@ func syncVersionBeacon(cfg *DirectConfig, root string, now time.Time) *DirectRes
 	if !ok || len(tree.Nodes) == 0 || tree.Library != cfg.libraryFor(absRoot) {
 		return nil
 	}
-	res := syncFolderTree(cfg, absRoot, m, tree.StampDaemonVersion(v).StampLedger(m.Entries, now), false, now)
+	res := syncFolderTree(cfg, absRoot, m, cfg.stampLedger(tree.StampDaemonVersion(v), m.Entries, now), false, now)
 	if res != nil {
 		if serr := m.Save(absManifest); serr != nil && res.Status != "failed" {
 			res = &DirectResult{Type: "folder_tree", Path: absRoot, Status: "failed",

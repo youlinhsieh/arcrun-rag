@@ -768,6 +768,8 @@ main { padding: 22px 32px 28px; }
 .alertcard summary::after { right: 40px !important; }
 .alertcard .x { right: 10px; }
 .alertcard .x { z-index: 2; }
+/* #330：同意通報前給用戶看的「要寄出的完整內容」（資料，不是我們寫的字，可捲動） */
+.stallpreview { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 8px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; background: var(--well2); border-radius: 6px; user-select: text; }
 
 .ugauge .bill { font-size: .85em; color: var(--amber); margin-left: 6px; white-space: nowrap; }
 
@@ -904,3 +906,14 @@ button.icbtn.plain:hover { background: var(--well); color: var(--ink); }
 .fterr.flash { animation: errflash 2.4s ease-out 1; }
 @keyframes errflash { 0%, 40% { background: rgba(var(--amber-rgb), .22); } 100% { background: transparent; } }
 .ftdone { color: rgba(var(--ink-rgb), .55); font-size: 13px; }
+
+/* ── 首頁問答框（#297）── */
+.chat { margin-bottom: 18px; }
+.chatrow { display: flex; gap: 8px; }
+.chatrow input[type=text] { flex: 1; min-width: 0; }
+.chatans { margin: 12px 0 8px; padding: 12px 14px; border-radius: 10px; background: var(--well); font: inherit; font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.chatsrc { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.chatsrc .nm { font-size: 12px; padding: 3px 9px; border-radius: 12px; background: var(--well2); color: rgba(var(--ink-rgb), .7); }
+.chatsrc .nm.cited { color: var(--ink); }
+.chatlogin { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
+.chatlogin input { flex: 1; min-width: 0; }

@@ -468,6 +468,14 @@ var secretPatterns = []secretPattern{
 	// 環境變數式賦值：大寫鍵名（含 TOKEN／SECRET／PASSWORD／API_KEY／PRIVATE_KEY 其一）＝值。
 	// 只認大寫鍵名：文件裡常見的 `ARCRUN_RAG_TOKEN`（只講名字、沒有 =）與 `<token>` 佔位符不會中。
 	{label: "環境變數式密鑰賦值", re: regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]<>"'` + "`" + `]{16,}`)},
+	// #294（2026-11-11）：網址裡的 token。leo21c 的 2026_10_21 卡上實見一把 Telegram bot token 寫在
+	// setWebhook 網址的路徑裡（…/bot<數字>:<token>/…），還帶 `secret_token=` 查詢參數，上面幾條都認不得：
+	// 路徑段不是「鍵=值」，`secret_token` 也不是 `secret` 緊接 `=`。
+	// ① Telegram 形狀：6–12 位數字 ＋ 冒號 ＋ 30 字以上 token（前面是 `bot` 或字界）。
+	// ② 網址查詢參數：鍵名是 token／secret／password／api_key／signature 類，值 8 字以上；
+	//    佔位符（`<token>`、`{{token}}`、`$TOKEN`）不中。
+	{label: "Telegram bot token", re: regexp.MustCompile(`(\bbot|\b)[0-9]{6,12}:[A-Za-z0-9_-]{30,}`)},
+	{label: "網址參數內的密鑰", re: regexp.MustCompile(`(?i)[?&](secret|secret_token|client_secret|token|access_token|refresh_token|id_token|auth_token|api_?key|password|passwd|sig|signature)=[^&#[:space:]"'<>{}$]{8,}`)},
 	{label: "JWT token", re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 	{label: "連線字串內嵌帳密", re: regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^[:space:]:/@]+:[^[:space:]:/@]+@`)},
 	{label: "台灣身分證字號", re: regexp.MustCompile(`(^|[^A-Za-z0-9])[A-Z][12][0-9]{8}([^0-9]|$)`)},

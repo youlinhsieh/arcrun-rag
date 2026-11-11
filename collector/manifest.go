@@ -584,6 +584,7 @@ func isTransientCloudText(msg string) bool {
 		// #256 c19045：雲端那一側回得太慢／沒回（stallguard 的措辭）。畫面對用戶說「稍後會自動恢復」，
 		// 這句就得是真的：算雲端端暫時性失敗——換版即重送，撞滿 8 次後照退避窗口繼續試。
 		"回得太慢", "沒有回應；稍後會自動恢復",
+		"連線在中途被切斷", // #330：cloudcallerr.go 對「被中途切斷」的說法
 	} {
 		if strings.Contains(msg, mark) {
 			return true
