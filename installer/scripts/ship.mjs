@@ -129,7 +129,7 @@ import { assertPushAllowed, unarmed as unarmedDestinations, claimGrants as claim
 import { resolveBundlePlan, diffAgainstPlan, readArtifactManifest } from './bundle-components.mjs';
 import { requireNoLocalBuild } from './no-local-build-gate.mjs';
 import { requireFreshArtifacts } from './artifact-freshness.mjs';
-import { requireFreshDaemonSource, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL } from './daemon-freshness.mjs';
+import { requireFreshDaemonSource, assessDaemonShipment, GATE_LOG_REL as DAEMON_FRESHNESS_GATE_LOG_REL } from './daemon-freshness.mjs';
 // inkstone/InkStoneCo#139（leo 2026-10-26）：切版前點名「已交回卻沒進這一版來源」的修正分支。
 import { requireNoUnmergedFixes } from './unmerged-fix-gate.mjs';
 import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
@@ -1755,7 +1755,19 @@ const STEPS = [
     // selftest（不推、不部署、沒有任何人會拿到東西）才允許指紋對不上仍跑完——
     // 而且照樣把差異印出來、照樣留痕（標「明知故犯放行」）。理由見 daemon-freshness.mjs。
     allowDirty: !!T.allowDirtySource,
+    // 🔴 inkstone/arcrun-rag#307（leo 11-10：「問題是這次完全沒改到它」）：源碼比成品新，
+    //   只在**這次會把小幫手換給使用者**時才擋。量法：daemon-sync／daemon-check 之後的
+    //   manifest.daemon（版本＋每個平台成品 sha256）vs 該目標線上（bundle repo origin/<branch>）。
+    //   逐項相同 ⇒ 使用者拿到的小幫手位元相同；量不到或有任何差異 ⇒ 照最嚴的走。
+    shipment: assessDaemonShipment({ bundlesDir: ctx.bundlesDir, branch: T.bundles.branch }),
   });
+  if (r.waived) {
+    return { status: 'done', detail: [
+      `小幫手源碼有未打包的改動（${r.unpackaged.files} 檔），這版沒帶，待 ${r.unpackaged.ticket}`,
+      `這版不換小幫手：${r.shipmentReason}`,
+      `（${r.version} 打包後的源碼指紋 ${r.recorded} → 現在 ${r.current}；要換小幫手時本站仍會擋）`,
+    ] };
+  }
   return { status: 'done', detail: [
     `${r.version} 的成品就是照現在這份源碼打的 ✓` +
     (r.hasDraft ? '（changelog 另有「下一版（未發佈）」草稿，尚未戳版，不影響本項判定）' : ''),

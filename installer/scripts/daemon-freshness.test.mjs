@@ -25,6 +25,7 @@ import {
   readSourceState, judgeSourceState, formatDaemonFreshnessProblem,
   appendGateLog, localStamp, requireFreshDaemonSource,
   SOURCE_STATE_SCRIPT_REL, GATE_LOG_REL,
+  judgeDaemonShipment, assessDaemonShipment, REPACKAGE_TICKET,
 } from './daemon-freshness.mjs';
 
 const CHANGELOG_REL = join('collector', 'CHANGELOG.md');
@@ -298,4 +299,92 @@ test('🔴 腳本不見 ⇒ readSourceState 回 ok:false，呼叫端判 unknown 
     assert.match(read.error, /找不到版本產生器/);
     assert.throws(() => requireFreshDaemonSource({ repo: dir, targetName: 'stage' }), /無法判定|拿不到/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// inkstone/arcrun-rag#307：源碼比成品新，只在「這次會換小幫手」時才擋
+// ═══════════════════════════════════════════════════════════════════════════
+
+const D = (over = {}) => ({
+  version: '0.18.118', built: '20261101-1000',
+  mac: { file: 'daemon/Arcrun-0.18.118.dmg', sha256: 'a'.repeat(64) },
+  win: { file: 'daemon/Arcrun-win-0.18.118.exe', sha256: 'b'.repeat(64) },
+  ...over,
+});
+
+test('#307 純函式：版本與每個平台 sha256 都跟線上一樣 ⇒ ships:false（built 不算）', () => {
+  const r = judgeDaemonShipment({ current: D(), live: D({ built: '20260101-0000' }), liveNote: 'origin/main' });
+  assert.equal(r.ships, false, JSON.stringify(r));
+});
+
+test('🔴 #307 該擋的仍然擋：委任版本不同／任一平台 sha 不同／少一個平台／查不到線上／manifest 沒 daemon ⇒ ships:true', () => {
+  const cases = {
+    版本不同: [D({ version: '0.18.119' }), D()],
+    mac_sha不同: [D({ mac: { file: 'daemon/Arcrun-0.18.118.dmg', sha256: 'c'.repeat(64) } }), D()],
+    少一個平台: [D({ win: undefined }), D()],
+    多一個平台: [D({ msix: { file: 'daemon/x.msix', sha256: 'd'.repeat(64) } }), D()],
+    查不到線上: [D(), null],
+    沒有daemon欄位: [null, D()],
+  };
+  for (const [name, [current, live]] of Object.entries(cases)) {
+    assert.equal(judgeDaemonShipment({ current, live }).ships, true, name);
+  }
+});
+
+test('#307 requireFreshDaemonSource：stale＋這版不帶小幫手 ⇒ 放行、不問人、記得到未打包檔數與 #308、留痕', () => {
+  const dir = fakeCollectorRepo();
+  const prev = process.env.DAEMON_SOURCE_ALLOW_STALE;
+  try {
+    const appDir = join(dir, 'collector', 'cmd', 'arcrun-app');
+    execFileSync('python3', [join(appDir, 'daemon-version.py'), '--stamp'],
+      { cwd: appDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    writeFileSync(join(appDir, 'main.go'), 'package main\n// 沒重打包\n');
+    delete process.env.DAEMON_SOURCE_ALLOW_STALE;   // 不靠任何略過旗標
+    const base = { repo: dir, changelogRel: CHANGELOG_REL, targetName: 'prod' };
+
+    const r = requireFreshDaemonSource({ ...base, shipment: judgeDaemonShipment({ current: D(), live: D() }) });
+    assert.equal(r.waived, true);
+    assert.equal(r.unpackaged.files, 1);
+    assert.equal(r.unpackaged.ticket, REPACKAGE_TICKET);
+    assert.match(readFileSync(join(dir, GATE_LOG_REL), 'utf8'), /這版不帶小幫手/, '放行要留痕，且講明原因');
+
+    // 🔴 同一份源碼狀態，這次會換小幫手 ⇒ 照舊擋（嚴格路徑沒被放鬆）
+    const ships = judgeDaemonShipment({ current: D({ version: '0.18.119' }), live: D() });
+    assert.throws(() => requireFreshDaemonSource({ ...base, shipment: ships }), /這次出貨會換小幫手/);
+    // 🔴 不告知 shipment（不知道會不會出）⇒ 照舊擋
+    assert.throws(() => requireFreshDaemonSource(base), /(?<!v)0\.18\.0/);
+  } finally {
+    if (prev === undefined) delete process.env.DAEMON_SOURCE_ALLOW_STALE; else process.env.DAEMON_SOURCE_ALLOW_STALE = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('🔴 #307 unknown（問不出事實）即使這版不帶小幫手也照樣停', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'freshness-unk-'));
+  try {
+    assert.throws(() => requireFreshDaemonSource({
+      repo: dir, targetName: 'prod', shipment: { ships: false, reason: 'x' },
+    }), /無法判定|拿不到/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#307 assessDaemonShipment 對真的 git：origin/main 的 manifest 與工作樹比', () => {
+  const root = mkdtempSync(join(tmpdir(), 'freshness-assess-'));
+  try {
+    const remote = join(root, 'remote.git');
+    const work = join(root, 'work');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+    execFileSync('git', ['clone', '-q', remote, work], { stdio: 'ignore' });
+    writeFileSync(join(work, 'manifest.json'), JSON.stringify({ daemon: D() }));
+    git(work, ['add', '-A']);
+    git(work, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'live']);
+    git(work, ['push', '-q', 'origin', 'HEAD:main']);
+    assert.equal(assessDaemonShipment({ bundlesDir: work, branch: 'main' }).ships, false, '一樣 ⇒ 不會換');
+
+    writeFileSync(join(work, 'manifest.json'), JSON.stringify({ daemon: D({ version: '0.18.119' }) }));
+    assert.equal(assessDaemonShipment({ bundlesDir: work, branch: 'main' }).ships, true, '工作樹換了版本 ⇒ 會換');
+
+    const noRef = assessDaemonShipment({ bundlesDir: work, branch: 'nope' });
+    assert.equal(noRef.ships, true, '讀不到線上現況 ⇒ 嚴格當作會換');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

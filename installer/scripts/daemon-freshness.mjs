@@ -54,11 +54,97 @@
  * 閘要能被單獨演練，不必跑一次會 push 會部署的完整管線才知道它還通不通。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, appendFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, appendFileSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 
 /** 事實的產地：daemon 那條線唯一的版本產生器，也是指紋帳本的唯一寫入者。 */
 export const SOURCE_STATE_SCRIPT_REL = join('collector', 'cmd', 'arcrun-app', 'daemon-version.py');
+
+
+/**
+ * 源碼比成品新、而這次出貨又沒帶小幫手時，出貨報告要指向的「重打包票」。
+ * 🔴 這不是擋出貨的閘：它是**不讓未打包的改動被藏起來**的那條線（08-15 事故的另一面）。
+ *    票關掉、源碼卻還沒打包時，要來改這個常數指向新的那張。
+ */
+export const REPACKAGE_TICKET = 'inkstone/arcrun-rag#308';
+
+/**
+ * ── 2026-11-10（inkstone/arcrun-rag#307，leo：「問題是這次完全沒改到它」）──────────
+ *
+ * 源碼比成品新，**只有在這次出貨會把小幫手換給使用者時才是問題**——使用者按「檢查更新」
+ * 拿到的是 bundle 裡那顆成品，不是 collector/ 的源碼。這次出貨若連 bundle 委任的版本與
+ * 每個平台成品的 sha256 都跟該目標現在線上的一樣，使用者拿到的小幫手就**位元相同**，
+ * 源碼落後打包這件事這一版碰不到它，擋出貨只是讓總管為了一件無關的事被迫帶「略過」旗標
+ * （一天內被問了 leo 兩次：stage 1.4.150、prod 1.4.151）。
+ *
+ * 🔴 這裡**沒有放鬆**「會出小幫手時」的判準：委任版本不同、或任何平台成品 sha256 不同、
+ *   或查不到線上現況，一律回 `ships:true`，走原本最嚴的路（指紋對不上就停）。
+ *   放行的唯一條件是「量得到線上現況，而且逐項相同」。
+ */
+export function daemonShipmentView(daemon) {
+  const files = {};
+  if (daemon && typeof daemon === 'object') {
+    for (const [k, v] of Object.entries(daemon)) {
+      // version／built／notes 不是平台；平台成品＝帶 file 的物件
+      if (v && typeof v === 'object' && typeof v.file === 'string') files[k] = { file: v.file, sha256: v.sha256 || null };
+    }
+  }
+  return { version: (daemon && daemon.version) || null, files };
+}
+
+/**
+ * 純函式：這次出貨的小幫手，跟線上的是不是同一份？
+ *   ships:false ＝ 量得到線上現況，且版本與每個平台成品（檔名＋sha256）逐項相同
+ *   ships:true  ＝ 有任何一項不同、或任何一邊量不到 ⇒ 一律當作會出（嚴格）
+ */
+export function judgeDaemonShipment({ current, live, liveNote = '' }) {
+  if (!live) return { ships: true, reason: `查不到該目標線上的小幫手現況${liveNote ? `（${liveNote}）` : ''} ⇒ 當作會出` };
+  if (!current) return { ships: true, reason: 'bundle 的 manifest 沒有 daemon 欄位 ⇒ 當作會出' };
+  const a = daemonShipmentView(current);
+  const b = daemonShipmentView(live);
+  if (a.version !== b.version) {
+    return { ships: true, reason: `bundle 委任的小幫手版本（${a.version}）與線上（${b.version}）不同 ⇒ 這次會換` };
+  }
+  const keys = [...new Set([...Object.keys(a.files), ...Object.keys(b.files)])].sort();
+  for (const k of keys) {
+    const x = a.files[k]; const y = b.files[k];
+    if (!x || !y) return { ships: true, reason: `平台 ${k} 只有一邊有成品 ⇒ 這次會換` };
+    if (x.file !== y.file || x.sha256 !== y.sha256 || !x.sha256) {
+      return { ships: true, reason: `平台 ${k} 的成品與線上不同（${x.file} ${String(x.sha256).slice(0, 12)} vs ${y.file} ${String(y.sha256).slice(0, 12)}）⇒ 這次會換` };
+    }
+  }
+  return {
+    ships: false,
+    reason: `bundle 委任 ${a.version}，${keys.length} 個平台成品的 sha256 與線上逐一相同（比對 ${liveNote || '線上現況'}）`,
+  };
+}
+
+/**
+ * 碰磁碟與 git：讀這次要出的 manifest.daemon，與該目標線上（bundle repo 的 origin/<branch>）那份。
+ * 先 best-effort fetch 一次（離線／沒憑證就用現有的追蹤分支，並在 note 裡講明）。
+ * 讀不到一律回 live:null ⇒ judgeDaemonShipment 判成「會出」（嚴格）。
+ */
+export function assessDaemonShipment({ bundlesDir, branch = 'main' }) {
+  let current = null;
+  try { current = JSON.parse(readFileSync(join(bundlesDir, 'manifest.json'), 'utf8')).daemon || null; } catch { /* 交給 judge */ }
+  const ref = `origin/${branch}`;
+  let fetched = false;
+  try {
+    execFileSync('git', ['fetch', '-q', 'origin', branch], {
+      cwd: bundlesDir, stdio: 'ignore', timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    fetched = true;
+  } catch { /* 離線／憑證：用現有 ref，note 會講 */ }
+  let live = null;
+  let note = `${ref}${fetched ? '（剛 fetch）' : '（fetch 失敗，用本機既有的追蹤分支）'}`;
+  try {
+    const raw = execFileSync('git', ['show', `${ref}:manifest.json`], {
+      cwd: bundlesDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024,
+    });
+    live = JSON.parse(raw).daemon || null;
+  } catch { note += '，讀不到那份 manifest'; }
+  return { ...judgeDaemonShipment({ current, live, liveNote: note }), liveNote: note };
+}
 
 /** 留痕的地方（同 daemon-in-bundle-gate 的形狀，兩支閘各一份，不共用一個檔）。 */
 export const GATE_LOG_REL = join('installer', 'daemon-freshness-gate-log.md');
@@ -223,6 +309,7 @@ export function formatDaemonFreshnessProblem({ repo, result }) {
   lines.push(`           最後讓 ship.mjs 的 daemon-sync 把新產物搬進 bundle。`);
   lines.push(`     🔴 本閘**不會自動幫你戳版／打包**——那有成本也可能失敗，要你看到少了哪一步（Arcrun#93 紅線）。`);
   lines.push(`     明知故犯：DAEMON_SOURCE_ALLOW_STALE=1（要在 commit 說明理由）。`);
+  if (result.shipmentReason) lines.push(`     （這次出貨會換小幫手，所以不能放行：${result.shipmentReason}）`);
   return lines.join('\n');
 }
 
@@ -233,12 +320,13 @@ export function localStamp(now = new Date()) {
 }
 
 /** 追一行流水帳。**擋下與放行都記**（InkStoneCo#48）。回傳寫進去的那一行。 */
-export function appendGateLog(logPath, { ts, targetName, result, allowed = false }) {
+export function appendGateLog(logPath, { ts, targetName, result, allowed = false, waived = false }) {
   const n = result.changed.length + result.added.length + result.removed.length;
   const diff = result.status === 'ok'
     ? '—'
     : (result.perFileComparable && n ? `${n} 個檔（改 ${result.changed.length}／增 ${result.added.length}／刪 ${result.removed.length}）` : result.reason.split('\n')[0]);
-  const verdict = result.status === 'ok' ? '✅ 放行' : (allowed ? '⚠️ 明知故犯放行' : '⛔ 擋下');
+  const verdict = result.status === 'ok' ? '✅ 放行'
+    : (waived ? '✅ 放行（這版不帶小幫手，源碼有未打包改動）' : (allowed ? '⚠️ 明知故犯放行' : '⛔ 擋下'));
   const row = `| ${ts} | ${targetName || '(未指名)'} | ${result.version || '(問不出來)'} | `
     + `${result.recorded || '(無紀錄)'} | ${result.current || '(算不出)'} | ${verdict} | ${diff.replace(/\|/g, '/')} |`;
   mkdirSync(dirname(logPath), { recursive: true });
@@ -261,6 +349,8 @@ export function appendGateLog(logPath, { ts, targetName, result, allowed = false
 export function requireFreshDaemonSource({
   repo, changelogRel = null, targetName = null, allowDirty = false,
   logPath = null, now = new Date(),
+  // assessDaemonShipment() 的結果；不給＝不知道這次會不會出小幫手＝照最嚴的走。
+  shipment = null,
 }) {
   const read = readSourceState({ repo });
   const result = read.ok
@@ -268,11 +358,24 @@ export function requireFreshDaemonSource({
     : judgeSourceState({ repo, state: null, changelogRel });
   if (!read.ok) result.reason = read.error;
 
+  // 🔴 唯一的放行條件：指紋對不上（stale）、而且量得到這次出貨不會換掉使用者手上的小幫手。
+  //   unknown（問不出事實）與會出小幫手的 stale 一律照舊停。
+  const waived = result.status === 'stale' && !!shipment && shipment.ships === false;
+  if (result.status === 'stale' && shipment && shipment.ships) result.shipmentReason = shipment.reason;
+  if (waived) {
+    const n = result.changed.length + result.added.length + result.removed.length;
+    result.waived = true;
+    result.unpackaged = { files: n, ticket: REPACKAGE_TICKET };
+    result.shipmentReason = shipment.reason;
+    appendGateLog(logPath || join(repo, GATE_LOG_REL), {
+      ts: localStamp(now), targetName, result, waived: true,
+    });
+    return result;
+  }
+
   const env = process.env.DAEMON_SOURCE_ALLOW_STALE === '1';
   const allowed = result.status !== 'ok' && (env || allowDirty);
-  appendGateLog(logPath || join(repo, GATE_LOG_REL), {
-    ts: localStamp(now), targetName, result, allowed,
-  });
+  appendGateLog(logPath || join(repo, GATE_LOG_REL), { ts: localStamp(now), targetName, result, allowed });
   if (result.status === 'ok') return result;
 
   const msg = formatDaemonFreshnessProblem({ repo, result });
