@@ -1,8 +1,8 @@
-出貨報告　release 1.4.166／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.165／小幫手 0.18.118／安裝器 1.0.74）25 站　無增減）
-來源（stage）＝Arcrun@92e8cfd0c168　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.171／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.170／小幫手 0.18.118／安裝器 1.0.74）25 站　無增減）
+來源（stage）＝Arcrun@504d9ca0c77d　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝1eeed9b6d264；這版多帶 5 筆，票：inkstone/Arcrun#374 inkstone/Arcrun#383
+🧾 stage 佇列：上一顆（線上當時）＝8f0fedb8e16c；這版多帶 10 筆，票：inkstone/Arcrun#388 inkstone/Arcrun#386 inkstone/Arcrun#392 #393 #394 #390 #374 inkstone/Arcrun#387
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |
@@ -32,7 +32,7 @@
 | 24 | 讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit） | ✅ | （未出） |
 | 25 | 把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次） | ✅ | （未出） |
 
-真的做事的站：stage 23／25 站（與上次相同）　｜　prod （未出）
+真的做事的站：stage 23／25 站（上次 10 站）　｜　prod （未出）
 
 ⬜ 跳過的站（2 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
    · stage｜daemon-sync：bundle 已委任 0.18.118；內容是否真的到位由下一站 daemon-check 逐檔查證
