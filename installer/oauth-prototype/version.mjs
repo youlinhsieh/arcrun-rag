@@ -14,5 +14,5 @@
  *   ⇒ 2026-09-01 實測：兩條跑著不同版本的線回同一串 sha，兩個都對不上原始碼。
  *   烙在這個檔裡＝**它跟原始碼一起被部署**，部署動作只有一種，沒有第二處要記得。
  */
-export const INSTALLER_VERSION = '1.0.74';
-export const INSTALLER_SRC_SHA = '10d3694c950c1e5fa739cf12f8de6bc3daade690b12c61e2ae9bae7b67957456';
+export const INSTALLER_VERSION = '1.0.75';
+export const INSTALLER_SRC_SHA = '6b34eb474c14ace86acc5992bcd4a8ea23eed4ab70d64c57c660d972c3b42ba2';

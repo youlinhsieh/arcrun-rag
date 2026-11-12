@@ -7,5 +7,6 @@
   "fix/312-by-source-ghost": {"tip": "30347f0", "reason": "已被取代：同一修正已在 Arcrun main（8ea830c，69efd7d 重編）；此為改 base 前的舊 commit（inkstone/arcrun-rag#307）"},
   "perf/290-app-action-roundtrips": {"tip": "5517afa", "reason": "已被取代：往返 7 趟→3 趟的修正已在 Arcrun main（228d5d8 rebase 版、4749192 型別修正；main 的 portal-data.ts 有 prefetchAppAction）；此為 rebase 前的舊 commit（inkstone/arcrun-rag#307）"},
   "stage/299-with-246fnum": {"tip": "78f4a1e", "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#299 內容已在 Arcrun main（d216dbd、051c52b 等）（inkstone/arcrun-rag#307）"},
-  "stage/300-with-299-246fnum": {"tip": "3f27857", "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#300 內容已在 Arcrun main（98ef009、8e4bc14）（inkstone/arcrun-rag#307）"}
+  "stage/300-with-299-246fnum": {"tip": "3f27857", "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#300 內容已在 Arcrun main（98ef009、8e4bc14）（inkstone/arcrun-rag#307）"},
+  "arcrun-351-close": {"tip": "2ee4685", "reason": "已被取代：工人自述此分支 build(workers) commit 用符號連結 node_modules 重編而壞，改推 arcrun-351-close-v2 → arcrun-351-lists，已進 main 51d26b9（Arcrun#351 c1794211212620492、c1794216882706089）"}
 }

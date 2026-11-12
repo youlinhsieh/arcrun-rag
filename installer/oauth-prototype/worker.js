@@ -292,8 +292,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8d677ff374b726b6d3387da75b51ce515256aedc';
-const BUNDLE_BUILT = '2026-11-11'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@63e348fc70967ea4ad057d6601f40d2cb9c7bad2';
+const BUNDLE_BUILT = '2026-11-12'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -1379,6 +1379,7 @@ const GENERATION_CHECKS = [
   { n: 8, checks: [{ kind: 'index', name: 'idx_entries_content' }] },
   { n: 9, checks: [
       { kind: 'index', name: 'idx_entries_owner_created' }, // idx_entries_owner_type_created 在第 15 代被拆掉
+      { kind: 'index', name: 'idx_entries_owner_library_created' }, // Arcrun#390：列某庫的卡走 (owner, library, created_at)
       { kind: 'index', name: 'idx_entries_source' },
     ] },
   { n: 10, checks: [{ kind: 'table', name: 'entries_fts' }] },
