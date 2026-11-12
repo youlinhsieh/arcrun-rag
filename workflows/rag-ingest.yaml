@@ -145,8 +145,8 @@ config:
           const op = String(ev.old_path || '');
           const inNew = isDoc(p), inOld = isDoc(op);
           if (inNew && inOld) {
-            renamed_files.push({ path: p, old_path: op, page_name_old: pageOf(op),
-                                 wiki_page_old: 'wiki-' + pageOf(op),
+            renamed_files.push({ path: p, old_path: op, page_name_old: pageOf(op), page_name_old_enc: encodeURIComponent(pageOf(op)),
+                                 wiki_page_old: 'wiki-' + pageOf(op), wiki_page_old_enc: encodeURIComponent('wiki-' + pageOf(op)),
                                  source_uri_old: uriOf(op), source_uri_new: uriOf(p) });
           } else if (inNew && !inOld) {
             // 非 .md 改名成 .md ＝視同新增；r2_key 由 hash 導出（renamed＝同內容已上過 R2）
@@ -155,13 +155,13 @@ config:
             files.push({ path: p, page_name: pageOf(p), r2_key: keyOf(ev.source_hash), source_uri: uriOf(p) });
           } else if (!inNew && inOld) {
             // .md 改名成非 .md ＝視同刪檔（頁名不變式：page_name 永遠＝現行路徑導出，直接可查）
-            removed_files.push({ path: op, page_name: pageOf(op), wiki_page: 'wiki-' + pageOf(op), source_uri: uriOf(op) });
+            removed_files.push({ path: op, page_name: pageOf(op), page_name_enc: encodeURIComponent(pageOf(op)), wiki_page: 'wiki-' + pageOf(op), wiki_page_enc: encodeURIComponent('wiki-' + pageOf(op)), source_uri: uriOf(op) });
           }
         } else if (ev.type === 'removed') {
           if (!isDoc(p) || seen.has('r:' + p)) continue;
           seen.add('r:' + p);
           // 頁名不變式（renamed 分支維護 page_name＝現行路徑導出）→ 直接可查
-          removed_files.push({ path: p, page_name: pageOf(p), wiki_page: 'wiki-' + pageOf(p), source_uri: uriOf(p) });
+          removed_files.push({ path: p, page_name: pageOf(p), page_name_enc: encodeURIComponent(pageOf(p)), wiki_page: 'wiki-' + pageOf(p), wiki_page_enc: encodeURIComponent('wiki-' + pageOf(p)), source_uri: uriOf(p) });
         }
       }
       return { success: true,
@@ -268,7 +268,7 @@ config:
   list_renamed_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{renamed_file.page_name_old}}&owner_id=__NAMESPACE__&limit=500"
+    url: "__KBDB_BASE__/entries?page_name={{renamed_file.page_name_old_enc}}&owner_id=__NAMESPACE__&limit=500"
     headers:
       Accept: "application/json"
 
@@ -277,7 +277,7 @@ config:
   list_renamed_wiki:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{renamed_file.wiki_page_old}}&owner_id=__NAMESPACE__&limit=50"
+    url: "__KBDB_BASE__/entries?page_name={{renamed_file.wiki_page_old_enc}}&owner_id=__NAMESPACE__&limit=50"
     headers:
       Accept: "application/json"
 
@@ -394,7 +394,7 @@ config:
   list_dead_blocks:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{removed_file.page_name}}&owner_id=__NAMESPACE__&limit=500"
+    url: "__KBDB_BASE__/entries?page_name={{removed_file.page_name_enc}}&owner_id=__NAMESPACE__&limit=500"
     headers:
       Accept: "application/json"
 
@@ -403,7 +403,7 @@ config:
   list_dead_wiki:
     component: "__HTTP_REQ_URL__"
     method: GET
-    url: "__KBDB_BASE__/entries?page_name={{removed_file.wiki_page}}&owner_id=__NAMESPACE__&limit=50"
+    url: "__KBDB_BASE__/entries?page_name={{removed_file.wiki_page_enc}}&owner_id=__NAMESPACE__&limit=50"
     headers:
       Accept: "application/json"
 

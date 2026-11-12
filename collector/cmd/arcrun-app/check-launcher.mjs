@@ -286,7 +286,7 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
   check(await page.$eval('#libHead h1', (e) => e.textContent) === '我的知識庫', '帳號頁第一行＝帳號名稱');
   // 頁籤是圖示（#246 c18651）：名稱在 title／aria-label
   const tabs = await page.$$eval('.tabs .tab', (n) => n.map((e) => e.getAttribute('title')));
-  check(tabs.join('|') === '同步|資料夾|App|用量|設定', `帳號頁分頁齊全（實際：${tabs.join('|')}）`);
+  check(tabs.join('|') === '同步|資料夾|App|知識卡|用量|設定', `帳號頁分頁齊全（實際：${tabs.join('|')}）`);
   check(await page.$('[data-synclib]') !== null, '「立刻同步」在帳號頁');
   for (const [tab, marker] of [['folders', '加資料夾'], ['usage', '.udash'], ['ai', '這個知識庫']]) {
     await page.click(`[data-libtab="${tab}"]`);

@@ -31,7 +31,8 @@ import (
 //	1＝0.18.119（#294 首版）
 //	2＝827c8a2（加 Cloudflare／Anthropic 金鑰格式、環境變數式賦值）
 //	3＝網址裡的 token（Telegram bot token、`?secret_token=` 等查詢參數）
-const secretRedactRevision = 3
+//	4＝值有引號的賦值（`DB_PASSWORD = "…"`、JSON／YAML 的 `"password": "…"`）——2026-11-11 stage 實跑發現漏網
+const secretRedactRevision = 4
 
 // secretRescanBatch＝單輪最多處理幾份「有命中」的文件（含重推）。與 sourceRepairBatch 同一個精神。
 const secretRescanBatch = 20

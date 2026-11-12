@@ -1,8 +1,8 @@
-出貨報告　release 1.4.160／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.159／小幫手 0.18.118／安裝器 1.0.74）25 站　無增減）
-來源（stage）＝Arcrun@4db0e8a41a3c　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.166／小幫手 0.18.118／安裝器 1.0.74　共 25 站（上次（1.4.165／小幫手 0.18.118／安裝器 1.0.74）25 站　無增減）
+來源（stage）＝Arcrun@92e8cfd0c168　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝feb922a39cc5；這版多帶 14 筆，票：inkstone/Arcrun#345 inkstone/InkStoneCo#3 inkstone/Arcrun#380 #259 inkstone/content-pipeline#2 inkstone/Arcrun#333 inkstone/Arcrun#376
+🧾 stage 佇列：上一顆（線上當時）＝1eeed9b6d264；這版多帶 5 筆，票：inkstone/Arcrun#374 inkstone/Arcrun#383
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |

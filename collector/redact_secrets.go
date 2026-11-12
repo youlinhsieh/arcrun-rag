@@ -35,9 +35,9 @@ var secretMarkerRe = regexp.MustCompile(`〔機敏值，未萃取[^〕]*〕`)
 // assignValueRe：「密碼/密鑰賦值」只遮等號後面的值，留下鍵名（讀卡的人才知道那裡原本是什麼）。
 // 與 lint.go 同一條 pattern，多了兩個分組。
 // envAssignRe：環境變數式賦值，只遮值、留鍵名（與 lint.go「環境變數式密鑰賦值」同一條，多兩個分組）。
-var envAssignRe = regexp.MustCompile(`(\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*[[:space:]]*=[[:space:]]*)([^[:space:]<>"'` + "`" + `〔]{16,})`)
+var envAssignRe = regexp.MustCompile(`(\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*[[:space:]]*=[[:space:]]*)(["'][^[:space:]<>"'` + "`" + `_〔][^[:space:]<>"'` + "`" + `〔]{15,}|[^[:space:]<>"'` + "`" + `〔]{16,})`)
 
-var assignValueRe = regexp.MustCompile(`(?i)((?:pass(?:word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(?:ate)?[_-]?key)[[:space:]]*[:=][[:space:]]*)([^[:space:]<>"'〔]{6,})`)
+var assignValueRe = regexp.MustCompile(`(?i)((?:pass(?:word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(?:ate)?[_-]?key)["']?[[:space:]]*[:=][[:space:]]*)(["'][^[:space:]<>"'_〔][^[:space:]<>"'〔]{5,}|[^[:space:]<>"'〔]{6,})`)
 
 // botTokenRe：Telegram bot token 只遮「數字:token」，留下網址裡的 `bot` 前綴（與 lint.go 同一條，多兩個分組）。
 var botTokenRe = regexp.MustCompile(`(\bbot|\b)([0-9]{6,12}:[A-Za-z0-9_-]{30,})`)
@@ -161,12 +161,12 @@ func redactSecretText(text string, withLineRefs bool) (string, secretRedaction) 
 				continue
 			case "密碼/密鑰賦值":
 				if assignValueRe.MatchString(line) {
-					line = assignValueRe.ReplaceAllString(line, "${1}"+mk)
+					line = replaceAssignValue(assignValueRe, line, mk)
 					rep.add(p.label, lineNo)
 				}
 			case "環境變數式密鑰賦值":
 				if envAssignRe.MatchString(line) {
-					line = envAssignRe.ReplaceAllString(line, "${1}"+mk)
+					line = replaceAssignValue(envAssignRe, line, mk)
 					rep.add(p.label, lineNo)
 				}
 			case "Telegram bot token":
@@ -228,4 +228,20 @@ func secretNote(rep secretRedaction, relPath string) string {
 	return fmt.Sprintf("本檔有 %d 處疑似機敏值%s（%s）刻意沒有萃取，卡上以「〔機敏值，未萃取〕」標出位置。"+
 		"需要原值請開原檔 %s——只有看得到那台電腦上原檔的人看得到。被問到時請這樣說明，不要猜測原值。",
 		rep.Count, where, strings.Join(rep.Labels, "、"), relPath)
+}
+
+// replaceAssignValue 把「鍵＝值」的值換成指標。值若帶開頭引號（`DB_PASSWORD = "…"`）就把那個引號留著，
+// 指標放在引號裡面，後面的收尾引號原本就不在值裡、自然還在。
+func replaceAssignValue(re *regexp.Regexp, line, mk string) string {
+	return re.ReplaceAllStringFunc(line, func(m string) string {
+		sm := re.FindStringSubmatch(m)
+		if len(sm) < 3 {
+			return m
+		}
+		q := ""
+		if strings.HasPrefix(sm[2], `"`) || strings.HasPrefix(sm[2], "'") {
+			q = sm[2][:1]
+		}
+		return sm[1] + q + mk
+	})
 }

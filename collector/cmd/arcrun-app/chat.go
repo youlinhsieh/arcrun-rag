@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -38,6 +39,10 @@ type UIChatCard struct {
 	PageName string `json:"pageName"`
 	Excerpt  string `json:"excerpt"`
 	Cited    bool   `json:"cited"`
+	// AccIdx＝這張卡屬於左欄第幾個帳號（點出處可開卡）；對不到為 -1。
+	AccIdx int `json:"accIdx"`
+	// Proxied＝雲端連不到那個帳號，這張卡是小幫手在這台電腦直接查到的（#333）。
+	Proxied bool `json:"proxied,omitempty"`
 }
 
 // UIChatAccount＝每個帳號這次的查詢結果。OK=false 時 Reason／Detail 講為什麼。
@@ -153,10 +158,12 @@ func askCore(cfg *directConfig, question string, history []ChatTurn) UIChatResul
 					Detail: "這台電腦沒有「" + name + "」的有效登入，請輸入密碼登入一次"})
 				continue
 			}
-			if msg, needLogin := linkAccount(pbase, primary.PortalSession, i, acc, name); msg != "" {
+			if msg, needLogin, why := linkAccount(pbase, primary.PortalSession, i, acc, name); msg != "" {
 				reason := "link_failed"
 				if needLogin {
 					reason = "needs_login"
+				} else if why == "unreachable" || why == "timeout" {
+					reason = why // 主帳號的雲端連不到它（例如只開放公司網路）⇒ 之後由小幫手代查
 				}
 				skipped = append(skipped, UIChatAccount{AccIdx: i, Label: name, Reason: reason, Detail: msg})
 			}
@@ -221,8 +228,15 @@ func askCore(cfg *directConfig, question string, history []ChatTurn) UIChatResul
 		if name == "本帳號" {
 			name = pname
 		}
-		out.Cards = append(out.Cards, UIChatCard{N: c.N, Account: name, Library: c.Library, PageName: c.PageName, Excerpt: c.Excerpt, Cited: c.Cited})
+		ci := -1
+		if c.Account == "本帳號" {
+			ci = 0
+		} else if i, ok := nameIdx[name]; ok {
+			ci = i
+		}
+		out.Cards = append(out.Cards, UIChatCard{N: c.N, Account: name, Library: c.Library, PageName: c.PageName, Excerpt: c.Excerpt, Cited: c.Cited, AccIdx: ci})
 	}
+	proxyUnreachable(cfg, question, &out)
 	if status != http.StatusOK {
 		if status == http.StatusNotFound {
 			out.Error = "第一個知識庫還沒有跨帳號問答功能（雲端版本較舊，更新後就會有）"
@@ -271,29 +285,86 @@ func hasLink(rows []chatLinkRow, otherURL string) bool {
 
 // linkAccount：B（acc）發一把唯讀連結金鑰 → A（主帳號）收下。回傳 ("", false)＝成功。
 // 連結碼只存在這個函式內，不回傳、不寫 log。
-func linkAccount(pbase, psession string, idx int, acc accountCfg, name string) (msg string, needsLogin bool) {
+func linkAccount(pbase, psession string, idx int, acc accountCfg, name string) (msg string, needsLogin bool, reason string) {
 	status, raw, err := chatBearer(apiBaseOf(acc), http.MethodPost, "/portal/data/links/issue", acc.PortalSession,
 		map[string]any{"label": "小幫手跨帳號問答"}, appReadTimeout)
 	if err != nil {
-		return "連不上「" + name + "」：" + err.Error(), false
+		return "連不上「" + name + "」：" + err.Error(), false, ""
 	}
 	if status == http.StatusUnauthorized {
 		clearSession(idx)
-		return loginExpiredMsg(name), true
+		return loginExpiredMsg(name), true, ""
 	}
 	var issued struct {
 		Code string `json:"code"`
 	}
 	if status != http.StatusOK || json.Unmarshal(raw, &issued) != nil || issued.Code == "" {
-		return "「" + name + "」不能被連結：" + appErrMessage(status, raw), false
+		return "「" + name + "」不能被連結：" + appErrMessage(status, raw), false, ""
 	}
 	status, raw, err = chatBearer(pbase, http.MethodPost, "/portal/data/links", psession,
 		map[string]any{"code": issued.Code, "label": name}, appReadTimeout)
 	if err != nil {
-		return err.Error(), false
+		return err.Error(), false, ""
 	}
 	if status != http.StatusOK {
-		return "連結「" + name + "」失敗：" + appErrMessage(status, raw), false
+		var why struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(raw, &why)
+		return "連結「" + name + "」失敗：" + appErrMessage(status, raw), false, why.Reason
 	}
-	return "", false
+	return "", false, ""
+}
+
+// proxyUnreachable：雲端說連不到的帳號（只開放公司網路等），由小幫手用這台電腦的連線直接查
+// 一次它自己的 /portal/data/retrieve，把找到的卡補進出處（#333 驗收 2）。
+// 只代查「連不到」（unreachable／timeout）；連結被撤銷（revoked）是用戶的決定，不繞過。
+// 只有按送出才跑；LLM 作答仍在雲端，所以代查到的卡只列出處、不進答案文字。
+func proxyUnreachable(cfg *directConfig, question string, out *UIChatResult) {
+	for k := range out.Accounts {
+		x := &out.Accounts[k]
+		if x.OK || x.AccIdx < 1 || (x.Reason != "unreachable" && x.Reason != "timeout") {
+			continue
+		}
+		acc, err := accountAt(cfg, x.AccIdx)
+		if err != nil {
+			continue
+		}
+		name := accountName(acc)
+		if !sessionValid(acc) {
+			x.Reason, x.Detail = "needs_login", "雲端連不到「"+name+"」，要由這台電腦代查，請輸入密碼登入一次"
+			continue
+		}
+		status, raw, err := chatBearer(apiBaseOf(acc), http.MethodGet, "/portal/data/retrieve?q="+url.QueryEscape(question)+"&limit=5", acc.PortalSession, nil, appReadTimeout)
+		if err != nil {
+			x.Detail += "；這台電腦也連不上：" + err.Error()
+			continue
+		}
+		if status == http.StatusUnauthorized {
+			clearSession(x.AccIdx)
+			x.Reason, x.Detail = "needs_login", loginExpiredMsg(name)
+			continue
+		}
+		var b struct {
+			Cards []struct {
+				Library  string `json:"library"`
+				PageName string `json:"page_name"`
+				Content  string `json:"content"`
+			} `json:"cards"`
+		}
+		if status != http.StatusOK || json.Unmarshal(raw, &b) != nil {
+			x.Detail += "；這台電腦代查也失敗：" + appErrMessage(status, raw)
+			continue
+		}
+		for _, c := range b.Cards {
+			ex := []rune(c.Content)
+			if len(ex) > 600 {
+				ex = append(ex[:600], '…')
+			}
+			out.Cards = append(out.Cards, UIChatCard{N: len(out.Cards) + 1, Account: name, Library: c.Library,
+				PageName: c.PageName, Excerpt: string(ex), AccIdx: x.AccIdx, Proxied: true})
+		}
+		x.OK, x.Count, x.Reason = true, len(b.Cards), "via_helper"
+		x.Detail = "雲端連不到這個帳號，已由這台電腦直接查（只列出處，沒有 AI 整理的答案）"
+	}
 }

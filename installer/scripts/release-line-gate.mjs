@@ -63,6 +63,7 @@ import {
   publishesRelease, releaseVisibility, whyInternal, tagPrefixFor,
 } from './release-lines.mjs';
 import { hostForLine } from './line-source-repo.mjs';
+import { isEnvBlocked, listTagsViaGit } from './github-read.mjs';
 import { giteaWriteCredentialsFromRemote } from './gitea-release.mjs';
 import { releaseForgeBase } from './forge-config.mjs';
 import { releaseForgeApi } from './release-forge.mjs';
@@ -460,7 +461,7 @@ export function internalNotesFrom(latestPayload, root = REPO_ROOT) {
  * 🔴 D95：回傳的是一個物件（key＝repoSlug、value＝該 repo 的 tag 陣列）。
  *   以前只回一個陣列，因為前提是「一個目標一個 repo」——而那個前提正是本輪拆掉的東西。
  */
-export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl = fetch } = {}) {
+export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl = fetch, spawnImpl } = {}) {
   const R = target.releaseRecord;
   // 🔴 2026-09-02（#169）：**主機是逐條線問的，不是一個目標一個。**
   //   安裝器的版本物件永遠發在內部 Gitea（連 prod 出貨也一樣）⇒ 拿目標的 host 去問，
@@ -485,6 +486,12 @@ export async function fetchPublishedTags(target, { root = REPO_ROOT, fetchImpl =
     if (home.host === 'github') {
       const r = await fetchImpl(`https://api.github.com/repos/${slug}/releases?per_page=100`,
         { headers: { 'user-agent': 'release-line-gate', accept: 'application/vnd.github+json' } });
+      if (await isEnvBlocked(r)) {
+        // API 匿名讀被擋 ⇒ 退回 git 匿名讀 tag 名（只有名字；release 與 tag 不同，照實印出來）。
+        console.warn(`⚠️ ${slug}：GitHub API 匿名讀被擋（環境沒放行或匿名額度用完），改用 git 匿名讀 tag 名代替 release 清單（只比對版本號是否出現）。`);
+        out[slug] = listTagsViaGit(slug, { spawnImpl });
+        continue;
+      }
       if (!r.ok) throw new Error(`列 ${slug} 的 release 失敗：HTTP ${r.status}`);
       out[slug] = (await r.json()).map((x) => x.tag_name);
     } else if (home.host === 'gitea' && fetchImpl === fetch && releaseForgeApi().kind === 'ahub') {

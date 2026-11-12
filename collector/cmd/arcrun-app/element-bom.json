@@ -136,6 +136,11 @@
    "asks": "裝了哪些 App（App 頁）"
   },
   {
+   "id": "tab.cards",
+   "sel": ".tabs [data-libtab='cards']",
+   "asks": "這個帳號整理了哪些知識卡（知識卡頁）"
+  },
+  {
    "id": "tab.usage",
    "sel": ".tabs [data-libtab='usage']",
    "asks": "Cloudflare 用量怎麼樣（用量頁）"

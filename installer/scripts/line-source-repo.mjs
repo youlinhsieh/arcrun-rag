@@ -44,6 +44,7 @@
  * ③ **純函式 ＋ 可注入**：所有 git 動作都經過 `runner`，測試餵假的 runner 就能演練
  *    「宣告缺了」「clone 失敗」「沒有變更」「有變更」四種路徑，不必真的碰網路。
  */
+import { isEnvBlocked, repoExistsViaGit } from './github-read.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -448,7 +449,7 @@ export function normRemote(u) {
  *
  * @returns {Promise<boolean>}
  */
-export async function repoExists(host, repoSlug, { token, baseUrl, fetchImpl } = {}) {
+export async function repoExists(host, repoSlug, { token, baseUrl, fetchImpl, spawnImpl } = {}) {
   const headers = { accept: 'application/json', 'user-agent': 'line-source-repo' };
   let url;
   if (host === 'gitea') {
@@ -471,6 +472,8 @@ export async function repoExists(host, repoSlug, { token, baseUrl, fetchImpl } =
   }
   const r = await (fetchImpl || fetch)(url, { headers });
   if (r.status === 404) return false;
+  // API 匿名讀被擋（雲端 session 代理沒放行／共用出口匿名額度用完）≠ repo 不存在：退回 git 匿名讀（D20：讀一律匿名、不帶憑證）。
+  if (host === 'github' && await isEnvBlocked(r)) return repoExistsViaGit(repoSlug, { spawnImpl });
   if (!r.ok) throw new Error(`查詢 ${repoSlug} 是否存在失敗：HTTP ${r.status}（不猜，直接停）`);
   return true;
 }

@@ -459,7 +459,7 @@ type secretPattern struct {
 }
 
 var secretPatterns = []secretPattern{
-	{label: "密碼/密鑰賦值", re: regexp.MustCompile(`(?i)(pass(word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(ate)?[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]<>"']{6,}`)},
+	{label: "密碼/密鑰賦值", re: regexp.MustCompile(`(?i)(pass(word)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|priv(ate)?[_-]?key)["']?[[:space:]]*[:=][[:space:]]*(?:["'][^[:space:]<>"'_][^[:space:]<>"']{5,}|[^[:space:]<>"']{6,})`)},
 	{label: "私鑰 PEM 區塊", re: regexp.MustCompile(`-----BEGIN[[:space:]].*PRIVATE KEY-----`)},
 	// #294：加 Cloudflare（cfut_／cfat_／cfk_）與 Anthropic（sk-ant-）——2026-11-05 在 leo21c 的
 	// 一張卡上實見完整的 cfut_ token 沒被攔：鍵名 CLOUDFLARE_TOKEN_CC_COURSE 不含 pass／secret／api_key，
@@ -467,7 +467,7 @@ var secretPatterns = []secretPattern{
 	{label: "服務金鑰特徵", re: regexp.MustCompile(`(AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{20,}|sk_(live|test)_[0-9A-Za-z]{16,}|cf(ut|at|k)_[0-9A-Za-z]{30,}|sk-ant-[0-9A-Za-z_-]{20,})`)},
 	// 環境變數式賦值：大寫鍵名（含 TOKEN／SECRET／PASSWORD／API_KEY／PRIVATE_KEY 其一）＝值。
 	// 只認大寫鍵名：文件裡常見的 `ARCRUN_RAG_TOKEN`（只講名字、沒有 =）與 `<token>` 佔位符不會中。
-	{label: "環境變數式密鑰賦值", re: regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]<>"'` + "`" + `]{16,}`)},
+	{label: "環境變數式密鑰賦值", re: regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*[[:space:]]*=[[:space:]]*(?:["'][^[:space:]<>"'` + "`" + `_][^[:space:]<>"'` + "`" + `]{15,}|[^[:space:]<>"'` + "`" + `]{16,})`)},
 	// #294（2026-11-11）：網址裡的 token。leo21c 的 2026_10_21 卡上實見一把 Telegram bot token 寫在
 	// setWebhook 網址的路徑裡（…/bot<數字>:<token>/…），還帶 `secret_token=` 查詢參數，上面幾條都認不得：
 	// 路徑段不是「鍵=值」，`secret_token` 也不是 `secret` 緊接 `=`。

@@ -198,6 +198,7 @@ function goPage(p) {
 function ensureTabData(idx) {
   if (libTabOf(idx) === 'usage') refreshUsage(idx);
   if (libTabOf(idx) === 'apps') loadApps(idx);
+  if (libTabOf(idx) === 'cards' && !kc[idx]) kcLibs(idx);
 }
 // 預設落在儀表板（碼表／用量）頁：用戶開 App 第一件事是「它有沒有在跑」，儀表板有跳動的數字，一眼就知道（#246 c18824）。
 // 用戶手動切過頁籤就記住（只在這次開著 App 期間；重開 App 回到儀表板），不會在換帳號、回首頁再進來時被硬拉回去。
@@ -238,8 +239,9 @@ function chatBox(s) {
       ${r.answer ? `<pre class="chatans">${esc(r.answer)}</pre>` : ''}
       ${r.error && !r.needsLogin ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}
       ${(r.cards || []).length ? `<div class="chatsrc">${r.cards.map((c) => `
-        <span class="nm${c.cited ? ' cited' : ''}" title="${esc(c.excerpt || '')}">${c.n} · ${esc(c.account)} · ${esc(c.library)} · ${esc(c.pageName)}</span>`).join('')}</div>` : ''}
+        <${c.accIdx >= 0 ? 'button' : 'span'} class="nm${c.cited ? ' cited' : ''}" title="${esc(c.excerpt || '')}"${c.accIdx >= 0 ? ` data-kcopen="${c.accIdx}|${esc(c.library)}|${esc(c.pageName)}"` : ''}>${c.n} · ${esc(c.account)} · ${esc(c.library)} · ${esc(c.pageName)}</${c.accIdx >= 0 ? 'button' : 'span'}>`).join('')}</div>` : ''}
       ${bad.length ? `<div class="chatsrc">${bad.map((x) => `<span class="nchip" title="${esc(x.detail || '')}">${esc(x.label)}<b>⚠</b></span>`).join('')}</div>` : ''}
+      ${(r.accounts || []).filter((x) => x.reason === 'via_helper').map((x) => `<div class="d one">${esc(x.label)}：${esc(x.detail || '')}</div>`).join('')}
       ${logins.map((x) => `
         <div class="chatlogin"><span class="nm">${esc(x.label)}</span>
           <input type="password" class="chatpw" data-chatacc="${x.accIdx}" placeholder="密碼" aria-label="${esc(x.label)} 的密碼"/>
@@ -1004,10 +1006,11 @@ const TAB_ICONS = {
   sync: tabSvg('<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9l-5 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/>'),
   folders: tabSvg('<path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/>'),
   apps: tabSvg('<circle cx="6" cy="6" r="1.4"/><circle cx="12" cy="6" r="1.4"/><circle cx="18" cy="6" r="1.4"/><circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/><circle cx="6" cy="18" r="1.4"/><circle cx="12" cy="18" r="1.4"/><circle cx="18" cy="18" r="1.4"/>'),
+  cards: tabSvg('<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>'),
   usage: tabSvg('<path d="M4.5 17a8 8 0 1 1 15 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15" r="1.2"/>'),
   ai: tabSvg('<path d="M14.5 5.5a4 4 0 0 0-5 5L4 16l2 2 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-2-.5-.5-2Z"/>'),
 };
-const LIB_TABS = [['sync', '同步'], ['folders', '資料夾'], ['apps', 'App'], ['usage', '用量'], ['ai', '設定']];
+const LIB_TABS = [['sync', '同步'], ['folders', '資料夾'], ['apps', 'App'], ['cards', '知識卡'], ['usage', '用量'], ['ai', '設定']];
 
 function libPortalURL(a) {
   return 'https://' + a.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/';
@@ -1131,6 +1134,7 @@ function libBodyHtml(s, a, idx) {
   switch (libTabOf(idx)) {
     case 'folders': return tabFolders(s, a, idx);
     case 'apps': return tabApps(a, idx);
+    case 'cards': return tabCards(idx);
     case 'usage': return tabUsage(s, a);
     case 'ai': return tabAI(a);
     default: return tabSync(s, a);
@@ -1221,6 +1225,91 @@ function tabApps(a, idx) {
       </div>
     </div>
     `;
+}
+
+
+// ── 知識卡分頁（inkstone/arcrun-rag#333）：依帳號、庫、目錄瀏覽，點進去看整張卡 ──
+// 薄殼：資料全來自雲端既有的 /portal/data/map、library-cards、card，各帳號用自己已存的 session。
+// 只有點進去才問網路，不輪詢；畫面暫存只活在這個視窗的記憶體裡。
+// 還沒有的（雲端沒有對應能力）：卡上的「被問過幾次」、對卡片回覆「補充／內容不對」——見票。
+const kc = {};   // accIdx -> { view:'libs'|'cat'|'card', libs, lib, cat, card, busy }
+async function kcRun(idx, view, call, key) {
+  const cur = kc[idx] = Object.assign(kc[idx] || {}, { view, busy: true });
+  if (page === 'lib:' + idx) renderPage();
+  let res;
+  try { res = await call(); } catch (ex) { res = { error: errText(ex) }; }
+  cur[key] = res; cur.busy = false;
+  if (page === 'lib:' + idx) renderPage();
+}
+function kcLibs(idx) { return kcRun(idx, 'libs', () => go.ListCardLibraries(idx), 'libs'); }
+function kcCatalog(idx, lib) { (kc[idx] = kc[idx] || {}).lib = lib; return kcRun(idx, 'cat', () => go.ListLibraryCards(idx, lib), 'cat'); }
+function kcCard(idx, lib, name) { (kc[idx] = kc[idx] || {}).lib = lib; return kcRun(idx, 'card', () => go.GetLibraryCard(idx, lib, name), 'card'); }
+function kcBack(idx, to) {
+  const c = kc[idx];
+  // 從出處直接開卡進來時，上一層還沒載過：現問一次，不顯示空白
+  if (to === 'libs') { if (c.libs) { c.view = 'libs'; renderPage(); } else kcLibs(idx); }
+  else if (c.cat && c.cat.library === c.lib) { c.view = 'cat'; renderPage(); }
+  else kcCatalog(idx, c.lib);
+}
+function kcReload(idx) {
+  const c = kc[idx] || {};
+  if (c.view === 'card' && c.card) kcCard(idx, c.card.library, c.card.pageName);
+  else if (c.view === 'cat' && c.lib) kcCatalog(idx, c.lib);
+  else kcLibs(idx);
+}
+// 從首頁問答的出處點進來：直接開那張卡。
+function kcOpenFromChat(idx, lib, name) {
+  libTab[idx] = 'cards';
+  goPage('lib:' + idx);
+  kcCard(idx, lib, name);
+}
+async function kcLogin(btn) {
+  const idx = Number(btn.dataset.kclogin);
+  const pw = btn.closest('.chatlogin').querySelector('.chatpw');
+  btn.disabled = true;
+  try { await go.PortalLogin(idx, pw.value); kcReload(idx); }
+  catch (ex) {
+    btn.disabled = false;
+    const c = kc[idx]; const r = c && (c[c.view]);
+    if (r) { r.error = errText(ex); renderPage(); }
+  }
+}
+function kcLoginBox(idx, a, r) {
+  return `<div class="card"><div class="err" role="alert">${esc(r.error)}</div>
+    <div class="chatlogin"><span class="nm">${esc(a.name)}</span>
+      <input type="password" class="chatpw" placeholder="密碼" aria-label="${esc(a.name)} 的密碼"/>
+      <button data-kclogin="${idx}">登入</button></div></div>`;
+}
+function tabCards(idx) {
+  const a = (state.accounts || [])[idx] || { name: '' };
+  const c = kc[idx];
+  if (!c) return `<div class="card"><div class="d">…</div></div>`;
+  const cur = c[c.view];
+  if (c.busy && !cur) return `<div class="card"><div class="d">…</div></div>`;
+  if (!cur) return `<div class="card"><div class="d">…</div></div>`;
+  if (cur.needsLogin) return kcLoginBox(idx, a, cur);
+  if (cur.error) {
+    return `<div class="card">${more('看不到知識卡', esc(cur.error))}<div class="acts"><button id="kcRetry">重試</button></div></div>`;
+  }
+  if (c.view === 'libs') {
+    const L = cur.libraries || [];
+    if (!L.length) return `<div class="card"><div class="d one">${esc(cur.note || '還沒有知識庫')}</div></div>`;
+    return `<div class="kclist">${L.map((l) => `
+      <button class="kcrow" data-kclib="${esc(l.name)}"><span class="nm">${esc(l.name)}</span>${l.entries >= 0 ? `<span class="s">${l.entries}</span>` : ''}</button>`).join('')}</div>`;
+  }
+  if (c.view === 'cat') {
+    const cards = cur.cards || [];
+    return `<div class="kchead"><button class="icbtn plain" data-kcback="libs" title="回庫清單" aria-label="回庫清單">‹</button>
+        <span class="nm">${esc(cur.library)}</span><span class="s">${cur.total}</span></div>
+      <div class="kclist">${cards.map((x) => `
+        <button class="kcrow" data-kccard="${esc(x.pageName)}" data-kcl="${esc(cur.library)}">
+          <span class="nm">${esc(x.pageName)}</span>${x.gloss ? `<span class="d one">${esc(x.gloss)}</span>` : ''}</button>`).join('')}
+        ${cur.total > cards.length ? `<div class="d one">${cards.length}/${cur.total}</div>` : ''}</div>`;
+  }
+  return `<div class="kchead"><button class="icbtn plain" data-kcback="cat" title="回目錄" aria-label="回目錄">‹</button>
+      <span class="nm">${esc(cur.pageName)}</span></div>
+    <div class="card kccard">${(cur.blocks || []).map((b) => `<pre class="kcblock">${esc(b)}</pre>`).join('')}
+      ${cur.origin ? `<div class="d one" title="原文位置">${esc(cur.origin)}</div>` : ''}</div>`;
 }
 
 function tabUsage(s, a) {
@@ -1688,6 +1777,14 @@ function wire(root) {
     cq.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) askChat(); };
   }
   all('[data-chatlogin]').forEach((b) => { b.onclick = () => chatLogin(b); });
+  all('[data-kcopen]').forEach((b) => {
+    b.onclick = () => { const p = b.dataset.kcopen.split('|'); kcOpenFromChat(Number(p[0]), p[1], p.slice(2).join('|')); };
+  });
+  all('[data-kclib]').forEach((b) => { b.onclick = () => kcCatalog(Number(page.slice(4)), b.dataset.kclib); });
+  all('[data-kccard]').forEach((b) => { b.onclick = () => kcCard(Number(page.slice(4)), b.dataset.kcl, b.dataset.kccard); });
+  all('[data-kcback]').forEach((b) => { b.onclick = () => kcBack(Number(page.slice(4)), b.dataset.kcback); });
+  all('[data-kclogin]').forEach((b) => { b.onclick = () => kcLogin(b); });
+  on('kcRetry', () => kcReload(Number(page.slice(4))));
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
   on('obConnect', showConnect);

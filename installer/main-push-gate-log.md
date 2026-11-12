@@ -444,3 +444,15 @@
 | 2026-11-11 09:33:58 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 3ec3ae3→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-11 09:56:59 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 3315291→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-11 10:20:17 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 703cdbb→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 10:43:02 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-11-11 10:44:11 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-11-11 10:53:44 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 9da981d→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 11:36:46 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ⛔ 擋下 | 機械檢查：不是 fast-forward：遠端 main 的 572cf7f 不在 HEAD 的歷史裡（會改寫遠端歷史） |
+| 2026-11-11 11:37:38 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 572cf7f→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 12:28:09 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 08ffe75→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 13:10:52 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6eb306d→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 13:55:14 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ⛔ 擋下 | 機械檢查：不是 fast-forward：遠端 main 的 6d80cb9 不在 HEAD 的歷史裡（會改寫遠端歷史） |
+| 2026-11-11 13:56:01 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6d80cb9→HEAD，25 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 14:03:17 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | ship/374-stage165 | ✅ 放行 | 目標不是 main／master |
+| 2026-11-11 14:28:38 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 338f5fd→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-11 14:35:12 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | ship/374-stage166 | ✅ 放行 | 目標不是 main／master |
