@@ -110,7 +110,10 @@ test('🔴 真的那份登錄簿：stage 與 prod 都宣告了 delivery，而且
   assert.ok(stage.delivery && stage.delivery.movingPointer, 'stage 必須宣告 delivery（#79 第一個驗收條件）');
   assert.ok(prod.delivery && prod.delivery.movingPointer);
   assert.equal(stage.delivery.refreshKind, '強制重讀');   // Gitea raw 沒有作廢端點
-  assert.equal(prod.delivery.refreshKind, '作廢端點');    // jsDelivr 有
+  // 2026-11-13（inkstone/Arcrun#396）：prod 改驗桌面小幫手真的會讀的 raw.githubusercontent（selfupdate.go manifestBase）；
+  // jsDelivr @main 對這個 repo 回 403（套件超過 50 MB），raw 沒有作廢端點
+  assert.equal(prod.delivery.refreshKind, '強制重讀');
+  assert.match(prod.delivery.movingPointer, /^https:\/\/raw\.githubusercontent\.com\/youlinhsieh\/arcrun-rag-bundles\/main\/manifest\.json$/);
   assert.equal(selftest.delivery, null);
   // `fullChain` 是「這一站只有 prod 會執行」的開關本身——它不准再存在（死旗標＝錯誤信號）
   assert.equal(prod.verify.fullChain, undefined);

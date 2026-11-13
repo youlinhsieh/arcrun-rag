@@ -471,9 +471,16 @@
           "⇒ 就算路徑對了也沒有意義。真正要緊的只有 `@main` 那份 manifest。",
           "那兩個安裝檔是不是這一版，由 verify 站逐位元比對（它抓的是真的下載網址）。"
         ],
-        "movingPointer": "https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@main/manifest.json",
-        "refreshUrl": "https://purge.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@main/manifest.json",
-        "refreshKind": "作廢端點",
+        "_2026_11_13": [
+          "🔴 2026-11-13 改指 raw.githubusercontent（inkstone/Arcrun#396 出 1.4.176 時實撞）：",
+          "jsDelivr `@main` 對這個 repo 回 403「Package size exceeded the configured limit of 50 MB」，",
+          "而桌面小幫手的檢查更新早就不讀它——collector/cmd/arcrun-app/selfupdate.go 的 manifestBase",
+          "是 raw.githubusercontent.com/…/main/manifest.json。這一站要驗的是使用者真的會讀的那條，",
+          "所以改成那條；raw 沒有作廢端點 ⇒ 強制重讀（no-cache＋快取破壞參數）。上面舊說明是當時的狀態。"
+        ],
+        "movingPointer": "https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/main/manifest.json",
+        "refreshUrl": "https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/main/manifest.json",
+        "refreshKind": "強制重讀",
         "waitMs": 20000,
         "maxTries": 4
       },
