@@ -12,8 +12,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	neturl "net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,30 +54,42 @@ func normalizePortalURL(raw string) (string, error) {
 	if strings.HasPrefix(host, "arcrun-rag-ui.") {
 		host = "arcrun-cypher-executor." + strings.TrimPrefix(host, "arcrun-rag-ui.")
 	}
-	return "https://" + host, nil
+	// 企業私有雲（inkstone/arcrun-rag#335）：公司內網常常是 http://主機:埠，且位址是管理員自己訂的，
+	// 不是 CF 的 workers.dev。用戶**明確打了 http://** 就照用（不替他改成 https 然後連不上）；
+	// 沒打協定一律補 https（現實世界的網址全是 https，不必逼用戶記得打）。
+	scheme := "https"
+	if strings.EqualFold(u.Scheme, "http") {
+		scheme = "http"
+	}
+	return scheme + "://" + host, nil
 }
 
+// fetchConfigByLogin：帳密換連線設定。
+//
+// 企業私有雲（inkstone/arcrun-rag#335）：網頁（portal）與 API 常常是不同位址（例：內網 :8080 與 :8081），
+// 用戶手上通常是網頁網址。打過去不是設定回應時，讀 portal 自己附的 `/config.js`（`apiBase`）找到 API 再打一次。
+// 只在「對方不像 API」（非 JSON／404／405）時才找——帳密錯、被鎖定這類真的回應不重打，避免帳密被多送一次。
 func fetchConfigByLogin(portalURL, email, password string) (*daemonConfigResp, error) {
 	base, err := normalizePortalURL(portalURL)
 	if err != nil {
 		return nil, err
 	}
-	body, _ := json.Marshal(map[string]string{"email": strings.TrimSpace(email), "password": password})
-	req, err := http.NewRequest(http.MethodPost, base+"/portal/daemon/config", bytes.NewReader(body))
+	out, status, err := postDaemonConfig(base, email, password)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
-	if err != nil {
-		return nil, errors.New("連不上這個網址——請確認網址正確、網路正常")
+	if out == nil && (status == 0 || status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusOK) {
+		if api := discoverAPIBase(base); api != "" && api != base {
+			out, status, err = postDaemonConfig(api, email, password)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
-	defer res.Body.Close()
-	var out daemonConfigResp
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+	if out == nil {
 		return nil, errors.New("這個網址不像是 Arcrun RAG 知識庫，請再確認一次")
 	}
-	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return nil, errors.New("帳號或密碼不對——用你在知識庫網站設定的那組")
 	}
 	if !out.Success {
@@ -84,7 +98,51 @@ func fetchConfigByLogin(portalURL, email, password string) (*daemonConfigResp, e
 		}
 		return nil, errors.New("連線失敗，請稍後再試一次")
 	}
-	return &out, nil
+	return out, nil
+}
+
+// postDaemonConfig 打一次 /portal/daemon/config。回應不是 JSON 設定格式時 out=nil（status 仍回，給呼叫端判斷要不要找 API）。
+func postDaemonConfig(base, email, password string) (*daemonConfigResp, int, error) {
+	body, _ := json.Marshal(map[string]string{"email": strings.TrimSpace(email), "password": password})
+	req, err := http.NewRequest(http.MethodPost, base+"/portal/daemon/config", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, 0, errors.New("連不上這個網址——請確認網址正確、網路正常")
+	}
+	defer res.Body.Close()
+	var out daemonConfigResp
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return nil, res.StatusCode, nil
+	}
+	return &out, res.StatusCode, nil
+}
+
+var apiBaseInConfigJS = regexp.MustCompile(`apiBase\s*:\s*["']([^"']+)["']`)
+
+// discoverAPIBase 讀 portal 的 `/config.js`（安裝器／私有雲映像檔注入的 `apiBase`）。找不到回 ""。
+func discoverAPIBase(base string) string {
+	res, err := (&http.Client{Timeout: 10 * time.Second}).Get(base + "/config.js")
+	if err != nil {
+		return ""
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return ""
+	}
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 8<<10))
+	m := apiBaseInConfigJS.FindSubmatch(raw)
+	if m == nil {
+		return ""
+	}
+	api, err := normalizePortalURL(string(m[1]))
+	if err != nil {
+		return ""
+	}
+	return api
 }
 
 // Connect 是前端「連線」按鈕的入口：帳密換設定 → append 成新帳號（或更新既有同實例帳號）。

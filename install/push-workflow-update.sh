@@ -24,6 +24,9 @@
 #   HTTPREQ=https://arcrun-http-request.<subdomain>.workers.dev \
 #   CODE=https://arcrun-code.<subdomain>.workers.dev \
 #   bash install/push-workflow-update.sh rag_ingest_card rag_takedown_direct
+#   企業私有雲：CYPHER 填 API 位址（例 http://127.0.0.1:8081），KBDB／HTTPREQ／CODE 填引擎內部位址
+#   （例 http://arcrun-kbdb.priv.local、http://arcrun-http-request.priv.local、http://arcrun-code.priv.local），
+#   另設 ARCRUN_BEARER（Portal 登入換到的 kbdb_key）。
 #   （不給 workflow 名 = 推 installer/src/workflows.json 裡全部）
 #
 # 動手前務必 `acr whoami`／`arcrun_whoami` 核對 CF 帳號／namespace／cypher 主機三項全對
@@ -74,10 +77,15 @@ def apply_subs(obj, subs):
     return json.loads(s)
 
 def api(path, body):
+    headers = {"Content-Type": "application/json", "X-Arcrun-API-Key": NS,
+               "User-Agent": "curl/8.5.0"}  # WAF 對 python UA 403（agent-memory 工具坑）
+    # 企業私有雲（inkstone/arcrun-rag#335）：打雲端要同時帶 Bearer 憑證（Arcrun#399）。
+    # 憑證用環境變數傳（ARCRUN_BEARER），不進命令列、不落檔。
+    if os.environ.get("ARCRUN_BEARER"):
+        headers["Authorization"] = "Bearer " + os.environ["ARCRUN_BEARER"]
     req = urllib.request.Request(
         CYPHER + path, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "X-Arcrun-API-Key": NS,
-                 "User-Agent": "curl/8.5.0"},  # WAF 對 python UA 403（agent-memory 工具坑）
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())

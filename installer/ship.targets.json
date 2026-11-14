@@ -95,6 +95,7 @@
         "seedFrom": "~/.arcrun-ship/bundles-stage"
       },
       "daemonDist": "dist",
+      "daemonChannel": "stage",
       "pin": null,
       "installer": null,
       "verify": null,
@@ -122,6 +123,12 @@
         "branch": "main"
       },
       "daemonDist": "dist-stage",
+      "daemonChannel": "stage",
+      "_daemonChannel": [
+        "inkstone/arcrun-rag#341（2026-11-14）：兩條通道各自認自己發過的最新小幫手版——stage 認 stage 通道發過的（0.18.119），prod 認正式站發過的（0.18.118）。",
+        "判別在 collector/CHANGELOG.md 版本段標題括號裡的「僅 stage」字樣（daemon-notes.mjs 的 STAGE_ONLY_MARK）：有它＝只在 stage 發過，prod 的閘看不見；沒有＝兩邊都看得見。",
+        "沒宣告本欄的目標視同 prod（最嚴）。正式站補發該版時，把標題裡的「・僅 stage」拿掉即可。"
+      ],
       "_daemonDist": [
         "inkstone/arcrun-rag#135（2026-11-12）：小幫手的 Stage 身分（Arcrun Stage.app）。daemon-sync 從 collector/cmd/arcrun-app/<daemonDist>/ 取安裝檔。",
         "stage 取 dist-stage（`CHANNEL=stage ./build-dmg.sh` 的產物），prod 取 dist——同一個 commit 為各目標各打一次，DMG 檔名相同、內容不同，所以必須分目錄。",
@@ -395,6 +402,7 @@
       "publish": true,
       "requiresArm": true,
       "daemonDist": "dist",
+      "daemonChannel": "prod",
       "armTicket": {
         "repo": "InkStoneCo",
         "coversMainPush": true,

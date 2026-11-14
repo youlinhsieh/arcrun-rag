@@ -3,7 +3,8 @@
   "出貨紀錄：版號 → 當初出貨用的 Arcrun commit → 內容指紋（inkstone/arcrun-rag#302）。出貨線每趟成功落帳時自動寫入，不靠人記得。",
   "prod 憑它出「leo 簽的那一版」：`ship.mjs --target prod --ship-version <版號>`，不受 stage 之後又出幾版影響。",
   "1.4.145 這一筆是補登的（出貨線在這本帳出現之前出的）：commit 取自 ship-report.json 的 sourceCommit，指紋取自 release-state.json 當時的值。",
-  "1.4.181 是補登、未完成的一筆：出貨在第 18 站（docs）停下，stage 沒有換到它（shipped 為空）；不要拿它出 prod，內容在 1.4.182。"
+  "1.4.181 是補登、未完成的一筆：出貨在第 18 站（docs）停下，stage 沒有換到它（shipped 為空）；不要拿它出 prod，內容在 1.4.182。",
+  "1.4.194 是補登、沒有內容指紋的一筆：從雲端用 Arcrun 的 stage-deploy-artifacts.py 直推 youlin stage（只換 cypher-executor，Arcrun@019efb54），沒走 ship.mjs，所以沒有指紋；不要拿它出 prod，出 prod 要走完整出貨線重出一版（inkstone/Arcrun#334）。"
  ],
  "releases": {
   "1.4.145": {
@@ -363,7 +364,24 @@
    "fingerprint": "45cc86ba6cd63d141d3b87a64b1d066ac3eca3dee911d068ab01e7e1e4a52001",
    "built": "2026-11-14",
    "shipped": {
-    "stage": "2026-11-14T01:40:45.936Z"
+    "stage": "2026-11-14T01:40:45.936Z",
+    "prod": "2026-11-14T05:57:14.936Z"
+   }
+  },
+  "1.4.194": {
+   "commit": "019efb5493a2680c5f273ef400e87e7f3fca758e",
+   "fingerprint": "",
+   "built": "2026-11-14",
+   "shipped": {
+    "stage": "2026-11-14T05:39:37.921Z"
+   }
+  },
+  "1.4.195": {
+   "commit": "174e6987c5833f2afe7339a4f9ffca95a260046b",
+   "fingerprint": "0e94adc9bd1db6e34f05cb480c7e9241c3cb999d600e9b65e147d7da0db499a2",
+   "built": "2026-11-14",
+   "shipped": {
+    "stage": "2026-11-14T07:26:11.195Z"
    }
   }
  }

@@ -70,6 +70,11 @@ const TAIL = '（細節見說明文件）';
  *   · 它是**宣告出來的事實**，不是猜的：DAEMON_LINE 說了算，改線就改那個檔
  */
 
+/** 版本段標題括號裡的這個字樣 ＝ 這一版只在 stage 通道發佈過，正式站還沒有（例 `## 0.18.119（2026-11-12・僅 stage）`）。 */
+export const STAGE_ONLY_MARK = '僅 stage';
+/** 小幫手的發佈通道。stage 認自己通道發過的最新版，prod 只認正式站發過的（inkstone/arcrun-rag#341）。 */
+export const DAEMON_CHANNELS = ['stage', 'prod'];
+
 /** `DAEMON_LINE` 的合法形狀。不是 `MAJOR.MINOR` 就不是一條線，別猜。 */
 export const DAEMON_LINE_RE = /^\d+\.\d+$/;
 
@@ -91,14 +96,21 @@ export function readDaemonLine(linePath = DAEMON_LINE_PATH) {
  *   呼叫端該把「問不出線」當成斷，不是當成「用預設值繼續」。
  * @returns {RegExp} 第 1 組＝版本號**原樣**（`v0.18.30` 或 `0.18.31`，怎麼寫就怎麼回）
  */
-export function daemonReleasedRe(line) {
+export function daemonReleasedRe(line, channel = 'prod') {
   if (!DAEMON_LINE_RE.test(String(line ?? ''))) {
     throw new Error(
       `daemonReleasedRe 需要一條版本線（MAJOR.MINOR，例 0.18），拿到的是 ${JSON.stringify(line)}。\n` +
       `  ⇒ 版本線的真相源是 collector/DAEMON_LINE。讀不到它就沒有判別器，\n` +
       `    此時該讓呼叫端「斷得很大聲」，不是塞一個預設值繼續往下走。`);
   }
-  return new RegExp(`^## (v?${line.replace(/\./g, '\\.')}\\.\\d+)（`, 'm');
+  if (!DAEMON_CHANNELS.includes(channel)) {
+    throw new Error(`daemonReleasedRe 不認得通道 ${JSON.stringify(channel)}（只有 ${DAEMON_CHANNELS.join('／')}）。`);
+  }
+  const head = `^## (v?${line.replace(/\./g, '\\.')}\\.\\d+)（`;
+  // 🔴 通道（inkstone/arcrun-rag#341）：標題括號裡寫了 STAGE_ONLY_MARK ＝ 這一版只在 stage 通道發過。
+  //   prod 看不見它（往下找到正式站真的發過的那一版）；stage 兩種都看得見。
+  //   預設是 prod＝最嚴：沒指名通道的呼叫端不會誤帶一個正式站沒發過的版號。
+  return new RegExp(channel === 'stage' ? head : `${head}(?![^）\\n]*${STAGE_ONLY_MARK})`, 'm');
 }
 
 /**

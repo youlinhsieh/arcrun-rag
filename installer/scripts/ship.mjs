@@ -266,6 +266,10 @@ if (!TARGET_NAME || !cfg.targets[TARGET_NAME]) {
 }
 const T = cfg.targets[TARGET_NAME];
 const DAEMON_DIST_REL = daemonDistRelFor(TARGET_NAME, T);
+// 🔴 inkstone/arcrun-rag#341：這個目標認**哪個通道**發過的最新小幫手版（登錄簿 `daemonChannel`）。
+//   stage 認 stage 通道發過的（含 changelog 標「僅 stage」的版本段），prod 只認正式站發過的。
+//   沒宣告＝prod（最嚴），不會誤帶一個正式站沒發過的版號。
+const DAEMON_CHANNEL = T.daemonChannel || 'prod';
 
 // 🔴 不變式：出貨線只准指 inkstone org，不准指 Leo/ 個人 namespace
 //   （inkstone/InkStoneCo#98 c7795，leo 2026-09-18：「Leo 的東西就是我的，org 的東西就是 CC 的」）。
@@ -1570,7 +1574,7 @@ const STEPS = [
   //   現在改問「這一段在不在 DAEMON_LINE 宣告的那條線上」：裸號與舊的帶 v 都認得，
   //   雲端那條 `1.4.x` 一樣進不來，而且 DAEMON_LINE 讀不出來時**這一站直接斷**。
   const clText = readFileSync(clPath, 'utf8');
-  const top = clText.match(daemonReleasedReFor(REPO_ROOT));
+  const top = clText.match(daemonReleasedReFor(REPO_ROOT, DAEMON_CHANNEL));
   if (!top) {
     const any = clText.match(ANY_RELEASED_RE);
     throw new Error(
@@ -1706,6 +1710,7 @@ const STEPS = [
     bundlesDir: ctx.bundlesDir,
     changelogRel: DAEMON_CHANGELOG_REL,
     targetName: TARGET_NAME,
+    channel: DAEMON_CHANNEL,
   });
   return { status: 'done', detail: [
     `daemon ${r.version} 真的在成品裡（源碼樹／bundle 版本一致）`,
@@ -1757,6 +1762,7 @@ const STEPS = [
     // selftest（不推、不部署、沒有任何人會拿到東西）才允許指紋對不上仍跑完——
     // 而且照樣把差異印出來、照樣留痕（標「明知故犯放行」）。理由見 daemon-freshness.mjs。
     allowDirty: !!T.allowDirtySource,
+    channel: DAEMON_CHANNEL,
     // 🔴 inkstone/arcrun-rag#307（leo 11-10：「問題是這次完全沒改到它」）：源碼比成品新，
     //   只在**這次會把小幫手換給使用者**時才擋。量法：daemon-sync／daemon-check 之後的
     //   manifest.daemon（版本＋每個平台成品 sha256）vs 該目標線上（bundle repo origin/<branch>）。

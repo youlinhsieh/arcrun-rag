@@ -12,10 +12,9 @@ import (
 // fakeDaemonConfigServer 假的知識庫登入端點，回傳固定的 daemonConfigResp，
 // 讓測試能真的走過 App.Connect() 而不必打真的雲端。
 //
-// 🔴 用 TLS server 不是隨便選的：normalizePortalURL()（connect.go）不管使用者貼的是
-// http:// 還是 https://，一律吐回 "https://" + host（現實世界的網址全是 https，這樣
-// 才不必逼使用者記得打 https）——所以假伺服器也一定要是 TLS，用一般 httptest.NewServer
-// 會被硬轉成 https:// 打過去、連不上。同時把 http.DefaultTransport 換成信任這顆測試憑證
+// 🔴 用 TLS server 不是隨便選的：normalizePortalURL()（connect.go）對 CF 雲慣例的網址一律吐回 "https://" + host
+// （企業私有雲 http:// 例外，見 connect_private_cloud_335_test.go）。這裡的 httptest 網址是
+// https:// 開頭，所以假伺服器要是 TLS。同時把 http.DefaultTransport 換成信任這顆測試憑證
 // 的版本（fetchConfigByLogin 的 http.Client{} 沒指定 Transport ⇒ 用的正是這個全域預設值），
 // 測試結束就還原，不影響其他測試或正式行為。
 func fakeDaemonConfigServer(t *testing.T, cypherURL string) *httptest.Server {

@@ -168,14 +168,14 @@ const GATE_LOG_HEADER = [
  * @returns {{ ok: true, state: object } | { ok: false, error: string }}
  *   `ok:false` 一律由呼叫端判成 `unknown` 而**停**——問不出來不等於沒事。
  */
-export function readSourceState({ repo, scriptRel = SOURCE_STATE_SCRIPT_REL, python = 'python3' }) {
+export function readSourceState({ repo, scriptRel = SOURCE_STATE_SCRIPT_REL, python = 'python3', channel = 'prod' }) {
   const script = join(repo, scriptRel);
   if (!existsSync(script)) {
     return { ok: false, error: `找不到版本產生器：${scriptRel}（事實只有它量得出來）` };
   }
   let out;
   try {
-    out = execFileSync(python, [script, '--source-state'], {
+    out = execFileSync(python, [script, '--source-state', '--channel', channel], {
       cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024,
     });
   } catch (e) {
@@ -347,12 +347,12 @@ export function appendGateLog(logPath, { ts, targetName, result, allowed = false
  *     selftest 不會有任何人拿到東西，而閘照樣把差異印出來 ⇒ 演練價值不變。
  */
 export function requireFreshDaemonSource({
-  repo, changelogRel = null, targetName = null, allowDirty = false,
+  repo, changelogRel = null, targetName = null, allowDirty = false, channel = 'prod',
   logPath = null, now = new Date(),
   // assessDaemonShipment() 的結果；不給＝不知道這次會不會出小幫手＝照最嚴的走。
   shipment = null,
 }) {
-  const read = readSourceState({ repo });
+  const read = readSourceState({ repo, channel });
   const result = read.ok
     ? judgeSourceState({ repo, state: read.state, changelogRel })
     : judgeSourceState({ repo, state: null, changelogRel });

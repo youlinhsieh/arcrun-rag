@@ -95,8 +95,10 @@ import { daemonReleasedRe, readDaemonLine, ANY_RELEASED_RE, DAEMON_LINE_REL } fr
  * @param {string} o.changelogRel    daemon 版本說明檔相對路徑（單一真相源＝
  *                                   `installer/scripts/daemon-notes.mjs` 的 `DAEMON_CHANGELOG_REL`）
  * @param {string[]} [o.requiredPlatforms]
+ * @param {'stage'|'prod'} [o.channel='prod'] 這個目標認哪個通道發過的最新版（#341）：
+ *                                   stage 看得見「僅 stage」的版本段，prod 看不見
  */
-export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatforms = REQUIRED_PLATFORMS }) {
+export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatforms = REQUIRED_PLATFORMS, channel = 'prod' }) {
   // 🔴 版本線是**宣告出來的事實**，所以它自己就是一項要量的事實（#88 第二輪）。
   //   量不到就記 null——判不判得下去交給 judge()，這裡不代它決定，也不給預設值。
   const daemonLinePath = join(repoRoot, DAEMON_LINE_REL);
@@ -110,7 +112,7 @@ export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatf
     const text = readFileSync(changelogPath, 'utf8');
     // ① 判斷用：只認**這條線**的版本段（裸號與舊的帶 v 都認）。
     if (daemonLine) {
-      const m = text.match(daemonReleasedRe(daemonLine));
+      const m = text.match(daemonReleasedRe(daemonLine, channel));
       sourceVersion = m ? m[1] : null;
     }
     // ② 診斷用：這份檔案最上面實際寫的是哪一版。**永遠不參與判斷**——
@@ -151,7 +153,7 @@ export function collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatf
   }
 
   return {
-    daemonLineRel: DAEMON_LINE_REL, daemonLinePath, daemonLine,
+    daemonLineRel: DAEMON_LINE_REL, daemonLinePath, daemonLine, channel,
     changelogRel, changelogPath, changelogFound,
     sourceVersion, changelogTopAny,
     manifestPath, manifestFound, manifestReadError,
@@ -383,9 +385,9 @@ export function formatProblem(result) {
  */
 export function requireDaemonInBundle({
   repoRoot, bundlesDir, changelogRel, targetName,
-  requiredPlatforms = REQUIRED_PLATFORMS, logPath = null, now = new Date(),
+  requiredPlatforms = REQUIRED_PLATFORMS, logPath = null, now = new Date(), channel = 'prod',
 }) {
-  const facts = collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatforms });
+  const facts = collectFacts({ repoRoot, bundlesDir, changelogRel, requiredPlatforms, channel });
   const result = judge(facts);
   // 🔴 留痕在丟例外**之前**——擋下的那些才是最需要被記錄的（InkStoneCo#48）。
   try {
@@ -404,6 +406,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const { DAEMON_CHANGELOG_REL } = await import('./daemon-notes.mjs');
 
   let bundlesDir = opt('--bundles');
+  let channel = opt('--channel') || 'prod';
   const targetName = opt('--target') || (bundlesDir ? '(手指定的目錄)' : null);
   if (!bundlesDir) {
     if (!targetName) {
@@ -415,9 +418,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     if (!t) { console.error(`❌ 登錄簿裡沒有目標 \`${targetName}\``); process.exit(2); }
     const home = process.env.HOME || '';
     bundlesDir = String(t.bundles.dir).startsWith('~/') ? join(home, String(t.bundles.dir).slice(2)) : t.bundles.dir;
+    if (!opt('--channel') && t.daemonChannel) channel = t.daemonChannel;
   }
 
-  const facts = collectFacts({ repoRoot: REPO_ROOT, bundlesDir, changelogRel: DAEMON_CHANGELOG_REL });
+  const facts = collectFacts({ repoRoot: REPO_ROOT, bundlesDir, changelogRel: DAEMON_CHANGELOG_REL, channel });
   const result = judge(facts);
   const row = appendGateLog(join(REPO_ROOT, GATE_LOG_REL), { ts: localStamp(), targetName, result });
   console.log(`bundle　${bundlesDir}`);

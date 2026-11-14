@@ -1,8 +1,8 @@
-出貨報告　release 1.4.192／小幫手 0.18.119／安裝器 1.0.77　共 25 站（上次（1.4.190／小幫手 0.18.119／安裝器 1.0.77）25 站　無增減）
-來源（stage）＝Arcrun@d0d575bfe7c4　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.195／小幫手 0.18.119／安裝器 1.0.77　共 25 站（上次（1.4.192／小幫手 0.18.118／安裝器 1.0.77）25 站　無增減）
+來源（stage）＝Arcrun@0b25a67b45b8　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝980c8935711b；這版多帶 11 筆，票：inkstone/Arcrun#384 inkstone/Arcrun#410 inkstone/Arcrun#397
+🧾 stage 佇列：上一顆（線上當時）＝b421bccc2f99；這版多帶 14 筆，票：inkstone/Arcrun#419 #348 inkstone/Arcrun#418 inkstone/Arcrun#409 inkstone/Arcrun#334
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |
@@ -32,8 +32,7 @@
 | 24 | 讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit） | ✅ | （未出） |
 | 25 | 把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次） | ✅ | （未出） |
 
-真的做事的站：stage 18／25 站（上次 23 站）　｜　prod （未出）
-⚠️ stage 這次比上次**少做 5 站**——站數一樣不代表做的事一樣。底下「跳過的站」逐條寫了原因；若某一條不是「沒事可做」，那就是漏了。
+真的做事的站：stage 18／25 站　｜　prod （未出）
 
 ⬜ 跳過的站（7 筆）——**這一欄要自己看過**：「登錄簿宣告本目標沒這東西」與「已經是這一版、沒事可做」是正常，其他都要當成漏做：
    · stage｜daemon-sync：bundle 已委任 0.18.119；內容是否真的到位由下一站 daemon-check 逐檔查證
@@ -41,7 +40,7 @@
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
    · stage｜pin：釘子沒動（built 2026-11-14）；安裝器原始碼指紋 3bc048bc1c54（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.192／pin f25fc29／安裝器原始碼 3bc048bc1c54 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜deploy：線上已是 1.4.195／pin 97cb050／安裝器原始碼 3bc048bc1c54 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜release-record：⏭ 內部版本物件｜安裝器 1.0.77 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.77
 
 件數：stage 25 站　｜　prod （未出）

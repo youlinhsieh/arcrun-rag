@@ -35,12 +35,14 @@ import {
   CHANGELOG_PATH as DAEMON_CHANGELOG_PATH,
   NOTES_MAX, stripMarkdown, headlinesFor, checkNotes, notesForVersion,
   DAEMON_LINE_RE, readDaemonLine, daemonReleasedRe, ANY_RELEASED_RE, lineOfVersion,
+  STAGE_ONLY_MARK, DAEMON_CHANNELS,
 } from '../../collector/cmd/arcrun-app/daemon-notes.mjs';
 
 export {
   NOTES_MAX, stripMarkdown, headlinesFor, checkNotes,
   // 版本線判別器（#88 第二輪）——判別的承載從「有沒有 v」換成「DAEMON_LINE 宣告的線」。
   DAEMON_LINE_RE, readDaemonLine, daemonReleasedRe, ANY_RELEASED_RE, lineOfVersion,
+  STAGE_ONLY_MARK, DAEMON_CHANNELS,
 };
 
 /** 雲端引擎（`1.4.x`）的版本說明＝repo 根的 `CHANGELOG.md`（出貨原稿，不是網頁）。 */
@@ -79,11 +81,12 @@ export const DAEMON_LINE_REL = 'collector/DAEMON_LINE';
  *   兩邊靠**測試**對齊，不靠註解對齊（本輪新增的 ⑥ 就是那道對齊閘）。
  *
  * @param {string} repoRoot arcrun-rag repo 根
+ * @param {'stage'|'prod'} [channel='prod'] 這次出貨的目標認哪個通道發過的最新版（登錄簿 `daemonChannel`，#341）
  * @returns {RegExp} 第 1 組＝版本號原樣（`v0.18.30` 或 `0.18.31`）
  * @throws 讀不到／讀不懂 `DAEMON_LINE` 時丟例外——**沒有線就沒有判別器**，
  *   此時「斷得很大聲」才對，塞一個預設值繼續走就是在重演本票要治的病。
  */
-export function daemonReleasedReFor(repoRoot) {
+export function daemonReleasedReFor(repoRoot, channel = 'prod') {
   const line = readDaemonLine(join(repoRoot, DAEMON_LINE_REL));
   if (!line) {
     throw new Error(
@@ -92,7 +95,7 @@ export function daemonReleasedReFor(repoRoot) {
       `       沒有它，出貨線分不出 daemon 的 \`0.18.x\` 與雲端引擎的 \`1.4.x\`\n` +
       `       ——而分不出來的下場是安靜拿到別條線的版號（arcrun-rag#88）。`);
   }
-  return daemonReleasedRe(line);
+  return daemonReleasedRe(line, channel);
 }
 
 /**

@@ -138,6 +138,13 @@ def is_test_only(rel):
 #     `v?` 只剩「讀得懂歷史」的作用。
 RELEASED_RE = re.compile(r"^## (v?)(\d+)\.(\d+)\.(\d+)（", re.M)
 
+# 🔴 inkstone/arcrun-rag#341：版本段標題括號裡有這個字樣 ＝ 這一版只在 stage 通道發過，正式站還沒有
+#   （例 `## 0.18.119（2026-11-12・僅 stage）`）。stage 看得見它，prod 往下找正式站真的發過的那一版。
+#   與 collector/cmd/arcrun-app/daemon-notes.mjs 的 STAGE_ONLY_MARK 同一個字串（daemon-version.test.mjs 對齊）。
+STAGE_ONLY_MARK = "僅 stage"
+RELEASED_PROD_RE = re.compile(
+    r"^## (v?)(\d+)\.(\d+)\.(\d+)（(?![^）\n]*" + STAGE_ONLY_MARK + ")", re.M)
+
 
 def die(msg):
     print(msg, file=sys.stderr)
@@ -273,7 +280,7 @@ def check_or_record(version, stamp):
             indent=1, ensure_ascii=False, sort_keys=False) + "\n")
 
 
-def source_state():
+def source_state(channel="prod"):
     """**唯讀**回答一個問題：「changelog 最上面那一版的成品，是不是照現在這份源碼打的？」
 
     ── 為什麼這個回答要住在這裡（inkstone/arcrun-rag#88，2026-08-18）──────────
@@ -296,7 +303,8 @@ def source_state():
     """
     fp, per_file = scan_source()
     text = CHANGELOG.read_text() if CHANGELOG.exists() else ""
-    top = RELEASED_RE.search(text)
+    # 通道：prod（預設，最嚴）只看正式站發過的最新版；stage 連「僅 stage」的段也看（#341）。
+    top = (RELEASED_RE if channel == "stage" else RELEASED_PROD_RE).search(text)
     version = ("%s%s.%s.%s" % top.groups()) if top else None
 
     lock = {}
@@ -334,6 +342,7 @@ def source_state():
         "algo": FINGERPRINT_ALGO,
         "collector_dir": str(COLLECTOR),
         "changelog": str(CHANGELOG),
+        "channel": channel,
         "version": version,
         "has_unreleased": UNRELEASED in text,
         "current_fingerprint": fp or None,
@@ -353,7 +362,13 @@ def source_state():
 def main():
     if "--source-state" in sys.argv:
         # 🔴 唯讀：不戳版、不寫任何檔案。出貨線的閘就是靠這條路問事實的。
-        json.dump(source_state(), sys.stdout, ensure_ascii=False, indent=1)
+        channel = "prod"
+        if "--channel" in sys.argv:
+            i = sys.argv.index("--channel")
+            channel = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+            if channel not in ("stage", "prod"):
+                die("❌ --channel 只能是 stage 或 prod，拿到 %r" % channel)
+        json.dump(source_state(channel), sys.stdout, ensure_ascii=False, indent=1)
         sys.stdout.write("\n")
         return
     stamp = "--stamp" in sys.argv
