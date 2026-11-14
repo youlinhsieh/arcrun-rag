@@ -92,7 +92,7 @@ func fetchUsageHTTP(cypherURL, apiKey string) (*Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Arcrun-API-Key", apiKey)
+	SetCypherAuth(req, apiKey)
 	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
 	if err != nil {
 		return nil, err

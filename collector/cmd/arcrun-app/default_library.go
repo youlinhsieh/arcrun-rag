@@ -28,6 +28,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"arcrun-rag/collector/channel"
 )
 
 func defaultLibraryMarkerPath() string {
@@ -41,7 +43,10 @@ type defaultLibraryMarker struct {
 
 // defaultLibraryDirName 刻意把「可刪除」寫進資料夾名字本身——
 // 使用者不用讀任何說明文件，光看資料夾名稱就知道這是我們鋪的示範內容、可以放心刪。
-const defaultLibraryDirName = "Arcrun 範例庫（可刪除）"
+//
+// 🔴 #135：名字跟著頻道（Stage 版＝「Arcrun Stage 範例庫（可刪除）」）——兩個 App 並存時，
+// 若共用同一個示範資料夾，它們會同時監看、互寫同一個 `.arcrun-rag/`。
+var defaultLibraryDirName = channel.Current().LibraryDir
 
 func defaultLibraryPath() string {
 	home, _ := os.UserHomeDir()

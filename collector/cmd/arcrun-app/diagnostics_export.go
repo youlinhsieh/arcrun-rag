@@ -123,7 +123,7 @@ func fetchCloudDiagnostics(cypherURL, apiKey string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Arcrun-API-Key", apiKey)
+	collector.SetCypherAuth(req, apiKey)
 
 	resp, err := diagnosticsHTTP.Do(req)
 	if err != nil {

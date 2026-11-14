@@ -70,7 +70,7 @@ func probeWorkersAIWithStatus(ctx context.Context, cypherURL, apiKey string) (Cl
 		return CloudAIState{Ready: false, Note: "雲端 AI 狀態查不到"}, 0, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Arcrun-API-Key", strings.TrimSpace(apiKey))
+	SetCypherAuth(req, strings.TrimSpace(apiKey))
 
 	resp, err := probeHTTP.Do(req)
 	if err != nil {

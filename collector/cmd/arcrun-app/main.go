@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	collector "arcrun-rag/collector"
+	"arcrun-rag/collector/channel"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -80,7 +81,7 @@ func main() {
 	installSignalHandler() // 收到 TERM/INT 要能正常退出（不必強制結束）
 
 	err := wails.Run(&options.App{
-		Title: "Arcrun",
+		Title: channel.Current().AppName, // 正式版 "Arcrun"；Stage 版 "Arcrun Stage"（#135）
 		// 這裡的 Width/Height 只是**開得起來的保底值**；真正的尺寸在 OnStartup
 		// 依螢幕算（見下方 resizeToScreenFraction）。保底值不能大於常見筆電
 		// 的可視高度，否則 ScreenGetAll 失敗時會沿用它而擠出畫面外
@@ -94,7 +95,7 @@ func main() {
 		//    macOS 由 LaunchServices 天然單實例 ⇒ 這個病**只在 Windows 現形**。
 		//    第二次啟動＝叫醒既有視窗後自己退出（Wails 內部 os.Exit(0)）。
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "dev.arcrun.rag.daemon",
+			UniqueId: channel.Current().InstanceLock, // 正式版與 Stage 版各一把鎖，才能同時開（#135）
 			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
 				app.ShowWindow()
 			},

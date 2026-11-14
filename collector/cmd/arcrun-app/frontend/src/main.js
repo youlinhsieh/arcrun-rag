@@ -13,6 +13,20 @@ import { glyphSvg } from './appglyph.js';   // App 圖示：字形由實例提�
 
 const go = window.go.main.App;
 const $ = (id) => document.getElementById(id);
+
+// 頻道身分（inkstone/arcrun-rag#135）：這個 App 是正式版還是 Stage 版，由後端（collector/channel 那張唯一的表）告訴前端，
+// 前端不自己寫任何「stage／prod」的網址或判斷。取回前先用正式版的值（＝以前寫死的值），取不到也不壞。
+let channelInfo = { name: 'prod', isStage: false, appName: 'Arcrun', tag: '', installUrl: 'https://install.arcrun.dev/', defaultConnect: '' };
+(async () => {
+  try {
+    const c = await go.GetChannel();
+    if (c && c.name) channelInfo = c;
+  } catch (e) { /* 舊後端沒有這個方法：維持正式版 */ }
+  document.title = channelInfo.appName;
+  const b = $('brandHome');
+  if (b && channelInfo.tag) b.setAttribute('data-tag', channelInfo.tag);   // 邊欄 logo 旁的 Stage 標記（style.css）
+  document.documentElement.setAttribute('data-channel', channelInfo.name);
+})();
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -373,7 +387,7 @@ function sectionMyApps(s) {
 // installURLFor：與 portal 版本卡同一個做法——落後才需要按，按下去帶 email 讓安裝頁
 // 預填，既有實例更新免辨識碼（安裝器 t154），不必讓使用者自己去 install.arcrun.dev 找。
 function installURLFor(email) {
-  const base = 'https://install.arcrun.dev/';
+  const base = channelInfo.installUrl;
   return email ? base + '?email=' + encodeURIComponent(email) : base;
 }
 
@@ -1788,7 +1802,7 @@ function wire(root) {
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
   on('obConnect', showConnect);
-  on('obInstall', () => go.OpenURL('https://install.arcrun.dev/'));
+  on('obInstall', () => go.OpenURL(channelInfo.installUrl));
   on('obNext', () => { obStep = 2; renderPage(); });
   on('obBack', () => { obStep = 1; renderPage(); });
   on('uCheck', checkUpdate); on('uDownload', downloadUpdate); on('uApply', applyUpdate);
@@ -2102,7 +2116,7 @@ function showConnect() {
   openSheet(`
     <h2>連線</h2>
     <div class="field"><div class="lb">知識庫網址</div>
-      <input type="text" id="u" placeholder="https://arcrun-cypher-executor.xxxx.workers.dev"/></div>
+      <input type="text" id="u" value="${esc(channelInfo.defaultConnect || '')}" placeholder="https://arcrun-cypher-executor.xxxx.workers.dev"/></div>
     <div class="field"><div class="lb">Email</div>
       <input type="text" id="e" placeholder="you@example.com"/></div>
     <div class="field"><div class="lb">密碼</div><input type="password" id="p"/></div>

@@ -50,6 +50,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	collector "arcrun-rag/collector"
 )
 
 // appHTTPTimeout：App 動作背後是一整條工作流（可能打 LLM），比單純讀清單久得多。
@@ -321,7 +323,7 @@ func (a *App) listAppsCore(accIdx int) UIAppList {
 		return out
 	}
 	req, _ := http.NewRequest(http.MethodGet, base+"/apps", nil)
-	req.Header.Set("X-Arcrun-API-Key", acc.APIKey)
+	collector.SetCypherAuth(req, acc.APIKey)
 	status, raw, derr := appDo(req, appReadTimeout)
 	if derr != nil {
 		out.Error = derr.Error()

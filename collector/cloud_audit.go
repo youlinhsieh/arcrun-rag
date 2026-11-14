@@ -191,7 +191,7 @@ func fetchCardBlocks(cfg *DirectConfig, base, library, relPath string, offset in
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Arcrun-API-Key", cfg.APIKey)
+	SetCypherAuth(req, cfg.APIKey)
 	resp, err := cloudAuditHTTP.Do(req)
 	if err != nil {
 		return nil, 0, gate.record(err)

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	collector "arcrun-rag/collector"
+	"arcrun-rag/collector/channel"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -44,9 +45,13 @@ func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 
 // ── 與 collector 共用的資料位置（路徑規則與 collector/direct.go 一致）──
 
-func appDir() string {
+// 資料目錄名來自頻道身分（inkstone/arcrun-rag#135）：正式版 ~/.arcrun-rag、Stage 版 ~/.arcrun-rag-stage，
+// 兩個 App 並存時設定、log、機器身分、更新暫存全部分開。
+func appDir() string { return appDirFor(channel.Current()) }
+
+func appDirFor(ch channel.Info) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".arcrun-rag")
+	return filepath.Join(home, ch.DataDirName)
 }
 func configPath() string    { return filepath.Join(appDir(), "config.json") }
 func statusPath() string    { return filepath.Join(appDir(), "status.json") }
@@ -75,6 +80,11 @@ type accountCfg struct {
 	// 🔴 這兩欄是 App 端獨有的（collector 的 AccountConfig 沒有）：collector 讀 config
 	//    時會忽略不認得的欄位，所以加在這裡是安全的；反過來（collector 有而這裡沒有）
 	//    才是上面那條註解講的、會靜默掉欄位的方向。
+	// KbdbKey＝打雲端的 Bearer 憑證（inkstone/arcrun-rag#334；連線精靈從
+	// `POST /portal/daemon/config` 的 `config.kbdb_key` 取得）。
+	// 🔴 與 collector.AccountConfig.KbdbKey 鏡像：saveCfg 用本 struct 重新序列化 accounts，
+	//    少了這欄＝存一次檔就把憑證抹掉（t108 同款）。
+	KbdbKey          string `json:"kbdb_key,omitempty"`
 	PortalSession    string `json:"portal_session,omitempty"`
 	PortalSessionExp int64  `json:"portal_session_exp,omitempty"`
 }
@@ -180,6 +190,14 @@ func loadCfg() (*directConfig, error) {
 		return &directConfig{raw: map[string]any{}}, err
 	}
 	_ = json.Unmarshal(b, &c.raw)
+	for _, acc := range c.Accounts {
+		t := acc.APIKey
+		if strings.TrimSpace(t) == "" {
+			t = acc.Namespace
+		}
+		collector.RegisterCypherKey(t, acc.KbdbKey) // #334：App 這條線打雲端也帶 Bearer 憑證
+		collector.RegisterCypherSession(t, acc.PortalSession, acc.PortalSessionExp)
+	}
 	// 🔴 自我修復：舊版存出來的 config 可能少了 collector 的必填欄位。
 	//    只補進記憶體不夠——collector 讀的是**磁碟上那份**，所以要寫回去。
 	// 🔴 inkstone/arcrun-rag#58：同一次回寫順手把舊的明碼 LLM 金鑰抹掉。
@@ -1438,4 +1456,25 @@ func (a *App) Quit() {
 	beginQuit()
 	stopSupervisor()
 	runtime.Quit(a.ctx)
+}
+
+// ── 頻道身分（inkstone/arcrun-rag#135）──────────────────────────────────────
+
+// ChannelInfo 給前端：這個 App 是正式版還是 Stage 版，以及該顯示什麼。
+// 前端不自己判斷、不寫任何網址——全部取自 collector/channel 那張唯一的表。
+type ChannelInfo struct {
+	Name           string `json:"name"`           // prod | stage
+	IsStage        bool   `json:"isStage"`        //
+	AppName        string `json:"appName"`        // 視窗標題用
+	Tag            string `json:"tag"`            // 畫面標記（正式版空）
+	InstallURL     string `json:"installUrl"`     // 安裝頁
+	DefaultConnect string `json:"defaultConnect"` // 首次連線預填的知識庫網址（正式版空）
+}
+
+func (a *App) GetChannel() ChannelInfo {
+	c := channel.Current()
+	return ChannelInfo{
+		Name: c.Name, IsStage: c.IsStage(), AppName: c.AppName, Tag: c.Tag,
+		InstallURL: c.InstallURL, DefaultConnect: c.DefaultConnect,
+	}
 }

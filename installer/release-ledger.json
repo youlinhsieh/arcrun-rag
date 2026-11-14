@@ -2,7 +2,8 @@
  "_": [
   "出貨紀錄：版號 → 當初出貨用的 Arcrun commit → 內容指紋（inkstone/arcrun-rag#302）。出貨線每趟成功落帳時自動寫入，不靠人記得。",
   "prod 憑它出「leo 簽的那一版」：`ship.mjs --target prod --ship-version <版號>`，不受 stage 之後又出幾版影響。",
-  "1.4.145 這一筆是補登的（出貨線在這本帳出現之前出的）：commit 取自 ship-report.json 的 sourceCommit，指紋取自 release-state.json 當時的值。"
+  "1.4.145 這一筆是補登的（出貨線在這本帳出現之前出的）：commit 取自 ship-report.json 的 sourceCommit，指紋取自 release-state.json 當時的值。",
+  "1.4.181 是補登、未完成的一筆：出貨在第 18 站（docs）停下，stage 沒有換到它（shipped 為空）；不要拿它出 prod，內容在 1.4.182。"
  ],
  "releases": {
   "1.4.145": {
@@ -242,7 +243,127 @@
    "fingerprint": "bcc65430a3ae6341f6a0264d7f0962cb308985bd18c4426ea91fad680d23d9b3",
    "built": "2026-11-12",
    "shipped": {
-    "stage": "2026-11-12T09:31:14.111Z"
+    "stage": "2026-11-12T09:31:14.111Z",
+    "prod": "2026-11-13T01:16:43.492Z"
+   }
+  },
+  "1.4.177": {
+   "commit": "ff3a454d6480d4c7b49ac724f53d9eb56ec98d3e",
+   "fingerprint": "0d1680ade3b1aa65f13616e6c3aba176ca57955331eead1497287a60819c5e1b",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T11:16:57.846Z"
+   }
+  },
+  "1.4.178": {
+   "commit": "adfbe64c85f8f4f86731ef5bcd3f11661404c0fa",
+   "fingerprint": "357aea184e7c299e90aa5d82bb18ad15666a5902d54be141ee175198cad5c6a8",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T11:37:17.653Z"
+   }
+  },
+  "1.4.179": {
+   "commit": "df38094707ac46d458ce9e4d91790bbbdc3ebe30",
+   "fingerprint": "e40b1e87fc29af306c73671865bdfe6c2b4c9b7517b6f33ff93ee3ea8bbd2922",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T11:48:46.769Z"
+   }
+  },
+  "1.4.180": {
+   "commit": "896674ba5de4f5eee0440ac454cecea919d9ba91",
+   "fingerprint": "c6bd42630e9dc406adb3100171eb1fd4d71a22ed8ab8e7110f1b688d1d48b98e",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T12:15:04.646Z"
+   }
+  },
+  "1.4.181": {
+   "commit": "f61d86a95595156297a19001d17faf1eb741e285",
+   "fingerprint": "451dda28e8cf482e9104027f55cbf0eb4a24598a3e565493bf3c4a9f58db1d84",
+   "built": "2026-11-12",
+   "shipped": {},
+   "note": "補登（總管 2026-11-12）：出貨線只跑到第 18 站 docs 就斷（bundle 已推 pin 7c6b367、installer 已部署，但 docs 之後都沒跑；youlin 引擎沒換到 1.4.181、沒寫 AHub stage 現況）。內容由 1.4.182 帶上線。依據 Arcrun#395 留言與出貨輸出。"
+  },
+  "1.4.182": {
+   "commit": "ce7887e4dd9c43b3dc6da47f80f1e711b1cba780",
+   "fingerprint": "7525b0b51d09b60a924bce7a0d0d9f982256d1c1a22ba0da1a358b3c986a4fa5",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T12:43:43.573Z"
+   }
+  },
+  "1.4.183": {
+   "commit": "2eedc63a6acfb0954f4ea2f74975a6c3c83e2fa6",
+   "fingerprint": "18a211cc7ed755f5f185287ba47908f45b86a66d694c0cf627be4d4d7f116432",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T13:47:51.830Z"
+   }
+  },
+  "1.4.184": {
+   "commit": "984fadb529e7af8835d42dd24a9bc42910c1f61a",
+   "fingerprint": "e929f5a49370621ca0383b7d2d84d4251b616ec61f109bdb972050d25ed2cadb",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T14:26:46.737Z"
+   }
+  },
+  "1.4.185": {
+   "commit": "a359cf0ea83c41ecd81f6fbb490671589b187d45",
+   "fingerprint": "badf04138b485afcfa1e458bd7b143f650f0984fb6483b36493a3bbd088b315e",
+   "built": "2026-11-12",
+   "shipped": {
+    "stage": "2026-11-12T14:44:12.389Z"
+   }
+  },
+  "1.4.186": {
+   "commit": "3865ba7a8fbf01b799abcf0403c4b0e18a62c029",
+   "fingerprint": "9991e5b8791a48943986646ea160d006d0dbfd34dd35dfe0ae25ea69379e49e1",
+   "built": "2026-11-13",
+   "shipped": {
+    "stage": "2026-11-13T01:38:06.666Z"
+   }
+  },
+  "1.4.187": {
+   "commit": "09b862c5de27fda557bbdb1620ec691c4ece2bc8",
+   "fingerprint": "97ecf85c9a7a09946aa4412c18db3e4fe35a823af00ea44aefdb087e427e15f3",
+   "built": "2026-11-13",
+   "shipped": {
+    "stage": "2026-11-13T01:52:49.007Z"
+   }
+  },
+  "1.4.188": {
+   "commit": "d760f7e0d3a9ab248a771d6c990674a46f5864e2",
+   "fingerprint": "bc8a7c36f23cc9f0eda940ced713f5bd50df0119483971b2fd1eac50cef5409e",
+   "built": "2026-11-13",
+   "shipped": {
+    "stage": "2026-11-13T12:44:25.841Z"
+   }
+  },
+  "1.4.189": {
+   "commit": "6484390d357192bc0e43a591f5a03854020a32e5",
+   "fingerprint": "e28cb5388930180dd14780b3f0db78889bf25a8bc6a994752febb5240907c129",
+   "built": "2026-11-13",
+   "shipped": {
+    "stage": "2026-11-13T13:35:58.030Z"
+   }
+  },
+  "1.4.190": {
+   "commit": "bd0bf58bce22617b1b634f7810dd4ceac05c260d",
+   "fingerprint": "d99a864b24af2fe08c2e41453d7a3167a0cf598c032310f3a2dacb0fb68ba817",
+   "built": "2026-11-13",
+   "shipped": {
+    "stage": "2026-11-13T14:20:54.756Z"
+   }
+  },
+  "1.4.192": {
+   "commit": "7106daf59c8b4c4b519a97cf2f2422c3e386e4a1",
+   "fingerprint": "45cc86ba6cd63d141d3b87a64b1d066ac3eca3dee911d068ab01e7e1e4a52001",
+   "built": "2026-11-14",
+   "shipped": {
+    "stage": "2026-11-14T01:40:45.936Z"
    }
   }
  }

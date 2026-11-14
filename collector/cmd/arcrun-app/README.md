@@ -33,6 +33,29 @@ cd collector/cmd/arcrun-app
 ./build-msix.sh     # → dist/Arcrun-<版本>.msix     （送 Store 用；不必自購憑證）
 ```
 
+### Arcrun Stage（測試版小幫手，inkstone/arcrun-rag#135）
+
+同一份原始碼、同一個 commit，加一個參數就打出另一個 App，**可以和正式版同時安裝、同時開**：
+
+```sh
+CHANNEL=stage ./build-dmg.sh   # → dist-stage/Arcrun-<版本>.dmg（裡面是 Arcrun Stage.app）
+./build-dmg.sh                 # → dist/Arcrun-<版本>.dmg      （今天的 Arcrun，一個位元都不變）
+```
+
+| | 正式版 | Arcrun Stage |
+|---|---|---|
+| App 名稱／bundle id | Arcrun／`com.wails.arcrun-app` | Arcrun Stage／`com.wails.arcrun-app-stage` |
+| 資料目錄 | `~/.arcrun-rag` | `~/.arcrun-rag-stage` |
+| 檢查更新讀哪 | GitHub bundle manifest | youlin R2 `dist/manifest.json` |
+| 首次連線預填 | 空白 | youlin 實例網址 |
+| 看得出是 Stage 的地方 | — | App 圖示右下橘色 STAGE、選單列 icon 旁「Stage」、視窗標題、邊欄 logo 旁橘牌 |
+
+身分只在一處定義：`collector/channel/channel.go`（執行檔用）與 `channel-env.sh`（打包腳本用），
+`channel_env_test.go` 比對兩邊；stage 座標與 `installer/ship.targets.json` 的 `targets.stage` 由
+`channel/channel_test.go` 與 `installer/scripts/channel-coordinates.test.mjs` 比對。
+出貨線依登錄簿 `targets.<目標>.daemonDist` 取檔（stage＝`dist-stage`、prod＝`dist`）。
+已知限制：兩個 App 若監看**同一個資料夾**，會在那裡的 `.arcrun-rag/` 互寫知識卡——Stage 請監看測試用資料夾。
+
 🔴 **版本號不要手打。** `daemon-version.py --stamp` 會從 `collector/CHANGELOG.md`
 最上面那個「下一版（未發佈）」段落戳出版號並補上日期——四支腳本都已經呼叫它。
 本次（`#137`）的 changelog 段落已經寫好，所以**這一版打出來會是 `0.18.35`**

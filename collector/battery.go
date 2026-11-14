@@ -65,7 +65,7 @@ func fetchBatteryHTTP(cypherURL, apiKey string) (*Battery, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Arcrun-API-Key", apiKey)
+	SetCypherAuth(req, apiKey)
 	resp, err := (&http.Client{Timeout: 6 * time.Second}).Do(req)
 	if err != nil {
 		return nil, err

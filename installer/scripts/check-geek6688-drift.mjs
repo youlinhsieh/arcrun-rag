@@ -56,6 +56,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { cypherAuthHeaders } from './cypher-auth.mjs';
 
 // youlin（D37 stage）現役子網域＝arcrun-yuga3bse；09-02 重裝前的舊子網域已 DNS 查無（#194）。
 const DEFAULT_STAGE_BASE = 'https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev';
@@ -141,7 +142,7 @@ export async function notifyLeo(text, { fetchImpl = fetch, base = NOTIFY_LEO_BAS
   const url = `${base}/webhooks/named/${namespace}/notify_leo/trigger`;
   const res = await fetchImpl(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...cypherAuthHeaders(namespace) },
     body: JSON.stringify({ text }),
   });
   let body = null;

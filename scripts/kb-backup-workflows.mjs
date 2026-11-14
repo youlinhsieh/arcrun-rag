@@ -57,6 +57,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { cypherAuthHeaders } from '../installer/scripts/cypher-auth.mjs';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 const KEY = process.env.ARCRUN_API_KEY;
@@ -113,7 +114,7 @@ function tenantLabel(raw) {
 
 // ── HTTP ────────────────────────────────────────────────────────────
 async function getArcrun(url) {
-  const res = await fetch(url, { headers: { 'X-Arcrun-API-Key': KEY } });
+  const res = await fetch(url, { headers: cypherAuthHeaders(KEY) });
   const text = await res.text();
   if (!res.ok) {
     const e = new Error(`HTTP ${res.status} ${url} :: ${text.slice(0, 200)}`);

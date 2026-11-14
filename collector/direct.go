@@ -49,6 +49,15 @@ type AccountConfig struct {
 	CypherURL    string            `json:"cypher_url"`
 	Namespace    string            `json:"namespace"`
 	APIKey       string            `json:"api_key,omitempty"`
+	// KbdbKey＝打雲端要帶的 Bearer 憑證（inkstone/arcrun-rag#334）。連線精靈
+	// `POST /portal/daemon/config` 回的 `config.kbdb_key`；舊版精靈連的帳號沒有這欄
+	// （相容期內只帶租戶名照通，重新連線一次就補上）。見 cypherauth.go。
+	KbdbKey      string            `json:"kbdb_key,omitempty"`
+	// PortalSession／PortalSessionExp＝App 連線時存的 portal 登入憑證（arcrun-rag#137，session token 不是密碼）。
+	// cypher 直接接受它當 Bearer（Arcrun#399 c1794481882638068）。App 是唯一寫入者；
+	// 這裡鏡像只為了 collector 回寫 config 時不把它抹掉。
+	PortalSession    string `json:"portal_session,omitempty"`
+	PortalSessionExp int64  `json:"portal_session_exp,omitempty"`
 	WatchFolders []string          `json:"watch_folders,omitempty"` // 此帳號看守的資料夾（多根）
 	Libraries    map[string]string `json:"libraries,omitempty"`     // 資料夾→庫對映（t52）
 	// RetiringFolders＝使用者已經按下「移除並收回雲端資料」、但雲端還沒撤乾淨的資料夾
@@ -73,6 +82,7 @@ type DirectConfig struct {
 	CypherURL    string          `json:"cypher_url,omitempty"`    // 實例 cypher base（舊制；新制走 Accounts）
 	Namespace    string          `json:"namespace,omitempty"`     // 租戶 namespace（舊制；新制走 Accounts）
 	APIKey       string          `json:"api_key,omitempty"`       // X-Arcrun-API-Key（舊制）
+	KbdbKey      string          `json:"kbdb_key,omitempty"`      // Bearer 憑證（舊制；新制走 Accounts[].KbdbKey）
 	Email        string          `json:"email,omitempty"`         // 實例主身分（舊制）
 	InstanceName string          `json:"instance_name,omitempty"` // 暱稱（舊制）
 	Library      string          `json:"library"`                 // 藏書地圖歸庫鍵（空＝kb；per-folder 未指定時的後備）
@@ -264,6 +274,7 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 			CypherURL:    c.CypherURL,
 			Namespace:    c.Namespace,
 			APIKey:       c.APIKey,
+			KbdbKey:      c.KbdbKey,
 			Libraries:    c.Libraries,
 			WatchFolders: c.Folders(), // 正規化後的監看清單
 			// arcrun-rag#46：待撤清單也要一起遷過來。漏掉這裡＝舊制使用者的
@@ -379,6 +390,7 @@ func LoadDirectConfig(path string) (*DirectConfig, error) {
 	if c.CypherURL != "" {
 		c.CypherURL = strings.TrimSuffix(c.CypherURL, "/")
 	}
+	registerAccountKeys(&c) // #334：打雲端帶 Bearer 憑證（見 cypherauth.go）
 	return &c, nil
 }
 
@@ -559,7 +571,7 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Arcrun-API-Key", c.APIKey)
+	SetCypherAuth(req, c.APIKey)
 	resp, err := directHTTP.Do(req)
 	if err != nil {
 		// 公眾 Wi-Fi 的登入頁攔 HTTPS 時憑證對不上 ⇒ 講成人話（captiveportal.go），且不算雲端的錯。
@@ -697,6 +709,7 @@ func (c *DirectConfig) makeAccountSubConfig(acc AccountConfig) *DirectConfig {
 	if sub.APIKey == "" {
 		sub.APIKey = sub.Namespace
 	}
+	sub.KbdbKey = acc.KbdbKey
 	sub.Email = acc.Email
 	sub.InstanceName = acc.InstanceName
 	sub.WatchFolder = ""
@@ -799,6 +812,7 @@ func RunDirectOnce(cfg *DirectConfig, dryRun bool) ([]DirectResult, int, *Trigge
 			CypherURL:    cfg.CypherURL,
 			Namespace:    cfg.Namespace,
 			APIKey:       cfg.APIKey,
+			KbdbKey:      cfg.KbdbKey,
 			Libraries:    cfg.Libraries,
 			WatchFolders: cfg.Folders(),
 			// arcrun-rag#46：舊制（單帳號、頂層欄位）的待撤資料夾也要帶進來，

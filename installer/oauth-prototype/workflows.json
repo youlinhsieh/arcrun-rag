@@ -2163,5 +2163,54 @@
         }
       ]
     }
+  },
+  {
+    "file": "portal-password-reset-mail.local.yaml",
+    "name": "portal_password_reset_mail",
+    "description": "忘記密碼寄信：實例按下「忘記密碼」後觸發，用 http_request 請郵差（arcrun.dev）寄出修改密碼連結。 工作流頁看得到、每次寄信都有執行紀錄。（inkstone/arcrun-rag#75）\n",
+    "flow": [
+      "input >> ON_SUCCESS >> send_reset_mail"
+    ],
+    "config": {
+      "send_reset_mail": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "{{input.relay_base}}/api/send-password-reset",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_json": {
+          "email": "{{input.email}}",
+          "api_origin": "{{input.api_origin}}",
+          "ticket": "{{input.ticket}}"
+        }
+      }
+    },
+    "placeholders": [
+      "__HTTP_REQ_URL__"
+    ],
+    "graph": {
+      "nodes": [
+        {
+          "id": "input",
+          "type": "Input",
+          "componentId": "input",
+          "label": "input"
+        },
+        {
+          "id": "send_reset_mail",
+          "type": "Component",
+          "componentId": "send_reset_mail",
+          "label": "send_reset_mail"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input",
+          "to": "send_reset_mail",
+          "type": "ON_SUCCESS"
+        }
+      ]
+    }
   }
 ]

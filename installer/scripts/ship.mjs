@@ -139,7 +139,7 @@ import { checkStageQueue } from './stage-queue-gate.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
-import { resolveDaemonDist } from './daemon-dist.mjs';
+import { resolveDaemonDist, daemonDistRelFor } from './daemon-dist.mjs';
 import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
 import { checkDocsLive } from './verify-docs.mjs';
 import { checkMailRelayLive } from './verify-mail-relay.mjs';
@@ -228,7 +228,8 @@ const TARGETS_FILE = join(REPO_ROOT, 'installer', 'ship.targets.json');
 // InkStoneCo 頂層（.github-armed／github-contact-log.md 的真身都住在這裡，見 d20-guard.mjs 檔頭）
 const INKSTONE_ROOT = resolveInkstoneRoot(REPO_ROOT).root;   // #298：不再假設「往上兩層」（雲端工作樹不是那個形狀）
 // 桌面 App（daemon）打包產物落地處——`daemon-sync` 從這裡取，見該步驟檔頭。
-const DAEMON_DIST_REL = join('collector', 'cmd', 'arcrun-app', 'dist');
+// 🔴 inkstone/arcrun-rag#135：每個目標宣告自己的 `daemonDist`（正式版 dist／Stage 版 dist-stage），
+//   不再是寫死的 `dist`——見 daemon-dist.mjs daemonDistRelFor。
 
 // ── 參數 ──────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -264,6 +265,7 @@ if (!TARGET_NAME || !cfg.targets[TARGET_NAME]) {
   process.exit(2);
 }
 const T = cfg.targets[TARGET_NAME];
+const DAEMON_DIST_REL = daemonDistRelFor(TARGET_NAME, T);
 
 // 🔴 不變式：出貨線只准指 inkstone org，不准指 Leo/ 個人 namespace
 //   （inkstone/InkStoneCo#98 c7795，leo 2026-09-18：「Leo 的東西就是我的，org 的東西就是 CC 的」）。

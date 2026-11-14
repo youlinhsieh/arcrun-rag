@@ -143,7 +143,7 @@ func fetchCredentialDirectory(base, apiKey string) credDirReport {
 	if err != nil {
 		return credDirReport{Status: credDirUnknown, Detail: "組不出目錄查詢：" + err.Error()}
 	}
-	req.Header.Set("X-Arcrun-API-Key", apiKey)
+	SetCypherAuth(req, apiKey)
 	resp, err := directHTTP.Do(req)
 	if err != nil {
 		return credDirReport{Status: credDirUnknown, Detail: "目錄查詢連不上：" + err.Error()}

@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"arcrun-rag/collector/channel"
 )
 
 // State 是看守狀態機。
@@ -73,12 +75,15 @@ type round struct {
 const DefaultLogMaxBytes = 5 << 20 // 5MB
 
 // defaultLogPath 回傳預設 log 檔位置：~/.arcrun-rag/collector.log（與 config/manifest 同窩）。
-func defaultLogPath() string {
+func defaultLogPath() string { return logPathFor(channel.Current()) }
+
+func logPathFor(ch channel.Info) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "" // 找不到家目錄＝不落 log（best-effort，不擋看守）
 	}
-	return filepath.Join(home, ".arcrun-rag", "collector.log")
+	// 🔴 #135：目錄名跟著頻道（Stage 版是 ~/.arcrun-rag-stage），兩個 App 的 log 不混。
+	return filepath.Join(home, ch.DataDirName, "collector.log")
 }
 
 // rotatingLog 是 append-only 的 log 檔 writer，帶簡單輪替：

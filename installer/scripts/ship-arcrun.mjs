@@ -81,6 +81,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findArcrunRoot } from './resource-rule-sync.mjs';
 import { fill as fillFromEnvFiles } from './credential-store.mjs';
+import { cypherAuthHeaders } from './cypher-auth.mjs';
 
 /**
  * 座標規則的原稿在 Arcrun repo 裡（見檔頭 2026-09-01 那段）。
@@ -226,7 +227,7 @@ export function maskNamespace(ns) {
   return `${s.slice(0, 2)}${'*'.repeat(Math.max(0, s.length - 2))}（長度 ${s.length}）`;
 }
 
-const headers = () => ({ 'content-type': 'application/json', 'X-Arcrun-API-Key': resolveNamespace().ns });
+const headers = () => ({ 'content-type': 'application/json', ...cypherAuthHeaders(resolveNamespace().ns) });
 
 /** 這台實例上這個 namespace 有哪些工作流（名字陣列）。 */
 export async function listWorkflows({ timeoutMs = 20000 } = {}) {

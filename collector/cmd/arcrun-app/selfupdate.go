@@ -32,6 +32,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"arcrun-rag/collector/channel"
 )
 
 // manifestBase 是 bundle manifest（含 daemon 區塊）。與安裝器同源，不另開發佈通道。
@@ -59,10 +61,14 @@ import (
 //	repo 是公開的，GitHub 不知道請求者是誰 ⇒ 零 flag 風險。
 //
 //	仍保留 `?t=<unix>`：擋瀏覽器／中間層快取，成本為零。
-const manifestBase = "https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/main/manifest.json"
+//
+// 🔴 inkstone/arcrun-rag#135：來源不再寫死 prod。正式版讀上面那條 GitHub manifest；
+// Arcrun Stage 讀 youlin R2 的 `dist/manifest.json`（出貨線 targets.stage.dist 放的那份）。
+// 座標全部在 collector/channel（唯一一份），這裡只取用——沒注入頻道＝正式版，行為與以前逐字相同。
+func manifestURLNoCache() string { return manifestURLFor(channel.Current()) }
 
-func manifestURLNoCache() string {
-	return manifestBase + "?t=" + strconv.FormatInt(time.Now().Unix(), 10)
+func manifestURLFor(ch channel.Info) string {
+	return ch.ManifestURL + "?t=" + strconv.FormatInt(time.Now().Unix(), 10)
 }
 
 // updateCheckInterval：背景檢查頻率。守「不輪詢」紅線——這是**單一 CDN 靜態檔**、
@@ -151,22 +157,26 @@ func checkForUpdate() updateState {
 
 // downloadURLFor 回傳本平台的下載網址。
 func downloadURLFor(rel *daemonRelease) string {
+	return downloadURLWith(channel.Current(), isWindows(), rel)
+}
+
+func downloadURLWith(ch channel.Info, windows bool, rel *daemonRelease) string {
 	// t186：與 manifestBase 同一個理由改走 raw——`@main` 的 ref 解析會卡住，
 	// 抓到舊 zip ⇒ sha256 校驗不符 ⇒ **更新永遠失敗且靜默**（正是 08-04 撞的病）。
 	// portal 的下載按鈕本來就走 raw（Mac zip 曾大於 jsDelivr 20MB 單檔上限），
 	// 這裡改過來後**兩條下載路徑同源**，不會再出現「下載頁對、檢查更新錯」的分歧。
-	base := "https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/main/"
+	// 🔴 #135：下載根跟著頻道走（正式版＝GitHub bundle repo；Stage＝youlin R2 的 /dist/）。
+	//    manifest 與下載必須同源，否則會出現「manifest 說有新版、下載卻是別的頻道的檔」。
 	suffix := "?t=" + strconv.FormatInt(time.Now().Unix(), 10)
-	if isWindows() {
-		return base + rel.Win.File + suffix
+	if windows {
+		return ch.FileURL(rel.Win.File) + suffix
 	}
-	return base + rel.Mac.File + suffix
+	return ch.FileURL(rel.Mac.File) + suffix
 }
 
 // updateStagePath 是下載暫存位置（~/.arcrun-rag/updates/）。
 func updateStagePath(name string) string {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".arcrun-rag", "updates")
+	dir := filepath.Join(appDir(), "updates")
 	_ = os.MkdirAll(dir, 0o755)
 	return filepath.Join(dir, name)
 }
@@ -376,9 +386,9 @@ func extractAppFrom(path, work string) (string, error) {
 		if out, err := runCmd("ditto", "-x", "-k", path, work); err != nil {
 			return "", fmt.Errorf("解壓失敗：%v %s", err, out)
 		}
-		app := filepath.Join(work, "Arcrun.app")
+		app := filepath.Join(work, channel.Current().AppName+".app")
 		if _, err := os.Stat(app); err != nil {
-			return "", fmt.Errorf("更新檔內容不符（找不到 Arcrun.app）")
+			return "", fmt.Errorf("更新檔內容不符（找不到 %s.app）", channel.Current().AppName)
 		}
 		return app, nil
 	default:
@@ -397,11 +407,14 @@ func extractAppFromDMG(dmgPath, work string) (string, error) {
 		return "", fmt.Errorf("掛載 DMG 失敗：%v %s", err, out)
 	}
 	defer func() { _, _ = runCmd("hdiutil", "detach", mount, "-quiet") }()
-	src := filepath.Join(mount, "Arcrun.app")
+	// 🔴 #135：DMG 裡的 .app 名稱跟著頻道（正式版 Arcrun.app、Stage 版 Arcrun Stage.app）——
+	//    Stage 的更新檔絕不會是 Arcrun.app，用錯頻道的檔會在這裡被擋下，而不是蓋掉另一個 App。
+	appName := channel.Current().AppName + ".app"
+	src := filepath.Join(mount, appName)
 	if _, err := os.Stat(src); err != nil {
-		return "", fmt.Errorf("DMG 裡找不到 Arcrun.app")
+		return "", fmt.Errorf("DMG 裡找不到 %s", appName)
 	}
-	dst := filepath.Join(work, "Arcrun.app")
+	dst := filepath.Join(work, appName)
 	if out, err := runCmd("ditto", src, dst); err != nil {
 		return "", fmt.Errorf("從 DMG 複製失敗：%v %s", err, out)
 	}

@@ -34,6 +34,15 @@ const idsOf = (r) => r.dead_entries.map((e) => e.id).sort();
 
 // ── build_deprecations（blocks）────────────────────────────────────────────
 {
+  // c2953（geek6688 實況）：同一個檔在庫裡有兩筆，一筆有 library、一筆是 library 欄位出現之前寫的（沒有）。
+  // 移除該資料夾時兩筆都要收回（舊的不能留成孤兒）；別的資料夾同名檔不准連坐。
+  const blocks = [block('new', 'notes.md', 'gone_folder'), block('legacy', 'notes.md', undefined), block('other', 'notes.md', 'keep_folder')];
+  const r = buildDeprecations({
+    blocks_body: JSON.stringify({ entries: blocks }), path: 'notes.md', library: 'gone_folder',
+  });
+  t('c2953 舊存量（無 library）與新卡一起收回、別庫不連坐', JSON.stringify(idsOf(r)) === '["legacy","new"]', JSON.stringify(idsOf(r)));
+}
+{
   // 🔴 本票的核心情境：兩個資料夾各有 notes.md，page_name 與相對 path 完全相同。
   const blocks = [block('gone', 'notes.md', 'gone_folder'), block('keep', 'notes.md', 'keep_folder')];
   const r = buildDeprecations({

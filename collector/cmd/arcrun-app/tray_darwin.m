@@ -40,17 +40,18 @@ extern void trayOnQuit(void);
 @end
 
 static ArcrunTray *gTray = nil;
-static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle);
+static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle, NSString *label);
 
 // 用一個小物件把參數帶到主執行緒（performSelectorOnMainThread 只能傳一個 object）
 @interface ArcrunTrayBoot : NSObject
 @property (strong) NSData *iconData;
 @property (strong) NSString *tip;
 @property (strong) NSString *quitTitle;
+@property (strong) NSString *label;
 - (void)run;
 @end
 @implementation ArcrunTrayBoot
-- (void)run { createTrayNow(self.iconData, self.tip, self.quitTitle); }
+- (void)run { createTrayNow(self.iconData, self.tip, self.quitTitle, self.label); }
 @end
 
 // createTray：兩個條件同時要滿足，缺一個都會靜默失敗（兩個我都踩過）：
@@ -60,22 +61,23 @@ static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle);
 //      還沒 finishLaunching 時拿不到東西 ⇒ icon 不會出現、也不報錯
 //      （實測：在 wails.Run() 之前呼叫 ⇒ menu bar item 數 = 0）
 // ⇒ 用 dispatch_async 丟到 main queue：Wails 起來後才會被執行，且保證在主執行緒。
-void createTray(const char *iconBytes, int iconLen, const char *tooltip, const char *quitTitle) {
+void createTray(const char *iconBytes, int iconLen, const char *tooltip, const char *quitTitle, const char *label) {
   // 先把參數複製一份——呼叫端的 C 字串在 dispatch 執行時可能已被釋放
   NSData *iconData = [NSData dataWithBytes:iconBytes length:iconLen];
   NSString *tip = [NSString stringWithUTF8String:tooltip];
   NSString *qt  = [NSString stringWithUTF8String:quitTitle];
+  NSString *lb  = [NSString stringWithUTF8String:label];   // 空字串＝正式版，不顯示文字（#135）
   // 🔴 **不能用 dispatch_async(main_queue)**——實測 Wails 佔住主執行緒後
   //    沒有跑標準 run loop，排進 main queue 的 block **永遠不會被執行**
   //    （log 只印到 "dispatching…"，block 內完全沒動靜）。
   //    改用 performSelectorOnMainThread：它走的是 run loop 的 common modes，
   //    在 Wails 的 loop 之下仍會被處理。
   ArcrunTrayBoot *boot = [[ArcrunTrayBoot alloc] init];
-  boot.iconData = iconData; boot.tip = tip; boot.quitTitle = qt;
+  boot.iconData = iconData; boot.tip = tip; boot.quitTitle = qt; boot.label = lb;
   [boot performSelectorOnMainThread:@selector(run) withObject:nil waitUntilDone:NO];
 }
 
-static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle) {
+static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle, NSString *label) {
   gTray = [[ArcrunTray alloc] init];
   gTray.item = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
 
@@ -84,6 +86,8 @@ static void createTrayNow(NSData *iconData, NSString *tip, NSString *quitTitle) 
   [img setTemplate:YES];          // 由系統依深淺色自動上色
   gTray.item.button.image = img;
   gTray.item.button.toolTip = tip;
+  // 🔴 #135：Stage 版在 icon 旁顯示文字，兩個 App 並排時一眼分得出哪個是測試版。正式版 label 為空＝不動。
+  if (label.length > 0) { gTray.item.button.title = label; }
 
   // 右鍵選單只有一項（leo：「托盤裡只剩下按右鍵會結束」）
   gTray.menu = [[NSMenu alloc] init];

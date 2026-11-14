@@ -23,6 +23,8 @@ import (
 	_ "embed"
 
 	"github.com/energye/systray"
+
+	"arcrun-rag/collector/channel"
 )
 
 // trayApp 讓回呼找得到 App（與 tray_darwin.go 同名同用途；
@@ -40,6 +42,16 @@ var trayApp *App
 //go:embed build/trayicon.ico
 var trayIconICO []byte
 
+// trayIconFor 回傳該頻道的系統匣圖：正式版＝上面 embed 的那顆（逐位元不變）；Stage 版＝同一張圖＋右下橘點（#135）。
+func trayIconFor(c channel.Info) []byte {
+	if c.IsStage() {
+		if ico := stageTrayICO(); len(ico) > 0 {
+			return ico
+		}
+	}
+	return trayIconICO
+}
+
 // setupTray 建立系統匣圖示。
 //
 // 與 macOS 版的介面契約相同（main.go 只呼叫 setupTray(app)），
@@ -48,13 +60,14 @@ func setupTray(app *App) {
 	trayApp = app
 	// RunWithExternalLoop 回傳 start/end；Windows 下 start 不阻塞。
 	trayStart, trayEnd = systray.RunWithExternalLoop(func() {
-		systray.SetIcon(trayIconICO)
-		systray.SetTitle("Arcrun")
-		systray.SetTooltip("Arcrun — 你的知識庫同步小幫手")
+		ch := channel.Current()
+		systray.SetIcon(trayIconFor(ch))
+		systray.SetTitle(ch.AppName)
+		systray.SetTooltip(ch.AppName + " — 你的知識庫同步小幫手")
 
 		// 🔴 右鍵選單：**只有結束**（leo 08-05：「依照 google drive，托盤裡只剩下
 		//   按右鍵會結束，其他設定都在這個頁面」）。
-		quit := systray.AddMenuItem("結束 Arcrun", "結束 Arcrun（同步會停止）")
+		quit := systray.AddMenuItem("結束 "+ch.AppName, "結束 "+ch.AppName+"（同步會停止）")
 		quit.Click(func() {
 			if trayApp != nil {
 				trayApp.Quit()

@@ -24,6 +24,8 @@ type daemonConfig struct {
 	Library      string `json:"library"`
 	Email        string `json:"email"`
 	InstanceName string `json:"instance_name"`
+	// KbdbKey＝打雲端的 Bearer 憑證（#334）。舊版雲端沒有這欄＝空字串，照舊只帶租戶名。
+	KbdbKey string `json:"kbdb_key"`
 }
 
 type daemonConfigResp struct {
@@ -102,6 +104,9 @@ func (a *App) Connect(portalURL, email, password string) error {
 			cfg.Accounts[i].CypherURL = r.Config.CypherURL
 			cfg.Accounts[i].Namespace = r.Config.Namespace
 			cfg.Accounts[i].APIKey = r.Config.Namespace
+			if r.Config.KbdbKey != "" { // 舊雲端不回這欄：不要把已存的憑證洗成空
+				cfg.Accounts[i].KbdbKey = r.Config.KbdbKey
+			}
 			cfg.Accounts[i].Email = r.Config.Email
 			cfg.Accounts[i].InstanceName = r.Config.InstanceName
 			// arcrun-rag#137：密碼**此刻**還在手上，順手換一張 portal session，
@@ -120,6 +125,7 @@ func (a *App) Connect(portalURL, email, password string) error {
 		CypherURL:    r.Config.CypherURL,
 		Namespace:    r.Config.Namespace,
 		APIKey:       r.Config.Namespace,
+		KbdbKey:      r.Config.KbdbKey,
 	})
 	// arcrun-rag#137：同上，順手換一張 portal session 給 App 啟動器用。
 	tryStoreSessionFromLogin(cfg, len(cfg.Accounts)-1, r.Config.Email, password)

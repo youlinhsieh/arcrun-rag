@@ -6,6 +6,7 @@ process.exit(2);
 
 // 把 workflows.json 的指定 workflow 推到指定實例（照 oauth worker pushWorkflowTo 手法）
 import { readFileSync } from 'node:fs';
+import { cypherAuthHeaders } from '../installer/scripts/cypher-auth.mjs';
 const [,, wfName, sub, ns] = process.argv;
 const W = JSON.parse(readFileSync(new URL('./workflows.json', `file://${process.env.WFDIR}/`)));
 const wf = Array.isArray(W) ? W.find(x=>x.name===wfName) : { name: wfName, ...W[wfName] };
@@ -19,7 +20,7 @@ const subs = {
   '__CODE_URL__': `https://arcrun-code.${sub}.workers.dev`,
 };
 const apply = (o) => { let s = JSON.stringify(o); for (const [k,v] of Object.entries(subs)) s = s.split(k).join(String(v)); return JSON.parse(s); };
-const hdr = { 'content-type':'application/json', 'X-Arcrun-API-Key': ns, 'user-agent':'curl/8.5.0' };
+const hdr = { 'content-type':'application/json', ...cypherAuthHeaders(ns), 'user-agent':'curl/8.5.0' };
 const cres = await fetch(`${base}/cypher/search`, { method:'POST', headers:hdr, body: JSON.stringify({ triplets: apply(wf.flow) }) });
 const compiled = await cres.json();
 if (!cres.ok || (compiled.missing||[]).length) { console.error('編圖失敗', cres.status, compiled.missing); process.exit(1); }

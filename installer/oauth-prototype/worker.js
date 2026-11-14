@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@04ee43d86ef91866a8ccb98b29266648c5dd4471';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@2d5053995e06bb80f79e5bb7a4e0b22199f1f656';
 const BUNDLE_BUILT = '2026-11-12'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2567,6 +2567,30 @@ export async function ensureInstanceSecretsToken(token, accountId, opts = {}) {
 }
 
 /**
+ * inkstone/arcrun-rag#334（母票 inkstone/Arcrun#399）：打 cypher 要帶合法憑證。
+ *
+ * 相容期（cypher 的 CYPHER_AUTH_COMPAT_UNTIL）之後，只有租戶名（`X-Arcrun-API-Key: <ns>`）
+ * 一律 401，要再帶 `Authorization: Bearer <key>`：
+ *   key ＝ HMAC-SHA256(金鑰＝該實例的 KBDB_INTERNAL_TOKEN, 訊息＝"kbdb-proxy-v1\n"+租戶名) 的小寫 hex。
+ * 格式只有這一套（Arcrun#399 c1794480503109218）；安裝器本來就握有／產生 KBDB_INTERNAL_TOKEN
+ * （自己寫進 Secret），所以用同一公式自己算，**不新增任何要使用者保管的金鑰**。
+ *
+ * kbdbToken 沒給（例如測試、或尚未取得）⇒ 只帶租戶名＝舊行為，相容期內照通。
+ */
+async function deriveKbdbProxyKey(kbdbToken, tenant) {
+  const enc = new TextEncoder();
+  const k = await crypto.subtle.importKey('raw', enc.encode(String(kbdbToken)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, enc.encode('kbdb-proxy-v1\n' + String(tenant)));
+  return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+/** 回 cypher 請求要帶的認證 header（租戶名＋有金鑰就加 Bearer）。 */
+async function cypherAuthHeaders(ns, kbdbToken) {
+  const h = { 'X-Arcrun-API-Key': ns };
+  if (kbdbToken) h.Authorization = 'Bearer ' + await deriveKbdbProxyKey(kbdbToken, ns);
+  return h;
+}
+
+/**
  * 兩步，**順序不可顛倒**（契約見 inkstone/Arcrun#196 comment 5973）：
  *   ① POST <cypherBase>/credentials/directory  → 只寫目錄、不收值，回 secret_ref + secret_script
  *   ② putWorkerSecretDirect(…, secret_script, secret_ref, 明文)  → 值那一半，一字沒改
@@ -2574,13 +2598,13 @@ export async function ensureInstanceSecretsToken(token, accountId, opts = {}) {
  * ⚠️ 端點帶值的欄位會 400（不是安靜忽略）⇒ 這裡**永遠只送 name/service/sensitivity**。
  * 冪等：同一組 (api_key, name) 重打＝upsert 同一列，重裝照打不必先查。
  */
-async function seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity) {
+async function seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity, kbdbToken) {
   // 網址還沒定案就別瞎猜——說出真話比丟一個 `undefined/credentials/directory` 好
   if (!cypherBase) throw new Error('還不知道這台實例的網址，目錄寫不進去');
   // ① 目錄（走實例端點，零 SQL）
   const res = await fetch(`${String(cypherBase).replace(/\/+$/, '')}/credentials/directory`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'X-Arcrun-API-Key': apiKey },
+    headers: { 'content-type': 'application/json', ...(await cypherAuthHeaders(apiKey, kbdbToken)) },
     body: JSON.stringify({ name, service, sensitivity }),
     signal: AbortSignal.timeout(30000),
   });
@@ -2623,12 +2647,12 @@ function isTransientSeedError(err) {
 }
 async function seedCredentialWithRetry(
   token, accountId, cypherBase, apiKey, name, value, service, sensitivity,
-  { attempts = 4, backoffMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+  { attempts = 4, backoffMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), kbdbToken } = {},
 ) {
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
     try {
-      const ref = await seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity);
+      const ref = await seedCredential(token, accountId, cypherBase, apiKey, name, value, service, sensitivity, kbdbToken);
       return { ref, attempts: i + 1 };
     } catch (e) {
       lastErr = e;
@@ -3369,7 +3393,8 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
   try {
     const flow = applySubs(wf.flow, subs);
     const cfg = applySubs(wf.config, subs);
-    const hdr = { 'content-type': 'application/json', 'X-Arcrun-API-Key': ns, 'user-agent': 'curl/8.5.0' };
+    // #334：認證 header 用安裝時替換進來的 KBDB_INTERNAL_TOKEN 算 Bearer（沒有就只帶租戶名）
+    const hdr = { 'content-type': 'application/json', ...(await cypherAuthHeaders(ns, subs && subs['__KBDB_TOKEN__'])), 'user-agent': 'curl/8.5.0' };
     // t158 P0「部署≠發現」（leo 07-31：「這裡只是複製一些工作流的 data 過去，沒有要在
     // 這裡驗證」「打包好的幾個工作流準備好直接 import 就好了」）：
     // graph 已在**打包期**預編進 workflows.json（引擎自己的 parser 產、mode:compile）——
@@ -3439,9 +3464,9 @@ async function pushWorkflowTo(cypherBase, ns, subs, wf) {
  *  stage 重裝後讀到的仍是 4033 字舊版（無 ON_BRANCH），得手動 PATCH 才更新。
  *  這與步驟 1 的「harness 世代脫節」同一個病——**發得出去 ≠ 收得到**。
  *  修法：內容不同才 PATCH（相同則 skip，維持冪等、不製造無謂寫入）。 */
-async function seedSkillsTo(cypherBase, ns) {
+async function seedSkillsTo(cypherBase, ns, kbdbToken) {
   const sk = { created: [], existed: [], updated: [], errors: [] };
-  const hdr = { 'X-Arcrun-API-Key': ns, 'user-agent': 'curl/8.5.0' };
+  const hdr = { ...(await cypherAuthHeaders(ns, kbdbToken)), 'user-agent': 'curl/8.5.0' };
   for (const s of SKILLS) {
     const pageName = `skill-${s.slug}`;
     try {
@@ -3510,6 +3535,7 @@ export {
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
   CRON_TRIGGERS, cronsForEntry, ensureWorkerSchedules, syncManifestCrons,
   seedSkillsTo, // skills 種入（本班）
+  deriveKbdbProxyKey, cypherAuthHeaders, // #334：打 cypher 的 Bearer 憑證
   waitForWorkerLive, briefBody, // #190：「等網址生效」單一真相＋失敗訊息保留 CF 原文
   // inkstone/Arcrun#190 workers.dev 子網域自動開通 ＋ 靜默降級可見化
   ensureWorkersSubdomain, subdomainCandidates, installWarnings,
@@ -4457,7 +4483,7 @@ async function runInstallSteps(env, sid, progress, force) {
     try {
       const seedRes = await fetch(`${workerUrl}/init/seed`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'X-Arcrun-API-Key': ns },
+        headers: { 'content-type': 'application/json', ...(await cypherAuthHeaders(ns, kbdbToken)) },
         body: JSON.stringify({}),
         signal: AbortSignal.timeout(30000),
       });
@@ -4480,7 +4506,7 @@ async function runInstallSteps(env, sid, progress, force) {
       const probeT0 = Date.now();
       try {
         const chk = await fetch(`${workerUrl}/kbdb/templates/triplet`, {
-          headers: { 'X-Arcrun-API-Key': ns },
+          headers: await cypherAuthHeaders(ns, kbdbToken),
           signal: AbortSignal.timeout(10000),
         });
         progress.result.seedTripletProbeMs = Date.now() - probeT0;
@@ -4590,7 +4616,7 @@ async function runInstallSteps(env, sid, progress, force) {
       // #196 c11733：用重試版——金鑰輪換剛換完，cypher 的新 secret 還在傳播，
       //   目錄端點會回一陣子 401。重試到生效為止（4 次，2/4/6s），把手動 --restart 自動化。
       const { attempts } = await seedCredentialWithRetry(
-        token, accountId, workerUrl, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high');
+        token, accountId, workerUrl, ns, 'kbdb_internal_token', kbdbToken, 'kbdb', 'high', { kbdbToken });
       progress.result.credentialSeeded = true;
       progress.result.credentialSeedAttempts = attempts;
     } catch (e) {
@@ -4604,7 +4630,7 @@ async function runInstallSteps(env, sid, progress, force) {
     // 放在 KBDB_INTERNAL_TOKEN 同步（上面 putWorkerSecretDirect）之後，cypher 代打才通。
     // 冪等（有就跳過），失敗不擋安裝但誠實記進 result 讓驗收看得到。
     try {
-      progress.result.skills = await seedSkillsTo(workerUrl, ns);
+      progress.result.skills = await seedSkillsTo(workerUrl, ns, kbdbToken);
       progress.updatedAt = Date.now();
       await writeProgress(env, sid, progress);
     } catch (e) {

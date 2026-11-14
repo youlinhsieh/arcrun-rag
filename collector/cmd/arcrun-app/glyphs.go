@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	collector "arcrun-rag/collector"
 )
 
 func fetchGlyphs(acc accountCfg) map[string]string {
@@ -31,7 +33,7 @@ func fetchGlyphs(acc accountCfg) map[string]string {
 		req.Header.Set("Authorization", "Bearer "+acc.PortalSession)
 	case strings.TrimSpace(acc.APIKey) != "":
 		req, _ = http.NewRequest(http.MethodGet, base+"/apps/glyphs", nil)
-		req.Header.Set("X-Arcrun-API-Key", acc.APIKey)
+		collector.SetCypherAuth(req, acc.APIKey)
 	default:
 		return nil
 	}

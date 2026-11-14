@@ -19,6 +19,8 @@
  * 用法：
  *   node installer/scripts/verify-instance-ai.mjs <cypher_base> <api_key> [問題]
  */
+import { cypherAuthHeaders } from './cypher-auth.mjs';
+
 const [, , base, key, q = '這個知識庫裡有什麼'] = process.argv;
 if (!base || !key) {
   console.error('用法：node verify-instance-ai.mjs <cypher_base> <api_key> [問題]');
@@ -30,14 +32,14 @@ const j = async (u, o) => { const r = await fetch(u, o); return { ok: r.ok, stat
 console.log('━━━ 實例 AI 問答免金鑰驗收 ━━━\n');
 
 // ① 這個實例有沒有 gemini 金鑰
-const creds = await j(`${U}/credentials`, { headers: { 'X-Arcrun-API-Key': key } });
+const creds = await j(`${U}/credentials`, { headers: cypherAuthHeaders(key) });
 const names = (creds.body?.credentials ?? []).map((c) => c.name);
 const hasGemini = names.includes('gemini_api_key');
 console.log(`① 憑證庫：${names.join(', ') || '(空)'}`);
 console.log(`   有 gemini_api_key：${hasGemini ? '是 ⚠️' : '否'}`);
 
 // ② 問一題（走用戶真的會走的那條路）
-const ans = await j(`${U}/q/${encodeURIComponent(key)}/rag_chat?question=${encodeURIComponent(q)}`);
+const ans = await j(`${U}/q/${encodeURIComponent(key)}/rag_chat?question=${encodeURIComponent(q)}`, { headers: cypherAuthHeaders(key) });
 const text = ans.body?.data?.answer ?? '';
 const err = ans.body?.data?.error ?? ans.body?.error ?? '';
 console.log(`\n② 問「${q}」→ HTTP ${ans.status}`);

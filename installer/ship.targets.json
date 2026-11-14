@@ -94,6 +94,7 @@
         "branch": "main",
         "seedFrom": "~/.arcrun-ship/bundles-stage"
       },
+      "daemonDist": "dist",
       "pin": null,
       "installer": null,
       "verify": null,
@@ -120,6 +121,12 @@
         "remote": "https://51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/InkStoneCo/arcrun-rag-bundles-staging.git",
         "branch": "main"
       },
+      "daemonDist": "dist-stage",
+      "_daemonDist": [
+        "inkstone/arcrun-rag#135（2026-11-12）：小幫手的 Stage 身分（Arcrun Stage.app）。daemon-sync 從 collector/cmd/arcrun-app/<daemonDist>/ 取安裝檔。",
+        "stage 取 dist-stage（`CHANNEL=stage ./build-dmg.sh` 的產物），prod 取 dist——同一個 commit 為各目標各打一次，DMG 檔名相同、內容不同，所以必須分目錄。",
+        "小幫手裡的 stage 座標（collector/channel/channel.go）要與本目標的 dist.publicBase／installer／instanceUpdate 對得上，channel_test.go 與 channel-coordinates.test.mjs 各比對一次。"
+      ],
       "stageQueue": {
         "_": [
           "inkstone/arcrun-rag#271（leo 2026-11-10「stage 只有一個」「release 是排隊的，stage 就不會覆蓋」）：出貨線是 stage 唯一的發版佇列。",
@@ -387,6 +394,7 @@
       "label": "prod（正式出貨：封測者按更新就會拿到）",
       "publish": true,
       "requiresArm": true,
+      "daemonDist": "dist",
       "armTicket": {
         "repo": "InkStoneCo",
         "coversMainPush": true,

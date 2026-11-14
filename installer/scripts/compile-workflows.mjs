@@ -31,6 +31,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cypherAuthHeaders } from './cypher-auth.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ragRoot = join(here, '..', '..');            // arcrun-rag repo 根
@@ -57,6 +58,8 @@ const FILES = [
   // inkstone/arcrun-rag#267：rag_entity_concept 的前置查詢（對這張卡自己的每個 entity 各查一次）。
   // 必須跟 rag_entity_concept 一起編圖／推送——它的 fetch_lookup 節點打這支，沒裝＝整支如實失敗。
   'rag-entity-lookup.local.yaml',
+  // inkstone/arcrun-rag#75：忘記密碼寄信。實例的 /portal/password/forgot 觸發它（舊實例沒裝則退回 relayResetLink）。
+  'portal-password-reset-mail.local.yaml',
 ];
 
 const py = `
@@ -168,7 +171,7 @@ if (needCompile.length > 0) {
   for (const w of needCompile) {
     const res = await fetch(`${cypherBase}/cypher/search`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-Arcrun-API-Key': ns, 'user-agent': 'curl/8.5.0' },
+      headers: { 'content-type': 'application/json', ...cypherAuthHeaders(ns), 'user-agent': 'curl/8.5.0' },
       body: JSON.stringify({ triplets: w.flow, mode: 'compile' }),
     });
     if (!res.ok) {

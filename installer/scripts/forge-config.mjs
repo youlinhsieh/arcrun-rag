@@ -30,6 +30,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withRetry } from './fetch-retry.mjs';
+import { cypherAuthHeaders } from './cypher-auth.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FORGE_CONF_PATH = join(HERE, '..', 'forge.conf');
@@ -188,7 +189,7 @@ export function makeAhubFetch({ cypherUrl, ns, fetchImpl = fetch }) {
     const endpoint = `${base}/webhooks/named/${encodeURIComponent(ns)}/${m.workflow}/query`;
     const r = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': 'arcrun-rag-forge/1' },
+      headers: { 'content-type': 'application/json', 'user-agent': 'arcrun-rag-forge/1', ...cypherAuthHeaders(ns) },
       body: JSON.stringify(envelope),
       ...(init.signal ? { signal: init.signal } : {}),
     });

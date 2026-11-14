@@ -63,3 +63,24 @@ export function resolveDaemonDist({ repoRoot, distRel, requiredFiles, worktrees 
   }
   return { dir: null, worktree: null, tried };
 }
+
+/** daemon 打包產物目錄名只准這兩個：正式版 `dist`、Stage 版 `dist-stage`（collector/cmd/arcrun-app/build-*.sh 的 CHANNEL 決定）。 */
+export const DAEMON_DIST_NAMES = ['dist', 'dist-stage'];
+
+/**
+ * 某個出貨目標的 daemon 產物目錄（相對 repo 根）——來自登錄簿 `targets.<目標>.daemonDist`。
+ *
+ * inkstone/arcrun-rag#135（2026-11-12）：小幫手有了 Stage 身分（Arcrun Stage.app，bundle id／資料目錄／更新來源都不同），
+ * 同一個 commit 為不同目標各打一次，DMG 檔名相同、內容不同 ⇒ 必須分目錄放，
+ * `daemon-sync` 才不會把正式版的 DMG 搬進 stage（或反過來）。
+ * **沒宣告就擋，不退回預設**：靜默退回 `dist` 正是「stage 出貨送了 prod 那顆 DMG」的形狀。
+ */
+export function daemonDistRelFor(targetName, target) {
+  const d = target && target.daemonDist;
+  if (!DAEMON_DIST_NAMES.includes(d)) {
+    throw new Error(
+      `登錄簿不完整：目標 \`${targetName}\` 沒宣告合法的 daemonDist（現在是 ${JSON.stringify(d)}；只准 ${DAEMON_DIST_NAMES.join('／')}）。\n` +
+      `     這個目標要從哪個目錄取 daemon 安裝檔，必須白紙黑字寫在 installer/ship.targets.json。`);
+  }
+  return join('collector', 'cmd', 'arcrun-app', d);
+}

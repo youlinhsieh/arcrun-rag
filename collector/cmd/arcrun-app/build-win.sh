@@ -18,6 +18,7 @@
 #    **只有真的在 Windows 上跑才驗得到**——那一步歸 leo／封測者真機。
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./channel-env.sh   # #135：CHANNEL=stage → 資料目錄／更新來源／單一實例鎖換成 Stage 身分，產物放 dist-stage/
 export PATH="$PATH:$(go env GOPATH)/bin"
 
 # 🔴 2026-08-06：版本號**不再手打、也不再靠 git describe**。
@@ -61,12 +62,12 @@ python3 gen-icons.py
 #   Windows 使用者在「內容→詳細資料」看到的版本讀這個欄位；MSIX 送審也會對照。
 PLIST_VER="${VERSION#v}"
 cp wails.json wails.json.bak
-python3 - "$PLIST_VER" <<'PY'
+python3 - "$PLIST_VER" "$APP_NAME" <<'PY'
 import json, sys
 c = json.load(open('wails.json'))
 c.setdefault('info', {})
 c['info']['productVersion'] = sys.argv[1]
-c['info']['productName'] = 'Arcrun'
+c['info']['productName'] = '%s' % sys.argv[2]
 json.dump(c, open('wails.json', 'w'), indent=2, ensure_ascii=False)
 PY
 trap 'mv -f wails.json.bak wails.json 2>/dev/null || true' EXIT
@@ -94,9 +95,9 @@ echo "② wails build（windows/amd64，CGo 走 mingw）"
 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
   wails build -platform windows/amd64 -clean ${NSIS_FLAG} \
     -ldflags "-X main.version=${VERSION} -X main.buildTime=${BUILD_TIME} \
-              -X arcrun-rag/collector.version=${VERSION} -X arcrun-rag/collector.buildTime=${BUILD_TIME}"
+              -X arcrun-rag/collector.version=${VERSION} -X arcrun-rag/collector.buildTime=${BUILD_TIME} ${CH_LDFLAGS}"
 
-OUT="dist"; mkdir -p "$OUT"
+OUT="$DIST_DIR"; mkdir -p "$OUT"
 
 echo "③ 產出**單一執行檔**"
 # 🔴 2026-08-06 交付形態改變（leo 封測回報②，圖一標註）：

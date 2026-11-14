@@ -21,9 +21,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"arcrun-rag/collector/channel"
 )
 
-const installLatestURL = "https://install.arcrun.dev/api/latest"
+// installLatestURL：雲端引擎「最新版」查詢端點。正式版＝install.arcrun.dev；Arcrun Stage＝youlin 的 stage 安裝器
+// （inkstone/arcrun-rag#135，座標在 collector/channel）。拿 stage 的雲端版本去跟 prod 的「最新版」比，
+// 天生對不上、看起來像 bug——leo 2026-08-24 撞到的就是這個形狀。
+func installLatestURL() string { return channel.Current().LatestURL }
 
 // latestCacheTTL：install.arcrun.dev 自己在 CF edge 快取 5 分鐘（landing/worker.js
 // 同一顆端點的既有用法），daemon 端沒必要比它更頻繁去打；同步輪詢間隔常常只有十幾秒，
@@ -41,7 +46,7 @@ var (
 // fetchLatestCloudReleaseRaw 可在測試中替換為 stub（同 fetchCloudVersion 慣例）。
 var fetchLatestCloudReleaseRaw = func() (string, bool) {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(installLatestURL)
+	resp, err := client.Get(installLatestURL())
 	if err != nil {
 		return "", false
 	}

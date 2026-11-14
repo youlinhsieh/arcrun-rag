@@ -103,3 +103,27 @@ test('listWorktrees：用真的 git repo 驗證 porcelain 輸出真的解析得�
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ── inkstone/arcrun-rag#135：每個目標宣告自己的 daemon 產物目錄 ─────────────────
+import { daemonDistRelFor } from './daemon-dist.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+test('✅ daemonDistRelFor：stage→dist-stage、prod→dist，來自登錄簿宣告', () => {
+  assert.equal(daemonDistRelFor('stage', { daemonDist: 'dist-stage' }), join('collector', 'cmd', 'arcrun-app', 'dist-stage'));
+  assert.equal(daemonDistRelFor('prod', { daemonDist: 'dist' }), join('collector', 'cmd', 'arcrun-app', 'dist'));
+});
+
+test('❌ daemonDistRelFor：沒宣告／亂寫一律擋，不退回預設 dist（否則 stage 會送出 prod 的 DMG）', () => {
+  for (const bad of [undefined, '', 'build', '../dist', 'dist-prod']) {
+    assert.throws(() => daemonDistRelFor('x', { daemonDist: bad }), /沒宣告合法的 daemonDist/);
+  }
+  assert.throws(() => daemonDistRelFor('x', undefined), /沒宣告合法的 daemonDist/);
+});
+
+test('✅ 真實登錄簿：每個目標都宣告 daemonDist，且 stage 與 prod 不同目錄', () => {
+  const reg = JSON.parse(readFileSync(fileURLToPath(new URL('../ship.targets.json', import.meta.url)), 'utf8'));
+  for (const [name, t] of Object.entries(reg.targets)) daemonDistRelFor(name, t);
+  assert.equal(reg.targets.stage.daemonDist, 'dist-stage');
+  assert.equal(reg.targets.prod.daemonDist, 'dist');
+});
