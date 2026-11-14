@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, placementRegionForD1, landingBase, resolveInstanceTenant,
+  deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, landingBase, resolveInstanceTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -1243,6 +1243,35 @@ test('P0-4 deployBundledWorker：leo 專屬 var 一律不灌進客戶實例（�
   } finally {
     restoreFetch();
   }
+});
+
+test('inkstone/Arcrun#416 deployBundledWorker：manifest 要 Artifacts → 帶上 binding；CF 拒收時退回不帶它再送、安裝不失敗', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const entry = { ...baseEntry, requires: { ...baseEntry.requires, artifacts: { binding: 'ARTIFACTS', namespace: 'default' } } };
+  const a = installBundleFetch();
+  try {
+    const r = await deployBundledWorker(env, 'tok', 'acct-123', entry, baseResources, baseInject);
+    assert.deepEqual(a.captured().bindings.find((b) => b.type === 'artifacts'), { type: 'artifacts', name: 'ARTIFACTS', namespace: 'default' });
+    assert.equal(r.artifactsBindingSkipped, false);
+  } finally { restoreFetch(); }
+  // 帳號沒有 Artifacts：第一次 PUT 被拒、第二次（不帶）成功
+  let puts = 0, lastMeta = null;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) {
+      puts++;
+      lastMeta = JSON.parse(await init.body.get('metadata').text());
+      if (lastMeta.bindings.some((b) => b.type === 'artifacts')) return new Response(JSON.stringify({ success: false, errors: [{ code: 10021, message: 'artifacts not enabled' }] }), { status: 400, headers: { 'content-type': 'application/json' } });
+      return cfOk({});
+    }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    return new Response('export default {}', { status: 200 });
+  });
+  try {
+    const r = await deployBundledWorker(env, 'tok', 'acct-123', entry, baseResources, baseInject);
+    assert.equal(puts, 2); assert.equal(r.artifactsBindingSkipped, true);
+    assert.ok(!lastMeta.bindings.some((b) => b.type === 'artifacts'));
+  } finally { restoreFetch(); }
 });
 
 test('P0-4 deployBundledWorker：注入安裝期才知道的值（account/subdomain/kbdb）', async () => {
@@ -5841,4 +5870,27 @@ test('#291 心跳掛在整輪安裝外層（不是只掛資料表那一步），
   assert.ok(m, '找不到 runInstall');
   assert.match(m[1], /startHeartbeat\(/, 'runInstall 外層要起心跳');
   assert.match(m[1], /finally\s*\{\s*stopHeartbeat\(\)/, '跑完（含失敗）要停心跳');
+});
+
+test('inkstone/Arcrun#416 Artifacts namespace 不寫死：env > 帳號實際有的（repo 最多）> manifest 備案', async () => {
+  const leo = [{ namespace: 'Leo', repo_count: 1 }, { namespace: 'InkStoneCo', repo_count: 24 }];
+  assert.equal(pickArtifactsNamespace('default', leo, undefined), 'InkStoneCo');
+  assert.equal(pickArtifactsNamespace('default', [{ namespace: 'default', repo_count: 1 }], undefined), 'default');
+  assert.equal(pickArtifactsNamespace('default', leo, ' Leo '), 'Leo');
+  assert.equal(pickArtifactsNamespace('default', null, undefined), 'default');
+  // 整條路：帳號上的 namespace 是 InkStoneCo → binding 就是 InkStoneCo（wrangler 備案仍是 default，沒有手改）
+  const entry = { ...baseEntry, requires: { ...baseEntry.requires, artifacts: { binding: 'ARTIFACTS', namespace: 'default' } } };
+  let meta = null;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && /\/artifacts\/namespaces$/.test(url)) return cfOk(leo);
+    if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) { meta = JSON.parse(await init.body.get('metadata').text()); return cfOk({}); }
+    if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
+    if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    await deployBundledWorker({ BUNDLE_BASE: BASE }, 'tok', 'acct-123', entry, baseResources, baseInject);
+    assert.equal(meta.bindings.find((b) => b.type === 'artifacts').namespace, 'InkStoneCo');
+  } finally { restoreFetch(); }
 });

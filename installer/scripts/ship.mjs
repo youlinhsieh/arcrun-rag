@@ -3072,7 +3072,9 @@ const STEPS = [
   if (todo.every((t) => t.existing)) {
     return {
       status: internal.created ? 'done' : 'skip',
-      detail: [...internalDetail, ...todo.map((t) => `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`)],
+      detail: [...internalDetail, ...todo.map((t) => t.existing.viaGit
+        ? `GitHub 已有 tag ${t.existing.tag_name}（${t.line.product}）：${t.existing.html_url}（雲端代理擋 API 匿名讀、改用 git 讀 tag；tag 在不等於 release 頁在，release-check 站與匿名讀 releases 頁會再核）`
+        : `GitHub 已有 ${t.line.tag}（${t.line.product}）：${t.existing.html_url}`)],
     };
   }
 
@@ -3161,7 +3163,7 @@ const STEPS = [
   // ③ 逐條線建 release（target_commitish 指到剛推上去的那個 sha，tag 不存在時 GitHub 會自動建出來）
   const made = [];
   for (const t of todo) {
-    if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在：${t.existing.html_url}`); continue; }
+    if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在${t.existing.viaGit ? '（git 讀到 tag；release 頁未經 API 確認）' : ''}：${t.existing.html_url}`); continue; }
     const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await ghListBodies(t.slug), homeOf.get(t.slug));
     // #298：`releaseRecord.via: 'arcrun'` ＝ release 寫入走容器外的 Arcrun 工作流（雲端出口代理擋 POST releases），
     //   進場條件是 leo 對這一版的 ARM 證據；沒宣告 via 的環境（地端）照舊直接打 GitHub。
@@ -3181,12 +3183,14 @@ const STEPS = [
     }
     // 把這一版的成品掛上去（理由與 gitea 那半一字不差：不留「點下去給錯東西」的版本頁）。
     // D20：這是寫入 GitHub ⇒ 與建 release 同一次保險（上面 checkArmed 已過）、同樣逐筆留痕。
+    const uploadedNames = [];
     for (const a of t.assets) {
       if (viaArcrun) {
         await uploadAssetViaArcrun({
           runWorkflow, repoSlug: t.slug, releaseId: rel.id, name: a.name, data: readFileSync(a.abs),
           shipVersion: ctx.release, arm: ctx.armEvidence,
         });
+        uploadedNames.push(a.name);
       } else {
         await ghUploadAsset({ uploadUrl: rel.upload_url, name: a.name, data: readFileSync(a.abs), token });
       }
@@ -3197,14 +3201,21 @@ const STEPS = [
       }
     }
     // 回頭查證（匿名唯讀），不聽上傳步驟說「我成功了」。
-    const onPage = await ghListAssets(t.slug, rel.id);
+    // #343：雲端代理擋 API 匿名讀時，回查拿不到附件清單。此時退回「這趟 Arcrun 工作流上傳後回傳的 asset 名」，
+    //   並在明細照實寫「未經 GitHub API 回查」——不假裝驗過；出貨後仍要從匿名讀 releases 頁複驗。
+    let onPage; let assetsNote = '';
+    try { onPage = await ghListAssets(t.slug, rel.id); } catch (e) {
+      if (!e.envBlocked || !viaArcrun) throw e;
+      onPage = uploadedNames.map((name) => ({ name }));
+      assetsNote = `（⚠️ 雲端代理擋 API 匿名讀：${e.message}；附件名取自 Arcrun 工作流回傳，未經 GitHub 回查）`;
+    }
     const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
     if (missing.length) {
       throw new Error(
         `${t.line.title} 的 release 建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
         `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去只有原始碼快照的版本頁。`);
     }
-    made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）`);
+    made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）${assetsNote}`);
   }
 
   return { status: 'done', detail: [...internalDetail, ...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}（${align.note}）`] };

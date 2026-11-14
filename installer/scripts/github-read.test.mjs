@@ -39,3 +39,35 @@ test('listTagsViaGit：只取 refs/tags 名、略過 ^{}', () => {
   assert.deepEqual(listTagsViaGit('a/b', { spawnImpl: okGit(out) }), ['v1.4.1', 'v1.4.2']);
   assert.throws(() => listTagsViaGit('a/b', { spawnImpl: badGit }), /匿名讀被擋/);
 });
+
+// ── inkstone/arcrun-rag#343：release-record 的 releaseExists 遇環境擋 403 改走 git 讀 ──
+import { releaseExists, listReleaseAssets } from './github-release.mjs';
+
+test('releaseExists：環境擋 + git 沒有該 tag ⇒ null（可建）', async () => {
+  const r = await releaseExists('a/b', 'v1.4.201', { fetchImpl: async () => BLOCK, spawnImpl: okGit('x\trefs/tags/v1.4.200\n') });
+  assert.equal(r, null);
+});
+
+test('releaseExists：環境擋 + git 有該 tag ⇒ 回 viaGit（不猜 release 在不在）', async () => {
+  const r = await releaseExists('a/b', 'v1.4.201', { fetchImpl: async () => BLOCK, spawnImpl: okGit('x\trefs/tags/v1.4.201\n') });
+  assert.equal(r.viaGit, true);
+  assert.match(r.html_url, /releases\/tag\/v1\.4\.201$/);
+});
+
+test('releaseExists：環境擋 + git 也讀不到 ⇒ 丟，錯誤帶 API 回應內文', async () => {
+  await assert.rejects(
+    () => releaseExists('a/b', 'v1', { fetchImpl: async () => BLOCK, spawnImpl: badGit }),
+    /not enabled for this session[\s\S]*匿名讀被擋|匿名讀被擋[\s\S]*not enabled for this session/);
+});
+
+test('releaseExists：rate limit 403 同樣走 git；一般 403 照舊丟且帶內文；404 仍 null', async () => {
+  const RL = { status: 403, ok: false, text: async () => '{"message":"API rate limit exceeded"}' };
+  assert.equal(await releaseExists('a/b', 'v1', { fetchImpl: async () => RL, spawnImpl: okGit('') }), null);
+  await assert.rejects(() => releaseExists('a/b', 'v1', { fetchImpl: async () => ({ status: 403, ok: false, text: async () => 'Forbidden' }), spawnImpl: okGit('') }), /HTTP 403 Forbidden/);
+  assert.equal(await releaseExists('a/b', 'v1', { fetchImpl: async () => ({ status: 404, ok: false }) }), null);
+});
+
+test('listReleaseAssets：環境擋 ⇒ 錯誤帶 envBlocked 與內文', async () => {
+  await assert.rejects(() => listReleaseAssets('a/b', 1, { fetchImpl: async () => BLOCK }),
+    (e) => e.envBlocked === true && /not enabled/.test(e.message));
+});

@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@859982e98396cacbf31acf1d8870415cb74d50b1';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@55c1021c24c1410fad77dbb97f999bf3376445fc';
 const BUNDLE_BUILT = '2026-11-14'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -464,6 +464,7 @@ import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from '.
 //     兩個都對不上原始碼。指紋跟著程式碼走，就不再有第二處要記得。
 import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
 // inkstone/arcrun-rag#238（leo 裁決 B）：沒有常駐 CF token 的實例改密碼 → 重新授權一次換一張一次性授權碼
+import { recordInstallEvent, backfillFromKv } from './install-telemetry.mjs'; // inkstone/arcrun-rag#342 匿名安裝遙測
 import { parseGrantTargets, verifyAccountOwnsInstance, GRANT_CODE_RE, GRANT_TTL_SECONDS } from './grant.mjs';
 
 // 安裝步驟定義（順序即執行順序）
@@ -3041,6 +3042,14 @@ async function resolveWorkerPlacement(token, accountId, scriptName, d1Id) {
   return null;
 }
 
+/** Artifacts binding 的 namespace 怎麼選（inkstone/Arcrun#416）：env > 帳號上 repo 最多的 > manifest 備案。 */
+function pickArtifactsNamespace(declared, accountNamespaces, envNs) {
+  if (envNs && String(envNs).trim()) return String(envNs).trim();
+  const rows = [...(accountNamespaces || [])].sort((a, b) => (b.repo_count || 0) - (a.repo_count || 0));
+  if (rows.length) return rows[0].namespace;
+  return declared || 'default';
+}
+
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
   const base = bundleBase(env);
   // 1. 抓主模組 + wasm 模組（fetchBundleAsset：3 次重試 + GitHub raw 備援）
@@ -3075,6 +3084,25 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     bindings.push({ type: 'd1', name: d.binding, id });
   }
   if (entry.requires?.ai) bindings.push({ type: 'ai', name: 'AI' });
+  // Artifacts binding（inkstone/Arcrun#416）：引擎不靠任何金鑰讀寫「同一個帳號」的 Cloudflare Artifacts。
+  // manifest 的 requires.artifacts 由 Arcrun 的 build-worker-artifacts.mjs 從 wrangler.toml 的 [[artifacts]] 抽出。
+  // 帳號沒開 Artifacts 時 CF 可能拒收這個 binding——下面 PUT 會退回不帶它再送一次（引擎照常運作，
+  // /artifacts 回 424「這個帳號沒有 Artifacts」），不讓整個安裝為了一個選配能力失敗。
+  const artifactsReq = entry.requires?.artifacts || null;
+  if (artifactsReq) {
+    // namespace 不寫死：每個實例讀「自己的 repo 住的那一個」。
+    //   ① env.ARCRUN_ARTIFACTS_NAMESPACE（明講）② 帳號上實際存在的 namespace（一個就用它；多個取 repo 最多的）
+    //   ③ manifest 宣告的（wrangler.toml 的 [[artifacts]]，只是備案）
+    let accountNs = null;
+    if (!(env && env.ARCRUN_ARTIFACTS_NAMESPACE)) {
+      try {
+        const rows = await cfFetch(token, `/accounts/${accountId}/artifacts/namespaces`);
+        if (Array.isArray(rows)) accountNs = rows;
+      } catch (_) { /* 帳號沒開 Artifacts／查不到＝退回備案 */ }
+    }
+    const pickedNs = pickArtifactsNamespace(artifactsReq.namespace, accountNs, env && env.ARCRUN_ARTIFACTS_NAMESPACE);
+    bindings.push({ type: 'artifacts', name: artifactsReq.binding || 'ARTIFACTS', namespace: pickedNs });
+  }
   // t151：還原被 strip 掉的 service binding（見 SERVICE_BINDINGS 那張表的說明）。
   // 病灶＝安裝器一個都沒注入 ⇒ env.KBDB／CYPHER_EXECUTOR／COMPONENT_REGISTRY 全 undefined
   // ⇒ 用戶的 AI 一呼叫工具就爆（實測 MCP client 回「KBDB service binding unavailable」）。
@@ -3231,19 +3259,30 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
         resolvedFor('d1', (entry.requires?.d1?.[0]?.binding) || 'DB') || resources.d1Id,
       )
     : null;
-  const metadata = {
-    main_module: entry.main_module,
-    compatibility_date: entry.compat_date || COMPAT_DATE,
-    compatibility_flags: entry.compat_flags || [],
-    bindings,
-    ...(placementRegion ? { placement: { region: placementRegion } } : {}),
+  const buildForm = (bs) => {
+    const metadata = {
+      main_module: entry.main_module,
+      compatibility_date: entry.compat_date || COMPAT_DATE,
+      compatibility_flags: entry.compat_flags || [],
+      bindings: bs,
+      ...(placementRegion ? { placement: { region: placementRegion } } : {}),
+    };
+    const form = new FormData();
+    form.append('metadata', new File([JSON.stringify(metadata)], 'metadata.json', { type: 'application/json' }));
+    form.append(entry.main_module, new File([mainSrc], entry.main_module, { type: 'application/javascript+module' }));
+    for (const w of wasmBlobs) form.append(w.name, new File([w.buf], w.name, { type: w.type }));
+    return form;
   };
-  const form = new FormData();
-  form.append('metadata', new File([JSON.stringify(metadata)], 'metadata.json', { type: 'application/json' }));
-  form.append(entry.main_module, new File([mainSrc], entry.main_module, { type: 'application/javascript+module' }));
-  for (const w of wasmBlobs) form.append(w.name, new File([w.buf], w.name, { type: w.type }));
 
-  await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}`, { method: 'PUT', body: form });
+  let artifactsBindingSkipped = false;
+  try {
+    await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}`, { method: 'PUT', body: buildForm(bindings) });
+  } catch (e) {
+    if (!artifactsReq) throw e;
+    // 只為「帶了 Artifacts binding 才失敗」退一步：不帶它再送一次；再失敗就是別的原因，照實丟。
+    await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}`, { method: 'PUT', body: buildForm(bindings.filter((b) => b.type !== 'artifacts')) });
+    artifactsBindingSkipped = true;
+  }
 
   // 4. 開 workers.dev 子域（cypher 靠 URL 找零件，component worker 也要對外可達）
   // 🔴 inkstone/Arcrun#190：這裡本來是空的 `catch {}`，註解寫「caller 記 note」——**而 caller 從來沒記**。
@@ -3261,7 +3300,7 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
       + ((e && e.status) ? `（HTTP ${e.status}${e.code == null ? '' : ' code=' + e.code}）` : '');
   }
 
-  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning, carriedVars };
+  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning, carriedVars, artifactsBindingSkipped };
 }
 
 /** 佔位代換：整棵 JSON stringify → 逐一 replace → parse（等價 push-demo-workflow.sh sed 段）。 */
@@ -3510,7 +3549,7 @@ async function seedSkillsTo(cypherBase, ns, kbdbToken) {
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
   installPage, INSTALL_SCRIPT,
-  fetchBundleManifest, deployBundledWorker, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
+  fetchBundleManifest, deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
@@ -3791,6 +3830,7 @@ async function runInstallSteps(env, sid, progress, force) {
   let manifest;
   try {
     manifest = await fetchBundleManifest(env);
+    progress.result.release = manifest && manifest.release ? String(manifest.release) : null; // #342 遙測：這次要裝的引擎版號
   } catch (e) {
     await fail('cache', e);
     return;
@@ -4129,6 +4169,10 @@ async function runInstallSteps(env, sid, progress, force) {
         progress.result.accountScriptListError = String((e && e.message) || e);
       }
       const accountHas = (name) => (accountScripts ? accountScripts.has(name) : null);
+      // #342 遙測：這輪是新裝還是更新（帳號上已有部署紀錄或核心 worker ＝更新）。接力續跑不覆蓋第一輪的判斷。
+      if (!progress.result.mode) {
+        progress.result.mode = (prevDeployState || (accountScripts && accountScripts.has('arcrun-cypher-executor'))) ? 'update' : 'install';
+      }
       // t157（07-31 實錄）：同帳號雙通道互蓋偵測——youlin 先被 staging（Gitea 釘點）裝了 24 顆，
       // leo 又用 prod（jsDelivr 釘點）裝到 9/27 ⇒ 混血實例。bundleBase 的 host 不同＝另一通道。
       // 只告知不擋：警告寫進 progress.channelWarning，前端進度頁頂部顯示黃卡。
@@ -5500,6 +5544,13 @@ export default {
   // 牆鐘：cron scheduled 可跑到 15 分鐘 wall，一輪 budget（3 顆）綽綽有餘。
   async scheduled(event, env, ctx) {
     attachKvShim(env);
+    // #342：一次性回補（既有安裝紀錄匿名化進 INSTALLS_DB）。marker 擋住重跑；失敗就下一輪 cron 再試，不影響下面的接力續跑。
+    try {
+      if (env.INSTALLS_DB && !(await env.INSTALLER_KV.get('telemetry:backfilled:v1'))) {
+        await runInstallsBackfill(env);
+        await env.INSTALLER_KV.put('telemetry:backfilled:v1', String(Date.now()));
+      }
+    } catch (_) { /* 回補失敗不炸 cron */ }
     const list = await env.INSTALLER_KV.list({ prefix: 'prog:' });
     for (const k of list.keys) {
       const sid = k.name.slice('prog:'.length);
@@ -5616,6 +5667,8 @@ export default {
           return handleGrantRedeem(request, env);
         case 'GET /admin/logs':
           return handleAdminLogs(request, env, url);
+        case 'POST /admin/installs-backfill':
+          return handleAdminInstallsBackfill(env, url);
         default:
           if (url.pathname === '/healthz') return json({ ok: true });
           return html(
@@ -5672,6 +5725,8 @@ async function writeInstallLog(env, sid, progress) {
     };
     await env.INSTALLER_KV.put(key, JSON.stringify(record), { expirationTtl: 90 * 86400 });
   } catch (_) { /* log 寫入失敗不炸安裝 */ }
+  // #342：匿名遙測（D1 INSTALLS_DB）。內部有逾時上限、永不丟例外；沒綁 D1 就略過——不影響安裝成敗。
+  await recordInstallEvent(env, sid, progress);
 }
 
 /** GET /admin/logs?key=<ADMIN_LOG_KEY>：列最近 50 筆安裝紀錄（JSON）。env 未設 ADMIN_LOG_KEY 回 404。 */
@@ -5985,6 +6040,32 @@ async function daemonOf(env) {
     } catch { /* 存不進快取不影響正確性 */ }
   }
   return out;
+}
+
+/** #342：把安裝器 DO 裡既有的 deployed:／log: 紀錄匿名化回補進 INSTALLS_DB（冪等，可重跑）。 */
+async function runInstallsBackfill(env) {
+  return backfillFromKv({
+    kv: env.INSTALLER_KV,
+    db: env.INSTALLS_DB,
+    channel: env.DEPLOY_ENV || 'prod',
+    releaseOf: async (base) => {
+      try {
+        const r = await bundleFetch(env, base + '/manifest.json');
+        if (!r.ok) return null;
+        const m = await r.json();
+        return m && m.release ? String(m.release) : null;
+      } catch (_) { return null; }
+    },
+  });
+}
+
+/** POST /admin/installs-backfill?key=<ADMIN_LOG_KEY>：手動重跑回補。閘同 /admin/logs（沒設 key 回 404）。 */
+async function handleAdminInstallsBackfill(env, url) {
+  const adminKey = url.searchParams.get('key');
+  if (!adminKey || !env.ADMIN_LOG_KEY || adminKey !== env.ADMIN_LOG_KEY || !env.INSTALLS_DB) {
+    return new Response(null, { status: 404 });
+  }
+  return json({ ok: true, ...(await runInstallsBackfill(env)) });
 }
 
 async function handleAdminLogs(request, env, url) {

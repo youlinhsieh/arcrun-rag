@@ -35,6 +35,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHANGELOG_REL, DAEMON_CHANGELOG_REL } from './daemon-notes.mjs';
 import { withRetry } from './fetch-retry.mjs';
+import { isEnvBlocked, listTagsViaGit } from './github-read.mjs';
 
 // 🔴 2026-09-22（inkstone/ISEP#30 c10724）：預設 fetchImpl 換成有界重試版，撐過
 //   Gitea／GitHub 這條路線的連線層掉包（見 fetch-retry.mjs 檔頭）。呼叫端仍可注入
@@ -92,12 +93,52 @@ function sectionIn(p, version) {
  * 不該報錯、也不該建出兩筆 release。
  * @returns {Promise<object|null>} release 物件，或 null（不存在）
  */
-export async function releaseExists(repoSlug, tag, { fetchImpl = DEFAULT_FETCH } = {}) {
+export async function releaseExists(repoSlug, tag, { fetchImpl = DEFAULT_FETCH, spawnImpl } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases/tags/${encodeURIComponent(tag)}`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
   if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`查詢 ${repoSlug} 的 release ${tag} 失敗：HTTP ${r.status}`);
+  if (!r.ok) {
+    const { blocked, body } = await readBlocked(r);
+    if (!blocked) throw new Error(`查詢 ${repoSlug} 的 release ${tag} 失敗：HTTP ${r.status}${body ? ` ${body}` : ''}`);
+    // inkstone/arcrun-rag#343：雲端代理擋 API 匿名讀（環境擋，不是 release 不存在）⇒ 改用 git 匿名讀 tag。
+    // 回應內文一律帶進錯誤／明細（ship-report 才看得出是 not enabled 還是 rate limit）。
+    return releaseExistsViaGit(repoSlug, tag, body, spawnImpl ? { spawnImpl } : undefined);
+  }
   return r.json();
+}
+
+/** 非 2xx ⇒ 帶內文的錯誤；`err.envBlocked` 為真＝雲端代理擋 API（呼叫端可據此改走別的證據，並照實寫明）。 */
+async function readFailure(r, what) {
+  const { blocked, body } = await readBlocked(r);
+  const err = new Error(`${what}：HTTP ${r.status}${body ? ` ${body}` : ''}`);
+  err.envBlocked = blocked;
+  return err;
+}
+
+/** 讀 403 內文（只能讀一次）並判斷是不是「雲端代理擋 API」。內文截 300 字，不含任何憑證。 */
+async function readBlocked(r) {
+  let body = '';
+  try { body = typeof r.text === 'function' ? String(await r.text()).slice(0, 300) : ''; } catch { body = ''; }
+  const blocked = await isEnvBlocked({ status: r.status, text: async () => body });
+  return { blocked, body };
+}
+
+/**
+ * 環境擋時的 release 存在查詢（只讀、不帶憑證）。
+ *   · tag 不在 ⇒ 那個 tag 底下不可能有 release ⇒ null（可以建；GitHub 會在建 release 時順手建 tag）。
+ *   · tag 在   ⇒ 回帶 `viaGit: true` 的物件：tag 在不等於 release 在，這裡**不猜**，由呼叫端的明細照實寫。
+ *   · git 也讀不到 ⇒ 丟錯，錯誤帶 API 回應內文（不猜存在與否）。
+ */
+function releaseExistsViaGit(repoSlug, tag, apiBody, opts) {
+  let tags;
+  try { tags = listTagsViaGit(repoSlug, opts); } catch (e) {
+    throw new Error(`查詢 ${repoSlug} 的 release ${tag} 失敗：API 匿名讀被擋（回應內文：${apiBody || '（空）'}），${e.message}`);
+  }
+  if (!tags.includes(tag)) return null;
+  return {
+    tag_name: tag, viaGit: true,
+    html_url: `https://github.com/${repoSlug}/releases/tag/${encodeURIComponent(tag)}`,
+  };
 }
 
 /**
@@ -177,7 +218,7 @@ export async function uploadReleaseAsset({ uploadUrl, name, data, token, content
 export async function listReleases(repoSlug, { fetchImpl = DEFAULT_FETCH, limit = 50 } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases?per_page=${limit}`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
-  if (!r.ok) throw new Error(`列出 ${repoSlug} 的 release 失敗：HTTP ${r.status}`);
+  if (!r.ok) throw await readFailure(r, `列出 ${repoSlug} 的 release 失敗`);
   return r.json();
 }
 
@@ -188,6 +229,6 @@ export async function listReleases(repoSlug, { fetchImpl = DEFAULT_FETCH, limit 
 export async function listReleaseAssets(repoSlug, id, { fetchImpl = DEFAULT_FETCH } = {}) {
   const r = await fetchImpl(`https://api.github.com/repos/${repoSlug}/releases/${id}/assets`,
     { headers: { 'user-agent': 'arcrun-rag-ship', accept: 'application/vnd.github+json' } });
-  if (!r.ok) throw new Error(`列出 release ${id} 的附件失敗：HTTP ${r.status}`);
+  if (!r.ok) throw await readFailure(r, `列出 release ${id} 的附件失敗`);
   return r.json();
 }

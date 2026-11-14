@@ -59,6 +59,25 @@ import worker, {
   loadDailySpend,
 } from '../oauth-prototype/worker.js';
 
+
+/** inkstone/arcrun-rag#342：驗收用——INSTALLS_D1_ID 有給時，把安裝遙測寫進**真的** D1（走 CF REST，用同一張 API token），
+ *  好讓本機實裝也能驗「安裝／更新真的寫進 stage 的 INSTALLS_DB」。只實作遙測用到的 prepare/bind/batch。
+ *  產品程式碼用的是 Worker 的 D1 binding；這只是驗收腳本的假件。 */
+function makeRestD1(accountId, token, dbId) {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`;
+  const post = async (body) => {
+    const r = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!j.success) throw new Error('D1 REST 失敗：' + JSON.stringify(j.errors));
+    return j;
+  };
+  const stmt = (sql, params = []) => ({ sql, params, bind: (...a) => stmt(sql, a), run: async () => post({ sql, params }) });
+  return {
+    prepare: (sql) => stmt(sql),
+    batch: async (stmts) => { for (const s of stmts) await post({ sql: s.sql, params: s.params }); return []; },
+  };
+}
+
 function parseArgs(argv) {
   const out = { restart: false, stateFile: null };
   for (let i = 0; i < argv.length; i++) {
@@ -143,6 +162,7 @@ async function main() {
     SITE_BASE: process.env.SITE_BASE || 'https://arcrun-landing-youlin-stage.arcrun-yuga3bse.workers.dev',
     DOCS_BASE: process.env.DOCS_BASE || 'https://arcrun-docs-youlin-stage.arcrun-yuga3bse.workers.dev/docs',
   };
+  if (process.env.INSTALLS_D1_ID) env.INSTALLS_DB = makeRestD1(accountId, token, process.env.INSTALLS_D1_ID);
 
   // 假 session：跟真的 OAuth 流程拿到的東西同一個形狀（見 getAccessToken()），
   // 只是 access_token 直接放一張 API token 進去、expires_at 給遠期，永遠不觸發 refresh。
