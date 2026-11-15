@@ -51,8 +51,16 @@ do_export() {
 
   rm -f "$OUT/kbdb.sqlite" "$OUT/kbdb.sqlite-wal" "$OUT/kbdb.sqlite-shm"
   say "1/4 D1 → SQLite（唯讀來源；完成會自動驗兩邊筆數與內容摘要）"
-  node --no-warnings "$KB/dist/kbdb-copy.mjs" --from "d1:$ACCOUNT/$D1" --to "sqlite:$OUT/kbdb.sqlite" | tee "$OUT/copy.log" | grep -v '已讀' || true
-  grep -q '驗證通過' "$OUT/copy.log" || die "搬庫驗證沒過，看 $OUT/copy.log"
+  node --no-warnings "$KB/dist/kbdb-copy.mjs" --from "d1:$ACCOUNT/$D1" --to "sqlite:$OUT/kbdb.sqlite" 2>&1 | tee "$OUT/copy.log" | grep -v '已讀' || true
+  if ! grep -q '驗證通過' "$OUT/copy.log"; then
+    # 來源是活的庫，搬完還在被寫，整庫逐列摘要常對不上（2026-11-15 實撞：筆數相同、摘要不同）。
+    # 改用分群對照：知識群必須完全一致，系統／營運群的差異只列出來。
+    grep -q '搬完：' "$OUT/copy.log" || die "搬庫沒搬完，看 $OUT/copy.log"
+    say "整庫摘要不符（來源是活的）→ 改用分群對照（知識群必須完全一致）"
+    CF_ACCOUNT="$ACCOUNT" CF_TOKEN="$CLOUDFLARE_API_TOKEN" D1="$D1" node --no-warnings "$HERE/verify-groups.mjs" "$OUT/kbdb.sqlite" > "$OUT/verify-groups.json" \
+      || die "分群對照有知識群不一致，看 $OUT/verify-groups.json"
+    node -e 'const j=require(process.argv[1]);console.log("分群對照：",j.groups,"群，完全一致",j.identical,"，知識群差異",j.knowledge_diff.length,"，系統／營運群差異",j.live_diff.length)' "$OUT/verify-groups.json"
+  fi
 
   say "2/4 拿掉來源自己的營運資料（只動複本）"
   node --no-warnings "$HERE/filter-snapshot.mjs" "$OUT/kbdb.sqlite" > "$OUT/filter.json"; cat "$OUT/filter.json"

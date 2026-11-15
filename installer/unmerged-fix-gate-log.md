@@ -2277,3 +2277,27 @@
 | 2026-11-15 01:12Z | stage | 點名 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（2 天前） |
 | 2026-11-15 01:12Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
 | 2026-11-15 01:12Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:32Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:32Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:32Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:32Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:33Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:33Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:33Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:33Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:33Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:33Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:33Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:33Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:40Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:40Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:40Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:40Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:47Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:47Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:47Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:47Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-15 09:53Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:53Z | stage | ⚠️ 這次不帶 | arcrun-hand/384-ahub-read-less-2 | c1794447448010120 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天）；理由：Arcrun#384 屬別條線、與 #343 無關，本版不帶 |
+| 2026-11-15 09:53Z | stage | 點名 | arcrun-hand/400-data-tables | c1794483077188687 已交回（2 天前） |
+| 2026-11-15 09:53Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |

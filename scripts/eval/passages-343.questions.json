@@ -1,0 +1,150 @@
+{
+ "_說明": "工單 B（Arcrun#343）評測題：中文換說法問英文原稿。每題先寫好正解在哪張卡哪一頁（正解寫死在題目裡，不是跑完才挑）。answer_re＝正解段落裡一定會有的原字串。測試庫 ink-eval-343：Q1–Q14 出自 lib_473ed4 的 LinmaxB 卡（節錄），Q15–Q18 出自 lib_1e221c 的 CompactB 手冊卡（略去第 1 頁）。",
+ "questions": [
+  {
+   "id": "Q1",
+   "q": "機台有沒有防止刀具撞到工件的功能？",
+   "page": 13,
+   "section": "2.3.3 Z-axis",
+   "answer_re": "anti-collision device",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q2",
+   "q": "主軸最高轉速是多少？",
+   "page": 4,
+   "section": "Spindle 表",
+   "answer_re": "Spindle speed｜rpm｜24,000|Spindle speed.*24,000",
+   "regression": true,
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q3",
+   "q": "刀庫可以放幾把刀？",
+   "page": 4,
+   "section": "Automatic Tool Changer 表",
+   "answer_re": "Tool magazine capacity",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q4",
+   "q": "機台需要什麼樣的電源規格？",
+   "page": 19,
+   "section": "2.9 Power Supply",
+   "answer_re": "AC400V",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q5",
+   "q": "怎麼避免機台因為溫度變化而影響加工精度？",
+   "page": 18,
+   "section": "2.5 Heat Flow Control System",
+   "answer_re": "Spindle temperature control the cooler",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q6",
+   "q": "選配的雷射量刀系統有哪些功能？",
+   "page": 21,
+   "section": "3.1 BLUM Laser Tool Measuring",
+   "answer_re": "Tool breakage monitoring",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q7",
+   "q": "旋轉軸的轉動角度範圍是多少？",
+   "page": 4,
+   "section": "Milling head B&C axis 表",
+   "answer_re": "Rotation angle｜B/C",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q8",
+   "q": "整台機器的長寬高尺寸多大？",
+   "page": 7,
+   "section": "Machine Layout 表",
+   "answer_re": "Length｜mm｜8,435",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q9",
+   "q": "出貨時會附上哪些技術文件？",
+   "page": 6,
+   "section": "1.4.2 Attachments",
+   "answer_re": "Operation Manual",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q10",
+   "q": "控制器的螢幕多大、有哪些連接介面？",
+   "page": 5,
+   "section": "1.3 Control System",
+   "answer_re": "24-inch color LCD",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q11",
+   "q": "工作台最大可以承載多重的工件？",
+   "page": 3,
+   "section": "Table 表",
+   "answer_re": "Max. table load",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q12",
+   "q": "有沒有用真空來固定工件的選配？",
+   "page": 25,
+   "section": "3.11 BUSCH Vacuum System",
+   "answer_re": "vacuum barrel",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q13",
+   "q": "操作人員的安全防護有哪些設計？",
+   "page": 18,
+   "section": "2.6 Safety and User-Friendly Design",
+   "answer_re": "emergency power off button",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q14",
+   "q": "X 軸為什麼可以跑得又快又準？",
+   "page": 10,
+   "section": "2.2 Linear Motor Direct-Driven",
+   "answer_re": "No backlash",
+   "card": "LinmaxB 3040(Z1250)+K2(A63)24K-Machine Feature"
+  },
+  {
+   "id": "Q15",
+   "q": "最多可以選配幾把刀的刀庫？",
+   "page": 6,
+   "section": "Automatic Tool Change 表",
+   "answer_re": "Tool capacity｜T｜30 \\(opt\\. 60\\)",
+   "card": "03-CompactB_brochure_V5_20250205(2)"
+  },
+  {
+   "id": "Q16",
+   "q": "冷卻液穿過主軸最高可以選到多大壓力？",
+   "page": 8,
+   "section": "Option Configuration",
+   "answer_re": "Coolant through spindle 20/30/40/50 bar",
+   "card": "03-CompactB_brochure_V5_20250205(2)"
+  },
+  {
+   "id": "Q17",
+   "q": "這款機台主要用來加工哪些產業的零件？",
+   "page": 2,
+   "section": "Application For",
+   "answer_re": "Application For",
+   "card": "03-CompactB_brochure_V5_20250205(2)"
+  },
+  {
+   "id": "Q18",
+   "q": "線性馬達驅動比滾珠螺桿好在哪裡？",
+   "page": 4,
+   "section": "Linear Motor Drive",
+   "answer_re": "Free of wear due to friction free",
+   "card": "03-CompactB_brochure_V5_20250205(2)"
+  }
+ ]
+}
