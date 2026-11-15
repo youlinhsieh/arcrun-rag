@@ -26,7 +26,11 @@ export async function isEnvBlocked(r) {
  * @param {string[]} args  例 ['HEAD'] 或 ['--tags']
  */
 export function gitLsRemote(slug, args, { spawnImpl = spawnSync } = {}) {
-  const r = spawnImpl('git', ['ls-remote', ...args.slice(0, 0), `https://github.com/${slug}.git`, ...args], {
+  // 旗標（--tags）必須在網址前面：放在網址後面 git 會當成「ref 樣式」，永遠比對不到、回空清單
+  // （2026-11-14 實撞：listTagsViaGit 回 []，release-record 誤判 tag 不存在而去建 ⇒ 422 already_exists）。
+  const flags = args.filter((a) => a.startsWith('-'));
+  const patterns = args.filter((a) => !a.startsWith('-'));
+  const r = spawnImpl('git', ['ls-remote', ...flags, `https://github.com/${slug}.git`, ...patterns], {
     encoding: 'utf8',
     timeout: 60_000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },

@@ -71,3 +71,12 @@ test('listReleaseAssets：環境擋 ⇒ 錯誤帶 envBlocked 與內文', async (
   await assert.rejects(() => listReleaseAssets('a/b', 1, { fetchImpl: async () => BLOCK }),
     (e) => e.envBlocked === true && /not enabled/.test(e.message));
 });
+
+import { gitLsRemote } from './github-read.mjs';
+test('gitLsRemote：旗標（--tags）放在網址前面，樣式（HEAD）放在網址後面', () => {
+  let seen;
+  gitLsRemote('o/r', ['--tags'], { spawnImpl: (_c, a) => { seen = a; return { status: 0, stdout: '', stderr: '' }; } });
+  assert.deepEqual(seen, ['ls-remote', '--tags', 'https://github.com/o/r.git']);
+  gitLsRemote('o/r', ['HEAD'], { spawnImpl: (_c, a) => { seen = a; return { status: 0, stdout: '', stderr: '' }; } });
+  assert.deepEqual(seen, ['ls-remote', 'https://github.com/o/r.git', 'HEAD']);
+});
