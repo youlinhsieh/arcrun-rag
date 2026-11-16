@@ -555,3 +555,4 @@
 | 2026-11-16 10:18:00 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
 | 2026-11-16 10:27:13 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward c150c30→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-16 11:04:06 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 69977c8→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-16 11:26:09 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward dfd27bf→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
