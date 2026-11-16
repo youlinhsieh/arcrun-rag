@@ -151,6 +151,7 @@ import {
 } from './github-release.mjs';
 import { redactToken } from './gitea-release.mjs';
 import { resolveShipPushRemote, buildShipPush } from './ship-branch-push.mjs';
+import { githubSlugOf, httpsUrlOf, probeGithubPush, pushProbeError } from './github-push-probe.mjs';
 import { releaseForgeApi } from './release-forge.mjs';
 
 import { pruneStrayDaemon, pendingPushBytes, describePushFailure, formatMB } from './bundle-push-scope.mjs';
@@ -1132,6 +1133,32 @@ const STEPS = [
       ctx.mainPushGrants = claimMainPushGrants(dests);
       lines.push(`推 main 的授權已領（${[...ctx.mainPushGrants.keys()].join('、')}）——每個目的地一次，用完即丟`);
     }
+  }
+
+  // (a5) 🔴 **這台機器推得動這一趟要推的 GitHub repo 嗎**（inkstone/arcrun-rag#344）
+  //   2026-11-15 1.4.208：leo 在 AHub 簽了，1～14 站都過，第 15 站被雲端 git proxy 擋
+  //   （session 對 bundle repo 只有讀取權），thread 誤以為要 leo 再寫一句「准推」。
+  //   ⇒ 真跑前用跟真推**同一個機制**（同一個 remote、同一組認證環境）做 `git push --dry-run`，
+  //     推不動就在這裡擋，訊息講清楚是 proxy、用 add_repo 補——不留到中段才「部分成功」。
+  //   預演（沒 --confirm）不探：D20 讀一律匿名，帶憑證的接觸只在 leo 簽過的真跑裡做。
+  if (CONFIRM && !VERIFY_ONLY && !DELIVERY_ONLY && !RELEASE_RECORD_ONLY) {
+    const probes = [];
+    const bslug = T.bundles && githubSlugOf(T.bundles.remote);
+    if (bslug) {
+      const hasClone = existsSync(join(ctx.bundlesDir, '.git'));
+      probes.push({ slug: bslug, cwd: hasClone ? ctx.bundlesDir : REPO_ROOT,
+        remote: hasClone ? 'origin' : httpsUrlOf(T.bundles.remote), env: process.env });
+    }
+    const RR = T.releaseRecord;
+    const mslug = RR && RR.host === 'github' && githubSlugOf(RR.mirrorRemote);
+    if (mslug && process.env.GITHUB_MIRROR_TOKEN) {
+      const authB64 = Buffer.from(`${process.env.GITHUB_ACCOUNT_NAME || 'git'}:${process.env.GITHUB_MIRROR_TOKEN}`).toString('base64');
+      probes.push({ slug: mslug, cwd: REPO_ROOT, remote: RR.mirrorRemote,
+        env: gitHeaderEnv(RR.mirrorRemote, `Authorization: Basic ${authB64}`, process.env) });
+    }
+    const failures = probes.map((p) => probeGithubPush(p)).filter((r) => !r.ok);
+    if (failures.length) throw pushProbeError(failures);
+    if (probes.length) lines.push(`GitHub 推送權探測通過（git push --dry-run）：${probes.map((p) => p.slug).join('、')}`);
   }
 
   // (b) 產物來源：**每個目標都從 Arcrun 原始碼重打**（2026-08-11，D65 三次補述訂正，
