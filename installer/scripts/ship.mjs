@@ -1153,8 +1153,13 @@ const STEPS = [
     const mslug = RR && RR.host === 'github' && githubSlugOf(RR.mirrorRemote);
     if (mslug && process.env.GITHUB_MIRROR_TOKEN) {
       const authB64 = Buffer.from(`${process.env.GITHUB_ACCOUNT_NAME || 'git'}:${process.env.GITHUB_MIRROR_TOKEN}`).toString('base64');
+      // 探測只問「推得動嗎」；真推在 .github-public（快照歷史），這裡的 cwd 是完整歷史，
+      // LFS pre-push 會去找舊 commit 的大檔而誤擋。只對這一次 dry-run 放寬（inkstone/Arcrun#430）。
+      const n = Number(process.env.GIT_CONFIG_COUNT || 0);
+      const lfsOff = { ...process.env, GIT_CONFIG_COUNT: String(n + 1),
+        [`GIT_CONFIG_KEY_${n}`]: 'lfs.allowincompletepush', [`GIT_CONFIG_VALUE_${n}`]: 'true' };
       probes.push({ slug: mslug, cwd: REPO_ROOT, remote: RR.mirrorRemote,
-        env: gitHeaderEnv(RR.mirrorRemote, `Authorization: Basic ${authB64}`, process.env) });
+        env: gitHeaderEnv(RR.mirrorRemote, `Authorization: Basic ${authB64}`, lfsOff) });
     }
     const failures = probes.map((p) => probeGithubPush(p)).filter((r) => !r.ok);
     if (failures.length) throw pushProbeError(failures);
