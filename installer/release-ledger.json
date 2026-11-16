@@ -584,7 +584,16 @@
    "fingerprint": "fa1035b5b581653ab035a5a50b33d18673d5d520960dcac1521cb893a2cf6c7e",
    "built": "2026-11-16",
    "shipped": {
-    "stage": "2026-11-16T12:52:03.257Z"
+    "stage": "2026-11-16T12:52:03.257Z",
+    "prod": "2026-11-16T13:21:46.735Z"
+   }
+  },
+  "1.4.224": {
+   "commit": "65cb350e761bc848d46699468c9b9d652ab9ee55",
+   "fingerprint": "ccd96f77105456343d06f61eabfbc26be9b882ccf1f3cfc4c4a34f646ca82f56",
+   "built": "2026-11-16",
+   "shipped": {
+    "stage": "2026-11-16T14:03:14.007Z"
    }
   }
  }
