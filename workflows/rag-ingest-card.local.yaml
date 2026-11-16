@@ -119,6 +119,15 @@ flow:
   # 修法：比照 rag-ingest-cards.local.yaml 的 fetch_index 用法，接一條 ON_FAIL 邊——
   # 讓「rag_cluster_auto 不存在／打不到」被吸收成正常結束，不影響外層 success。
   - "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail"
+  # inkstone/Arcrun#343（Leo 2026-11-16：「應該是要去修改 ingest，原文就在那裡；如果我原本萃了 A，現在又要萃 B，就可以再次啟動去萃」）：
+  # 原稿段落在收卡這一步產生。卡有變（parse_card 之後）與卡沒變（skip_unchanged）兩條路都會走到——
+  # 所以已萃好的庫「再啟動一次萃取」就補上段落；KBDB 端已是最新的段落原樣不動（只花讀），不重寫、不重嵌。
+  # 只有負責 block 的那一段（do_blocks）送；其餘三元組分段不重複送。失敗不擋卡（舊版 KBDB 沒這個端點會 404，由 ON_FAIL 吸收）。
+  - "parse_card >> ON_SUCCESS >> prep_card_passages"
+  - "skip_unchanged >> ON_SUCCESS >> prep_card_passages"
+  - "prep_card_passages >> ON_SUCCESS >> card_passages"
+  - "prep_card_passages >> ON_FAIL >> card_passages_absorb_prep_fail"
+  - "card_passages >> ON_FAIL >> card_passages_absorb_fail"
 
 config:
   # ── #14 upsert 前置：先刪同 page_name 的舊資料（leo 08-04 裁「用真 DELETE，不是 deprecate」）──
@@ -1064,6 +1073,69 @@ config:
       prep_error: "{{prep_entity_resolve.error}}"
     code: |
       return { success: true, entity_resolve_skipped: true, reason: String(input.prep_error || 'no entities to resolve') };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  # ── inkstone/Arcrun#343：收卡時順手產生原稿段落 ───────────────────────────────────
+  # 切段（原文表格／條列／段落／讀圖原文 → source_passage）由 KBDB 自己做（同一份切法，不在這裡再寫一份）；
+  # 這裡只把這張卡的內容與身分交過去。段落 id 由（機器、庫、卡名、序號）決定，重送冪等。
+  # 非 do_blocks 的分段（只寫自己那批三元組）throw ⇒ 走 ON_FAIL 吸收，不送。
+  prep_card_passages:
+    component: "__CODE_URL__"
+    input:
+      card: "{{input.card_content}}"
+      page_name: "{{input.page_name}}"
+      path: "{{prep.data.src_uri}}"
+      library: "{{prep.data.const_library}}"
+      machine: "{{prep.data.const_machine}}"
+      machine_label: "{{input.machine_label}}"
+      card_hash: "{{prep.data.card_hash}}"
+      do_blocks: "{{prep.data.do_blocks}}"
+    code: |
+      if (String(input.do_blocks) === 'false') throw new Error('這一段不負責 block，不送原稿段落');
+      function unresolvedTpl(v) { return typeof v === 'string' && /^\{\{[\s\S]*\}\}$/.test(v.trim()); }
+      function s(v) { return v == null || unresolvedTpl(v) ? '' : String(v); }
+      var src = s(input.path);
+      var sourcePath = src.indexOf('kb://') === 0 ? src.slice(5) : src;
+      return { success: true, page_name: s(input.page_name), source_path: sourcePath, library: s(input.library) || 'kb',
+               machine: s(input.machine), machine_label: s(input.machine_label), card_hash: s(input.card_hash),
+               card_content: s(input.card) };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4194304
+
+  card_passages:
+    component: "__HTTP_REQ_URL__"
+    method: POST
+    url: "__KBDB_BASE__/entries/card-passages"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{credential.kbdb_internal_token}}"
+    body_json:
+      owner_id: "__NAMESPACE__"
+      page_name: "{{prep_card_passages.data.page_name}}"
+      source_path: "{{prep_card_passages.data.source_path}}"
+      library: "{{prep_card_passages.data.library}}"
+      machine: "{{prep_card_passages.data.machine}}"
+      machine_label: "{{prep_card_passages.data.machine_label}}"
+      card_hash: "{{prep_card_passages.data.card_hash}}"
+      card_content: "{{prep_card_passages.data.card_content}}"
+
+  card_passages_absorb_fail:
+    component: "__CODE_URL__"
+    code: |
+      return { success: true, card_passages_skipped: true, reason: 'POST /entries/card-passages failed or not available on this instance' };
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 4096
+
+  card_passages_absorb_prep_fail:
+    component: "__CODE_URL__"
+    input:
+      prep_error: "{{prep_card_passages.error}}"
+    code: |
+      return { success: true, card_passages_skipped: true, reason: String(input.prep_error || 'not sent') };
     limits:
       timeout_ms: 2000
       max_output_bytes: 4096

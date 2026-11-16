@@ -1914,6 +1914,23 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 		saveManifest()
 	}
 
+	// 🔴 已萃過、但沒送過原稿段落的檔 ⇒ 補送一次（inkstone/Arcrun#343）——每個檔只補一次、零 LLM；見 passagepush.go。
+	if pr := repushCardPassages(cfg, absRoot, m, dryRun, runNow); pr != nil {
+		if pr.Repushed > 0 {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: fmt.Sprintf("已替 %d 份先前整理好的筆記補上原稿段落（不再使用 AI），之後 AI 回答時可以回原稿查證", pr.Repushed),
+			})
+		}
+		if pr.Err != "" {
+			results = append(results, DirectResult{
+				Type: "resync", Path: absRoot, Status: "noticed",
+				Error: "補原稿段落時有一份沒成功（不影響同步，稍後自動再試）：" + pr.Err,
+			})
+		}
+		saveManifest()
+	}
+
 	// 2026-08-07 task 3：Scan() 會把 removed 的路徑從 m.Entries 整批拿掉（rebuild 語意，
 	// 見 scan.go 步驟 7）——但那只是「偵測到不見了」，不代表下架 POST 已經成功。
 	// 沒有這份快照的話，本輪只要有任何一個 added/modified 事件先觸發了下面的
@@ -2625,6 +2642,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				m.MarkIngestedBy(ev.Path, ev.SourceHash, now, cfg.Extractor)
 				if e := m.Entries[ev.Path]; e != nil && !cloudHasSlicedNotes(cfg.CloudVersion) {
 					e.TripletRev = 0 // 舊版雲端還在共用 source_uri：這一發不算新送法，升級後要再送一次
+				}
+				if e := m.Entries[ev.Path]; e != nil && cloudHasCardPassages(cfg.CloudVersion) {
+					e.PassageRev = passageRevision // 新雲端收卡時已產生段落，不必再補送（Arcrun#343）
 				}
 				if tw != nil {
 					tw.add(ev.SourceHash, absRoot, ev.Path) // #246 c18734：從此它是這份內容的本尊

@@ -318,7 +318,12 @@
       "prep_entity_resolve >> ON_FAIL >> entity_resolve_absorb_prep_fail",
       "resolve_entities >> ON_FAIL >> entity_resolve_absorb_fail",
       "prep_cluster_wiki >> ON_FAIL >> wiki_cluster_absorb_prep_fail",
-      "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail"
+      "trigger_wiki_cluster >> ON_FAIL >> wiki_cluster_absorb_fail",
+      "parse_card >> ON_SUCCESS >> prep_card_passages",
+      "skip_unchanged >> ON_SUCCESS >> prep_card_passages",
+      "prep_card_passages >> ON_SUCCESS >> card_passages",
+      "prep_card_passages >> ON_FAIL >> card_passages_absorb_prep_fail",
+      "card_passages >> ON_FAIL >> card_passages_absorb_fail"
     ],
     "config": {
       "prep": {
@@ -758,6 +763,62 @@
           "timeout_ms": 2000,
           "max_output_bytes": 4096
         }
+      },
+      "prep_card_passages": {
+        "component": "__CODE_URL__",
+        "input": {
+          "card": "{{input.card_content}}",
+          "page_name": "{{input.page_name}}",
+          "path": "{{prep.data.src_uri}}",
+          "library": "{{prep.data.const_library}}",
+          "machine": "{{prep.data.const_machine}}",
+          "machine_label": "{{input.machine_label}}",
+          "card_hash": "{{prep.data.card_hash}}",
+          "do_blocks": "{{prep.data.do_blocks}}"
+        },
+        "code": "if (String(input.do_blocks) === 'false') throw new Error('這一段不負責 block，不送原稿段落');\nfunction unresolvedTpl(v) { return typeof v === 'string' && /^\\{\\{[\\s\\S]*\\}\\}$/.test(v.trim()); }\nfunction s(v) { return v == null || unresolvedTpl(v) ? '' : String(v); }\nvar src = s(input.path);\nvar sourcePath = src.indexOf('kb://') === 0 ? src.slice(5) : src;\nreturn { success: true, page_name: s(input.page_name), source_path: sourcePath, library: s(input.library) || 'kb',\n         machine: s(input.machine), machine_label: s(input.machine_label), card_hash: s(input.card_hash),\n         card_content: s(input.card) };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4194304
+        }
+      },
+      "card_passages": {
+        "component": "__HTTP_REQ_URL__",
+        "method": "POST",
+        "url": "__KBDB_BASE__/entries/card-passages",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer {{credential.kbdb_internal_token}}"
+        },
+        "body_json": {
+          "owner_id": "__NAMESPACE__",
+          "page_name": "{{prep_card_passages.data.page_name}}",
+          "source_path": "{{prep_card_passages.data.source_path}}",
+          "library": "{{prep_card_passages.data.library}}",
+          "machine": "{{prep_card_passages.data.machine}}",
+          "machine_label": "{{prep_card_passages.data.machine_label}}",
+          "card_hash": "{{prep_card_passages.data.card_hash}}",
+          "card_content": "{{prep_card_passages.data.card_content}}"
+        }
+      },
+      "card_passages_absorb_fail": {
+        "component": "__CODE_URL__",
+        "code": "return { success: true, card_passages_skipped: true, reason: 'POST /entries/card-passages failed or not available on this instance' };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
+      },
+      "card_passages_absorb_prep_fail": {
+        "component": "__CODE_URL__",
+        "input": {
+          "prep_error": "{{prep_card_passages.error}}"
+        },
+        "code": "return { success: true, card_passages_skipped: true, reason: String(input.prep_error || 'not sent') };\n",
+        "limits": {
+          "timeout_ms": 2000,
+          "max_output_bytes": 4096
+        }
       }
     },
     "placeholders": [
@@ -990,6 +1051,30 @@
           "type": "Component",
           "componentId": "wiki_cluster_absorb_fail",
           "label": "wiki_cluster_absorb_fail"
+        },
+        {
+          "id": "prep_card_passages",
+          "type": "Component",
+          "componentId": "prep_card_passages",
+          "label": "prep_card_passages"
+        },
+        {
+          "id": "card_passages",
+          "type": "Component",
+          "componentId": "card_passages",
+          "label": "card_passages"
+        },
+        {
+          "id": "card_passages_absorb_prep_fail",
+          "type": "Component",
+          "componentId": "card_passages_absorb_prep_fail",
+          "label": "card_passages_absorb_prep_fail"
+        },
+        {
+          "id": "card_passages_absorb_fail",
+          "type": "Component",
+          "componentId": "card_passages_absorb_fail",
+          "label": "card_passages_absorb_fail"
         }
       ],
       "edges": [
@@ -1179,6 +1264,31 @@
         {
           "from": "trigger_wiki_cluster",
           "to": "wiki_cluster_absorb_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "parse_card",
+          "to": "prep_card_passages",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "skip_unchanged",
+          "to": "prep_card_passages",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_card_passages",
+          "to": "card_passages",
+          "type": "ON_SUCCESS"
+        },
+        {
+          "from": "prep_card_passages",
+          "to": "card_passages_absorb_prep_fail",
+          "type": "ON_FAIL"
+        },
+        {
+          "from": "card_passages",
+          "to": "card_passages_absorb_fail",
           "type": "ON_FAIL"
         }
       ]

@@ -543,3 +543,11 @@
 | 2026-11-16 04:20:53 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6a0baff→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-16 04:47:58 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward d916987→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-16 05:13:43 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 717d748→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-16 07:54:59 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-11-16 07:56:24 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-11-16 08:30:16 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 6c6ba3d→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-16 09:20:22 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ⛔ 擋下 | 機械檢查：不是 fast-forward：遠端 main 的 9c86c0d 不在 HEAD 的歷史裡（會改寫遠端歷史） |
+| 2026-11-16 09:21:23 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 9c86c0d→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-16 09:34:19 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward bf3b807→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-16 09:40:24 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | ship/arcrun-414-stage | ✅ 放行 | 目標不是 main／master |
+| 2026-11-16 09:57:29 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 2fc6dcf→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |

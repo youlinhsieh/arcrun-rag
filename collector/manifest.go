@@ -27,6 +27,8 @@ type ManifestEntry struct {
 	// 改版前走過續讀的大檔，概念卡的關係被後送的卡刪光；內容沒變 ⇒ 不重送 ⇒ 永遠補不回來。
 	// 見 cardslice.go 的 requeueSharedSourceDocs。
 	TripletRev int `json:"triplet_rev,omitempty"`
+	// PassageRev＝這個檔的原稿段落補送到第幾版（0＝沒補過；inkstone/Arcrun#343）。見 passagepush.go。
+	PassageRev int `json:"passage_rev,omitempty"`
 	IngestedAt   int64  `json:"ingested_at,omitempty"`
 	// ExtractedBy＝這張卡是誰萃的（"claude"／"gemma"／""＝無萃取器的直送路）。
 	//
