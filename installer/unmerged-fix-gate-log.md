@@ -2554,3 +2554,12 @@
 | 2026-11-16 16:40Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：別線分支不屬於本版，本版只出 inkstone/Arcrun#434 與已在 main 的 #430，沿用 #414/#430 先例 |
 | 2026-11-16 16:40Z | stage | 點名 | arcrun-hand/434-withdraw-reject | c1794843890360372 已交回（0 天前） |
 | 2026-11-16 16:40Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 03:23Z | prod | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：別線分支不屬於本版，沿用 #414/#430/#434 先例 |
+| 2026-11-17 03:23Z | prod | 點名 | arcrun-hand/434-withdraw-reject | c1794843890360372 已交回（0 天前） |
+| 2026-11-17 03:23Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 03:55Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：別條線（Arcrun#400）的交回，與 Arcrun#437 結構頁無關，這一版不帶也不動它 |
+| 2026-11-17 03:55Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 04:23Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 與本版（#438 簽證）無關 |
+| 2026-11-17 04:23Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 04:29Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 與本版（#438 簽證）無關 |
+| 2026-11-17 04:29Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |

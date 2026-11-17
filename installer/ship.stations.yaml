@@ -375,6 +375,22 @@
     理由: 讀的是本機 docs-site 原始檔（此刻還沒部署，線上還查不到）。
     驗法: changelog 原始檔裡有這一版的段落
 
+  - id: visa-gate
+    名字: 海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）
+    問幾條線: |
+      零件包那一條（AHub 的簽證以零件包版號為鍵）；daemon 線的說明格式在 release-record 站建發佈時另檢查。
+    用什麼: 本機
+    為什麼不搬: 還沒交貨
+    要搬需要: |
+      這一站只做一次唯讀 `GET /ahub/visas/check`（AHub 已有，inkstone/Arcrun#438）＋讀 CHANGELOG 兩段，
+      判準全是純字串與一次 HTTP；唯一卡點是 CHANGELOG 住在 arcrun-rag（private）。
+      ⇒ 與 docs-changelog 同一個卡點：Arcrun 取得 Artifacts 讀取 token 後兩站可一起搬走。
+    理由: 讀的是本機 repo 的 CHANGELOG 原稿（與 docs-changelog 同一份），此刻只有本機看得到。
+    驗法: |
+      inkstone/arcrun-rag#348：stage 目標整站跳過（不查）；prod 帶一個三張兒子只關一張的意圖，
+      --confirm 被退回並列出另兩張；兒子全關、簽證確認後放行。
+      演練：`node --test installer/scripts/visa-gate.test.mjs`。
+
   - id: readme
     名字: bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）
     用什麼: 本機

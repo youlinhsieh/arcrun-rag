@@ -401,6 +401,8 @@
       "label": "prod（正式出貨：封測者按更新就會拿到）",
       "publish": true,
       "requiresArm": true,
+      "visaGate": true,
+      "visaGate_": "inkstone/arcrun-rag#348（ADR D101 第三步）：出 prod 前向 AHub 查這一版有沒有有效的意圖完成簽證（visa-gate 站），並要求 CHANGELOG 固定兩段「這版完成／順帶修好」。簽證是附加條件，prod 放行仍以 AHub 簽核為準（requiresArm）。stage 不宣告這一格＝不查。",
       "daemonDist": "dist",
       "daemonChannel": "prod",
       "armTicket": {

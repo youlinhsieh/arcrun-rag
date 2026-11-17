@@ -128,6 +128,9 @@ export const AHUB_ROUTES = [
   ['POST', '/ahub/stage', 'ahub__stage_record'],
   ['GET', '/ahub/stage', 'ahub__stage_get'],
   ['GET', '/repos/:owner/:repo/issues/:index/stage', 'ahub__issue_stage'],
+  // 意圖完成簽證的海關（Arcrun AHub 0.39.0，inkstone/Arcrun#438；本 repo 的 inkstone/arcrun-rag#348）：
+  // 出 prod 前唯讀問「這個版本有沒有有效簽證」（visa-gate.mjs）。
+  ['GET', '/ahub/visas/check', 'ahub__visa_check'],
 ];
 
 export function matchAhubRoute(method, path, routes = AHUB_ROUTES) {

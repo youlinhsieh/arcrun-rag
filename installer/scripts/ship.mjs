@@ -138,6 +138,7 @@ import { checkSourceNotOlder } from './source-regression-gate.mjs';
 import { checkStageQueue } from './stage-queue-gate.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
+import { runVisaGate, checkTwoPart } from './visa-gate.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist, daemonDistRelFor } from './daemon-dist.mjs';
 import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
@@ -900,6 +901,17 @@ async function recordInternalReleases({ R, manifest }) {
   return { detail, created };
 }
 
+
+// inkstone/arcrun-rag#348：prod 發新版本發佈時，這一條線的說明也要是兩段、且意圖＝海關查過的那個。
+// 只在 visaGate 目標、且這一趟真的要新建發佈時問（已存在的舊發佈不回頭查）；installer 線是內部線，不在這個約束內。
+function assertTwoPartFor(line, body) {
+  if (!T.visaGate || !['bundle', 'daemon'].includes(line.id)) return;
+  const c = checkTwoPart(body, { expectIntent: ctx.visaIntent || null });
+  if (!c.ok) {
+    throw new Error(`${line.product} ${line.version} 的版本說明不合規定（${changelogRelFor(REPO_ROOT, line.version)}）：\n` +
+      c.problems.map((p) => `     · ${p}`).join('\n'));
+  }
+}
 
 const STEPS = [
 
@@ -2107,6 +2119,32 @@ const STEPS = [
   ] };
 }},
 
+// ── 3.6 visa-gate：prod 的海關——這一版有沒有有效的意圖完成簽證，版本說明是不是兩段 ─────
+// inkstone/arcrun-rag#348（ADR D101 第三步；AHub 端 inkstone/Arcrun#438，AHub 0.39.0）。
+// 只有宣告 `visaGate: true` 的目標（prod）才問；stage 是班車，不查。
+// 簽證是**附加條件**：prod 放行仍以 AHub 簽核為準（version 站的 ticket-arm），這一站不取代它。
+// 預演（沒 --confirm）照樣查、照樣報，但不中止——讓人在按發射鈕前就看得到會被擋在哪；真的 --confirm 一律 fail-closed。
+{ id: 'visa-gate', title: '海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）', mutates: false, async run() {
+  if (!T.visaGate) return { status: 'skip', detail: [`${TARGET_NAME} 沒宣告 visaGate（不是 prod）：測試版不查簽證`] };
+  const forge = ticketForge();
+  const section = releaseSectionFor(REPO_ROOT, ctx.release);
+  let r;
+  if (forge.kind !== 'ahub') {
+    r = { ok: false, intent: null, detail: [], problems: [`票的正本在 ${forge.kind}，不是 AHub：沒有意圖完成簽證可查（海關查不出來不算通過）`] };
+  } else {
+    r = await runVisaGate({ section, version: ctx.release, fetchImpl: forge.fetchImpl, token: ticketToken('ahub') });
+  }
+  ctx.visaIntent = r.intent;
+  if (!r.ok) {
+    const msg = `海關退回 ${ctx.release}（${CHANGELOG_REL}）：\n` + r.problems.map((p) => `     · ${String(p).split('\n').join('\n       ')}`).join('\n') +
+      `\n     版本說明要固定兩段：「這版完成：<意圖一句話>（owner/repo#N）」＋「順帶修好」；` +
+      `意圖底下的執行票全關、簽核人在 AHub 確認簽證之後再重跑。簽證只是附加條件，prod 放行仍以 AHub 簽核為準。`;
+    if (CONFIRM) throw new Error(msg);
+    return { status: 'done', detail: [`⚠️ 預演：正式出貨會被海關擋下（現在不中止）`, ...r.problems] };
+  }
+  return { status: 'done', detail: [`意圖 ${r.intent}`, ...r.detail] };
+}},
+
 // ── 3.7 readme：bundle repo 的 README 由零件清單算出來，不留會過期的手寫數字 ──
 //
 // 🔴 leo 2026-08-10（總管實測發現）：`youlinhsieh/arcrun-rag-bundles` 的 README
@@ -2942,6 +2980,7 @@ const STEPS = [
           `     這不是「先跳過、之後再補」——少了它，封測者點進版本發佈頁看到的是空白。\n` +
           `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
       }
+      assertTwoPartFor(line, changelogBody);
       todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
     }
     if (todo.every((t) => t.existing)) {
@@ -3099,6 +3138,7 @@ const STEPS = [
         `     這不是「先跳過、之後再補」——少了這一步，使用者點「完整發佈紀錄」永遠是空白。\n` +
         `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
     }
+    assertTwoPartFor(line, changelogBody);
     todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
   }
   if (todo.every((t) => t.existing)) {

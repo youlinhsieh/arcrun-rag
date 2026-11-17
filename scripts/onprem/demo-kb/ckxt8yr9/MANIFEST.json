@@ -1,0 +1,49 @@
+{
+  "made_at": "2026-11-17T04:56:17.503Z",
+  "tenant": "ckxt8yr9",
+  "kind": "demo",
+  "note": "示範知識庫（與任何客戶無關）：5 份食譜＋虛構公司請假規定 3 份。inkstone/arcrun-rag#349",
+  "entries": 1997,
+  "templates": 30,
+  "by_entry_type": {
+    "": 1935,
+    "field": 25,
+    "kbdb_fts_migration_cutoff": 1,
+    "relation": 29,
+    "sheet": 4,
+    "system": 3
+  },
+  "vectors": 95,
+  "user_version": 16,
+  "filter": {
+    "before": 2226,
+    "after": 2041,
+    "dropped_total": 185,
+    "dropped": [
+      {
+        "entry_type": "",
+        "owner_id": "demokb01::assets",
+        "n": 114
+      },
+      {
+        "entry_type": "",
+        "owner_id": "demokb01::portal",
+        "n": 67
+      },
+      {
+        "entry_type": "",
+        "owner_id": "__arcrun_auth_store__",
+        "n": 2
+      },
+      {
+        "entry_type": "",
+        "owner_id": "demokb01",
+        "n": 2
+      }
+    ]
+  },
+  "sha256": {
+    "kbdb.sqlite": "2e78941db7b2db6c1b828f05780d1132e65171ac71d5394e5b3e85e0c57f005b",
+    "vectors.sqlite": "fd902a410748ff70898ef9d5066733c75ae3c9f48a655c5ca64a40c22813138d"
+  }
+}
