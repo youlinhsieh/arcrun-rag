@@ -292,7 +292,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@d27e65273304f7872c4de1d704d1b32ca707220a';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@57195d3dc453781c2c96903da36b43239057d779';
 const BUNDLE_BUILT = '2026-11-16'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2177,10 +2177,17 @@ function jsdelivrToGithubRaw(primaryUrl) {
 /**
  * 抓 bundle 靜態資源（帶重試＋備援）：
  * - 最多重試 3 次，指數退避（300ms / 900ms / 2700ms）
- * - 5xx 與網路錯誤重試；404 直接報錯（不重試、不備援）
+ * - 5xx、網路錯誤、以及「jsDelivr 暫時抓不到 commit」的假 404 都重試
+ *   （inkstone/arcrun-rag#347：jsDelivr 偶爾對同一網址回 404＋內文 `Failed to fetch the requested commit`，
+ *   檔案其實在、GitHub raw 一直 200）
+ * - 真的 404（內文不是上面那句）直接報「找不到」，不重試不備援
  * - 重試用盡後嘗試 raw.githubusercontent.com 備援；備援也失敗才丟 InstallError
  * 回 { response, usedFallback }。
  */
+function isTransientCdn404(bodyText) {
+  return /Failed to fetch the requested commit/i.test(String(bodyText || ''));
+}
+
 async function fetchBundleAsset(primaryUrl, what, env) {
   let lastErr = null;
   const retryDelays = [300, 900, 2700];
@@ -2190,11 +2197,17 @@ async function fetchBundleAsset(primaryUrl, what, env) {
       const res = await bundleFetch(env, primaryUrl);
       if (res.ok) return { response: res, usedFallback: false };
       if (res.status === 404) {
-        throw new InstallError('找不到 ' + what + '（HTTP 404）', {
-          hint: '這可能是版本設定問題，請把技術細節回報給我們。',
-          detail: 'GET ' + primaryUrl + ' → HTTP 404',
-          status: 404,
-        });
+        let body = '';
+        try { body = await res.text(); } catch (_) { /* 讀不到內文就當真 404 */ }
+        if (!isTransientCdn404(body)) {
+          throw new InstallError('找不到 ' + what + '（HTTP 404）', {
+            hint: '這可能是版本設定問題，請把技術細節回報給我們。',
+            detail: 'GET ' + primaryUrl + ' → HTTP 404',
+            status: 404,
+          });
+        }
+        lastErr = new Error('HTTP 404（CDN 暫時抓不到 commit）');
+        continue;
       }
       lastErr = new Error('HTTP ' + res.status);
     } catch (e) {
@@ -2208,7 +2221,17 @@ async function fetchBundleAsset(primaryUrl, what, env) {
     try {
       const res = await fetch(fallbackUrl);
       if (res.ok) return { response: res, usedFallback: true };
-    } catch (_) { /* 備援也失敗，下面報錯 */ }
+      if (res.status === 404) {
+        throw new InstallError('找不到 ' + what + '（HTTP 404）', {
+          hint: '這可能是版本設定問題，請把技術細節回報給我們。',
+          detail: 'GET ' + fallbackUrl + ' → HTTP 404（備援）',
+          status: 404,
+        });
+      }
+    } catch (e) {
+      if (e instanceof InstallError) throw e;
+      /* 備援也失敗，下面報錯 */
+    }
   }
   throw new InstallError('下載元件時網路不穩（已重試 3 次）', {
     hint: '請按「重新安裝」再試一次；若持續發生，請把技術細節回報給我們。',
@@ -2978,25 +3001,45 @@ const TENANT_SOURCES = [
 ];
 
 /**
- * 這台實例的帳號落點（租戶）該是誰。
+ * 記住「這個 Cloudflare 帳號的租戶是誰」。跟著安裝器走、不跟著實例走：
+ * 實例被清空（worker 全刪）之後，身上的 var 沒了，只剩這筆能讓重裝落回同一個租戶。
+ * 只在部署完成後記（半途失敗的安裝不留下不存在的落點）；寫不進去不擋安裝，只是少一層保險。
+ */
+export async function rememberTenant(kv, accountId, tenant) {
+  if (!kv || !accountId || !tenant) return;
+  try { await kv.put('tenant:' + accountId, String(tenant)); } catch (_) { /* best-effort */ }
+}
+
+/**
+ * 這台實例的帳號落點（租戶）該是誰。依序看：
+ *   ① 帳號上已經部署著的 worker 身上的 var（existing）
+ *   ② 安裝器自己記的 `tenant:<accountId>`（remembered）——實例被清空後只剩它
+ *   ③ 這次信箱推導的值（email）——只在全新安裝
  *
  * 🔴 inkstone/arcrun-rag#268：租戶以前永遠＝「這次輸入的信箱」的雜湊（slugFromEmail），
  *    沒有讀回這台原本的值 ⇒ 同一個 Cloudflare 帳號換信箱重裝，`CONSOLE_TENANT`／
  *    `MCP_OWNER_NAMESPACE` 就被換成新代號，Portal 登入回 auth_store_empty、
  *    原本的 App 和知識全看不到（youlin stage 10-11 實撞：yuga3bse → pcemcdk6）。
- *    ⇒ 判準改成「**這個帳號上已經裝著誰就沿用誰**」，信箱只在**全新安裝**時決定租戶。
+ *    11-16 清空重裝又撞一次：兩顆 worker 都 404，①讀不到，退回信箱推導 ⇒ yuga3bse → xnck2pxu。
+ *    ⇒ 判準改成「**這個帳號上已經裝過誰就沿用誰**」，信箱只在**全新安裝**時決定租戶。
  *
  * 讀不到（非 404）時往外拋，不退回信箱推導——不知道，就不能去覆蓋。
  *
- * @returns {Promise<{tenant: string, source: 'existing'|'email', from: string|null, emailTenant: string}>}
+ * @returns {Promise<{tenant: string, source: 'existing'|'remembered'|'email', from: string|null, emailTenant: string}>}
  */
-export async function resolveInstanceTenant(token, accountId, emailTenant) {
+export async function resolveInstanceTenant(token, accountId, emailTenant, kv) {
   for (const src of TENANT_SOURCES) {
     const { vars } = await readScriptPlainVars(token, accountId, src.script);
     for (const name of src.vars) {
       const v = String(vars[name] || '').trim();
       if (v) return { tenant: v, source: 'existing', from: `${src.script}.${name}`, emailTenant };
     }
+  }
+  if (kv && accountId) {
+    let saved = null;
+    try { saved = await kv.get('tenant:' + accountId); } catch (_) { saved = null; }
+    saved = String(saved || '').trim();
+    if (saved) return { tenant: saved, source: 'remembered', from: 'INSTALLER_KV.tenant:' + accountId, emailTenant };
   }
   return { tenant: emailTenant, source: 'email', from: null, emailTenant };
 }
@@ -3571,6 +3614,7 @@ export {
   applySubs, pushWorkflowTo,
   hasDeployRecordForToken, // t154
   SERVICE_BINDINGS, reorderForServiceBindings, // t151
+  fetchBundleAsset, // #347：CDN 暫時 404 重試＋備援
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
   CRON_TRIGGERS, cronsForEntry, ensureWorkerSchedules, syncManifestCrons,
   seedSkillsTo, // skills 種入（本班）
@@ -4090,10 +4134,10 @@ async function runInstallSteps(env, sid, progress, force) {
       // arcrun-rag#268：帳號落點（租戶）— 這個帳號上已經裝著誰就沿用誰，信箱只在全新安裝時決定。
       // 存進 progress.result.tenant＝接力續跑的游標（後面每一輪、以及 workflows 步都吃同一個值）。
       if (!progress.result.tenant) {
-        const t = await resolveInstanceTenant(token, accountId, suffix);
+        const t = await resolveInstanceTenant(token, accountId, suffix, env.INSTALLER_KV);
         progress.result.tenant = t.tenant;
         progress.result.tenantSource = t.source;
-        if (t.source === 'existing' && t.tenant !== suffix) {
+        if ((t.source === 'existing' || t.source === 'remembered') && t.tenant !== suffix) {
           progress.result.tenantKept = `沿用這個帳號原本的帳號落點 ${t.tenant}（來自 ${t.from}），`
             + `沒有改成這次信箱推導的 ${suffix}`;
         }
@@ -4304,6 +4348,7 @@ async function runInstallSteps(env, sid, progress, force) {
           bundleBase: bundleBase(env), fingerprint: manifestFingerprint, workers: rebuiltShas,
         }), { expirationTtl: 180 * 86400 }).catch(() => {});
         await setStep('deploy', 'done', `${manifest.core.length} 個服務都沒有變動，直接沿用（金鑰已重新同步）`);
+        await rememberTenant(env.INSTALLER_KV, accountId, progress.result.tenant);
 
       } else {
       // tier1 先、tier2 後（manifest 已排序）；逐顆回寫進度＋游標（deployedNames）
@@ -4457,6 +4502,7 @@ async function runInstallSteps(env, sid, progress, force) {
         });
       }
       await setStep('deploy', 'done', progress.result.deployedNames.length + ' 個服務已部署' + fallbackNote);
+      await rememberTenant(env.INSTALLER_KV, accountId, progress.result.tenant);
       }
     } catch (e) {
       await fail('deploy', e);

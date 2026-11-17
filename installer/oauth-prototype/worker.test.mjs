@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, landingBase, resolveInstanceTenant,
+  deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, landingBase, resolveInstanceTenant, rememberTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -5515,6 +5515,34 @@ test('#268 resolveInstanceTenant：全新帳號（兩顆都 404）⇒ 才用信�
   } finally { restoreFetch(); }
 });
 
+test('#268 resolveInstanceTenant：實例被清空（兩顆都 404）但安裝器記得這個帳號的租戶 ⇒ 沿用記得的，不退回信箱推導', async () => {
+  installFetchScriptSettings({});
+  const kv = makeKV();
+  await rememberTenant(kv, 'acct-1', 'yuga3bse');
+  try {
+    const t = await resolveInstanceTenant('tok', 'acct-1', 'xnck2pxu', kv);
+    assert.deepEqual([t.tenant, t.source], ['yuga3bse', 'remembered']);
+    // 別的 Cloudflare 帳號不受影響
+    const other = await resolveInstanceTenant('tok', 'acct-2', 'xnck2pxu', kv);
+    assert.deepEqual([other.tenant, other.source], ['xnck2pxu', 'email']);
+  } finally { restoreFetch(); }
+});
+
+test('#268 resolveInstanceTenant：帳號上有活的租戶時，以活的為準（記的那筆不覆蓋它）', async () => {
+  installFetchScriptSettings({ 'arcrun-cypher-executor': [pt('CONSOLE_TENANT', 'live1234')] });
+  const kv = makeKV();
+  await rememberTenant(kv, 'acct-1', 'old99999');
+  try {
+    const t = await resolveInstanceTenant('tok', 'acct-1', 'new', kv);
+    assert.deepEqual([t.tenant, t.source], ['live1234', 'existing']);
+  } finally { restoreFetch(); }
+});
+
+test('#268 rememberTenant：kv 寫不進去不拋錯（少一層保險而已，不擋安裝）', async () => {
+  await rememberTenant({ put: async () => { throw new Error('kv down'); } }, 'a', 't');
+  await rememberTenant(null, 'a', 't');
+});
+
 test('#268 resolveInstanceTenant：讀不到（非 404）⇒ 往外拋，不退回信箱值去覆蓋', async () => {
   installFetch(() => ({ status: 500, json: { success: false, errors: [{ code: 1, message: 'boom' }] } }));
   try {
@@ -5621,6 +5649,52 @@ test('#268 端到端：已裝過的帳號換信箱重裝 ⇒ 租戶沿用原本�
   assert.equal(v.MULTI_TENANT, 'false');
 });
 
+
+test('#268 端到端：裝過 → 實例被清空（worker 全沒了）→ 換信箱重裝 ⇒ 租戶仍是原本那個（安裝器記得）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  // 第一輪：帳號上已有 yuga3bse 的實例，裝完會被記下來
+  const sid1 = 'sid-268-wipe-1';
+  await seedAccountSession(env, sid1);
+  installFetchWithEdge530();
+  const inner1 = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if ((init.method || 'GET').toUpperCase() === 'GET' && url.endsWith('/workers/scripts/arcrun-cypher-executor/settings')) {
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { bindings: [
+        { type: 'plain_text', name: 'CONSOLE_TENANT', text: 'yuga3bse' },
+      ] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return inner1(input, init);
+  };
+  try { await startInstallAndDrain(env, sid1, {}); } finally { restoreFetch(); }
+  assert.equal(await env.INSTALLER_KV.get('tenant:acc-a'), 'yuga3bse', '第一輪裝完要把這個帳號的租戶記下來');
+
+  // 清空：兩顆 worker 的 settings 都 404；第二輪換了信箱
+  const sid2 = 'sid-268-wipe-2';
+  await seedAccountSession(env, sid2, { inviteEmail: 'another-person@test.example' });
+  installFetchWithEdge530();
+  const inner2 = globalThis.fetch;
+  let cypherMeta = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = (init.method || 'GET').toUpperCase();
+    if (method === 'GET' && /\/workers\/scripts\/arcrun-(cypher-executor|mcp)\/settings$/.test(url)) {
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 10007, message: 'This Worker does not exist' }], result: null }), { status: 404, headers: { 'content-type': 'application/json' } });
+    }
+    if (method === 'PUT' && /\/workers\/scripts\/arcrun-cypher-executor$/.test(url)) {
+      cypherMeta = JSON.parse(await init.body.get('metadata').text());
+    }
+    return inner2(input, init);
+  };
+  try { await startInstallAndDrain(env, sid2, {}); } finally { restoreFetch(); }
+  const p = await env.INSTALLER_KV.get(`prog:${sid2}`, 'json');
+  assert.notEqual(p.result.suffix, 'yuga3bse', '前置條件：這次信箱推導的代號和原本的不同');
+  assert.equal(p.result.tenant, 'yuga3bse');
+  assert.equal(p.result.tenantSource, 'remembered');
+  assert.match(p.result.tenantKept, /yuga3bse/);
+  assert.ok(cypherMeta, 'cypher 有被推');
+  assert.equal(varsOf(cypherMeta).CONSOLE_TENANT, 'yuga3bse');
+});
 
 // inkstone/Arcrun#325：KBDB 放到自己那顆 D1 旁邊（各帳號 D1 區域不同，不寫死；重部不洗掉）
 test('#325 placementRegionForD1：依 D1 區域換算，未知不猜', () => {

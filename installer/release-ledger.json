@@ -593,7 +593,32 @@
    "fingerprint": "ccd96f77105456343d06f61eabfbc26be9b882ccf1f3cfc4c4a34f646ca82f56",
    "built": "2026-11-16",
    "shipped": {
-    "stage": "2026-11-16T14:03:14.007Z"
+    "stage": "2026-11-16T14:03:14.007Z",
+    "prod": "2026-11-16T14:51:44.690Z"
+   }
+  },
+  "1.4.225": {
+   "commit": "5b7d1032a08a3afe07aa5d5f19b7a4621e5e428c",
+   "fingerprint": "54df0274059ddd3d0922d72afd159cd0b42eca951f9024c0f48bfee14f7a6233",
+   "built": "2026-11-16",
+   "shipped": {
+    "stage": "2026-11-16T16:21:13.711Z"
+   }
+  },
+  "1.4.226": {
+   "commit": "cd2815394352e8175a8101cca2681e483fb21217",
+   "fingerprint": "5f627e58506c4e84e0993b1b90d25225e87526239ce6ba8abe7fb06939a23390",
+   "built": "2026-11-16",
+   "shipped": {
+    "stage": "2026-11-16T16:50:16.063Z"
+   }
+  },
+  "1.4.227": {
+   "commit": "5da4bda5f5d9ab20befd92b6b295790987352715",
+   "fingerprint": "0a07716535c7ec91ea867bc230a9299f4c70965ed96ff6778244d52372b90656",
+   "built": "2026-11-17",
+   "shipped": {
+    "stage": "2026-11-17T01:58:55.453Z"
    }
   }
  }
