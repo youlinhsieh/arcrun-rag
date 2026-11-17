@@ -2563,3 +2563,17 @@
 | 2026-11-17 04:23Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
 | 2026-11-17 04:29Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 與本版（#438 簽證）無關 |
 | 2026-11-17 04:29Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 11:18Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：別條線（Arcrun#400）的分支，與 #446 無關，非本版範圍 |
+| 2026-11-17 11:18Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:10Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:10Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:13Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:13Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:16Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:16Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:23Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:23Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:30Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:30Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 10:42Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
+| 2026-11-17 10:42Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
