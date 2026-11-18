@@ -232,7 +232,7 @@ function setLibTab(idx, tab) {
 //   · 同步、資料夾、App、用量、AI 與設定、停工回報，全部在各帳號分頁裡
 function pageHome(s) {
   if (!s.accounts || !s.accounts.length) return onboarding();
-  return chatBox(s) + statusStrip(s) + sectionMyApps(s);
+  return chatBox(s) + cardStalls(s.stalls, null) + statusStrip(s) + sectionMyApps(s);
 }
 
 
@@ -436,13 +436,20 @@ function cardStalls(stalls, onlyAccount) {
     const accidx = (state.accounts || []).findIndex((x) => x.name === list[0].account);
     const tickets = Array.from(new Set(list.map((x) => x.ticket).filter(Boolean)));
     const ticketLine = tickets.length ? `<div class="d mono" data-data="1">${esc(tickets.join(' '))}</div>` : '';
+    // #362：哪一份檔要讓人看得到（只給檔名，不給路徑）；多份時標「等 N 份」
+    const names = Array.from(new Set(list.flatMap((x) => x.samples || []).map((n) => String(n).split(/[\\/]/).pop()).filter(Boolean)));
+    const fileLines = names.length
+      ? `<div class="d one"><span class="nm" title="${esc(names.slice(0, 3).join(' '))}">${esc(Array.from(names[0]).slice(0, 24).join(''))}</span>${total > 1 ? ` 等 ${total} 份` : ''}</div>`
+      : lines;
     const close = `<button class="x" data-dismiss="${keys}" title="關閉" aria-label="關閉">×</button>`;
     if (st === 'ask') {
       parts.push(`
     <div class="card alertcard" role="alert" data-stall-card="1">
       ${close}
-      <div class="nt" title="小幫手試過了 要開發團隊才能修">⚠ 修不了 · 要通報嗎 ${total}</div>
-      ${lines}
+      <div class="nt" title="不處理 只缺這份 其他照常">⚠ ${total} 份進不了知識庫</div>
+      ${fileLines}
+      <div class="d one">小幫手試過 修不好</div>
+      <div class="d one">同意後只寄原因 不含文件</div>
       <pre class="stallpreview" data-preview style="display:none"></pre>
       <div class="acts"><button class="primary" data-stallview="${fps}" data-accidx="${accidx}">看內容</button><button data-stalldecline="${fps}">不用了</button></div>
       <div class="d stallmsg" style="margin-top:6px"></div>
@@ -1183,6 +1190,7 @@ function libTroubleHtml() { return ''; }   // 自動重試中的失敗用戶做�
 
 function tabFolders(s, a, idx) {
   return `
+    ${cardStalls(s.stalls, a.name)}
     <div class="folderbar">
       <button class="icbtn primary" data-addto="${idx}" title="加資料夾" aria-label="加資料夾">${IC_FOLDER_PLUS}</button>
     </div>

@@ -186,6 +186,41 @@
    "asks": "停住了該做什麼"
   },
   {
+   "id": "card.stall.title",
+   "sel": "[data-stall-card] .nt",
+   "asks": "有幾份檔進不了知識庫（hover：不處理會怎樣）"
+  },
+  {
+   "id": "card.stall.file",
+   "sel": "[data-stall-card] .nt + .d.one",
+   "asks": "是哪一份檔、還有幾份同樣卡住"
+  },
+  {
+   "id": "card.stall.filename",
+   "sel": "[data-stall-card] .nm",
+   "asks": "卡住那份檔的檔名（不給路徑）"
+  },
+  {
+   "id": "card.stall.tried",
+   "sel": "[data-stall-card] .d.one:has(+ .d.one + pre.stallpreview)",
+   "asks": "小幫手自己修過了沒"
+  },
+  {
+   "id": "card.stall.consent",
+   "sel": "[data-stall-card] .d.one:has(+ pre.stallpreview)",
+   "asks": "同意通報會寄出什麼"
+  },
+  {
+   "id": "card.stall.view",
+   "sel": "[data-stall-card] [data-stallview]",
+   "asks": "怎麼先看要寄的內容、再同意通報"
+  },
+  {
+   "id": "card.stall.decline",
+   "sel": "[data-stall-card] [data-stalldecline]",
+   "asks": "不想通報怎麼拒絕"
+  },
+  {
    "id": "folders.add",
    "sel": ".folderbar .icbtn",
    "asks": "怎麼加一個資料夾"
