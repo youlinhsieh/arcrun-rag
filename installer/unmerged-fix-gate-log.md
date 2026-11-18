@@ -2577,3 +2577,39 @@
 | 2026-11-17 10:30Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
 | 2026-11-17 10:42Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（4 天前）；交回後放著 4 天沒進版（門檻 3 天）；理由：Arcrun#400 資料表那條線的交件，歸總管收斂，與 Arcrun#445 無關，本次 stage 只帶 #445 |
 | 2026-11-17 10:42Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:10Z | stage | ⛔ 擋下 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天） |
+| 2026-11-17 12:10Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:11Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：Arcrun#400 的分支與本次 Arcrun#452（AHub 簽完通知）無關，交回後未併由該票負責；先前 1.4.233 同樣跳過 |
+| 2026-11-17 12:11Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:12Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：Arcrun#400 的分支與本次 Arcrun#452（AHub 簽完通知）無關，交回後未併由該票負責；先前 1.4.233 同樣跳過 |
+| 2026-11-17 12:12Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:13Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：Arcrun#400 的分支與本次 Arcrun#452（AHub 簽完通知）無關，交回後未併由該票負責；先前 1.4.233 同樣跳過 |
+| 2026-11-17 12:13Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:14Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：Arcrun#400 的分支與本次 Arcrun#452（AHub 簽完通知）無關，交回後未併由該票負責；先前 1.4.233 同樣跳過 |
+| 2026-11-17 12:14Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 12:15Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：Arcrun#400 的分支與本次 Arcrun#452（AHub 簽完通知）無關，交回後未併由該票負責；先前 1.4.233 同樣跳過 |
+| 2026-11-17 12:15Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 19:34Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前兩版出貨同做法 |
+| 2026-11-17 19:34Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 19:43Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前兩版出貨同做法 |
+| 2026-11-17 19:43Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 20:36Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 20:36Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 20:40Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 20:40Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 20:47Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 20:47Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 20:52Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 20:52Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 21:17Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 21:17Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-17 21:24Z | stage | ⚠️ 這次不帶 | arcrun-hand/400-data-tables | c1794483077188687 已交回（5 天前）；交回後放著 5 天沒進版（門檻 3 天）；理由：另一條線（Arcrun#400）的未併分支，與 #446 無關；前幾版出貨同做法 |
+| 2026-11-17 21:24Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 01:26Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 01:31Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 01:46Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 01:51Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 02:10Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 02:17Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 02:21Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-18 02:33Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
