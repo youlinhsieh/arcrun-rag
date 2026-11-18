@@ -24,10 +24,17 @@ type UpdateInfo struct {
 	Notes     string `json:"notes,omitempty"`
 	Staged    bool   `json:"staged"`        // 已下載備妥、等重啟套用
 	Err       string `json:"err,omitempty"` // 誠實回報，不假裝成功
+	// StoreManaged：這份是 Microsoft Store（msix）版，更新只由 Store 發（#352）。
+	// 此時不查最新版、Available 恆為 false、也沒有下載／套用。
+	StoreManaged bool `json:"storeManaged,omitempty"`
 }
 
 func (a *App) CheckUpdate() UpdateInfo {
 	info := UpdateInfo{Current: version}
+	if updatesManagedByStore() {
+		info.StoreManaged = true
+		return info
+	}
 	rel, err := fetchLatestRelease()
 	if err != nil {
 		info.Err = "暫時連不上更新伺服器：" + err.Error()
@@ -78,6 +85,10 @@ func clearStaleStaged() {
 
 func (a *App) DownloadUpdate() UpdateInfo {
 	info := UpdateInfo{Current: version}
+	if updatesManagedByStore() {
+		info.StoreManaged = true
+		return info
+	}
 	rel, err := fetchLatestRelease()
 	if err != nil {
 		info.Err = "暫時連不上更新伺服器：" + err.Error()

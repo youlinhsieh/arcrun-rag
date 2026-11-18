@@ -1357,10 +1357,14 @@ function libBatteryWarnHtml(a) {
 
 function pageUpdate(s) {
   const u = updateInfo;
-  const latest = u ? (u.latest || '查詢中…') : '—';
+  const latest = (u && !u.storeManaged) ? (u.latest || '查詢中…') : '—';
   let action = `<button class="primary" id="uCheck">檢查更新</button>`;
   let note = '';
-  if (u && u.staged) {
+  if (channelInfo.storeManaged || (u && u.storeManaged)) {
+    // Store（msix）版：更新只由 Store 發（#352）——不查最新版、不放任何更新按鈕
+    action = '';
+    note = `<div class="d">由 Microsoft Store 更新</div>`;
+  } else if (u && u.staged) {
     action = `<button class="primary" id="uApply">重啟更新</button>`;
     note = '';
   } else if (u && u.available) {

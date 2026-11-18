@@ -388,3 +388,56 @@ test('#307 assessDaemonShipment 對真的 git：origin/main 的 manifest 與工�
     assert.equal(noRef.ships, true, '讀不到線上現況 ⇒ 嚴格當作會換');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 兩道閘不准互卡（2026-11-18，prod 1.4.247 第 23 站實撞）
+//
+// 海關（visa-gate.mjs，inkstone/arcrun-rag#348）要求**已打包那一版**的說明改寫成
+// 「這版完成／順帶修好」兩段；本閘（指紋）以前把 collector/CHANGELOG.md 算進去
+// ⇒ 一照海關改說明，本閘就判「成品不是照這份源碼打的」，只剩手改帳本或白出一個版號。
+// 這支測試把**兩道真的閘**接在一起跑：照海關的格式改寫、海關要過、本閘也要過；
+// 反過來，連號碼都改掉（＝宣稱是別的版）本閘照樣要擋。
+// ═══════════════════════════════════════════════════════════════════════════
+test('🔴 照海關格式改寫已打包那一版的說明 ⇒ 海關過、指紋閘也過；改號碼照樣擋', async () => {
+  const { checkTwoPart } = await import('./visa-gate.mjs');
+  const { releaseSectionFor } = await import('./github-release.mjs');
+  const { DAEMON_CHANGELOG_REL, checkNotes } = await import('./daemon-notes.mjs');
+  const { notesForVersion, DONE_LABEL: D2, ALSO_LABEL: A2 } = await import('../../collector/cmd/arcrun-app/daemon-notes.mjs');
+  const { DONE_LABEL, ALSO_LABEL } = await import('./visa-gate.mjs');
+  assert.deepEqual([D2, A2], [DONE_LABEL, ALSO_LABEL], '海關與 notes 投影器認的兩個標題字要一字不差');
+  assert.equal(DAEMON_CHANGELOG_REL, CHANGELOG_REL.split('\\').join('/'),
+    '海關要求改寫的那份檔，就是本測試改寫的那份（兩邊不准各指各的）');
+  const dir = fakeCollectorRepo();
+  try {
+    const appDir = join(dir, 'collector', 'cmd', 'arcrun-app');
+    execFileSync('python3', [join(appDir, 'daemon-version.py'), '--stamp'],
+      { cwd: appDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const clPath = join(dir, CHANGELOG_REL);
+    const before = readFileSync(clPath, 'utf8');
+    assert.equal(checkTwoPart(releaseSectionFor(dir, '0.18.0')).ok, false, '前提：舊格式海關不收');
+
+    writeFileSync(clPath, before.replace('- 這一版改了什麼',
+      '- **這版完成：這一版改了什麼（inkstone/Arcrun#459）**\n\n- **順帶修好**\n  - 無'));
+    const visa = checkTwoPart(releaseSectionFor(dir, '0.18.0'), { expectIntent: 'inkstone/Arcrun#459' });
+    assert.equal(visa.ok, true, JSON.stringify(visa));
+    // 第三道：notes 站（更新畫面那一行）。兩段式的標題字與票號不准原樣進畫面（第 10 站實撞）
+    const notes = notesForVersion('0.18.0', clPath);
+    assert.equal(notes, '這一版改了什麼', `notes 站取到的是：${JSON.stringify(notes)}`);
+    assert.deepEqual(checkNotes(notes), [], 'notes 站的閘要收');
+    const s = readSourceState({ repo: dir });
+    const r = judgeSourceState({ repo: dir, state: s.state, changelogRel: CHANGELOG_REL });
+    assert.equal(r.status, 'ok', `兩道閘互卡又回來了：\n${JSON.stringify(r, null, 2)}`);
+
+    // 修 notes 投影器本身（為了正確讀兩段式而改它）也不准讓已打包那一版過期
+    const proj = join(appDir, 'daemon-notes.mjs');
+    writeFileSync(proj, '// 投影器改過\n');
+    const s1 = readSourceState({ repo: dir });
+    assert.equal(judgeSourceState({ repo: dir, state: s1.state, changelogRel: CHANGELOG_REL }).status, 'ok');
+
+    // 反向：號碼改掉（說明宣稱這是另一版）⇒ 帳本查不到那一版 ⇒ unknown（擋）
+    writeFileSync(clPath, readFileSync(clPath, 'utf8').replace('## 0.18.0（', '## 0.18.1（'));
+    const s2 = readSourceState({ repo: dir });
+    const r2 = judgeSourceState({ repo: dir, state: s2.state, changelogRel: CHANGELOG_REL });
+    assert.equal(r2.status, 'unknown', JSON.stringify(r2, null, 2));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

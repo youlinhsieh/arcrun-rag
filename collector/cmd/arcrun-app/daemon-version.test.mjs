@@ -289,3 +289,57 @@ test('⑭ 🔴 反向：被 embed 的非 Go 檔（圖示、範本）照樣算數
     assert.deepEqual(s.added, ['templatefs/VERSION']);
   } finally { t.cleanup(); }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 版本說明的內文不算指紋，號碼照樣守住（ALGO 6，2026-11-18，prod 1.4.247 第 23 站）
+// 內文不進執行檔（go build 不讀它）；號碼經 ldflags 進執行檔，而號碼就是帳本的鍵。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('⑮ 打包之後改寫已發佈那一版的說明文字（例：補成兩段式）⇒ 成品仍算數', () => {
+  const t = realishTree({ changelog: UNRELEASED + OLD_V });
+  try {
+    t.stampIt();
+    const cl = join(t.root, 'collector', 'CHANGELOG.md');
+    writeFileSync(cl, readFileSync(cl, 'utf8').replace('- 修了一件事',
+      '- **這版完成：修了一件事（inkstone/Arcrun#1）**\n\n- **順帶修好**\n  - 無'));
+    const s = askState(t);
+    assert.equal(s.version, '0.18.29');
+    assert.equal(s.recorded_fingerprint, s.current_fingerprint);
+    assert.deepEqual([s.changed, s.added, s.removed], [[], [], []]);
+  } finally { t.cleanup(); }
+});
+
+test('⑯ 🔴 反向：把已發佈那一版的**號碼**改掉 ⇒ 帳本查不到紀錄（不會因為說明不算指紋就放行）', () => {
+  const t = realishTree({ changelog: UNRELEASED + OLD_V });
+  try {
+    t.stampIt();
+    const cl = join(t.root, 'collector', 'CHANGELOG.md');
+    writeFileSync(cl, readFileSync(cl, 'utf8').replace('## 0.18.29（', '## 0.18.30（'));
+    const s = askState(t);
+    assert.equal(s.version, '0.18.30');
+    assert.equal(s.recorded_fingerprint, null);
+  } finally { t.cleanup(); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 更新畫面那一行要讀得懂兩段式（2026-11-18，prod 1.4.247 第 10 站實撞）
+// 兩個標題字（這版完成／順帶修好）是結構；票號是給海關的鍵。兩者都不准原樣露在畫面上。
+// ═══════════════════════════════════════════════════════════════════════════
+test('⑰ 兩段式：取「這版完成」那句話（去標題字、去票號）＋「順帶修好」底下條目，「無」略過', async () => {
+  const { headlinesFor, checkNotes } = await import('./daemon-notes.mjs');
+  const cl = '## 0.18.9（2026-11-18）\n\n'
+    + '- **這版完成：Mac 打開不再跳警告（inkstone/Arcrun#459）**\n  細節說明一行（inkstone/arcrun-rag#353）\n\n'
+    + '- **順帶修好**\n  - **更新後不再閃退**：細節\n  - 托盤圖示對齊（inkstone/arcrun-rag#1、inkstone/arcrun-rag#2）\n\n'
+    + '## 0.18.8（2026-11-01）\n\n- **舊的**\n';
+  const h = headlinesFor(cl, '0.18.9');
+  assert.deepEqual(h, ['Mac 打開不再跳警告', '更新後不再閃退', '托盤圖示對齊']);
+  assert.deepEqual(checkNotes(h.join('・')), []);
+  const none = '## 0.18.9（x）\n\n- **這版完成：只有一件事（a/b#1）**\n\n- **順帶修好**\n  - 無\n';
+  assert.deepEqual(headlinesFor(none, '0.18.9'), ['只有一件事']);
+});
+
+test('⑱ 舊格式（沒有兩個標題字）的結果一個字都沒變', async () => {
+  const { headlinesFor } = await import('./daemon-notes.mjs');
+  const cl = '## 0.18.7（x）\n\n- 🔴 **從官網下載不再被擋**：以前…\n  續行\n  - 巢狀不取\n- 沒粗體的條目\n';
+  assert.deepEqual(headlinesFor(cl, '0.18.7'), ['從官網下載不再被擋', '沒粗體的條目']);
+});

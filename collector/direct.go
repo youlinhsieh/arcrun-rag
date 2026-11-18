@@ -107,6 +107,7 @@ type DirectConfig struct {
 	CriticalFolders []string `json:"critical_folders,omitempty"`
 	PassageIngestWF string   `json:"passage_ingest_workflow,omitempty"`
 	PollSec           int     `json:"poll_interval_sec"`              // 輪詢間隔秒（空/0＝5）
+	IdlePollMaxSec    int     `json:"idle_poll_max_sec,omitempty"`    // 連續沒事做時輪詢間隔的上限秒（空/0＝60）
 	MaxRemoved        float64 `json:"max_removed_ratio"`              // 大量刪除防呆門檻（空/0＝0.4）
 	// MaxEventsPerRun（2026-08-07 pacing task）：單輪最多處理幾個 added/modified/renamed/
 	// removed 事件，空/0＝DefaultMaxEventsPerRun。存在理由：巨量積壓（實據 27,164 檔）
@@ -3029,6 +3030,7 @@ func runDirect(args []string) int {
 	// claude 執行檔，cfg.ClaudeBin 不會被改寫，故沒有東西需要回寫。
 	// （留著空轉的回寫邏輯會讓未來的人以為 claude 路還活著＝錯誤的環境信號。）
 
+	lastRoundBusy := true
 	runOne := func(force bool) int {
 		// 🔴 t191（leo 08-04，issue #17）：「按『立刻同步』後**很快就回到「看守中」**，
 		//    看起來好像就做完了，這時使用者一看沒做完啊，就覺得是 bug」。
@@ -3048,6 +3050,7 @@ func runDirect(args []string) int {
 		}{time.Now().Format(time.RFC3339), "start"})
 
 		results, exit, _ := RunDirectOnce(roundConfig(cfg, force), *dryRun)
+		lastRoundBusy = roundDidWork(results)
 		printJSONLine(struct {
 			At      string         `json:"at"`
 			Phase   string         `json:"phase"`
@@ -3097,7 +3100,14 @@ func runDirect(args []string) int {
 	runOne(false)
 
 	signalPath := SyncNowSignalPath(cfg.Manifest)
-	pollInterval := time.Duration(cfg.PollSec) * time.Second
+	basePoll := time.Duration(cfg.PollSec) * time.Second
+	// 🔴 inkstone/arcrun-rag（閒置吃滿 CPU，leo 2026-11-17 實測 0.18.119 連跑 7 天 CPU 87%）：
+	//    每一輪＝每個帳號各自把每個看守資料夾整棵走一遍（逐檔 stat＋.gitignore 比對＋讀寫帳本 JSON），
+	//    成本＝檔案數 × 帳號數。以前不管有沒有事，**固定每 5 秒**做一次 ⇒ 檔多、帳號多的機器上
+	//    「沒事做」也一直在燒 CPU。
+	//    ⇒ 改成「有事做就維持 5 秒，連續沒事就把間隔拉長（每次加倍，上限 idleMaxPoll）」。
+	//      一有變動（送出、刪除、失敗重試）立刻回到 5 秒；「立刻同步」照舊每秒檢查、隨按隨跑。
+	pollInterval := basePoll
 	lastRun := time.Now()
 	const checkInterval = time.Second
 	for {
@@ -3105,13 +3115,64 @@ func runDirect(args []string) int {
 		if consumeSyncNowSignal(signalPath) {
 			runOne(true) // #256：按「立刻同步」＝這一輪忽略退避與次數上限（以前沒人把 ForceSync 設成 true）
 			lastRun = time.Now()
+			pollInterval = nextPollInterval(pollInterval, basePoll, cfg.idleMaxPoll(), true)
 			continue
 		}
 		if time.Since(lastRun) >= pollInterval {
 			runOne(false)
 			lastRun = time.Now()
+			pollInterval = nextPollInterval(pollInterval, basePoll, cfg.idleMaxPoll(), lastRoundBusy)
 		}
 	}
+}
+
+// defaultIdleMaxPollSec＝連續沒事做時，兩輪之間最長隔多久（秒）。
+// 新檔最晚這麼久會被看到；要馬上收就按「立刻同步」。
+const defaultIdleMaxPollSec = 60
+
+// idleMaxPoll＝閒置時輪詢間隔的上限。設定檔 idle_poll_max_sec 可調；
+// 小於基本間隔（PollSec）時以基本間隔為準＝等同關掉退避。
+func (c *DirectConfig) idleMaxPoll() time.Duration {
+	sec := c.IdlePollMaxSec
+	if sec <= 0 {
+		sec = defaultIdleMaxPollSec
+	}
+	if sec < c.PollSec {
+		sec = c.PollSec
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// nextPollInterval＝下一輪要隔多久。這一輪有做事 ⇒ 回到基本間隔；
+// 沒做事 ⇒ 加倍，最多到 max。
+func nextPollInterval(cur, base, max time.Duration, busy bool) time.Duration {
+	if busy || cur < base {
+		return base
+	}
+	next := cur * 2
+	if next > max {
+		next = max
+	}
+	if next < base {
+		next = base
+	}
+	return next
+}
+
+// roundDidWork＝這一輪是不是真的有做事（送出／刪除／排了動作／嘗試失敗）。
+// 只有「略過」（退避中、已是最新、資訊提示）的輪次算閒置。
+// 🔴 失敗算有做事：失敗代表這輪真的打出去了，下一輪要照常快速重試／讓退避機制自己決定。
+func roundDidWork(results []DirectResult) bool {
+	for _, r := range results {
+		if r.Type == "folder_tree" {
+			continue // 資料夾樹會定期重送一次（心跳性質），不代表使用者的檔有變
+		}
+		switch r.Status {
+		case "ingested", "removed", "planned", "failed":
+			return true
+		}
+	}
+	return false
 }
 
 // roundConfig 回傳這一輪用的設定副本：使用者按「立刻同步」的那一輪 ForceSync=true，其餘輪為 false。

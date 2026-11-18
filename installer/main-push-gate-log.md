@@ -607,3 +607,10 @@
 | 2026-11-18 02:26:44 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | arcrun-hand/400-ship | ✅ 放行 | 目標不是 main／master |
 | 2026-11-18 02:33:48 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 2f47525→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-18 02:38:47 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | arcrun-hand/400-ship | ✅ 放行 | 目標不是 main／master |
+| 2026-11-18 09:50:40 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 4e98e5f→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-18 10:02:54 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag | arcrun-hand/459-ship | ✅ 放行 | 目標不是 main／master |
+| 2026-11-18 09:07:35 | github.com/youlinhsieh/arcrun-rag-bundles | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag-bundles，這一趟剩 19 次） |
+| 2026-11-18 09:10:15 | github.com/youlinhsieh/arcrun-rag | main | ✅ 放行 | preflight 已按閘（github.com/youlinhsieh/arcrun-rag，這一趟剩 19 次） |
+| 2026-11-18 18:57:10 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 0fea14d→HEAD，2 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-18 19:09:11 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-collector | main | ✅ 放行 | 機械檢查（stage）：fast-forward c8b97bb→HEAD，44 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-18 12:18:12 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward f02ae0e→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |

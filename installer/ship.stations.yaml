@@ -727,6 +727,30 @@
       `node --test installer/scripts/instance-update.test.mjs`（沒換版要擋、acr 失敗要擋、讀回有界重試、輸出遮蔽）；
       出貨後在貼回本票：`curl <cypher>/health` 的 bundle_version／bundle_commit ＝ 這次出貨的版號與 manifest.source。
 
+  - id: front-door
+    名字: 正門：從 MCP 走一遍「寫意圖 → 做出一條會跑的工作流」（任何一環斷＝這版不算 stage 驗過）
+    為什麼有這一站: |
+      inkstone/Arcrun#461（leo 2026-11-18）。inkstone/Arcrun#460：MCP 查零件三支工具在 leo21c／geek6688／stage 壞了約兩個月沒人發現
+      （wiki 09-22、09-25 已撞到，記成「既有缺口」沒開票）。因為工人寫工作流走捷徑（`acr parts` 寫死清單、直接打引擎），
+      stage 驗收只看「引擎活著、工作流跑得動」，**沒有任何一項是從 AI 實際用的那扇門走一遍**。
+      leo：「會有另一個這種事情明明斷了但每個人都抄捷徑都沒發現？這是正確的路，把意圖寫了去做出來不是嗎？」
+    怎麼做: |
+      擺在 instance-update 之後（實例已換到這一版）、stage-record 之前。憑證不靠任何人另外放：站在執行當下用出貨環境已有的 Cloudflare 鑰匙（cloudflareCredentials 指名的 youlin 那把）在 arcrun-mcp 上現寫一把一次性 Secret `MCP_STATIC_TOKEN`，走完一定撤掉（該 Secret 已存在就不覆蓋、不撤別人的，直接報錯）。
+      照連線自帶說明的順序走十一環：說明指路／get_skill／search_components／get_component／list_components／`/cypher/search` 媒合／
+      validate_yaml／push（抓網址回 JSON 的探針工作流）／run／verdict／收探針。一環斷，後面依賴它的標「前面斷了，沒跑」，錯誤訊息講出斷在哪一環與原因。
+      預演（無 --confirm）不走（它要在 stage 實例寫東西）；`--confirm` 出貨一定走，**沒有 skip 開關**（總管裁定：不准用跳過當出口）。
+    只在 stage: 登錄簿 `targets.stage.frontDoor` 才生效；prod 不由出貨線寫實例，沒宣告整站跳過（leo21c／geek6688 由總管用 MCP 連線各走一次，貼票）。
+    憑證: 只碰名字（D36）：Cloudflare 鑰匙走 cloudflareCredentials（youlin 那一把）、namespace 讀環境變數 ARCRUN_NS_YOULIN；一次性憑證只活在本行程記憶體，不落檔不印，用完撤。
+    用什麼: 本機
+    為什麼不搬: 缺零件
+    要搬需要: 一條 Arcrun 工作流，能站在「只有 MCP 連線」的位置依序呼叫 MCP 工具並逐環判定；目前沒有這種「從外面連自己」的零件。
+    理由: |
+      驗收的重點是「不是實例自己跑自己」——正門要從實例外面、用 AI 會用的那條連線進來，由實例內的工作流代走就失去意義；
+      出貨線只是呼叫 MCP 並逐環判定。
+    驗法: |
+      `node --test installer/scripts/front-door.test.mjs`（全通＝綠；故意拿掉零件目錄／說明指路／媒合回 unknown 等，各自擋下並說出斷在哪一環；一次性憑證：已存在不覆蓋、走完（含失敗）一定撤）；
+      出貨後把站的輸出貼回本票（十一環各一行）。
+
   - id: stage-record
     名字: 把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）
     為什麼有這一站: |

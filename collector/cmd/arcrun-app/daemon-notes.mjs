@@ -139,25 +139,82 @@ export function stripMarkdown(s) {
 }
 
 /**
+ * 兩段式版本說明的兩個標題（inkstone/arcrun-rag#348，ADR D101 第三步）。
+ * 🔴 與 `installer/scripts/visa-gate.mjs` 的 DONE_LABEL／ALSO_LABEL 是同一組字——
+ *    collector 不准往外伸手 import，所以在這裡另寫一份，由
+ *    `installer/scripts/daemon-freshness.test.mjs`「兩道閘不准互卡」測試逐字對齊。
+ */
+export const DONE_LABEL = '這版完成';
+export const ALSO_LABEL = '順帶修好';
+
+/**
+ * 票號參照（`owner/repo#N`）是給出貨線與海關看的鍵，不是給使用者看的字——
+ * 畫面上露出 `#` 會被 checkNotes 當成 markdown 擋下（2026-11-18 prod 1.4.247 第 10 站實撞）。
+ * 整個括號裡只有票號 ⇒ 連括號一起拿掉；散在句中的票號 ⇒ 只拿掉票號。
+ */
+const REF = String.raw`[\w.-]+\/[\w.-]+#\d+`;
+const REF_PAREN_RE = new RegExp(String.raw`\s*[（(]\s*${REF}(?:\s*[、,，]\s*${REF})*\s*[）)]`, 'g');
+const REF_BARE_RE = new RegExp(REF, 'g');
+export function stripTicketRefs(s) {
+  return String(s).replace(REF_PAREN_RE, '').replace(REF_BARE_RE, '')
+    .replace(/([（(])\s+/g, '$1').replace(/\s+([）)])/g, '$1').replace(/[（(][）)]/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** 一條條目 → 畫面上的一句話：取第一個粗體（沒有就整行）、剝 markdown／票號／開頭符號／尾標點。 */
+function headlineOf(body) {
+  const bold = body.match(/\*\*([^*]+)\*\*/);
+  let h = stripTicketRefs(stripMarkdown(bold ? bold[1] : body));
+  h = h.replace(/^[^\p{L}\p{N}「（(]+/u, '');  // 去掉開頭的 emoji／符號
+  h = h.replace(/[：:，,。.]+$/, '');           // 去掉尾標點（要串接）
+  return h;
+}
+
+/**
  * 從 changelog 取某一版的「一句話摘要」清單。
  * 規則：只認**頂層條目**（行首 `- `）的第一個粗體片段——那就是該條的標題。
  *   沒有粗體的條目退而取整行（截短），因為「有寫總比漏掉好」。
+ *
+ * 🔴 兩段式（2026-11-18，prod 1.4.247 第 10 站實撞）：海關要求 prod 每版寫成
+ *   「- **這版完成：<一句話>（owner/repo#N）**」＋「- **順帶修好**」底下巢狀條列。
+ *   兩個**標題字**是結構，不是內容 ⇒ 不准原樣進畫面：
+ *     · 「這版完成：」那條 ⇒ 去掉標題字，只留那句話
+ *     · 「順帶修好」那條本身不是一句話 ⇒ 改取它底下的巢狀條目（「無」略過）
+ *   舊格式（沒有這兩個標題字）的行為一個字都沒變。
  */
 export function headlinesFor(changelogText, version) {
   const lines = changelogText.split('\n');
   const start = lines.findIndex((l) => new RegExp(`^##\\s+${version.replace(/[.\\]/g, '\\$&')}(\\D|$)`).test(l.trim()));
   if (start < 0) return null;
+  const doneRe = new RegExp(`^${DONE_LABEL}\\s*[：:]\\s*`);
+  const alsoRe = new RegExp(`^${ALSO_LABEL}`);
   const out = [];
+  let inAlso = false;
   for (let i = start + 1; i < lines.length; i++) {
     const l = lines[i];
     if (/^##\s/.test(l)) break;                 // 下一版開始
-    if (!/^-\s/.test(l)) continue;              // 只取頂層條目（續行、巢狀一律略過）
-    const body = l.replace(/^-\s*/, '');
-    const bold = body.match(/\*\*([^*]+)\*\*/);
-    let h = stripMarkdown(bold ? bold[1] : body);
-    h = h.replace(/^[^\p{L}\p{N}「（(]+/u, '');  // 去掉開頭的 emoji／符號
-    h = h.replace(/[：:，,。.]+$/, '');           // 去掉尾標點（要串接）
-    if (h) out.push(h);
+    if (/^-\s/.test(l)) {
+      const body = l.replace(/^-\s*/, '');
+      const lead = stripMarkdown(body);
+      if (alsoRe.test(lead)) { inAlso = true; continue; }   // 標題本身不進畫面
+      inAlso = false;
+      const doneBold = body.match(/\*\*([^*]+)\*\*/);
+      if (doneRe.test(lead)) {
+        const h = headlineOf(doneBold ? `**${doneBold[1].replace(doneRe, '')}**` : lead.replace(doneRe, ''));
+        if (h) out.push(h);
+        continue;
+      }
+      const h = headlineOf(body);
+      if (h) out.push(h);
+      continue;
+    }
+    // 「順帶修好」底下的巢狀條目（第一層縮排）才算；其餘續行、更深的巢狀一律略過
+    if (inAlso && /^\s{1,4}-\s/.test(l)) {
+      const body = l.replace(/^\s*-\s*/, '');
+      if (/^無[。.]?$/.test(stripMarkdown(body))) continue;
+      const h = headlineOf(body);
+      if (h) out.push(h);
+    }
   }
   return out;
 }

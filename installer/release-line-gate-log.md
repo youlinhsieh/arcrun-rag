@@ -411,3 +411,13 @@
 | 2026-11-18 01:57:06 | stage | bundle 1.4.243；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
 | 2026-11-18 02:27:05 | stage | bundle 1.4.244；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
 | 2026-11-18 02:39:09 | stage | bundle 1.4.245；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 09:49:56 | stage | bundle 1.4.246；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 10:09:42 | stage | bundle 1.4.246；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 10:21:44 | stage | bundle 1.4.246；daemon 0.18.119；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 08:49:08 | prod | bundle 1.4.245；daemon 0.18.118；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 09:10:24 | prod | bundle 1.4.245；daemon 0.18.118；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 09:12:11 | prod | bundle 1.4.245；daemon 0.18.118；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 19:09:37 | stage | bundle 1.4.247；daemon 0.18.121；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 19:19:56 | stage | bundle 1.4.247；daemon 0.18.121；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 12:29:54 | stage | bundle 1.4.248；daemon 0.18.121；installer 1.0.82 | ✅ 放行 | — |
+| 2026-11-18 12:36:20 | stage | bundle 1.4.248；daemon 0.18.121；installer 1.0.82 | ✅ 放行 | — |

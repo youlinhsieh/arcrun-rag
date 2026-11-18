@@ -177,7 +177,19 @@
         "namespaceEnv": "ARCRUN_NS_YOULIN",
         "releaseApi": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/api/latest"
       },
-"verify": {
+      "frontDoor": {
+        "_": [
+          "inkstone/Arcrun#461（leo 2026-11-18）：站表 `front-door` 站——從 MCP 連線走一遍「寫意圖 → 做出一條會跑的工作流」，任何一環斷＝這版不算 stage 驗過。",
+          "憑證不用任何人另外放：站在執行當下用出貨環境已有的 Cloudflare 鑰匙（cloudflareCredentials 指名的 youlin 那把）在 mcpWorker 上現寫一把一次性 Secret MCP_STATIC_TOKEN、走完撤掉（總管裁定 Arcrun#461 c1794996907844366）；該 Secret 已存在就不覆蓋、不撤別人的。",
+          "mcpUrl 是打過的那一個（/health 200、/mcp 要 Bearer）；cypherUrl／namespaceEnv 與 instanceUpdate 同一個（改了要一起改）。write:true＝走 push／run／收探針（stage 是 AI 的實驗場，可寫）。"
+        ],
+        "mcpUrl": "https://arcrun-mcp.arcrun-yuga3bse.workers.dev/mcp",
+        "mcpWorker": "arcrun-mcp",
+        "cypherUrl": "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev",
+        "namespaceEnv": "ARCRUN_NS_YOULIN",
+        "write": true
+      },
+      "verify": {
         "installerBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
       },
       "delivery": {

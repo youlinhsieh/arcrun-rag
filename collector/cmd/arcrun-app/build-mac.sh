@@ -79,8 +79,10 @@ echo "   ✅ bundle id：$BID"
 
 echo "③ 同綑 collector 進 .app（App 用 os.Executable() 找同層）"
 
-echo "④ ad-hoc 重簽（改過 bundle 內容必重簽，否則 launchd 拒開）"
-codesign --force --deep --sign - "$APP" 2>/dev/null || true
+echo "④ 簽章（改過 bundle 內容必重簽，否則 launchd 拒開）"
+# 🔴 inkstone/arcrun-rag#353：有 Developer ID 素材就用它簽（hardened runtime＋timestamp，公證的前提）；
+#    沒有才退回 ad-hoc。公證與 staple 在 build-dmg.sh（Apple 公證的對象是 DMG）。
+./sign-mac.sh app "$APP"
 
 echo "✅ 完成：$APP"
 echo "   驗法：open '$APP' → 選單列出現 icon、Dock **不出現** icon（Stage 版 icon 旁另有「Stage」字樣）"

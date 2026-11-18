@@ -136,6 +136,7 @@ import { branchTip, setBranchTip, checkSourcePin } from './source-pin.mjs';
 import { readLedger, recordShipment, resolveSignedVersion, ensureSourceAt, checkSignedBuild, LEDGER_FILE } from './release-ledger.mjs';
 import { checkSourceNotOlder } from './source-regression-gate.mjs';
 import { checkStageQueue } from './stage-queue-gate.mjs';
+import { frontDoorStation } from './front-door.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { runVisaGate, checkTwoPart } from './visa-gate.mjs';
@@ -3383,6 +3384,20 @@ const STEPS = [
     redact: redactSecrets,
   });
   return { status: 'done', detail: [`期望 ${expect.version}／Arcrun@${expect.commit}｜acr ${acr.entry}`, ...r.detail, ...cred.lines] };
+}},
+
+// ── 正門：站在 AI 的位置，從 MCP 走一遍「寫意圖 → 做出一條會跑的工作流」（inkstone/Arcrun#461）────
+// leo 2026-11-18：MCP 查零件三支工具壞了兩個月沒人發現，因為大家都走捷徑（acr parts、直接打引擎）。
+// 擺在 instance-update 之後（實例已換到這一版才走）、stage-record 之前（正門不通就不把這版寫成 stage 現況）。
+// 憑證在執行當下現寫（出貨環境已有的 Cloudflare 鑰匙 → 一次性 Secret，用完撤），不靠任何人另外放金鑰；沒有 skip 開關。
+{ id: 'front-door', title: '正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）', mutates: false, async run() {
+  // 只靠出貨環境已有的那把 Cloudflare 鑰匙（登錄簿 cloudflareCredentials 指名，D36：只讀名字、不印值）——不要任何人另外放金鑰
+  let cf;
+  if (T.frontDoor && CONFIRM) {
+    const c = cloudflareDeployEnv({ cfg, accountId: T.installer.accountId, startDir: REPO_ROOT });
+    cf = { accountId: T.installer.accountId, token: c.env.CLOUDFLARE_API_TOKEN };
+  }
+  return frontDoorStation({ cfg: T.frontDoor, env: process.env, confirm: CONFIRM, cf });
 }},
 
 // ── 最後一站：把這一版寫進 AHub 的 stage 現況（inkstone/arcrun-rag#301，後端 inkstone/Arcrun#365）────

@@ -86,7 +86,23 @@ SOURCE_FILES = HERE / ".version-source-files.json"
 #    帳本不是整本作廢：0.18.56 那一版已用「打包那顆 commit 的樹」重算 v5 指紋
 #    （同一棵樹的 v4 值與舊帳本 `d333ded9d0608cd9` 逐位相符，才准換），
 #    所以 changelog 最上面那一版仍查證得到，不會掉進「無法查證」。
-FINGERPRINT_ALGO = 5
+# 🔴 5 → 6（2026-11-18，prod 1.4.247 第 23 站實撞）：**版本說明 `CHANGELOG.md` 不再算進指紋**。
+#    它不會進執行檔：`go build` 只讀 .go 與 `//go:embed` 指到的三處（templatefs／frontend/dist／build/…），
+#    changelog 只把「最上面那一版的號碼」經 ldflags 交給執行檔——而那個號碼本身就是帳本的鍵，
+#    號碼一變就查不到紀錄、照樣擋（見測試 ⑯）。內文只投影成 manifest.notes 與發佈頁，不進位元。
+#    為什麼一定要排：prod 的海關（installer/scripts/visa-gate.mjs）要求**已打包那一版**的說明
+#    改寫成「這版完成／順帶修好」兩段；說明在指紋裡 ⇒ 一改就被本檔判「成品不是照這份源碼打的」。
+#    兩道閘各自都對，衝突在**範圍重疊**（與 2026-08-18 ① 同一個形狀，這次是內文不是標題）。
+#    檔案集合變了 ⇒ 照慣例 +1；帳本最上面那一版用同一棵樹重算 v6（v5 值逐位相符才換）。
+# 🔴 6 → 7（同日，第 10 站 notes 實撞，inkstone/arcrun-rag#357）：把說明投影成「更新畫面那一行」的
+#    `cmd/arcrun-app/daemon-notes.mjs` 也排除。它是出貨線的 Node 工具（ship.mjs 的 notes 站呼叫），
+#    不在任何 `//go:embed` 根底下、也不是 Go ⇒ 結構上不可能進執行檔；與量尺本身（本檔）同一個理由。
+#    不排除它 ⇒ 為了讓說明格式能被正確投影而修它，已發佈那一版就被判過期＝同一個互卡換一個檔再來一次。
+FINGERPRINT_ALGO = 7
+
+# 不進執行檔的「版本說明」與它的投影器（相對 collector/）。
+# 🔴 不要順手擴大（README、其他 .mjs 之類請另開票論證）：判準是「出貨線為了寫／讀版本說明而改的檔」。
+NOTES_ONLY = {"CHANGELOG.md", "cmd/arcrun-app/daemon-notes.mjs"}
 
 
 def is_test_only(rel):
@@ -207,6 +223,8 @@ def scan_source():
         str(SOURCE_LOCK.relative_to(COLLECTOR)),
         str(SOURCE_FILES.relative_to(COLLECTOR)),
         str((HERE / "daemon-version.py").relative_to(COLLECTOR)),
+        # 2026-11-18（ALGO 6）：版本說明——內文不進執行檔，號碼由帳本的鍵守住。見 FINGERPRINT_ALGO 註。
+        *(str((COLLECTOR / n).relative_to(COLLECTOR)) for n in NOTES_ONLY),
     }
 
     h = hashlib.sha256()

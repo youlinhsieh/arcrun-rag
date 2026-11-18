@@ -221,6 +221,9 @@ func loadStaged() stagedUpdate {
 // downloadUpdate 下載新版 zip 到暫存區並驗 sha256。
 // 驗章失敗＝寧可不更新（壞掉的 .app 會讓小幫手開不起來，比舊版更糟）。
 func downloadUpdate(rel *daemonRelease) (string, error) {
+	if updatesManagedByStore() {
+		return "", errStoreManaged
+	}
 	url := downloadURLFor(rel)
 	want := rel.Mac.SHA256
 	if isWindows() {
@@ -259,6 +262,9 @@ func downloadUpdate(rel *daemonRelease) (string, error) {
 // prepareUpdateInBackground：檢查 → 有新版就下載備妥 → 記錄 staged。
 // 全程不打擾使用者；備妥後由選單顯示「重新啟動以完成更新」。
 func prepareUpdateInBackground() {
+	if updatesManagedByStore() {
+		return
+	}
 	st := checkForUpdate()
 	if !st.Available {
 		appLog("自動檢查更新：沒有新版（最新 %s；%s）", st.Latest, st.Err)
@@ -283,6 +289,11 @@ func prepareUpdateInBackground() {
 
 // startUpdateWatcher 啟動背景更新檢查（每日一次；啟動後先等 1 分鐘避免搶開機資源）。
 func startUpdateWatcher() {
+	// 🔴 #352：Store（msix）版只靠 Store 更新——不開背景檢查，也不打 manifest。
+	if updatesManagedByStore() {
+		appLog("自動檢查更新：這是 Microsoft Store 版，更新交給 Store，不自己檢查")
+		return
+	}
 	go func() {
 		time.Sleep(time.Minute)
 		for {
@@ -299,6 +310,9 @@ func startUpdateWatcher() {
 // 做法（Windows）：見 applyWindowsUpdateAndRestart（rename 正在跑的 exe，標準自我更新手法）。
 // 失敗時保留原版不動（寧可停在舊版，也不要弄出開不起來/開不動的執行檔）。
 func applyStagedAndRestart() error {
+	if updatesManagedByStore() {
+		return errStoreManaged
+	}
 	s := loadStaged()
 	if !s.Ready || s.ZipPath == "" {
 		return fmt.Errorf("沒有已備妥的更新")

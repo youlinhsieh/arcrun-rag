@@ -1469,6 +1469,7 @@ type ChannelInfo struct {
 	Tag            string `json:"tag"`            // 畫面標記（正式版空）
 	InstallURL     string `json:"installUrl"`     // 安裝頁
 	DefaultConnect string `json:"defaultConnect"` // 首次連線預填的知識庫網址（正式版空）
+	StoreManaged   bool   `json:"storeManaged"`   // Microsoft Store（msix）版：更新只由 Store 發（#352）
 }
 
 func (a *App) GetChannel() ChannelInfo {
@@ -1476,5 +1477,6 @@ func (a *App) GetChannel() ChannelInfo {
 	return ChannelInfo{
 		Name: c.Name, IsStage: c.IsStage(), AppName: c.AppName, Tag: c.Tag,
 		InstallURL: c.InstallURL, DefaultConnect: c.DefaultConnect,
+		StoreManaged: updatesManagedByStore(),
 	}
 }

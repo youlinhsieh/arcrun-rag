@@ -77,6 +77,9 @@ echo "⑤ 壓成唯讀發佈檔"
 hdiutil convert "$RW" -format UDZO -o "$DMG" >/dev/null
 rm -rf "$(dirname "$RW")"
 
+echo "⑥ 簽 DMG、送 Apple 公證、staple（inkstone/arcrun-rag#353；出貨線設 REQUIRE_NOTARIZE=1 則缺素材即失敗）"
+./sign-mac.sh dmg "$DMG"
+
 SIZE=$(ls -lh "$DMG" | awk '{print $5}')
 echo "✅ 完成：${DMG}（${SIZE}）頻道：${CHANNEL}"
 echo
