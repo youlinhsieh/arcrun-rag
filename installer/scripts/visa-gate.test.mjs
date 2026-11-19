@@ -100,3 +100,56 @@ test('stage 不查、prod 查：ship.targets.json 只有 prod 宣告 visaGate', 
   assert.equal(t.prod.visaGate, true);
   for (const [name, v] of Object.entries(t)) if (name !== 'prod') assert.ok(!v.visaGate, `${name} 不該查簽證`);
 });
+
+// ── 簽核即簽證（AHub 0.46.0 規則由海關自己判；prod 的 AHub 還沒升級時也成立）────────────
+// 舊 AHub 對單票意圖回 no_children；海關再問意圖票本身的簽核看板，簽的是「這一個版號」才放行。
+const noChildren = { ok: false, message: '這個意圖底下沒有任何執行票', missing: { reason: 'no_children' }, visas: [] };
+const router = (board) => {
+  const calls = [];
+  const f = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('/visas/check')) return new Response(JSON.stringify(noChildren), { status: 200 });
+    if (String(url).includes('/signoffs')) return new Response(JSON.stringify(board), { status: 200 });
+    return new Response('{}', { status: 404 });
+  };
+  f.calls = calls;
+  return f;
+};
+const SINGLE = [
+  '- **這版完成：Portal 同意通報提醒講白話（inkstone/Arcrun#465）**',
+  '',
+  '- **順帶修好**',
+  '  - 無',
+].join('\n');
+
+test('單票意圖、意圖票上有這一版的 ARM ⇒ 簽核即簽證放行', async () => {
+  const f = router({ version: { version: '1.4.249', approved: true, by: 'Leo', at: '2026-11-18T17:13:55Z', comment_id: '1795022035078844' } });
+  const r = await runVisaGate({ section: SINGLE, version: '1.4.249', token: 't', fetchImpl: f });
+  assert.equal(r.ok, true);
+  assert.match(r.detail.join('\n'), /簽核即簽證/);
+  const sign = f.calls.find((u) => u.includes('/signoffs'));
+  assert.match(sign, /\/repos\/inkstone\/Arcrun\/issues\/465\/signoffs\?version=1\.4\.249/);
+});
+
+test('單票意圖、沒有 ARM ⇒ 退回', async () => {
+  const f = router({ version: { version: '1.4.249', approved: false, by: null, at: null, comment_id: null } });
+  const r = await runVisaGate({ section: SINGLE, version: '1.4.249', token: 't', fetchImpl: f });
+  assert.equal(r.ok, false);
+  assert.match(r.problems.join('\n'), /沒有任何執行票/);
+  assert.match(r.problems.join('\n'), /沒有簽核人簽 1\.4\.249/);
+});
+
+test('單票意圖、有 ARM 但簽的是別的版號 ⇒ 退回', async () => {
+  const f = router({ version: { version: '1.4.248', approved: true, by: 'Leo', at: 'x', comment_id: '1' } });
+  const r = await runVisaGate({ section: SINGLE, version: '1.4.249', token: 't', fetchImpl: f });
+  assert.equal(r.ok, false);
+  assert.match(r.problems.join('\n'), /簽核即簽證不成立/);
+});
+
+test('AHub 沒回答（不認權杖）⇒ 不改問簽核看板，照舊退回', async () => {
+  const calls = [];
+  const f = async (url) => { calls.push(String(url)); return new Response('no', { status: 401 }); };
+  const r = await runVisaGate({ section: SINGLE, version: '1.4.249', token: 't', fetchImpl: f });
+  assert.equal(r.ok, false);
+  assert.equal(calls.filter((u) => u.includes('/signoffs')).length, 0);
+});

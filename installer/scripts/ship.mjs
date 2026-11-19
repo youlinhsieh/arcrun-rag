@@ -118,7 +118,7 @@ import { notesFromChangelog, checkNotes, changelogRelFor, CHANGELOG_REL, DAEMON_
 import { requireDaemonInBundle, GATE_LOG_REL as DAEMON_IN_BUNDLE_GATE_LOG_REL } from './daemon-in-bundle-gate.mjs';
 import { checkArmed, checkArmedViaTicket, logGithubContact } from './d20-guard.mjs';
 import { resolveInkstoneRoot } from './inkstone-root.mjs';
-import { armEvidenceFrom, createReleaseViaArcrun, uploadAssetViaArcrun } from './ship-github-release.mjs';
+import { armEvidenceFrom, createReleaseViaArcrun, uploadAssetViaArcrun, planAssetUpload } from './ship-github-release.mjs';
 import { resolveArmTicket } from './ticket-arm-guard.mjs';
 import { ticketForge, ticketToken, releaseForgeBase } from './forge-config.mjs';
 // 🔴 推 main 的人閘，長在真的在推的那一行身上（InkStoneCo#56）。
@@ -138,6 +138,8 @@ import { checkSourceNotOlder } from './source-regression-gate.mjs';
 import { checkStageQueue } from './stage-queue-gate.mjs';
 import { frontDoorStation } from './front-door.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
+import { syncBundleClone } from './bundle-sync.mjs';
+import { readAhubStage, checkSameVersion } from './same-version-gate.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { runVisaGate, checkTwoPart } from './visa-gate.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
@@ -1463,6 +1465,10 @@ const STEPS = [
         `       應為   ${normRemote(T.bundles.remote)}   ← installer/ship.targets.json`);
     }
     lines.push(`bundle repo：${ctx.bundlesDir} → ${normRemote(origin)} ✓`);
+    // inkstone/arcrun-rag#363 第 2 處：先把本機 clone 追到遠端（只 fast-forward）。
+    //   1.4.247：prod 的 clone 落後 GitHub 36 筆，到 push 站才被 non-fast-forward 擋下。
+    const bs = syncBundleClone({ dir: ctx.bundlesDir, branch: T.bundles.branch });
+    lines.push(bs.message);
   } else {
     lines.push(`bundle repo：${ctx.bundlesDir}（本機 selftest，不推遠端）`);
   }
@@ -1984,6 +1990,17 @@ const STEPS = [
   if (ctx.signedEntry) {
     const chk = checkSignedBuild({ version: ctx.signedEntry.version, entry: ctx.signedEntry, builtRelease: release, builtFingerprint });
     if (!chk.ok) throw new Error(chk.message);
+  }
+  // inkstone/arcrun-rag#363 第 3 處：同一個版號不能換成另一包——**在任何部署／推送／寫 AHub 之前**查，
+  //   不等最後落帳（那時 stage 已換版、AHub 現況已寫）。簽好的舊版（ctx.signedEntry）本來就由紀錄決定，不重查。
+  if (shared && !ctx.signedEntry) {
+    const forgeSv = ticketForge();
+    const ahubStage = (T.stageQueue && forgeSv.kind === 'ahub')
+      ? await readAhubStage({ fetchImpl: forgeSv.fetchImpl, token: ticketToken('ahub') })
+      : { known: false, reason: '本目標不寫 AHub stage 現況' };
+    const sv = checkSameVersion({ ledger: readLedger(REPO_ROOT), release, fingerprint: builtFingerprint, commit: ctx.arcrunHeadSha, ahubStage });
+    if (!sv.ok) throw new Error(sv.message);
+    console.log(`   ${sv.message}`);
   }
   const problems = verifyManifest(ctx.bundlesDir, { repoRoot: REPO_ROOT });
   if (problems.length) throw new Error('manifest 機械閘不過：\n' + problems.map((p) => `       • ${p}`).join('\n'));
@@ -3237,7 +3254,14 @@ const STEPS = [
   const made = [];
   for (const t of todo) {
     if (t.existing) { made.push(`⏭ ${t.line.product} ${t.line.tag} 已存在${t.existing.viaGit ? '（git 讀到 tag；release 頁未經 API 確認）' : ''}：${t.existing.html_url}`); continue; }
-    const body = bodyWithMapping(t.line, t.changelogBody, t.assets, await ghListBodies(t.slug), homeOf.get(t.slug));
+    let body = bodyWithMapping(t.line, t.changelogBody, t.assets, await ghListBodies(t.slug), homeOf.get(t.slug));
+    // inkstone/arcrun-rag#363 第 1 處：via arcrun 時，工作流掛不上的二進位（dmg／exe／msix）不上傳、改在內文列
+    //   bundle repo 的下載網址——不再每次 prod 都停在第 23 站、等人手動 `gh release upload`。
+    //   直接打 GitHub（地端）的路徑照舊全掛。
+    const plan = G.via === 'arcrun'
+      ? planAssetUpload({ assets: t.assets, bundleSlug: githubSlugOf(T.bundles.remote), sha: ctx.headSha, read: (a) => readFileSync(a.abs) })
+      : { attach: t.assets, listed: [], section: '' };
+    body += plan.section;
     // #298：`releaseRecord.via: 'arcrun'` ＝ release 寫入走容器外的 Arcrun 工作流（雲端出口代理擋 POST releases），
     //   進場條件是 leo 對這一版的 ARM 證據；沒宣告 via 的環境（地端）照舊直接打 GitHub。
     const viaArcrun = G.via === 'arcrun';
@@ -3257,7 +3281,7 @@ const STEPS = [
     // 把這一版的成品掛上去（理由與 gitea 那半一字不差：不留「點下去給錯東西」的版本頁）。
     // D20：這是寫入 GitHub ⇒ 與建 release 同一次保險（上面 checkArmed 已過）、同樣逐筆留痕。
     const uploadedNames = [];
-    for (const a of t.assets) {
+    for (const a of plan.attach) {
       if (viaArcrun) {
         await uploadAssetViaArcrun({
           runWorkflow, repoSlug: t.slug, releaseId: rel.id, name: a.name, data: readFileSync(a.abs),
@@ -3282,13 +3306,14 @@ const STEPS = [
       onPage = uploadedNames.map((name) => ({ name }));
       assetsNote = `（⚠️ 雲端代理擋 API 匿名讀：${e.message}；附件名取自 Arcrun 工作流回傳，未經 GitHub 回查）`;
     }
-    const missing = t.assets.filter((a) => !onPage.some((p) => p.name === a.name));
+    const missing = plan.attach.filter((a) => !onPage.some((p) => p.name === a.name));
     if (missing.length) {
       throw new Error(
         `${t.line.title} 的 release 建好了，但成品沒掛上去：${missing.map((m) => m.name).join('、')}\n` +
         `     頁面已存在於 ${rel.html_url} ⇒ 請確認後補掛或刪除該筆，不要留一個點下去只有原始碼快照的版本頁。`);
     }
-    made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）${assetsNote}`);
+    made.push(`release｜${t.line.title} → ${t.slug}：${rel.html_url}（成品 ${onPage.length} 個：${onPage.map((p) => p.name).join('、')}）${assetsNote}`
+      + (plan.listed.length ? `｜內文列下載網址（不掛附件）：${plan.listed.map((a) => a.name).join('、')}` : ''));
   }
 
   return { status: 'done', detail: [...internalDetail, ...made, `鏡像 HEAD：${mirrorSha.slice(0, 7)}（${align.note}）`] };

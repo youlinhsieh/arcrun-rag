@@ -89,3 +89,42 @@ export async function uploadAssetViaArcrun({ runWorkflow, repoSlug, releaseId, n
   if (!out.asset || !out.asset.id) throw new Error(`${what}：工作流說成功，卻沒有 asset id（不放行）`);
   return out.asset;
 }
+
+/**
+ * 一個成品能不能經工作流掛上 GitHub release（只收 ≤1.5MB 的 .json／.txt／.md 文字檔）。
+ * 與 uploadAssetViaArcrun 的判準同一份——兩處各寫一次會漂，所以它直接用這支。
+ */
+export function attachableViaWorkflow(name, data) {
+  const ext = (String(name).match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  if (!TEXT_TYPES[ext]) return false;
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  if (buf.length > MAX_TEXT_ASSET_BYTES) return false;
+  return Buffer.from(buf.toString('utf8'), 'utf8').compare(buf) === 0;
+}
+
+/** 二進位成品（dmg／exe／msix）的下載網址：bundle repo 釘在這一版 commit 的 raw 網址（桌面 App 自己更新時讀的也是這條）。 */
+export function rawAssetUrl(bundleSlug, sha, rel) {
+  return `https://raw.githubusercontent.com/${bundleSlug}/${sha}/${String(rel).replace(/^\/+/, '')}`;
+}
+
+/**
+ * prod（via arcrun）掛成品的計畫（inkstone/arcrun-rag#363 第 1 處）：
+ *   · 工作流掛得上的（小文字檔）→ attach，照舊走 uploadAssetViaArcrun
+ *   · 掛不上的（dmg／exe／msix，幾十 MB 的二進位）→ listed：**不上傳、不丟例外**，
+ *     版本頁內文改列 bundle repo 的下載網址（那裡本來就是 prod 安裝檔的家，verify 站逐位元比對的也是它）。
+ * 以前這裡一律硬上傳，遇到二進位就在第 23 站丟例外，每次 prod 都要人手動 `gh release upload`。
+ * @param {{rel:string,name:string,abs?:string}[]} assets
+ * @param {(a:object)=>Buffer} read   讀成品內容（測試注入）
+ * @returns {{attach:object[], listed:object[], section:string}}
+ */
+export function planAssetUpload({ assets, bundleSlug, sha, read }) {
+  const attach = []; const listed = [];
+  for (const a of assets) (attachableViaWorkflow(a.name, read(a)) ? attach : listed).push(a);
+  if (listed.length && (!bundleSlug || !/^[0-9a-f]{40}$/.test(String(sha || '')))) {
+    throw new Error(`${listed.map((a) => a.name).join('、')} 掛不上 release（二進位／太大），要改列下載網址，但缺 bundle repo 或它的 40 碼 commit（slug=${bundleSlug || '(空)'}，sha=${sha || '(空)'}）——不發一個點下去沒東西的版本頁。`);
+  }
+  const section = listed.length
+    ? `\n\n## 下載\n\n安裝檔放在 bundle repo（${bundleSlug}），不掛在這個頁面上（檔案太大，GitHub release 寫入走的工作流只收小文字檔）：\n\n${listed.map((a) => `- ${a.name}：${rawAssetUrl(bundleSlug, sha, a.rel)}`).join('\n')}\n`
+    : '';
+  return { attach, listed, section };
+}

@@ -29,6 +29,7 @@
  *
  * 純函式＋注入 fetch，可在假 fetch 上演練（見 visa-gate.test.mjs）。
  */
+import { askSignoffStatus } from './ticket-arm-guard.mjs';
 
 export const DONE_LABEL = '這版完成';
 export const ALSO_LABEL = '順帶修好';
@@ -143,7 +144,7 @@ export function refuseMessage(body, { version, intent }) {
  * @param {{ section:string|null, version:string, fetchImpl:Function, token:string|null }} p
  * @returns {Promise<{ ok:boolean, intent:string|null, detail:string[], problems:string[] }>}
  */
-export async function runVisaGate({ section, version, fetchImpl, token }) {
+export async function runVisaGate({ section, version, fetchImpl, token, baseUrl = 'http://ahub.invalid' }) {
   const two = checkTwoPart(section);
   const problems = [...two.problems];
   const detail = [];
@@ -153,7 +154,46 @@ export async function runVisaGate({ section, version, fetchImpl, token }) {
     return { ok: false, intent: null, detail, problems };
   }
   const v = await checkVisa({ fetchImpl, token, version, intent: two.intent });
-  if (!v.ok) problems.push(v.message);
-  else detail.push(`AHub 簽證有效：${v.message}`);
+  if (v.ok) {
+    detail.push(`AHub 簽證有效：${v.message}`);
+  } else {
+    const s = NOT_ANSWERED.has(v.reason) ? null : await signoffAsVisa({ fetchImpl, token, baseUrl, version, intent: two.intent });
+    if (s && s.ok) detail.push(s.message);
+    else problems.push(s && s.note ? `${v.message}\n${s.note}` : v.message);
+  }
   return { ok: problems.length === 0, intent: two.intent, detail, problems };
+}
+
+// checkVisa 這幾種 reason＝AHub 根本沒回答（沒權杖／連不上／沒這組工作流／不認權杖／回怪東西）⇒ 不往下問，fail-closed。
+const NOT_ANSWERED = new Set(['no-token', 'unreachable', 'workflow-missing', 'unauthorized', 'unexpected']);
+
+/**
+ * 簽核即簽證（AHub 0.46.0 的規則，inkstone/Arcrun#464）——由海關自己判，不靠 prod 上那台 AHub 的版本。
+ *
+ * 為什麼在這裡：海關問的是 prod 那台 AHub，而 0.46.0 的規則就裝在要出的那一版裡
+ * ⇒ prod 還沒升級時，帶著「簽一次就能出貨」的那版自己永遠出不去（2026-11-18 1.4.249 實撞：
+ *    意圖 inkstone/Arcrun#465 ARM 已簽，舊 AHub 回 no_children）。升級順序不該決定規則，
+ *    所以規則放在閘這一側，資料仍取自 AHub。leo 2026-11-19 親口同意（「改海關」）。
+ *
+ * 判準（比 0.46.0 嚴，不是另開一條路）：
+ *   · 只在 AHub **有回答**、而且說沒有簽證時才問（連不上、沒權杖等照舊退回）
+ *   · 問的是**意圖票本身**的簽核看板、帶**這一個版號**：AHub 回 version.approved（只認租戶設定的簽核人）
+ *     而且 version.version 就是這個版號才算——0.46.0 只看「這個版號有沒有被簽過」，這裡還要求簽在意圖票上
+ *   · 沒簽、簽的是別的版號、看板讀不到 ⇒ 退回
+ *   · prod 放行另由 ticket-arm-guard 驗 ARM，這裡不取代它
+ */
+export async function signoffAsVisa({ fetchImpl, token, baseUrl = 'http://ahub.invalid', version, intent }) {
+  const m = String(intent || '').match(/^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)#(\d+)$/);
+  if (!m) return { ok: false, note: `意圖鍵 ${intent} 不是 owner/repo#N，查不了簽核看板` };
+  let board;
+  try {
+    board = await askSignoffStatus({ owner: m[1], repo: m[2], issue: Number(m[3]), version: String(version), token, baseUrl, fetchImpl });
+  } catch (e) {
+    return { ok: false, note: `也查不到意圖 ${intent} 的簽核看板：${e && e.message ? e.message : e}` };
+  }
+  const v = board && board.version;
+  if (v && v.approved === true && String(v.version) === String(version)) {
+    return { ok: true, message: `簽核即簽證（AHub 0.46.0 規則，inkstone/Arcrun#464）：${v.by} 已在意圖 ${intent} 簽核 ${version}（${v.at}，留言 ${v.comment_id}）` };
+  }
+  return { ok: false, note: `意圖 ${intent} 上也沒有簽核人簽 ${version}（簽核即簽證不成立）` };
 }

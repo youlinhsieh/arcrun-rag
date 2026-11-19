@@ -135,3 +135,55 @@ test('uploadAssetViaArcrun：文字檔走工作流；二進位／大檔／非 UT
   await assert.rejects(() => bad('manifest.json', Buffer.from([0xff, 0xfe, 0x00])), /不能經工作流掛/);
   await assert.rejects(() => bad('manifest.json', Buffer.alloc(1_600_000, 97)), /不能經工作流掛/);
 });
+
+// ── inkstone/arcrun-rag#363 第 1 處：二進位成品不再讓第 23 站停下 ────────────────────
+import { attachableViaWorkflow, planAssetUpload, rawAssetUrl } from './ship-github-release.mjs';
+
+const BUNDLE = 'youlinhsieh/arcrun-rag-bundles';
+const FILES = {
+  'manifest.json': Buffer.from('{"a":1}'),
+  'Arcrun-0.19.1.dmg': Buffer.alloc(2_000_000, 7),
+  'Arcrun-win-0.19.1.exe': Buffer.from([0xff, 0xfe, 0x00, 0x80, 0x4d, 0x5a]),
+};
+const assets = Object.keys(FILES).map((name) => ({ name, rel: name === 'manifest.json' ? name : `daemon/${name}` }));
+const readF = (a) => FILES[a.name];
+
+test('attachableViaWorkflow：小文字檔可，dmg／exe／超大檔／非 UTF-8 不可（與 uploadAssetViaArcrun 同一份判準）', () => {
+  assert.equal(attachableViaWorkflow('manifest.json', FILES['manifest.json']), true);
+  assert.equal(attachableViaWorkflow('Arcrun-0.19.1.dmg', FILES['Arcrun-0.19.1.dmg']), false);
+  assert.equal(attachableViaWorkflow('Arcrun-win-0.19.1.exe', FILES['Arcrun-win-0.19.1.exe']), false);
+  assert.equal(attachableViaWorkflow('big.json', Buffer.alloc(1_500_001, 0x61)), false);
+  assert.equal(attachableViaWorkflow('bin.json', Buffer.from([0xff, 0xfe])), false);
+});
+
+test('planAssetUpload：二進位不上傳、不丟例外，內文列釘在這一版 commit 的 raw 下載網址；小檔照舊掛', () => {
+  const p = planAssetUpload({ assets, bundleSlug: BUNDLE, sha: SHA, read: readF });
+  assert.deepEqual(p.attach.map((a) => a.name), ['manifest.json']);
+  assert.deepEqual(p.listed.map((a) => a.name), ['Arcrun-0.19.1.dmg', 'Arcrun-win-0.19.1.exe']);
+  assert.match(p.section, /## 下載/);
+  assert.ok(p.section.includes(`https://raw.githubusercontent.com/${BUNDLE}/${SHA}/daemon/Arcrun-0.19.1.dmg`));
+  assert.ok(p.section.includes(rawAssetUrl(BUNDLE, SHA, 'daemon/Arcrun-win-0.19.1.exe')));
+  assert.doesNotMatch(p.section, /manifest\.json/);
+});
+
+test('planAssetUpload：全是小檔 ⇒ 全掛、內文不加下載段；缺 sha／repo 而有二進位 ⇒ 擋（不發沒東西的頁）', () => {
+  const small = assets.filter((a) => a.name === 'manifest.json');
+  const p = planAssetUpload({ assets: small, bundleSlug: BUNDLE, sha: SHA, read: readF });
+  assert.equal(p.attach.length, 1); assert.equal(p.listed.length, 0); assert.equal(p.section, '');
+  assert.throws(() => planAssetUpload({ assets, bundleSlug: BUNDLE, sha: 'main', read: readF }), /40 碼 commit/);
+  assert.throws(() => planAssetUpload({ assets, bundleSlug: '', sha: SHA, read: readF }), /缺 bundle repo/);
+});
+
+test('uploadAssetViaArcrun 仍拒收二進位（守住工作流進場條件）——所以出貨線必須先分流，不能硬傳', async () => {
+  await assert.rejects(() => uploadAssetViaArcrun({ runWorkflow: fakeRun({}), repoSlug: 'youlinhsieh/arcrun-rag', releaseId: 1, name: 'Arcrun-0.19.1.dmg', data: FILES['Arcrun-0.19.1.dmg'], shipVersion: '1', arm: ARM }), /不能經工作流掛/);
+});
+
+test('接線：ship.mjs 的 github／arcrun 這一半先 planAssetUpload 再只掛 plan.attach；回查也只查 plan.attach（拿掉就紅）', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ship.mjs'), 'utf8');
+  const half = src.slice(src.indexOf('// ③ 逐條線建 release（target_commitish'));
+  assert.match(half, /planAssetUpload\(\{ assets: t\.assets, bundleSlug: githubSlugOf\(T\.bundles\.remote\), sha: ctx\.headSha/);
+  assert.match(half, /for \(const a of plan\.attach\) \{\s*if \(viaArcrun\)/);
+  assert.match(half, /const missing = plan\.attach\.filter/);
+  assert.match(half, /body \+= plan\.section/);
+  assert.doesNotMatch(half, /for \(const a of t\.assets\) \{\s*if \(viaArcrun\)/, '不能退回「一律硬傳 t.assets」');
+});
