@@ -21,7 +21,14 @@ try {
   const card = page.locator('[data-stall-card]').first();
   check(await card.count() === 1, '首頁看得到停工卡');
   log('卡上的字：', JSON.stringify((await card.innerText()).replace(/\n+/g, ' | ')));
-  check(await page.locator('[data-stallview]').count() >= 1, '卡上有「看內容」按鈕');
+  // 首頁卡要標出是哪個知識庫、不在首頁送出（只帶人跳過去）；送出在該知識庫的頁面上做
+  check(/知識庫：/.test(await card.innerText()), '首頁卡標出屬於哪個知識庫');
+  check(await page.locator('[data-stallview]').count() === 0, '首頁不直接送出（沒有「看內容」）');
+  await page.locator('[data-gostall]').first().click();
+  await page.waitForSelector('[data-stallview], [data-stalldecline]', { timeout: 15000 });
+  await page.screenshot({ path: `${outDir}/1b-account-page.png` });
+  check(/知識庫：/.test(await page.locator('[data-stall-card]').first().innerText()), '帳號頁的卡也標出知識庫');
+  check(await page.locator('[data-stallview]').count() >= 1, '帳號頁上有「看內容」按鈕');
   if (mode === 'report') {
     await page.locator('[data-stallview]').first().click();
     await page.waitForSelector('[data-preview]:not([style*="none"])', { timeout: 15000 });

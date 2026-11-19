@@ -537,7 +537,29 @@ config:
         cur.push(line);
       }
       if (cur.join('').trim()) chunks.push(cur.join('\n').trim());
-      const blocks = chunks.map(function (content, i) {
+      // 🔴 inkstone/Arcrun#291：一個 block＝一個章節，沒有大小上限；錯誤碼總表這種「一個章節幾千列」的卡，
+      //   單一 block 可以大到數百 KB。http_request 零件單次回應上限 64 KB，之後任何一次把它整塊讀回來
+      //   （寫入回敬、改版時列舊 block）都會「回應太大」整張卡失敗。這裡把超過 12,000 字（UTF-8 最壞約 36 KB）的
+      //   章節在換行處切成多個 block（單行本身超過就硬切）。切完才編號，card_blocks／source #N 都用切後的數量。
+      const MAX_BLOCK_CHARS = 12000;
+      const pieces = [];
+      for (const ch of chunks) {
+        if (ch.length <= MAX_BLOCK_CHARS) { pieces.push(ch); continue; }
+        let acc = '';
+        const flush = function () { if (acc.trim()) pieces.push(acc.trim()); acc = ''; };
+        for (const ln of ch.split('\n')) {
+          let line = ln;
+          while (line.length > MAX_BLOCK_CHARS) {
+            flush();
+            pieces.push(line.slice(0, MAX_BLOCK_CHARS));
+            line = line.slice(MAX_BLOCK_CHARS);
+          }
+          if (acc.length + line.length + 1 > MAX_BLOCK_CHARS) flush();
+          acc += (acc ? '\n' : '') + line;
+        }
+        flush();
+      }
+      const blocks = pieces.map(function (content, i) {
         return { content: content, page_name: pageName, source: srcUri + '#' + i, source_path: srcPath,
                  library: lib, machine: machine, machine_label: machineLabel };
       });
@@ -596,7 +618,7 @@ config:
   post_block:
     component: "__HTTP_REQ_URL__"
     method: POST
-    url: "__KBDB_BASE__/entries"
+    url: "__KBDB_BASE__/entries?view=identity"
     headers:
       Content-Type: "application/json"
       Authorization: "Bearer {{credential.kbdb_internal_token}}"

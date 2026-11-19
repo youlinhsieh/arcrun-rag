@@ -196,6 +196,16 @@
    "asks": "是哪一份檔、還有幾份同樣卡住"
   },
   {
+   "id": "card.stall.account",
+   "sel": "[data-stall-card] .acct",
+   "asks": "這張卡是哪個知識庫的（多帳號時送出要在那個帳號頁）"
+  },
+  {
+   "id": "card.stall.gohome",
+   "sel": "[data-stall-card] [data-gostall]",
+   "asks": "首頁不直接送，帶我去那個知識庫處理"
+  },
+  {
    "id": "card.stall.filename",
    "sel": "[data-stall-card] .nm",
    "asks": "卡住那份檔的檔名（不給路徑）"

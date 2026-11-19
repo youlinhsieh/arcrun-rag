@@ -155,8 +155,19 @@ export const ALSO_LABEL = '順帶修好';
 const REF = String.raw`[\w.-]+\/[\w.-]+#\d+`;
 const REF_PAREN_RE = new RegExp(String.raw`\s*[（(]\s*${REF}(?:\s*[、,，]\s*${REF})*\s*[）)]`, 'g');
 const REF_BARE_RE = new RegExp(REF, 'g');
+// inkstone/arcrun-rag#365：括號裡「票號＋說明它的標籤」（例：（inkstone/Arcrun#465；執行票 inkstone/arcrun-rag#362））
+// 拿掉票號後只剩「；執行票」這種殘句——括號裡拿掉票號後若只剩分隔符號與標籤字，整個括號連同前面空白拿掉。
+const REF_LABEL_PAREN_RE = new RegExp(String.raw`\s*[（(][^（）()]*?${REF}[^（）()]*?[）)]`, 'g');
+const LABEL_ONLY_RE = /^[\s、,，;；:：]*(?:(?:執行票|相關票|意圖票|意圖|票|ticket|issue)[\s、,，;；:：]*)*$/i;
+function dropRefLabelParens(s) {
+  return s.replace(REF_LABEL_PAREN_RE, (m) => {
+    const inner = m.replace(/^\s*[（(]/, '').replace(/[）)]\s*$/, '');
+    const rest = inner.replace(REF_BARE_RE, '');
+    return LABEL_ONLY_RE.test(rest) ? '' : m;
+  });
+}
 export function stripTicketRefs(s) {
-  return String(s).replace(REF_PAREN_RE, '').replace(REF_BARE_RE, '')
+  return dropRefLabelParens(String(s)).replace(REF_PAREN_RE, '').replace(REF_BARE_RE, '')
     .replace(/([（(])\s+/g, '$1').replace(/\s+([）)])/g, '$1').replace(/[（(][）)]/g, '')
     .replace(/\s+/g, ' ').trim();
 }

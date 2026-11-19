@@ -76,6 +76,37 @@ export function parseVersionSection(body) {
 }
 
 /**
+ * 把「這版完成」那一段的意圖鍵對齊到簽證的意圖（inkstone/arcrun-rag#365）。
+ *
+ * 為什麼：簽證（簽核）只有一張，掛在零件包那一版的意圖上；小幫手版本說明寫的常是它自己的執行票，
+ * 或另一個意圖。1.4.249 prod 第 23 站因此停下，出貨的人只好手改 CHANGELOG 再 commit。
+ * 判斷（假設，ADR D101）：一趟 prod 只有一個意圖簽證，**以簽證的意圖為準**——寫錯的那個鍵不丟掉，
+ * 改記成「執行票」留在同一個括號裡（與 1.4.249 手改的形狀一致），出貨線不必再停下來要人手改。
+ * 只動出貨當下的內文副本，不回寫 CHANGELOG；沒有「這版完成」段或根本沒帶票鍵時原樣回傳（交給 checkTwoPart 退回）。
+ *
+ * @returns {{ body:string|null, changed:boolean, from:string|null }}
+ */
+export function alignDoneIntent(body, intent) {
+  if (!body || !intent) return { body: body ?? null, changed: false, from: null };
+  const lines = String(body).split('\n');
+  const alsoRe = new RegExp(`^${ALSO_LABEL}`);
+  const doneRe = new RegExp(`^${DONE_LABEL}\\s*[：:]`);
+  for (let i = 0; i < lines.length; i++) {
+    if (!doneRe.test(plainLead(lines[i]))) continue;
+    let end = i + 1;
+    while (end < lines.length && lines[end].trim() && !alsoRe.test(plainLead(lines[end]))) end++;
+    const para = lines.slice(i, end).join('\n');
+    const m = para.match(REF_RE);
+    if (!m) return { body, changed: false, from: null };
+    const old = `${m[1]}#${m[2]}`;
+    if (old === intent) return { body, changed: false, from: null };
+    const next = para.slice(0, m.index) + `${intent}；執行票 ${old}` + para.slice(m.index + m[0].length);
+    return { body: [...lines.slice(0, i), next, ...lines.slice(end)].join('\n'), changed: true, from: old };
+  }
+  return { body, changed: false, from: null };
+}
+
+/**
  * 版本說明是不是固定兩段，且第一段帶得出意圖鍵。
  * @param {string|null} body releaseSectionFor() 的回傳
  * @param {{expectIntent?: string|null}} [opts] 給了就要求第一段的意圖＝它（daemon 那條線對齊簽證意圖用）

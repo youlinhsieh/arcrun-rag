@@ -426,9 +426,19 @@ function cardStalls(stalls, onlyAccount) {
   //   fixed     已修好
   // 鍵可能含任何字元（逗號、引號）：一律用 JSON 陣列放在屬性裡，不用分隔字元拼接再切開
   const parts = [];
+  // #362 c1795074610464817：首頁同時有好幾個帳號時，不能把不同帳號的停工併成一張卡（「2 份」＝兩個帳號各 1 份，
+  // 預覽卻只講一個帳號的「停工份數：1」）。每張卡只屬於一個帳號、標出帳號名；
+  // 「看內容／同意通報」只在那個帳號自己的頁面上做，首頁卡只帶人過去。
+  const cardGroups = [];
   for (const st of ['ask', 'reported', 'fixed']) {
-    const list = all.filter((x) => (x.state || 'ask') === st);
-    if (!list.length) continue;
+    const stList = all.filter((x) => (x.state || 'ask') === st);
+    if (!stList.length) continue;
+    if (onlyAccount) { cardGroups.push([st, stList]); continue; }
+    const byAcc = new Map();
+    for (const x of stList) { if (!byAcc.has(x.account)) byAcc.set(x.account, []); byAcc.get(x.account).push(x); }
+    for (const l of byAcc.values()) cardGroups.push([st, l]);
+  }
+  for (const [st, list] of cardGroups) {
     const total = list.reduce((t, x) => t + x.count, 0);
     const lines = list.slice(0, 3).map((x) => `<div class="d one raw" title="${esc(Array.from(x.label).slice(0, 25).join(''))}">${esc(Array.from(x.label).slice(0, 12).join(''))}${x.count ? ' ' + x.count : ''}</div>`).join('');
     const fps = esc(JSON.stringify(list.map((x) => x.fingerprint)));
@@ -442,12 +452,25 @@ function cardStalls(stalls, onlyAccount) {
       ? `<div class="d one"><span class="nm" title="${esc(names.slice(0, 3).join(' '))}">${esc(Array.from(names[0]).slice(0, 24).join(''))}</span>${total > 1 ? ` 等 ${total} 份` : ''}</div>`
       : lines;
     const close = `<button class="x" data-dismiss="${keys}" title="關閉" aria-label="關閉">×</button>`;
-    if (st === 'ask') {
+    const acctName = list[0].account || '';
+    const acctLine = acctName ? `<div class="d one acct" title="${esc(acctName)}">知識庫：${esc(Array.from(acctName).slice(0, 20).join(''))}</div>` : '';
+    if (st === 'ask' && !onlyAccount) {
+      // 首頁：只告知＋帶人跳到那個帳號頁；不在這裡送（送出要在該帳號頁面上）
+      parts.push(`
+    <div class="card alertcard" role="alert" data-stall-card="1" data-stall-home="1">
+      ${close}
+      <div class="nt" title="到這個知識庫的頁面處理">⚠ ${total} 份進不了知識庫</div>
+      ${fileLines}
+      ${acctLine}
+      <div class="acts"><button class="primary" data-gostall="${accidx}"${accidx < 0 ? ' disabled' : ''}>去處理</button></div>
+    </div>`);
+    } else if (st === 'ask') {
       parts.push(`
     <div class="card alertcard" role="alert" data-stall-card="1">
       ${close}
       <div class="nt" title="不處理 只缺這份 其他照常">⚠ ${total} 份進不了知識庫</div>
       ${fileLines}
+      ${acctLine}
       <div class="d one">小幫手試過 修不好</div>
       <div class="d one">同意後只寄原因 不含文件</div>
       <pre class="stallpreview" data-preview style="display:none"></pre>
@@ -459,7 +482,8 @@ function cardStalls(stalls, onlyAccount) {
     <div class="card alertcard" role="status" data-stall-card="1">
       ${close}
       <div class="nt" title="修好會放進新版 到更新頁看">✓ 已通報 · 處理中</div>
-      ${lines}${ticketLine}
+      ${lines}
+      ${acctLine}${ticketLine}
       <div class="acts"><button data-gopage="update">更新</button></div>
     </div>`);
     } else {
@@ -467,7 +491,8 @@ function cardStalls(stalls, onlyAccount) {
     <div class="card alertcard" role="status" data-stall-card="1">
       ${close}
       <div class="nt">✓ 已修好</div>
-      ${lines}${ticketLine}
+      ${lines}
+      ${acctLine}${ticketLine}
     </div>`);
     }
   }
@@ -1830,6 +1855,10 @@ function wire(root) {
   });
   all('[data-gohome]').forEach((b) => { b.onclick = () => goPage('home'); });
   all('[data-gopage]').forEach((b) => { b.onclick = () => goPage(b.dataset.gopage); });
+  // #362：首頁的停工卡只帶人去——跳到那個知識庫、停在放「看內容／同意通報」那張卡的資料夾頁
+  all('[data-gostall]').forEach((b) => {
+    b.onclick = () => { const i = Number(b.dataset.gostall); if (i < 0) return; libTab[i] = 'folders'; goPage('lib:' + i); };
+  });
   // #330：「看內容」→ 顯示要寄出的完整內容 → 按鈕變「同意通報」→ 才寄。不同意就什麼都不寄。
   all('[data-stallview]').forEach((b) => {
     b.onclick = async () => {

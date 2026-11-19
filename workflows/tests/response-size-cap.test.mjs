@@ -62,6 +62,8 @@ for (const f of files) {
     const url = m[1];
     // 只管「列一堆東西回來」的讀取端點
     if (!LIST_ENDPOINT.test(url)) return;
+    // 寫入端點（POST）不是「列一堆東西」；它的回應大小由 view=identity 管（inkstone/Arcrun#291）
+    if (lines.slice(Math.max(0, i - 3), i).some((l) => /^\s*method:\s*POST\b/.test(l))) return;
     if (SCOPE_PARAMS.some((p) => url.includes(p))) return;
     checked++;
     const lm = url.match(LIMIT_PARAM);

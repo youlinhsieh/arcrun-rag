@@ -619,7 +619,7 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 		if msg := triggerRejectedSentence(string(full), c.credentialDirectoryProbe()); msg != "" {
 			return resp.StatusCode, string(snippet), &triggerFailure{
 				sentence: msg,
-				raw:      fmt.Sprintf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet))),
+				raw:      fmt.Sprintf("HTTP %d：%s%s", resp.StatusCode, failedNodePrefix(string(full)), strings.TrimSpace(string(snippet))),
 			}
 		}
 		return resp.StatusCode, string(snippet), fmt.Errorf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet)))

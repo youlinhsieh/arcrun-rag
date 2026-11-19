@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseVersionSection, checkTwoPart, checkVisa, runVisaGate } from './visa-gate.mjs';
+import { parseVersionSection, checkTwoPart, checkVisa, runVisaGate, alignDoneIntent } from './visa-gate.mjs';
 import { matchAhubRoute } from './forge-config.mjs';
 
 const GOOD = [
@@ -152,4 +152,42 @@ test('AHub 沒回答（不認權杖）⇒ 不改問簽核看板，照舊退回',
   const r = await runVisaGate({ section: SINGLE, version: '1.4.249', token: 't', fetchImpl: f });
   assert.equal(r.ok, false);
   assert.equal(calls.filter((u) => u.includes('/signoffs')).length, 0);
+});
+
+// ── inkstone/arcrun-rag#365：1.4.249 prod 第 23 站「說明掛的意圖 ≠ 簽證意圖」不再停下來要人手改 ──
+// 形狀取自 4e9d83f 手改之前的 collector/CHANGELOG.md（這版完成掛執行票 arcrun-rag#362，簽證在 Arcrun#465）。
+const DAEMON_1_4_249_SHAPE = [
+  '- **這版完成：小幫手修不了檔案時，畫面上真的出現「看內容／同意通報」那張卡（inkstone/arcrun-rag#362）**',
+  '',
+  '- **順帶修好**',
+  '  - 無',
+].join('\n');
+
+test('#365：說明掛別的票 ⇒ checkTwoPart 會退回（這就是 1.4.249 第 23 站的停點）', () => {
+  const c = checkTwoPart(DAEMON_1_4_249_SHAPE, { expectIntent: 'inkstone/Arcrun#465' });
+  assert.equal(c.ok, false);
+  assert.match(c.problems.join('\n'), /不一致/);
+});
+
+test('#365：alignDoneIntent 以簽證意圖為準，原鍵改記執行票，之後 checkTwoPart 通過', () => {
+  const a = alignDoneIntent(DAEMON_1_4_249_SHAPE, 'inkstone/Arcrun#465');
+  assert.equal(a.changed, true);
+  assert.equal(a.from, 'inkstone/arcrun-rag#362');
+  assert.match(a.body, /（inkstone\/Arcrun#465；執行票 inkstone\/arcrun-rag#362）/);
+  assert.equal(checkTwoPart(a.body, { expectIntent: 'inkstone/Arcrun#465' }).ok, true);
+  assert.match(a.body, /順帶修好/);   // 第二段沒被動到
+});
+
+test('#365：已一致／沒簽證意圖／沒有第一段 ⇒ 原樣不動（缺段仍交給 checkTwoPart 退回）', () => {
+  assert.equal(alignDoneIntent(GOOD, 'inkstone/Arcrun#438').changed, false);
+  assert.equal(alignDoneIntent(GOOD, null).changed, false);
+  const no = '- 舊格式一句話。';
+  assert.deepEqual(alignDoneIntent(no, 'inkstone/Arcrun#465'), { body: no, changed: false, from: null });
+  assert.equal(checkTwoPart(no, { expectIntent: 'inkstone/Arcrun#465' }).ok, false);
+});
+
+test('#365：ship.mjs 真的用對齊後的內文發佈（拿掉修法就紅）', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ship.mjs'), 'utf8');
+  assert.match(src, /alignDoneIntent\(body, ctx\.visaIntent/);
+  assert.equal((src.match(/changelogBody: alignedBody/g) || []).length, 2);   // Gitea 內部線與 GitHub 公開線各一處
 });

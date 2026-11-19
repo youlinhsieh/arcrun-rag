@@ -141,7 +141,7 @@ import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, 
 import { syncBundleClone } from './bundle-sync.mjs';
 import { readAhubStage, checkSameVersion } from './same-version-gate.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
-import { runVisaGate, checkTwoPart } from './visa-gate.mjs';
+import { runVisaGate, checkTwoPart, alignDoneIntent } from './visa-gate.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
 import { resolveDaemonDist, daemonDistRelFor } from './daemon-dist.mjs';
 import { dropStaleDaemonKeys } from './daemon-stale-keys.mjs';
@@ -907,13 +907,21 @@ async function recordInternalReleases({ R, manifest }) {
 
 // inkstone/arcrun-rag#348：prod 發新版本發佈時，這一條線的說明也要是兩段、且意圖＝海關查過的那個。
 // 只在 visaGate 目標、且這一趟真的要新建發佈時問（已存在的舊發佈不回頭查）；installer 線是內部線，不在這個約束內。
+// inkstone/arcrun-rag#365：說明掛的意圖與簽證意圖不同時，**以簽證意圖為準**自動對齊（alignDoneIntent），
+// 不再停下來要人手改 CHANGELOG。回傳要拿去發佈的內文（可能已對齊）。
 function assertTwoPartFor(line, body) {
-  if (!T.visaGate || !['bundle', 'daemon'].includes(line.id)) return;
+  if (!T.visaGate || !['bundle', 'daemon'].includes(line.id)) return body;
+  const al = alignDoneIntent(body, ctx.visaIntent || null);
+  if (al.changed) {
+    console.log(`     ⓘ ${line.product} ${line.version} 的說明掛 ${al.from}，簽證意圖是 ${ctx.visaIntent}：發佈內文以簽證意圖為準（原鍵改記為執行票；CHANGELOG 檔不動）`);
+    body = al.body;
+  }
   const c = checkTwoPart(body, { expectIntent: ctx.visaIntent || null });
   if (!c.ok) {
     throw new Error(`${line.product} ${line.version} 的版本說明不合規定（${changelogRelFor(REPO_ROOT, line.version)}）：\n` +
       c.problems.map((p) => `     · ${p}`).join('\n'));
   }
+  return body;
 }
 
 const STEPS = [
@@ -2998,8 +3006,8 @@ const STEPS = [
           `     這不是「先跳過、之後再補」——少了它，封測者點進版本發佈頁看到的是空白。\n` +
           `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
       }
-      assertTwoPartFor(line, changelogBody);
-      todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
+      const alignedBody = assertTwoPartFor(line, changelogBody);
+      todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody: alignedBody });
     }
     if (todo.every((t) => t.existing)) {
       // 🔴 內部那一筆是這一趟**真的建出來的東西** ⇒ 不准把整站印成「跳過／不需要做」。
@@ -3156,8 +3164,8 @@ const STEPS = [
         `     這不是「先跳過、之後再補」——少了這一步，使用者點「完整發佈紀錄」永遠是空白。\n` +
         `     🔴 而「先出貨、之後再補」正是 daemon 斷更四版的走法（#88）。`);
     }
-    assertTwoPartFor(line, changelogBody);
-    todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody });
+    const alignedBody = assertTwoPartFor(line, changelogBody);
+    todo.push({ line, entry, slug, assets: assetsOf(line), changelogBody: alignedBody });
   }
   if (todo.every((t) => t.existing)) {
     return {
