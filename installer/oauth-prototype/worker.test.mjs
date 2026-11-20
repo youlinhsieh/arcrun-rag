@@ -5946,25 +5946,42 @@ test('#291 心跳掛在整輪安裝外層（不是只掛資料表那一步），
   assert.match(m[1], /finally\s*\{\s*stopHeartbeat\(\)/, '跑完（含失敗）要停心跳');
 });
 
-test('inkstone/Arcrun#416 Artifacts namespace 不寫死：env > 帳號實際有的（repo 最多）> manifest 備案', async () => {
+test('inkstone/Arcrun#416／#415／arcrun-rag#367 Artifacts namespace：env > 線上有 repo 的 binding > repo 最多的；查不到不靜默退備案', async () => {
   const leo = [{ namespace: 'Leo', repo_count: 1 }, { namespace: 'InkStoneCo', repo_count: 24 }];
-  assert.equal(pickArtifactsNamespace('default', leo, undefined), 'InkStoneCo');
-  assert.equal(pickArtifactsNamespace('default', [{ namespace: 'default', repo_count: 1 }], undefined), 'default');
-  assert.equal(pickArtifactsNamespace('default', leo, ' Leo '), 'Leo');
-  assert.equal(pickArtifactsNamespace('default', null, undefined), 'default');
+  const P = (...a) => pickArtifactsNamespace(...a);
+  assert.deepEqual(P('default', leo, undefined, null), { namespace: 'InkStoneCo', source: 'account' });
+  assert.equal(P('default', leo, ' Leo ', null).namespace, 'Leo');
+  assert.equal(P('default', [{ namespace: 'default', repo_count: 1 }], undefined, null).namespace, 'default');
+  // 線上綁到帳號裡不存在的 default（leo21c 事故）→ 改綁 InkStoneCo 並說明
+  const fixed = P('default', leo, undefined, 'default');
+  assert.equal(fixed.namespace, 'InkStoneCo'); assert.match(fixed.warning, /不存在/);
+  // 線上 namespace 存在但 0 repo → 不可沿用
+  const empty = P('default', [...leo, { namespace: 'zero', repo_count: 0 }], undefined, 'zero');
+  assert.equal(empty.namespace, 'InkStoneCo'); assert.match(empty.warning, /沒有任何 repo/);
+  // 線上有 repo → 沿用，不亂動
+  assert.deepEqual(P('default', leo, undefined, 'Leo'), { namespace: 'Leo', source: 'live' });
+  // 查不到帳號：沿用線上（未驗證）；連線上都沒有才用備案，兩者都有 warning
+  assert.match(P('default', null, undefined, 'X').warning, /未驗證/);
+  const fb = P('default', null, undefined, null);
+  assert.equal(fb.namespace, 'default'); assert.match(fb.warning, /沒查到.*備案/);
   // 整條路：帳號上的 namespace 是 InkStoneCo → binding 就是 InkStoneCo（wrangler 備案仍是 default，沒有手改）
   const entry = { ...baseEntry, requires: { ...baseEntry.requires, artifacts: { binding: 'ARTIFACTS', namespace: 'default' } } };
   let meta = null;
   installFetch(async (url, init) => {
     const method = (init.method || 'GET').toUpperCase();
     if (method === 'GET' && /\/artifacts\/namespaces$/.test(url)) return cfOk(leo);
+    // 線上現況：binding 綁著帳號裡不存在的 default（leo21c 事故）
+    if (method === 'GET' && /\/settings$/.test(url)) return cfOk({ bindings: [{ type: 'artifacts', name: 'ARTIFACTS', namespace: 'default' }] });
     if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) { meta = JSON.parse(await init.body.get('metadata').text()); return cfOk({}); }
     if (method === 'POST' && url.endsWith('/subdomain')) return cfOk({});
     if (url.startsWith(BASE)) return new Response('export default {}', { status: 200 });
     throw new Error('未預期的 URL：' + url);
   });
   try {
-    await deployBundledWorker({ BUNDLE_BASE: BASE }, 'tok', 'acct-123', entry, baseResources, baseInject);
+    const r = await deployBundledWorker({ BUNDLE_BASE: BASE }, 'tok', 'acct-123', entry, baseResources, baseInject);
     assert.equal(meta.bindings.find((b) => b.type === 'artifacts').namespace, 'InkStoneCo');
+    assert.equal(meta.bindings.find((b) => b.name === 'ARTIFACTS_NAMESPACE').text, 'InkStoneCo');
+    assert.equal(r.artifactsNamespace, 'InkStoneCo');
+    assert.match(r.artifactsWarning, /default.*不存在/);
   } finally { restoreFetch(); }
 });

@@ -53,7 +53,13 @@ const OAUTH_BASE_SCOPES = [
 //   建 token 需要這個 scope。⚠️ 它必須先登記在 OAuth client（uncle6 後台）上，
 //   否則 Cloudflare 授權頁會對**整個**授權請求回 invalid_scope（連帶新裝也斷）。
 export const OAUTH_TOKEN_MINT_SCOPE = 'account-api-tokens.write';
-const OAUTH_SCOPES = [...OAUTH_BASE_SCOPES, OAUTH_TOKEN_MINT_SCOPE].join(' ');
+// inkstone/arcrun-rag#367（Arcrun#415）：安裝／更新要查「這個帳號有哪些 Artifacts namespace、各有幾個 repo」，
+//   才綁得到真的放 repo 的那個。Cloudflare `GET /oauth/scopes` 實查有 `artifacts.read`（唯讀，用戶不加任何金鑰）。
+//   ⚠️ 它必須先登記在 OAuth client（uncle6 後台）上，否則 Cloudflare 對**整個**授權請求回 invalid_scope
+//   ——callback 會退回只要基礎五項（見 handleAuthCallback 的 invalid_scope 分支），此時查不到 namespace，
+//   部署會沿用線上 binding 並在報告明寫「未驗證」，不再靜默退備案。改密碼授權（GRANT_SCOPES）不需要它。
+export const OAUTH_ARTIFACTS_SCOPE = 'artifacts.read';
+const OAUTH_SCOPES = [...OAUTH_BASE_SCOPES, OAUTH_TOKEN_MINT_SCOPE, OAUTH_ARTIFACTS_SCOPE].join(' ');
 // 改密碼授權（#238 grant）只拿來證明「這個帳號擁有那台實例」並寫一次 Secrets，
 // 不需要、也不該多要「建 API token」的權限。
 const GRANT_SCOPES = OAUTH_BASE_SCOPES.join(' ');
@@ -292,8 +298,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@9be05871457fe76744848014ee18f80802aba192';
-const BUNDLE_BUILT = '2026-11-18'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@386ce3a23fe9c68dde2d5d0510f4172f0eeca194';
+const BUNDLE_BUILT = '2026-11-19'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -3085,12 +3091,43 @@ async function resolveWorkerPlacement(token, accountId, scriptName, d1Id) {
   return null;
 }
 
-/** Artifacts binding 的 namespace 怎麼選（inkstone/Arcrun#416）：env > 帳號上 repo 最多的 > manifest 備案。 */
-function pickArtifactsNamespace(declared, accountNamespaces, envNs) {
-  if (envNs && String(envNs).trim()) return String(envNs).trim();
-  const rows = [...(accountNamespaces || [])].sort((a, b) => (b.repo_count || 0) - (a.repo_count || 0));
-  if (rows.length) return rows[0].namespace;
-  return declared || 'default';
+/**
+ * Artifacts binding 的 namespace 怎麼選（inkstone/Arcrun#416、#415；inkstone/arcrun-rag#367）。**純函式**，
+ * 規則與 Arcrun `cli/src/lib/bundle-deploy.ts` 的 pickArtifactsNamespace 一致：
+ *   ① env 明講
+ *   ② 帳號查得到：線上 binding 的 namespace 真的存在且有 repo → 沿用；否則改綁 repo 最多的
+ *   ③ 帳號查不到：沿用線上 binding（未驗證，附 warning）；連線上都沒有才用宣告的備案（附 warning）
+ * 🔴 不准靜默：不是靠「查得到的帳號事實」選出來的，都回 warning，部署報告要印出來。
+ * @returns {{namespace:string, source:'env'|'live'|'account'|'manifest', warning?:string}}
+ */
+function pickArtifactsNamespace(declared, accountNamespaces, envNs, liveNs) {
+  if (envNs && String(envNs).trim()) return { namespace: String(envNs).trim(), source: 'env' };
+  const live = (liveNs || '').trim() || null;
+  if (Array.isArray(accountNamespaces)) {
+    const rows = [...accountNamespaces].sort((a, b) => (b.repo_count || 0) - (a.repo_count || 0));
+    const liveRow = live ? rows.find((r) => r.namespace === live) : undefined;
+    if (live && liveRow && (liveRow.repo_count || 0) > 0) return { namespace: live, source: 'live' };
+    if (rows.length) {
+      const warning = live
+        ? `線上 Artifacts binding 的 namespace「${live}」${liveRow ? '沒有任何 repo' : '在帳號裡不存在'}，改綁帳號裡 repo 最多的「${rows[0].namespace}」`
+        : undefined;
+      return { namespace: rows[0].namespace, source: 'account', ...(warning ? { warning } : {}) };
+    }
+    const ns = live || declared || 'default';
+    return { namespace: ns, source: live ? 'live' : 'manifest', warning: `帳號上沒有任何 Artifacts namespace，仍用「${ns}」——這個 binding 讀不到任何 repo` };
+  }
+  if (live) return { namespace: live, source: 'live', warning: `沒查到帳號有哪些 Artifacts namespace，沿用線上 binding「${live}」（未驗證它真的放著 repo）` };
+  const fb = declared || 'default';
+  return { namespace: fb, source: 'manifest', warning: `沒查到帳號有哪些 Artifacts namespace，線上也沒有 binding，用了備案「${fb}」——不保證那裡有你的 repo；要指定請設 ARCRUN_ARTIFACTS_NAMESPACE` };
+}
+
+/** 讀這顆 worker 線上 Artifacts binding 綁的 namespace。沒有 binding／讀不到＝null（讀不到不擋部署，picker 會附 warning）。 */
+async function readLiveArtifactsNamespace(token, accountId, script) {
+  try {
+    const s = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(script)}/settings`);
+    const hit = ((s && s.bindings) || []).find((b) => b && b.type === 'artifacts');
+    return hit && hit.namespace ? String(hit.namespace) : null;
+  } catch (_) { return null; }
 }
 
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
@@ -3132,19 +3169,26 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   // 帳號沒開 Artifacts 時 CF 可能拒收這個 binding——下面 PUT 會退回不帶它再送一次（引擎照常運作，
   // /artifacts 回 424「這個帳號沒有 Artifacts」），不讓整個安裝為了一個選配能力失敗。
   const artifactsReq = entry.requires?.artifacts || null;
+  let artifactsPick = null;
   if (artifactsReq) {
     // namespace 不寫死：每個實例讀「自己的 repo 住的那一個」。
     //   ① env.ARCRUN_ARTIFACTS_NAMESPACE（明講）② 帳號上實際存在的 namespace（一個就用它；多個取 repo 最多的）
     //   ③ manifest 宣告的（wrangler.toml 的 [[artifacts]]，只是備案）
     let accountNs = null;
-    if (!(env && env.ARCRUN_ARTIFACTS_NAMESPACE)) {
+    let liveNs = null;
+    const envNs = !!(env && env.ARCRUN_ARTIFACTS_NAMESPACE);
+    if (!envNs) {
       try {
         const rows = await cfFetch(token, `/accounts/${accountId}/artifacts/namespaces`);
         if (Array.isArray(rows)) accountNs = rows;
-      } catch (_) { /* 帳號沒開 Artifacts／查不到＝退回備案 */ }
+      } catch (_) { /* 帳號沒開 Artifacts／token 沒 artifacts.read＝查不到：下面 picker 會明寫，不靜默退備案 */ }
+      liveNs = await readLiveArtifactsNamespace(token, accountId, entry.name);
     }
-    const pickedNs = pickArtifactsNamespace(artifactsReq.namespace, accountNs, env && env.ARCRUN_ARTIFACTS_NAMESPACE);
-    bindings.push({ type: 'artifacts', name: artifactsReq.binding || 'ARTIFACTS', namespace: pickedNs });
+    const picked = pickArtifactsNamespace(artifactsReq.namespace, accountNs, env && env.ARCRUN_ARTIFACTS_NAMESPACE, liveNs);
+    artifactsPick = picked;
+    bindings.push({ type: 'artifacts', name: artifactsReq.binding || 'ARTIFACTS', namespace: picked.namespace });
+    // binding 本身不告訴你它綁到哪；寫一個 plain var 讓引擎 /artifacts/status 回報（與 Arcrun 側同名）
+    bindings.push({ type: 'plain_text', name: 'ARTIFACTS_NAMESPACE', text: picked.namespace });
   }
   // t151：還原被 strip 掉的 service binding（見 SERVICE_BINDINGS 那張表的說明）。
   // 病灶＝安裝器一個都沒注入 ⇒ env.KBDB／CYPHER_EXECUTOR／COMPONENT_REGISTRY 全 undefined
@@ -3343,7 +3387,9 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
       + ((e && e.status) ? `（HTTP ${e.status}${e.code == null ? '' : ' code=' + e.code}）` : '');
   }
 
-  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning, carriedVars, artifactsBindingSkipped };
+  return { name: entry.name, url: 'https://' + entry.name + '.' + inject.subdomain + '.workers.dev', usedFallback, routeWarning, carriedVars, artifactsBindingSkipped,
+    artifactsNamespace: artifactsPick ? artifactsPick.namespace : null,
+    artifactsWarning: artifactsPick ? (artifactsPick.warning || null) : null };
 }
 
 /** 佔位代換：整棵 JSON stringify → 逐一 replace → parse（等價 push-demo-workflow.sh sed 段）。 */
@@ -4434,6 +4480,12 @@ async function runInstallSteps(env, sid, progress, force) {
         if (r.routeWarning) {
           if (!Array.isArray(progress.result.routeWarnings)) progress.result.routeWarnings = [];
           progress.result.routeWarnings.push(r.routeWarning);
+        }
+        // inkstone/arcrun-rag#367：Artifacts binding 綁到哪、為什麼——不是查得到的帳號事實就要看得見
+        if (r.artifactsNamespace) progress.result.artifactsNamespace = r.artifactsNamespace;
+        if (r.artifactsWarning) {
+          if (!Array.isArray(progress.result.artifactsWarnings)) progress.result.artifactsWarnings = [];
+          progress.result.artifactsWarnings.push(`${r.name}：${r.artifactsWarning}`);
         }
         if (entry.sha256) deployedShaNow[entry.name] = entry.sha256;
         try {
@@ -6645,6 +6697,15 @@ function installWarnings(result) {
       body: '功能可用，安全性較舊',
       detail: String(r.credentialSeedError),
       audience: 'internal',
+    });
+  }
+  if (Array.isArray(r.artifactsWarnings) && r.artifactsWarnings.length) {
+    // inkstone/arcrun-rag#367：讀程式碼的 Artifacts 綁定不是靠查得到的帳號事實選的（沒查到／改綁）
+    out.push({
+      title: '程式碼庫綁定需要確認',
+      body: '讀程式碼的功能可能暫時用不了，我們來處理，其他功能不受影響',
+      detail: r.artifactsWarnings.join('\n'),
+      audience: 'user',
     });
   }
   if (r.skillsSeedError) {
