@@ -93,8 +93,16 @@ sign_app() {
   while IFS= read -r f; do
     codesign --force --options runtime --timestamp --keychain "$KC" --sign "$IDENTITY" "$f"
   done < <(find "$app/Contents" \( -name '*.dylib' -o -name '*.so' -o -perm -u+x -type f \) ! -path "$app/Contents/MacOS/*" ! -name '*.plist' 2>/dev/null | while read -r p; do file "$p" | grep -q 'Mach-O' && echo "$p"; done)
-  codesign --force --options runtime --timestamp --keychain "$KC" --sign "$IDENTITY" "$app/Contents/MacOS/"* 2>/dev/null || true
-  codesign --force --options runtime --timestamp --keychain "$KC" --sign "$IDENTITY" "$app"
+  # 🔴 主執行檔（含 `--collector` 身分的同一支）要帶 entitlements：wazero 跑 PDFium 要可執行記憶體，
+  #    hardened runtime 沒這個 entitlement 會被 kernel 砍（inkstone/arcrun-rag#353 c6）。不是拿掉 runtime，是補一項。
+  local ent; ent="$(cd "$(dirname "$0")" && pwd)/arcrun-app.entitlements"
+  [ -f "$ent" ] || { echo "❌ 找不到 $ent" >&2; return 1; }
+  for b in "$app/Contents/MacOS/"*; do
+    codesign --force --options runtime --timestamp --entitlements "$ent" --keychain "$KC" --sign "$IDENTITY" "$b"
+  done
+  codesign --force --options runtime --timestamp --entitlements "$ent" --keychain "$KC" --sign "$IDENTITY" "$app"
+  codesign -d --entitlements - "$app" 2>&1 | grep -q allow-unsigned-executable-memory \
+    || { echo "❌ 簽完 entitlement 沒帶上" >&2; return 1; }
   codesign --verify --strict --deep --verbose=2 "$app"
   echo "   ✅ Developer ID 簽章完成：$app"
 }

@@ -1,0 +1,456 @@
+# feedback_probe_daily — 用戶「?」回報收件站的「每日自動測試」（住在 uncle6，程式住在 CF）
+# （inkstone/arcrun-rag#282 c1795187556046542，總監 11-20 23:12 裁定）
+#
+# 為什麼存在：leo 11-20「這個修了這麼久居然還是死的，讓我失去跟用戶連線的唯一管道」。收件站死了沒有任何人知道，
+# 是這一整串事故的根（youlin 清空後金鑰沒了、舊版小幫手送了好幾天都失敗）。
+# 解法不是再掛一個 Claude 排程（解決機的 prompt 不能改、排程本身也會停），而是讓**收件站自己每天測一次自己**：
+#   uncle6 的 Arcrun 排程（首節點 cron 零件，引擎每分鐘比對 cron-idx）→ 這條工作流 → 送一則測試回報進同一個收件站。
+#
+# 流程（每個節點名字就是它做的事）：
+#   daily_cron      每天 UTC 01:10（臺北 09:10）
+#   probe_prep      組一則帶標記的測試回報（事件鍵 probe:<日期>，同一天重跑併成同一張）
+#   send1           in-process 觸發 feedback_report（和小幫手「?」走同一條工作流；不走外部 HTTP，免得撞 CF self-fetch）
+#   judge1→gate1    有票號＝收件站活著 → 去關測試票；沒有 → 看是不是 AHub 的「相近票比對」擋下（見下）
+#   gate_retry→send2→judge2→gate2   🔴 AHub 開票時會拿新票去比對全部票（含已關）。探針票天天長得像，
+#                   第二天起一定被擋（409「重複候選」）。這是**預期會發生的事**，所以帶逐張交代重送一次；
+#                   不處理它，探針第二天就會天天假警報，警報一假就沒人信。
+#   close_prep→close_ticket→close_judge→gate_close   把測試票關掉（關不掉也要叫人：測試票留著開著會被分診）
+#   alert_*         送不到／關不掉：在本票留言＋開一件「要你做的事」（AHub 自動掛 Human、置於票頁最上面「等你處理」）
+#                   ——解決機與總監開場都看得到。重複失敗不堆疊：昨天的探針警報撤回、換成今天的。
+#
+# 🔴 紅線：
+#   · 金鑰只寫名字 `{{credential.ahub_token}}`（D36）。值由 CF 金鑰中心在執行前回填，AI 不碰、不印。
+#   · 本檔是模板，`__X__` 佔位由 `installer/scripts/render-feedback-probe.mjs` 渲染；殘留佔位渲染器直接丟。
+#   · 推進 uncle6 ＝ prod 寫入：先有 AHub 簽核再推（本票 c1795187556046542 第三條）。
+#
+# ⚠ 誠實的洞（寫在這裡，不假裝沒有）：警報走 AHub，需要 `ahub_token`。如果壞的**正是** ahub_token
+#   （金鑰被清掉），收件站壞、警報也發不出去 ⇒ 這次執行會以「失敗」收尾（alert_done 故意丟錯），
+#   但沒有人被叫。補這個洞的是 installer/scripts/feedback-inbox.mjs 的 `probe-status`
+#   （只讀 uncle6 的執行紀錄，不需要任何金鑰）：由「現有每天會跑的流程」呼叫，最近一次失敗／超過 26 小時沒跑就非零退出。
+#
+# ⚠ 引擎相容（uncle6 目前 1.4.64，早於 inkstone/Arcrun#362 的「code 節點回 success:false 走 ON_FAIL」）：
+#   所有 code 節點一律回 success:true、用 `route` 欄位＋if_control 分流，不靠 success:false；
+#   唯一故意丟錯的是 alert_done（走 sandbox 例外 ＝ 零件失敗，新舊引擎都算整次失敗）。
+
+name: feedback_probe_daily
+description: >
+  每天自己送一則測試回報到收件站 inbox-feedback（開得出票＝活著，並把測試票關掉）；
+  送不到或關不掉就在 __ALERT_REPO__#__ALERT_NUMBER__ 留言並開一件「要你做的事」（掛 Human）。
+  收件站的健康檢查，不是用戶功能；不對用戶發任何東西。
+
+flow:
+  - "daily_cron >> ON_SUCCESS >> probe_prep"
+  - "probe_prep >> ON_SUCCESS >> send1"
+  - "send1 >> ON_SUCCESS >> judge1"
+  - "send1 >> ON_FAIL >> judge1"
+  - "judge1 >> ON_SUCCESS >> gate1"
+  - "gate1 >> ON_TRUE >> close_prep"
+  - "gate1 >> ON_FALSE >> gate_retry"
+  - "gate_retry >> ON_TRUE >> send2"
+  - "gate_retry >> ON_FALSE >> alert_prep"
+  - "send2 >> ON_SUCCESS >> judge2"
+  - "send2 >> ON_FAIL >> judge2"
+  - "judge2 >> ON_SUCCESS >> gate2"
+  - "gate2 >> ON_TRUE >> close_prep"
+  - "gate2 >> ON_FALSE >> alert_prep"
+  - "close_prep >> ON_SUCCESS >> close_ticket"
+  - "close_ticket >> ON_SUCCESS >> close_judge"
+  - "close_ticket >> ON_FAIL >> close_judge"
+  - "close_judge >> ON_SUCCESS >> gate_close"
+  - "gate_close >> ON_TRUE >> done"
+  - "gate_close >> ON_FALSE >> alert_prep"
+  - "alert_prep >> ON_SUCCESS >> alert_list"
+  - "alert_list >> ON_SUCCESS >> alert_plan"
+  - "alert_list >> ON_FAIL >> alert_plan"
+  - "alert_plan >> ON_SUCCESS >> alert_comment"
+  - "alert_comment >> ON_SUCCESS >> alert_request"
+  - "alert_comment >> ON_FAIL >> alert_request"
+  - "alert_request >> ON_SUCCESS >> alert_done"
+  - "alert_request >> ON_FAIL >> alert_done"
+
+config:
+  daily_cron:
+    component: cron
+    cron_expr: "__PROBE_CRON__"
+    description: "每天一次：用戶回報收件站自己測自己（inkstone/arcrun-rag#282）"
+
+  # 1) 一則帶標記的測試回報。事件鍵 probe:<日期>：同一天重跑（手動補測）併成同一張，不開一疊。
+  probe_prep:
+    component: code
+    code: |
+      var now = new Date();
+      var day = now.toISOString().slice(0, 10);
+      var tpe = new Date(now.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ');
+      // 租戶（trigger_workflow 要用）：排程觸發有 api_key、手動觸發只有 _tenant（2026-11-20 youlin 演練實撞：「trigger_workflow 缺 api_key」）；
+      // 兩個都沒有才退回渲染時給的 namespace（正式＝inbox-feedback）。
+      var ok = function (v) { return typeof v === 'string' && v !== '' && !/^\s*\{\{[\w.]+\}\}\s*$/.test(v); };
+      var api_key = ok(input.api_key) ? input.api_key : (ok(input.tenant) ? input.tenant : '__INBOX_NS__');
+      return {
+        success: true,
+        day: day,
+        tpe: tpe,
+        repo: '__PROBE_REPO__',
+        api_key: api_key,
+        event_key: 'probe:' + day,
+        text: '【每日探針 ' + day + '】收件站自動測試，請直接關閉，不用處理。'
+      };
+    input:
+      api_key: "{{api_key}}"
+      tenant: "{{_tenant}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 2) 和小幫手「?」同一條路：in-process 觸發 feedback_report（不走外部 HTTP）。
+  send1:
+    component: trigger_workflow
+    workflow_name: "feedback_report"
+    api_key: "{{probe_prep.data.api_key}}"
+    input:
+      text: "{{probe_prep.data.text}}"
+      version: "probe"
+      instance: "probe"
+      os: "probe"
+      reporter: "每日探針（自動）"
+      repo: "{{probe_prep.data.repo}}"
+      event_key: "{{probe_prep.data.event_key}}"
+
+  # 3) 看結果。成功＝找得到票號。失敗＝看是不是「相近票比對」擋下（有候選＝可帶逐張交代重送）。
+  #    sub_ok／sub_err／sub_data 都可能沒有（沒跑到或舊引擎）：每一格都容忍「沒有值」與「字面 {{…}}」。
+  judge1:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var txt = function (v) { v = raw(v); if (v === undefined || v === null) return ''; return typeof v === 'string' ? v : JSON.stringify(v); };
+      var seek = function seek(o, d) {
+        if (!o || typeof o !== 'object' || d > 6) return undefined;
+        if (typeof o.number === 'number') return o;
+        var ks = Object.keys(o);
+        for (var i = 0; i < ks.length; i++) { if (ks[i] === 'trace') continue; var r = seek(o[ks[i]], d + 1); if (r) return r; }
+        return undefined;
+      };
+      var subOk = raw(input.sub_ok) !== false;
+      var hit = subOk ? seek(raw(input.sub_data), 0) : undefined;
+      if (hit) return { success: true, route: 'ok', number: hit.number, merged: hit.merged === true };
+      var trace = txt(input.trace);
+      var err = txt(input.sub_err);
+      var m2 = /開票失敗：([^"\\]*)/.exec(trace);
+      if (!err) err = m2 ? '開票失敗：' + m2[1] : (subOk ? '收件工作流跑完了，但沒有回票號' : '收件工作流沒跑成（沒有說明）');
+      var m = /重複候選=([^"\\]*)/.exec(err) || /重複候選=([^"\\]*)/.exec(trace);
+      var refs = (m ? m[1].match(/[^\s=,]+\/[^\s=,#]+#\d+/g) : null) || [];
+      if (refs.length && !raw(input.last)) {
+        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針的測試票，與前幾天的探針票內容相近但不是同一件事' }; }) };
+      }
+      return { success: true, route: 'fail', error: err.slice(0, 500) };
+    input:
+      sub_ok: "{{send1.success}}"
+      sub_err: "{{send1.sub_result.error}}"
+      sub_data: "{{send1.sub_result.data}}"
+      trace: "{{send1.sub_result.trace}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  gate1:
+    component: if_control
+    condition: "route == ok"
+    input:
+      route: "{{judge1.data.route}}"
+
+  gate_retry:
+    component: if_control
+    condition: "route == retry"
+    input:
+      route: "{{judge1.data.route}}"
+
+  # 4) 被「相近票比對」擋下 ⇒ 帶逐張交代重送一次（事件鍵不變）。
+  send2:
+    component: trigger_workflow
+    workflow_name: "feedback_report"
+    api_key: "{{probe_prep.data.api_key}}"
+    input:
+      text: "{{probe_prep.data.text}}"
+      version: "probe"
+      instance: "probe"
+      os: "probe"
+      reporter: "每日探針（自動）"
+      repo: "{{probe_prep.data.repo}}"
+      event_key: "{{probe_prep.data.event_key}}"
+      compared: "{{judge1.data.compared}}"
+
+  judge2:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var txt = function (v) { v = raw(v); if (v === undefined || v === null) return ''; return typeof v === 'string' ? v : JSON.stringify(v); };
+      var seek = function seek(o, d) {
+        if (!o || typeof o !== 'object' || d > 6) return undefined;
+        if (typeof o.number === 'number') return o;
+        var ks = Object.keys(o);
+        for (var i = 0; i < ks.length; i++) { if (ks[i] === 'trace') continue; var r = seek(o[ks[i]], d + 1); if (r) return r; }
+        return undefined;
+      };
+      var subOk = raw(input.sub_ok) !== false;
+      var hit = subOk ? seek(raw(input.sub_data), 0) : undefined;
+      if (hit) return { success: true, route: 'ok', number: hit.number, merged: hit.merged === true };
+      var trace = txt(input.trace);
+      var err = txt(input.sub_err);
+      var m2 = /開票失敗：([^"\\]*)/.exec(trace);
+      if (!err) err = m2 ? '開票失敗：' + m2[1] : (subOk ? '收件工作流跑完了，但沒有回票號' : '收件工作流沒跑成（沒有說明）');
+      var m = /重複候選=([^"\\]*)/.exec(err) || /重複候選=([^"\\]*)/.exec(trace);
+      var refs = (m ? m[1].match(/[^\s=,]+\/[^\s=,#]+#\d+/g) : null) || [];
+      if (refs.length && !raw(input.last)) {
+        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針的測試票，與前幾天的探針票內容相近但不是同一件事' }; }) };
+      }
+      return { success: true, route: 'fail', error: err.slice(0, 500) };
+    input:
+      sub_ok: "{{send2.success}}"
+      sub_err: "{{send2.sub_result.error}}"
+      sub_data: "{{send2.sub_result.data}}"
+      trace: "{{send2.sub_result.trace}}"
+      last: true
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  gate2:
+    component: if_control
+    condition: "route == ok"
+    input:
+      route: "{{judge2.data.route}}"
+
+  # 5) 關測試票（AHub issue_patch；信封同 feedback_report 的開票節點，成敗只看內層 status）。
+  close_prep:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var num = raw(input.n1) !== undefined ? raw(input.n1) : raw(input.n2);
+      var repo = String(raw(input.repo) || '__PROBE_REPO__').trim();
+      var parts = repo.split('/');
+      return {
+        success: true,
+        number: num,
+        path: '/repos/' + repo + '/issues/' + num,
+        params: { owner: parts[0], repo: parts[1], index: String(num) }
+      };
+    input:
+      n1: "{{judge1.data.number}}"
+      n2: "{{judge2.data.number}}"
+      repo: "{{probe_prep.data.repo}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  close_ticket:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__issue_patch/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "PATCH"
+      path: "{{close_prep.data.path}}"
+      query: {}
+      body:
+        state: "closed"
+      token: "{{credential.ahub_token}}"
+      params: "{{close_prep.data.params}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  close_judge:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var env = raw(input.issue_raw);
+      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+      var inner = env && typeof env === 'object' ? env.data : null;
+      if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+      if (!inner || typeof inner !== 'object' || typeof inner.status !== 'number') {
+        var why = raw(input.http_err);
+        return { success: true, route: 'fail', error: '關測試票失敗：' + (why ? String(why).slice(0, 300) : 'AHub 沒有回 {status, body}') };
+      }
+      if (inner.status !== 200) {
+        var msg = inner.body && inner.body.message ? String(inner.body.message) : '沒有說明';
+        return { success: true, route: 'fail', error: '關測試票失敗：HTTP ' + inner.status + ' ' + msg.slice(0, 300) };
+      }
+      return { success: true, route: 'ok' };
+    input:
+      issue_raw: "{{close_ticket.data.body}}"
+      http_err: "{{close_ticket.error}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  gate_close:
+    component: if_control
+    condition: "route == ok"
+    input:
+      route: "{{close_judge.data.route}}"
+
+  done:
+    component: code
+    code: |
+      return { success: true, probe: 'ok', number: input.number, closed: true, at: new Date().toISOString() };
+    input:
+      number: "{{close_prep.data.number}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 6) 警報。算出「壞在哪、要誰做什麼」，白話寫進票。
+  alert_prep:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var s = function (v) { v = raw(v); return v === undefined || v === null ? '' : String(v); };
+      var day = s(input.day) || new Date().toISOString().slice(0, 10), tpe = s(input.tpe);
+      var closeFail = s(input.c_route) && s(input.c_route) !== 'ok';
+      var err = closeFail ? s(input.c_err) : (s(input.j2_err) || s(input.j1_err) || '（沒有說明）');
+      var what, fix, title;
+      if (closeFail) {
+        title = '每日探針：收件站收得到，但測試票關不掉（' + day + '）';
+        what = '收件站本身是通的（測試回報開得出票，票號 ' + s(input.n) + '），但探針關不掉那張測試票。';
+        fix = '請總監確認該票是否還開著並關掉；查 AHub issue_patch 為什麼失敗（見下方原文）。收件站不受影響，用戶「?」仍可用。';
+      } else {
+        title = '每日探針失敗：用戶「?」回報收件站收不了（' + day + '）';
+        what = '探針照小幫手「?」同一條路送了一則測試回報，**沒有開出票**——學員現在按「?」送的意見會失敗，而且沒有留底。';
+        fix = '請總監照原文判斷：';
+        if (/credential|ahub_token|金鑰/.test(err)) fix += '金鑰 ahub_token 不在 uncle6 的 inbox-feedback（金鑰被清或沒種）。重種：`node installer/scripts/feedback-inbox.mjs seed-token`（需 AHub 簽核；值不印不落檔）。';
+        else if (/找不到 workflow|404/.test(err)) fix += '收件工作流 feedback_report 不在 uncle6 inbox-feedback。重推：`node installer/scripts/feedback-inbox.mjs deploy`（prod 寫入，需 AHub 簽核）。';
+        else if (/401|403/.test(err)) fix += 'AHub 不認 ahub_token（被停用或雜湊對不上）。重種：`seed-token`（需 AHub 簽核）。';
+        else if (/重複候選/.test(err)) fix += 'AHub 的相近票比對連帶逐張交代重送都擋下。看被擋的候選票，必要時手動關掉舊探針票。';
+        else fix += '原因不在上面幾種常見的，先看 uncle6 inbox-feedback 的 feedback_report 執行紀錄。';
+      }
+      var commentBody = '【每日探針】' + (tpe ? tpe + '（臺北）' : day) + '\n\n' + what + '\n\n**原文**：' + err.slice(0, 400) + '\n\n**要做什麼**：' + fix + '\n\n（本則由 uncle6 排程工作流 feedback_probe_daily 自動留言；修好後手動觸發它一次確認，明天起照常每日測。）';
+      return {
+        success: true,
+        title: title.slice(0, 120),
+        comment: commentBody,
+        detail: what + '\n\n原文：' + err.slice(0, 400) + '\n\n' + fix,
+        path: '/repos/__ALERT_REPO__/issues/__ALERT_NUMBER__',
+        params: { owner: '__ALERT_REPO__'.split('/')[0], repo: '__ALERT_REPO__'.split('/')[1], index: '__ALERT_NUMBER__' }
+      };
+    input:
+      day: "{{probe_prep.data.day}}"
+      tpe: "{{probe_prep.data.tpe}}"
+      j1_err: "{{judge1.data.error}}"
+      j2_err: "{{judge2.data.error}}"
+      c_route: "{{close_judge.data.route}}"
+      c_err: "{{close_judge.data.error}}"
+      n: "{{close_prep.data.number}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  # 6a) 讀警報票最近的留言：昨天的探針警報撤回、其餘開著的要求逐張保留（AHub 開新單時要逐張交代，沒交代就 422）。
+  alert_list:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__comment_list/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "GET"
+      path: "{{alert_prep.data.path}}/comments"
+      query:
+        tail: "1"
+        limit: "100"
+      token: "{{credential.ahub_token}}"
+      params: "{{alert_prep.data.params}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  alert_plan:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var env = raw(input.list_raw);
+      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+      var inner = env && typeof env === 'object' ? env.data : null;
+      if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+      var rows = inner && inner.status === 200 && Array.isArray(inner.body) ? inner.body : [];
+      var keep = [], withdraw = [];
+      rows.forEach(function (c) {
+        var b = c && typeof c.body === 'string' ? c.body : '';
+        if (!/^\s*【(要求|簽核請求)/.test(b)) return;
+        var id = String(c.id == null ? '' : c.id);
+        if (!/^\d+$/.test(id)) return;
+        if (b.indexOf('每日探針') >= 0) withdraw.push(id); else keep.push(id);
+      });
+      return { success: true, keep: keep, withdraw: withdraw, listed: rows.length };
+    input:
+      list_raw: "{{alert_list.data.body}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  alert_comment:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__comment_create/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{alert_prep.data.path}}/comments"
+      query: {}
+      body:
+        body: "{{alert_prep.data.comment}}"
+      token: "{{credential.ahub_token}}"
+      params: "{{alert_prep.data.params}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  # 6b) 開一件「要你做的事」：AHub 在伺服器端替票掛 Human、指派簽核人（處理完自動收回）。
+  #     reopen:true — 警報票若已關閉（例：#282 結案後），先重開再掛；壞掉的收件站不能因為票關了就沒人知道。
+  alert_request:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__action_request/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{alert_prep.data.path}}/requests"
+      query: {}
+      body:
+        kind: "do"
+        title: "{{alert_prep.data.title}}"
+        detail: "{{alert_prep.data.detail}}"
+        withdraw: "{{alert_plan.data.withdraw}}"
+        keep: "{{alert_plan.data.keep}}"
+        reopen: true
+      token: "{{credential.ahub_token}}"
+      params: "{{alert_prep.data.params}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  # 6c) 收尾：留言與要求兩件都要 201。任何一件沒成 ⇒ **故意丟錯**讓這次執行以失敗收尾
+  #     （警報發不出去不能無聲：失敗的執行紀錄是 probe-status 的訊號）。
+  alert_done:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var statusOf = function (v, httpErr) {
+        var env = raw(v);
+        if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+        var inner = env && typeof env === 'object' ? env.data : null;
+        if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+        if (!inner || typeof inner.status !== 'number') return { status: 0, message: String(raw(httpErr) || 'AHub 沒有回 {status, body}').slice(0, 200) };
+        return { status: inner.status, message: inner.body && inner.body.message ? String(inner.body.message).slice(0, 200) : '', body: inner.body };
+      };
+      var c = statusOf(input.comment_raw, input.comment_err), r = statusOf(input.request_raw, input.request_err);
+      if (c.status !== 201 || r.status !== 201) {
+        throw new Error('每日探針發不出警報：留言 ' + c.status + ' ' + c.message + '；要求 ' + r.status + ' ' + r.message + '（收件站本身的問題：' + String(raw(input.what) || '') + '）');
+      }
+      return { success: true, probe: 'alerted', comment_status: c.status, request_status: r.status, request_id: r.body && r.body.request_id, human_hold: r.body && r.body.human_hold, withdrawn: r.body && r.body.older && r.body.older.withdrawn, kept: r.body && r.body.older && r.body.older.kept };
+    input:
+      comment_raw: "{{alert_comment.data.body}}"
+      comment_err: "{{alert_comment.error}}"
+      request_raw: "{{alert_request.data.body}}"
+      request_err: "{{alert_request.error}}"
+      what: "{{alert_prep.data.title}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536

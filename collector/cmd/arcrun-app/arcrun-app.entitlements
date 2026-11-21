@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- wazero（PDFium 的 WASM runtime）把 wasm 編成機器碼：先 mmap 匿名 RW 記憶體，再 mprotect 成 RX
+	     （wazero v1.12.0 internal/platform/mmap_other.go＋mmap_unix.go，沒用 MAP_JIT）。
+	     hardened runtime 下要這一個 entitlement，否則 kernel 以 Code Signature Invalid 砍掉（inkstone/arcrun-rag#353 c6）。
+	     不用 allow-jit：那只對 MAP_JIT 配置有效，wazero 不走那條路。 -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

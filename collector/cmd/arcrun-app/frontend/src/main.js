@@ -1895,7 +1895,7 @@ function wire(root) {
         b.disabled = false;
         b.textContent = '重試';
         // 真的失敗只留一行 `⚠ 沒送出`＋「重試」，原因點開才看
-        if (msg) msg.innerHTML = `<details class="more"><summary>⚠ 沒送出</summary><div class="d one raw">${esc(Array.from(t).slice(0, 20).join(''))}</div></details>`;
+        if (msg) msg.innerHTML = `<div class="d one">⚠ ${esc(Array.from(t).slice(0, 120).join(''))}</div>`;
       }
     };
   });

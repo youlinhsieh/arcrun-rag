@@ -125,7 +125,7 @@ func TestSubmitFeedback_NeverTouchesUsersOwnInstance_NoNamespaceLeak(t *testing.
 
 func TestFeedbackInboxURL_DefaultIsOurCentralService(t *testing.T) {
 	t.Setenv("ARCRUN_FEEDBACK_INBOX", "")
-	want := "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev/webhooks/named/inbox-feedback/feedback_report/trigger"
+	want := "https://arcrun-cypher-executor.uncle6-me.workers.dev/webhooks/named/inbox-feedback/feedback_report/trigger"
 	if got := feedbackInboxURL(); got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}

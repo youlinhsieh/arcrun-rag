@@ -241,13 +241,27 @@ func (a *App) StallPreview(fingerprint string) (string, error) {
 		return "", fmt.Errorf("這個問題現在已經不在了（可能已經自己好了），不用通報")
 	}
 	text := stallReportText(*hit)
-	diag := a.buildDiagnosticsPayload()
-	dj, _ := json.MarshalIndent(diag, "", "  ")
-	shown := text + "\n\n── 診斷資料（只有統計數字，不含文件內容）──\n" + string(dj)
+	diag := a.buildDiagnosticsPayloadFor(hit.Host) // 只取出事的那個帳號（#362）
+	shown := text + "\n\n" + stallDiagSummary(hit.AccountName, diag)
 	pendingMu.Lock()
 	pendingReports[fingerprint] = &pendingReport{g: *hit, text: text, diag: diag, shown: shown, shownA: time.Now()}
 	pendingMu.Unlock()
 	return shown, nil
+}
+
+// stallDiagSummary：白話講「同意後一併寄出的診斷資料」有哪些類別，不把原始 JSON 攤給用戶（#362）。
+// 對應 diag 的實際欄位（local＋這一個帳號的 cloud）；只講類別，不含文件內容、不含別的帳號。
+func stallDiagSummary(account string, diag exportedDiagnostics) string {
+	var b strings.Builder
+	b.WriteString("一併寄出的診斷資料（只有狀態與統計數字，不含文件內容）：\n")
+	b.WriteString("- 小幫手版本、這台電腦的同步引擎是否在跑、失敗原因的分類份數\n")
+	if len(diag.Accounts) > 0 && diag.Accounts[0].Cloud != nil {
+		fmt.Fprintf(&b, "- 「%s」這個知識庫在雲端的統計（例如庫數、資料筆數）\n", account)
+	} else {
+		fmt.Fprintf(&b, "- 「%s」這個知識庫這次讀不到雲端統計，會照實註明\n", account)
+	}
+	b.WriteString("- 不會附上其他知識庫的任何資料")
+	return b.String()
 }
 
 // ReportStall 是前端「同意通報」按鈕的唯一入口。
@@ -267,7 +281,8 @@ func (a *App) ReportStall(fingerprint string) error {
 	}
 	ref, err := a.submitFeedbackRef(p.text, true, p.diag, hit.Host, buildEventKey(hit.Host, "stall", "all", hit.Key))
 	if err != nil {
-		return err // 沒送出去就不標已通報，用戶可再按
+		// 沒送出去就不標已通報，用戶可再按；原因用白話講，不只丟一句「沒送出」
+		return fmt.Errorf("回報站暫時收不到，這一份還沒送出、也沒有記成已通報，你可以稍後再按一次「重試」。（%v）", err)
 	}
 	if err := markStallReported(fingerprint, hit.Count); err != nil {
 		appLog("記錄已回報失敗：%v", err)

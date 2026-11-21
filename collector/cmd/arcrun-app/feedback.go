@@ -10,7 +10,7 @@ package main
 // 舊版 POST 到用戶自己雲端的 feedback_report 工作流——那條工作流要用我們的 gitea_token，
 // 而用戶不會有、也不該有我們的金鑰；而且那條工作流從沒被裝進任何實例（三台實測 404，
 // 一張票都沒開出）。leo 規格：「用戶就是免設定發給我們訊息，直接塞進票即可」。
-// ⇒ 現在小幫手把回報直接 POST 到**我們自己的收件端**（youlin 上的 feedback_report，
+// ⇒ 現在小幫手把回報直接 POST 到**我們自己的收件端**（uncle6 上的 feedback_report，
 // namespace 走 URL path＝Arcrun 的公開表單形態），開票用的金鑰只住在那台，
 // `{{credential.gitea_token}}` 由那邊回填。用戶實例完全不參與：不讀、不寫、不需任何金鑰，
 // 連「還沒連上任何知識庫」的人也送得出去。
@@ -59,13 +59,15 @@ type feedbackCompared struct {
 
 var feedbackHTTP = &http.Client{Timeout: 30 * time.Second}
 
-// 我們自己的收件端：youlin（stage，leo 2026-10-09 裁決 B，#235 c18468）上，
-// 專屬 namespace 底下的 feedback_report。namespace 走 URL path ＝ 公開表單形態
+// 我們自己的收件端：**uncle6（核心帳號）**上，專屬 namespace 底下的 feedback_report
+// （inkstone/arcrun-rag#282，leo 2026-10-20／11-20：「官方內容都放 uncle6」「youlin 不可以放任何正式內容，
+// 因為 stage 隨時會清掉」）。⚠ 2026-10-09 裁決 B 曾放 youlin，youlin 一清空收件端就斷、用戶回報石沉大海
+// （2026-11-20 實測 `缺少 credential: ahub_token`）——別再放回去。namespace 走 URL path ＝ 公開表單形態
 // （webhooks-named.ts `/webhooks/named/:ns/:name/trigger`，設計給公開表單用）。
 // 這個 namespace 底下**只放這一條工作流與 gitea_token 一把金鑰**，不是任何用戶的租戶。
 // 測試／換環境走環境變數 ARCRUN_FEEDBACK_INBOX（完整 trigger 網址），不改程式碼。
 const (
-	feedbackInboxBase  = "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev"
+	feedbackInboxBase  = "https://arcrun-cypher-executor.uncle6-me.workers.dev"
 	feedbackInboxNS    = "inbox-feedback"
 	feedbackMaxPerHour = 5
 )

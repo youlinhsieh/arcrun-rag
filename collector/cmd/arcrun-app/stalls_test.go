@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -239,3 +240,47 @@ func TestStalls_ReportedShowsTicketThenFixedWhenProblemGone(t *testing.T) {
 }
 
 func r0host(u string) string { return strings.TrimPrefix(u, "http://") }
+
+// #362：停工卡只准帶出事的那個帳號；畫面上不出現原始 JSON、別的帳號名或網址。
+func TestStalls_PreviewOnlyStalledAccountNoJSON(t *testing.T) {
+	tempHome(t)
+	f := &feedbackFakeServer{respBody: `{"success":true,"data":{"success":true}}`}
+	srv := newFeedbackFakeServer(f)
+	defer srv.Close()
+	t.Setenv("ARCRUN_FEEDBACK_INBOX", srv.URL+"/webhooks/named/inbox-feedback/feedback_report/trigger")
+	setupStalledAccount(t, srv.URL, 2, "雲端沒有把這一份寫進你的知識庫，稍後會自動再試。")
+	cfg, _ := loadCfg()
+	cfg.Accounts = append(cfg.Accounts, accountCfg{Namespace: "ns-other", InstanceName: "leo21c-other", CypherURL: "https://other.example.workers.dev", APIKey: "k"})
+	cb, _ := json.MarshalIndent(map[string]any{"manifest": cfg.Manifest, "accounts": cfg.Accounts}, "", "  ")
+	if err := os.WriteFile(configPath(), cb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := fetchCloudDiagnosticsFn
+	defer func() { fetchCloudDiagnosticsFn = old }()
+	fetchCloudDiagnosticsFn = func(u, k string) (map[string]any, error) {
+		return map[string]any{"instance_url": u, "library_count": 20}, nil
+	}
+	cfg, _ = loadCfg()
+	s := uiStalls(cfg)
+	if len(s) != 1 {
+		t.Fatalf("%+v", s)
+	}
+	a := &App{}
+	shown, err := a.StallPreview(s[0].Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"{", "instance_url", "library_count", "leo21c-other", "other.example"} {
+		if strings.Contains(shown, bad) {
+			t.Errorf("預覽不該出現「%s」：\n%s", bad, shown)
+		}
+	}
+	if err := a.ReportStall(s[0].Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(f.gotBody["diagnostics"])
+	if strings.Contains(string(raw), "leo21c-other") || strings.Contains(string(raw), "other.example") {
+		t.Errorf("寄出的診斷含別的帳號：%s", raw)
+	}
+}

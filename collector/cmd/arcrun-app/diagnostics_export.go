@@ -151,6 +151,12 @@ func fetchCloudDiagnostics(cypherURL, apiKey string) (map[string]any, error) {
 // 純合併邏輯抽進 mergeDiagnostics（無 IO），方便測試不必真的連網／彈存檔對話框
 // 就能涵蓋「同一組數字」「分類原樣照抄」「basename-only」這幾條規則。
 func (a *App) buildDiagnosticsPayload() exportedDiagnostics {
+	return a.buildDiagnosticsPayloadFor("")
+}
+
+// buildDiagnosticsPayloadFor：onlyHost 非空時，雲端那半只查這一個知識庫（shortHost 相同者）。
+// #362：停工卡的通報只該帶出事那個帳號，不准把其他帳號的名稱、網址、統計一起寄出去。
+func (a *App) buildDiagnosticsPayloadFor(onlyHost string) exportedDiagnostics {
 	sync := loadSyncStatus()
 	skipped := buildSkipped(sync) // 首頁既有邏輯：Files 已是 basename＋白話標籤，直接借用
 	update := a.CheckUpdate()     // 現查現答，不用可能過期的背景檢查快取（Q4）
@@ -178,6 +184,9 @@ func (a *App) buildDiagnosticsPayload() exportedDiagnostics {
 	cfg, _ := loadCfg()
 	accounts := make([]accountDiagnostics, 0, len(cfg.Accounts))
 	for _, acc := range cfg.Accounts {
+		if onlyHost != "" && shortHost(acc.CypherURL) != onlyHost {
+			continue
+		}
 		ad := accountDiagnostics{InstanceName: accountName(acc), Host: shortHost(acc.CypherURL)}
 		key := acc.APIKey
 		if strings.TrimSpace(key) == "" {

@@ -1,3 +1,6 @@
+# 🔴 2026-11-20（inkstone/arcrun-rag#282）：**部署點改成 uncle6**（leo：官方內容都放 uncle6，youlin 隨時會清）。
+#   下面「部署點＝youlin」的敘述是 10-09 裁決 B 的歷史，已被取代；部署／體檢／每日探針見 installer/scripts/feedback-inbox.mjs。
+#
 # feedback_report（AHub 版）— 學員／封測者打字回報，一律變成 inkstone/arcrun-rag 的一張票
 # （inkstone/arcrun-rag#210）
 #
