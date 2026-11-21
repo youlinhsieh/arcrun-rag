@@ -298,7 +298,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@5b3f213f7a8d595958f5d832bbbdd730ccae402a';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@0376ecae35386e661708dd1e1d3d5ddb2d98f85d';
 const BUNDLE_BUILT = '2026-11-21'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -5982,11 +5982,21 @@ async function appsHandle(request, env, pathname) {
   const key = 'apps/' + rel;
   if (!appsKeyAllowed(key)) return new Response('not found', { status: 404 });
   if (env.DIST) return distHandle(request, env, pathname, key);
-  const base = String(env.APP_FEED_BASE || '').replace(/\/+$/, '');
+  // 目錄的家，優先序：APP_FEED_BASE（明講的）＞ 跟著零件包釘子走（prod：與小幫手下載同一個釘子，簽哪版就是哪版的目錄）。
+  //   釘子是 jsDelivr `@<sha>` ⇒ 換成 raw.githubusercontent（與 daemonOf 同一個換法：jsDelivr 會快取 index.json 與大檔）；
+  //   其他釘子（Gitea raw／R2 bundle）本身可直接讀，目錄就放在 bundle 根目錄的 apps/ 底下。
+  let base = String(env.APP_FEED_BASE || '').replace(/\/+$/, '');
+  if (!base) {
+    const pin = bundleBase(env);
+    const sha = (pin.match(/@([0-9a-f]{7,40})/) || [])[1];
+    base = (sha ? `https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/${sha}` : pin) + '/apps';
+  }
   if (/^https:\/\//i.test(base)) {
     const up = await fetch(`${base}/${rel}`, { method: request.method, headers: { accept: 'application/json' } });
+    if (up.status === 404) return new Response(JSON.stringify({ error: '這個安裝站釘住的那一版沒有 App 市集目錄' }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
     const h = new Headers();
-    h.set('content-type', up.headers.get('content-type') || 'application/json; charset=utf-8');
+    h.set('content-type', 'application/json; charset=utf-8');
+    // index 不快取（釘子一換馬上看得到新目錄）；包依版號命名、不可變，長快取。
     h.set('cache-control', rel === 'index.json' ? 'no-cache' : 'public, max-age=31536000, immutable');
     return new Response(request.method === 'HEAD' ? null : up.body, { status: up.status, headers: h });
   }

@@ -44,10 +44,29 @@ test('/apps：只開放目錄檔與 App 包；其他 key（含跨前綴、..）4
   assert.equal((await call(e, '/apps/index.json', { method: 'POST' })).status, 405);
 });
 
-test('沒綁 R2 也沒設 APP_FEED_BASE：404 並明說沒有市集目錄（不回空目錄冒充「市集沒 App」）', async () => {
-  const res = await call({ INSTALLER_KV: kv() }, '/apps/index.json');
-  assert.equal(res.status, 404);
-  assert.match((await res.json()).error, /沒有 App 市集目錄/);
+test('沒綁 R2 也沒設 APP_FEED_BASE（prod）：目錄跟著零件包釘子走——jsDelivr @sha 換成 raw.githubusercontent 同一個 sha 的 apps/', async () => {
+  const seen = [];
+  globalThis.fetch = async (u) => { seen.push(String(u)); return String(u).endsWith('nope-1.0.0.json') ? new Response('x', { status: 404 }) : new Response('{"ok":1}', { headers: { 'content-type': 'text/plain' } }); };
+  try {
+    const e = { INSTALLER_KV: kv(), BUNDLE_BASE: 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@0376ecaabcdef' };
+    const i = await call(e, '/apps/index.json');
+    assert.equal(i.status, 200);
+    assert.match(i.headers.get('content-type'), /json/);
+    assert.equal(i.headers.get('cache-control'), 'no-cache');
+    assert.equal((await call(e, '/apps/packages/notes-1.4.0.json')).status, 200);
+    assert.deepEqual(seen, [
+      'https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/0376ecaabcdef/apps/index.json',
+      'https://raw.githubusercontent.com/youlinhsieh/arcrun-rag-bundles/0376ecaabcdef/apps/packages/notes-1.4.0.json',
+    ]);
+    // 釘住的那一版沒有目錄（舊釘子）：誠實 404，不回空目錄
+    const miss = await call(e, '/apps/packages/nope-1.0.0.json');
+    assert.equal(miss.status, 404);
+    assert.match((await miss.json()).error, /釘住的那一版沒有 App 市集目錄/);
+    // 其他釘子（Gitea raw）直接讀 bundle 根目錄的 apps/
+    seen.length = 0;
+    await call({ INSTALLER_KV: kv(), BUNDLE_BASE: 'https://git.test/o/r/raw/commit/2c81ea6' }, '/apps/index.json');
+    assert.deepEqual(seen, ['https://git.test/o/r/raw/commit/2c81ea6/apps/index.json']);
+  } finally { restore(); }
 });
 
 test('沒綁 R2 但有 APP_FEED_BASE：轉去該靜態目錄；index 不快取、包長快取；來源錯誤碼原樣帶出', async () => {

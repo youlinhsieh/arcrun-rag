@@ -103,7 +103,7 @@
  *          inkstone/arcrun-rag#281：核准留在該版自己的票底下，功能票才追得到它有沒有出貨。）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { join, resolve, dirname, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -200,7 +200,7 @@ import { fill as fillCredentials, describeSources, missingCredentialError } from
 import { cloudflareDeployEnv } from './cf-credential.mjs';
 // inkstone/arcrun-rag#266：登錄簿宣告了 `dist` 的目標（今天只有 stage），桌面安裝檔與「最新版」
 // 指標放 R2、不進 git 歷史、不在 Gitea 網址上（細節見 stage-dist.mjs 檔頭）。
-import { publishDist, publishAppsFeed, ensureLocalExclude, assertDistDeclared, downloadSection, bundleDirUrl } from './stage-dist.mjs';
+import { publishDist, publishAppsFeed, planAppsFeed, ensureLocalExclude, assertDistDeclared, downloadSection, bundleDirUrl } from './stage-dist.mjs';
 // 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
 //   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
 //   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
@@ -589,7 +589,9 @@ function publishToR2() {
   let feedLine = '市集目錄：來源沒有 app-market/，這次不更新 /apps';
   if (existsSync(join(appDir, 'build-feed.mjs'))) {
     const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));
-    execFileSync('node', [join(appDir, 'build-feed.mjs'), '--out', feedDir], { cwd: ctx.arcrunRepo, stdio: 'pipe' });
+    // build-feed 靠「argv[1] ＝ 自己的真實路徑」判斷是不是被直接執行；來源 repo 走符號連結時（例 matrix/arcrun）
+    // 路徑對不上它會什麼都不做卻回 0——所以一律給真實路徑，並在產出後驗 index.json 真的在。
+    execFileSync('node', [realpathSync(join(appDir, 'build-feed.mjs')), '--out', feedDir], { cwd: ctx.arcrunRepo, stdio: 'pipe' });
     const f = publishAppsFeed({ dist: T.dist, feedDir, run: (args) => r2PutRetry(args, ctx.bundlesDir, cred.env) });
     feedLine = `市集目錄：${f.count} 個 App 包＋index.json → ${f.indexUrl}`;
   }
@@ -2267,6 +2269,23 @@ const STEPS = [
       console.log(`     ✔ 移出 ${pruned.moved.length} 個上一個沒出成的版號安裝檔 → ${pruned.destDir}：${pruned.moved.join('、')}`);
     }
   }
+  // inkstone/InkStoneCo#330：沒宣告 dist 的目標（prod）沒有 R2——App 市集目錄跟零件包、小幫手走同一條送達路：
+  //   寫進 bundle repo 的 apps/，同一個 commit、同一個釘子；安裝站的 /apps 照釘子讀（簽哪版就是哪版的目錄）。
+  //   宣告了 dist 的目標（stage）目錄在 R2（push 站放），這裡不重複。
+  //   只加不刪：舊版 App 包依版號命名、不可變，留著不會被「刪檔」閘擋；index.json 每次整份覆蓋。
+  let appsLine = null;
+  if (!T.dist) {
+    const appDir = join(ctx.arcrunRepo, 'app-market');
+    if (existsSync(join(appDir, 'build-feed.mjs'))) {
+      const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));
+      execFileSync('node', [realpathSync(join(appDir, 'build-feed.mjs')), '--out', feedDir], { cwd: ctx.arcrunRepo, stdio: 'pipe' });
+      planAppsFeed(feedDir); // 目錄在、每包雜湊對得上才放行（與 stage 同一道檢查）
+      cpSync(feedDir, join(ctx.bundlesDir, 'apps'), { recursive: true });
+      appsLine = `App 市集目錄寫進 bundle 的 apps/（${planAppsFeed(feedDir).length - 1} 個 App 包＋index.json）`;
+    } else {
+      appsLine = '來源沒有 app-market/，bundle 不帶 apps/';
+    }
+  }
   if (!sh('git', ['status', '--porcelain'], ctx.bundlesDir)) {
     return { status: 'skip', detail: ['工作區乾淨——這一版的產物已經在版控裡了'] };
   }
@@ -2294,7 +2313,7 @@ const STEPS = [
   sh('git', ['-c', 'user.email=ship@local', '-c', 'user.name=ship', 'commit', '-q', '-m',
     `ship ${ctx.release}：${JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8')).source || 'unknown source'}`],
     ctx.bundlesDir);
-  return { status: 'done', detail: [`commit ${sh('git', ['rev-parse', '--short', 'HEAD'], ctx.bundlesDir)}`] };
+  return { status: 'done', detail: [`commit ${sh('git', ['rev-parse', '--short', 'HEAD'], ctx.bundlesDir)}`, ...(appsLine ? [appsLine] : [])] };
 }},
 
 // ── 5. push ──────────────────────────────────────────────────────────────
