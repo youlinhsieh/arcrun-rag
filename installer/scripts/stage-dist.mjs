@@ -224,3 +224,36 @@ export function publishDist({ dist, manifest, bundlesDir, run, bundle, listFiles
   detail.push('R2 ← manifest.json（最新版指標，最後才翻）');
   return { objects, bundleBase, pointerUrl: distUrl(dist.publicBase, 'manifest.json'), detail };
 }
+
+/**
+ * inkstone/Arcrun#432、inkstone/InkStoneCo#330：App 市集目錄（安裝站的 `/apps`）。
+ * `feedDir` 是 `node app-market/build-feed.mjs --out <資料夾>` 的產出（index.json＋packages/）。
+ * 每個 App 包重算 sha256 對目錄宣告——不一致就丟，不放半套；包先、目錄最後（目錄一翻，它指到的包必已就位）。
+ * @returns {{key:string, path:string, contentType:string, cacheControl:string}[]}
+ */
+export function planAppsFeed(feedDir) {
+  const indexPath = join(feedDir, 'index.json');
+  if (!existsSync(indexPath)) throw new Error(`市集目錄資料夾沒有 index.json（${feedDir}）——build-feed.mjs 沒跑成功？`);
+  const index = JSON.parse(readFileSync(indexPath, 'utf8'));
+  if (!index || !Array.isArray(index.apps) || !index.apps.length) throw new Error('市集目錄 index.json 沒有任何 App，不上傳（空市集會被用戶看到）。');
+  const out = [];
+  for (const a of index.apps) {
+    const rel = String(a && a.package && a.package.url || '').replace(/^\.?\/+/, '');
+    if (!/^packages\/[a-z][a-z0-9_-]{0,63}-\d+\.\d+\.\d+\.json$/.test(rel)) throw new Error(`${a && a.id}：package.url「${rel}」不是 packages/<id>-<版本>.json`);
+    const abs = join(feedDir, rel);
+    if (!existsSync(abs)) throw new Error(`${a.id}：目錄指向 ${rel}，但資料夾裡沒有這個檔。`);
+    const want = a.package.sha256;
+    if (want && sha256File(abs) !== want) throw new Error(`${a.id}：${rel} 的 sha256 ≠ 目錄宣告，不上傳。`);
+    out.push({ key: `apps/${rel}`, path: abs, contentType: contentTypeOf(rel), cacheControl: 'public, max-age=31536000, immutable' });
+  }
+  out.push({ key: 'apps/index.json', path: indexPath, contentType: contentTypeOf('index.json'), cacheControl: 'no-cache' });
+  return out;
+}
+
+/** 把市集目錄放進 R2 的 `apps/` 前綴：包先、index.json 最後。 */
+export function publishAppsFeed({ dist, feedDir, run }) {
+  assertDistDeclared(dist);
+  const objs = planAppsFeed(feedDir);
+  for (const o of objs) run(r2PutArgs({ bucket: dist.bucket, key: o.key, file: o.path, contentType: o.contentType, cacheControl: o.cacheControl }), { label: o.key });
+  return { count: objs.length - 1, indexUrl: distUrl(String(dist.publicBase).replace(/\/dist\/?$/, ''), 'apps/index.json') };
+}

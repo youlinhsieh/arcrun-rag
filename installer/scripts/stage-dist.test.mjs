@@ -199,3 +199,38 @@ test('publishDist：宣告了 bundlePrefix 卻沒給釘點 sha ⇒ 丟；零件�
   assert.ok(!seen.some((l) => l.startsWith('daemon/') || l === 'manifest.json'));
   rmSync(dir, { recursive: true });
 });
+
+// ── inkstone/InkStoneCo#330：市集目錄（/apps）出版 ──
+import { planAppsFeed, publishAppsFeed } from './stage-dist.mjs';
+import { mkdtempSync as _mk, writeFileSync as _wf, mkdirSync as _md } from 'node:fs';
+import { tmpdir as _td } from 'node:os';
+import { join as _j } from 'node:path';
+import { createHash as _h } from 'node:crypto';
+
+function feed({ badSha = false, noPkg = false, empty = false } = {}) {
+  const d = _mk(_j(_td(), 'feed-'));
+  _md(_j(d, 'packages'));
+  const body = '{"format":"arcrun-app-package"}';
+  if (!noPkg) _wf(_j(d, 'packages', 'notes-1.4.0.json'), body);
+  const sha = badSha ? '0'.repeat(64) : _h('sha256').update(body).digest('hex');
+  _wf(_j(d, 'index.json'), JSON.stringify({ schema: 1, apps: empty ? [] : [{ id: 'notes', version: '1.4.0', package: { url: 'packages/notes-1.4.0.json', sha256: sha } }] }));
+  return d;
+}
+const FDIST = { bucket: 'b', accountId: 'a', publicBase: 'https://inst.test/dist' };
+
+test('publishAppsFeed：包先、index.json 最後；key 在 apps/ 前綴；index 不快取、包長快取', () => {
+  const calls = [];
+  const r = publishAppsFeed({ dist: FDIST, feedDir: feed(), run: (args) => calls.push(args) });
+  assert.equal(r.count, 1);
+  assert.equal(r.indexUrl, 'https://inst.test/apps/index.json');
+  assert.deepEqual(calls.map((a) => a[4]), ['b/apps/packages/notes-1.4.0.json', 'b/apps/index.json']);
+  assert.ok(calls.every((a) => a.includes('--remote')));
+  assert.ok(calls[0].join(' ').includes('immutable'));
+  assert.ok(calls[1].join(' ').includes('no-cache'));
+});
+
+test('planAppsFeed：sha 不符／包缺檔／空目錄 一律丟，不放半套', () => {
+  assert.throws(() => planAppsFeed(feed({ badSha: true })), /sha256/);
+  assert.throws(() => planAppsFeed(feed({ noPkg: true })), /沒有這個檔/);
+  assert.throws(() => planAppsFeed(feed({ empty: true })), /沒有任何 App/);
+});

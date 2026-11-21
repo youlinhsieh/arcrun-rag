@@ -57,11 +57,28 @@ flow:
   - "close_ticket >> ON_SUCCESS >> close_judge"
   - "close_ticket >> ON_FAIL >> close_judge"
   - "close_judge >> ON_SUCCESS >> gate_close"
-  - "gate_close >> ON_TRUE >> done"
+  - "gate_close >> ON_TRUE >> sweep_list"
+  - "sweep_list >> ON_SUCCESS >> sweep_plan"
+  - "sweep_list >> ON_FAIL >> sweep_plan"
+  - "sweep_plan >> ON_SUCCESS >> sweep_g1"
+  - "sweep_g1 >> ON_TRUE >> sweep_w1"
+  - "sweep_g1 >> ON_FALSE >> done"
+  - "sweep_w1 >> ON_SUCCESS >> sweep_g2"
+  - "sweep_w1 >> ON_FAIL >> sweep_g2"
+  - "sweep_g2 >> ON_TRUE >> sweep_w2"
+  - "sweep_g2 >> ON_FALSE >> done"
+  - "sweep_w2 >> ON_SUCCESS >> sweep_g3"
+  - "sweep_w2 >> ON_FAIL >> sweep_g3"
+  - "sweep_g3 >> ON_TRUE >> sweep_w3"
+  - "sweep_g3 >> ON_FALSE >> done"
+  - "sweep_w3 >> ON_SUCCESS >> done"
+  - "sweep_w3 >> ON_FAIL >> done"
   - "gate_close >> ON_FALSE >> alert_prep"
   - "alert_prep >> ON_SUCCESS >> alert_list"
-  - "alert_list >> ON_SUCCESS >> alert_plan"
-  - "alert_list >> ON_FAIL >> alert_plan"
+  - "alert_list >> ON_SUCCESS >> alert_list_s"
+  - "alert_list >> ON_FAIL >> alert_list_s"
+  - "alert_list_s >> ON_SUCCESS >> alert_plan"
+  - "alert_list_s >> ON_FAIL >> alert_plan"
   - "alert_plan >> ON_SUCCESS >> alert_comment"
   - "alert_comment >> ON_SUCCESS >> alert_request"
   - "alert_comment >> ON_FAIL >> alert_request"
@@ -139,7 +156,7 @@ config:
       var m = /重複候選=([^"\\]*)/.exec(err) || /重複候選=([^"\\]*)/.exec(trace);
       var refs = (m ? m[1].match(/[^\s=,]+\/[^\s=,#]+#\d+/g) : null) || [];
       if (refs.length && !raw(input.last)) {
-        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針的測試票，與前幾天的探針票內容相近但不是同一件事' }; }) };
+        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針事件鍵 probe:' + new Date().toISOString().slice(0, 10) + ' 還沒有任何票，' + r + ' 是別天的探針票或別件事，事件鍵不同，所以這是新事件、另開一張' }; }) };
       }
       return { success: true, route: 'fail', error: err.slice(0, 500) };
     input:
@@ -200,7 +217,7 @@ config:
       var m = /重複候選=([^"\\]*)/.exec(err) || /重複候選=([^"\\]*)/.exec(trace);
       var refs = (m ? m[1].match(/[^\s=,]+\/[^\s=,#]+#\d+/g) : null) || [];
       if (refs.length && !raw(input.last)) {
-        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針的測試票，與前幾天的探針票內容相近但不是同一件事' }; }) };
+        return { success: true, route: 'retry', error: err.slice(0, 500), compared: refs.slice(0, 10).map(function (r) { return { ref: r, reason: '每日自動探針事件鍵 probe:' + new Date().toISOString().slice(0, 10) + ' 還沒有任何票，' + r + ' 是別天的探針票或別件事，事件鍵不同，所以這是新事件、另開一張' }; }) };
       }
       return { success: true, route: 'fail', error: err.slice(0, 500) };
     input:
@@ -270,9 +287,14 @@ config:
         var why = raw(input.http_err);
         return { success: true, route: 'fail', error: '關測試票失敗：' + (why ? String(why).slice(0, 300) : 'AHub 沒有回 {status, body}') };
       }
-      if (inner.status !== 200) {
+      // 🔴 真 AHub 的 issue_patch 成功回 **201**＋票的內容（Arcrun workflows/ahub/routes/issue_patch.js：reply(201, issueView)），
+      //    不是 200；2026-11-21 因為只認 200 對真 AHub 誤報「關不掉」。成功＝2xx 且（有 state 時）state 是 closed。
+      if (inner.status !== 200 && inner.status !== 201) {
         var msg = inner.body && inner.body.message ? String(inner.body.message) : '沒有說明';
         return { success: true, route: 'fail', error: '關測試票失敗：HTTP ' + inner.status + ' ' + msg.slice(0, 300) };
+      }
+      if (inner.body && typeof inner.body === 'object' && typeof inner.body.state === 'string' && inner.body.state !== 'closed') {
+        return { success: true, route: 'fail', error: '關測試票失敗：AHub 回 ' + inner.status + ' 但票的狀態是 ' + inner.body.state };
       }
       return { success: true, route: 'ok' };
     input:
@@ -288,12 +310,156 @@ config:
     input:
       route: "{{close_judge.data.route}}"
 
+  # 5b) 探針這一輪成功＝收件站是好的：把之前探針自己開過、還開著的警報撤掉（它是開單的人，撤得掉），
+  #     這樣收件站從壞變好時不用任何人動手，Human 隨「票上沒有別的開著的要求」自動收回。
+  #     只撤「標題含每日探針、還在等、開單的人是 feedback-inbox」的要求；別人的要求與簽核一律不碰。
+  #     最多撤 3 張（平常 ≤1：每次警報都會先撤回上一張）；撤不掉不讓探針變失敗（收件站是好的），結果記在 done 的輸出。
+  sweep_list:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__action_status/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "GET"
+      path: "/repos/__ALERT_REPO__/issues/__ALERT_NUMBER__/requests"
+      query: {}
+      token: "{{credential.ahub_token}}"
+      params:
+        owner: "__ALERT_OWNER__"
+        repo: "__ALERT_NAME__"
+        index: "__ALERT_NUMBER__"
+      base: "__AHUB_CYPHER_URL__"
+
+  sweep_plan:
+    component: code
+    code: |
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var env = raw(input.list_raw);
+      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+      var inner = env && typeof env === 'object' ? env.data : null;
+      if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+      var rows = inner && inner.status === 200 && inner.body && Array.isArray(inner.body.requests) ? inner.body.requests : null;
+      var ids = [];
+      (rows || []).forEach(function (r) {
+        if (!r || r.state !== 'waiting' || !/^\d+$/.test(String(r.request_id))) return;
+        if (String(r.title || '').indexOf('每日探針') < 0) return;
+        if (r.opener && String(r.opener) !== 'feedback-inbox') return;
+        ids.push(String(r.request_id));
+      });
+      var base = '/repos/__ALERT_REPO__/issues/__ALERT_NUMBER__/requests/';
+      var out = { success: true, list_ok: rows !== null, found: ids.length, has1: ids.length > 0 ? 'yes' : 'no', has2: ids.length > 1 ? 'yes' : 'no', has3: ids.length > 2 ? 'yes' : 'no' };
+      for (var i = 0; i < 3; i++) { var id = ids[i] || '0'; out['id' + (i + 1)] = id; out['path' + (i + 1)] = base + id + '/withdraw'; }
+      return out;
+    input:
+      list_raw: "{{sweep_list.data.body}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  sweep_g1:
+    component: if_control
+    condition: "has == yes"
+    input:
+      has: "{{sweep_plan.data.has1}}"
+
+  sweep_g2:
+    component: if_control
+    condition: "has == yes"
+    input:
+      has: "{{sweep_plan.data.has2}}"
+
+  sweep_g3:
+    component: if_control
+    condition: "has == yes"
+    input:
+      has: "{{sweep_plan.data.has3}}"
+
+  sweep_w1:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__request_withdraw/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{sweep_plan.data.path1}}"
+      query: {}
+      body:
+        reason: "探針本輪成功，收件站已恢復，撤回先前的探針警報"
+      token: "{{credential.ahub_token}}"
+      params:
+        owner: "__ALERT_OWNER__"
+        repo: "__ALERT_NAME__"
+        index: "__ALERT_NUMBER__"
+        rid: "{{sweep_plan.data.id1}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  sweep_w2:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__request_withdraw/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{sweep_plan.data.path2}}"
+      query: {}
+      body:
+        reason: "探針本輪成功，收件站已恢復，撤回先前的探針警報"
+      token: "{{credential.ahub_token}}"
+      params:
+        owner: "__ALERT_OWNER__"
+        repo: "__ALERT_NAME__"
+        index: "__ALERT_NUMBER__"
+        rid: "{{sweep_plan.data.id2}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  sweep_w3:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__request_withdraw/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "POST"
+      path: "{{sweep_plan.data.path3}}"
+      query: {}
+      body:
+        reason: "探針本輪成功，收件站已恢復，撤回先前的探針警報"
+      token: "{{credential.ahub_token}}"
+      params:
+        owner: "__ALERT_OWNER__"
+        repo: "__ALERT_NAME__"
+        index: "__ALERT_NUMBER__"
+        rid: "{{sweep_plan.data.id3}}"
+      base: "__AHUB_CYPHER_URL__"
+
   done:
     component: code
     code: |
-      return { success: true, probe: 'ok', number: input.number, closed: true, at: new Date().toISOString() };
+      var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
+      var st = function (v) {
+        var env = raw(v);
+        if (env === undefined) return undefined;
+        if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { return 'unreadable'; } }
+        var inner = env && typeof env === 'object' ? env.data : null;
+        if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+        return inner && typeof inner.status === 'number' ? inner.status : 'unreadable';
+      };
+      var sw = [st(input.w1), st(input.w2), st(input.w3)].filter(function (x) { return x !== undefined; });
+      return { success: true, probe: 'ok', number: input.number, closed: true, at: new Date().toISOString(), sweep_listed_ok: raw(input.list_ok), sweep_found: raw(input.found), sweep_withdraw_status: sw };
     input:
       number: "{{close_prep.data.number}}"
+      list_ok: "{{sweep_plan.data.list_ok}}"
+      found: "{{sweep_plan.data.found}}"
+      w1: "{{sweep_w1.data.body}}"
+      w2: "{{sweep_w2.data.body}}"
+      w3: "{{sweep_w3.data.body}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -343,20 +509,36 @@ config:
       timeout_ms: 2000
       max_output_bytes: 65536
 
-  # 6a) 讀警報票最近的留言：昨天的探針警報撤回、其餘開著的要求逐張保留（AHub 開新單時要逐張交代，沒交代就 422）。
+  # 6a) 讀警報票上「開著的要求」：昨天的探針警報撤回、其餘開著的逐張保留（AHub 開新單時要逐張交代，沒交代就 422）。
+  #     🔴 不讀整份留言（comment_list）：http_request 單次回應上限 64 KB，本票留言已超過 ⇒ 該節點失敗（2026-11-21 實撞，
+  #        真要叫人時它不能壞）。改讀「要求看板」（action_status，要你做的事）與「簽核看板」（signoff_status），
+  #        兩者只回每件的標題與狀態，不帶留言內文。
   alert_list:
     component: http_request
     method: POST
-    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__comment_list/query"
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__action_status/query"
     headers:
       Accept: "application/json"
       Content-Type: "application/json"
     body_json:
       method: "GET"
-      path: "{{alert_prep.data.path}}/comments"
-      query:
-        tail: "1"
-        limit: "100"
+      path: "{{alert_prep.data.path}}/requests"
+      query: {}
+      token: "{{credential.ahub_token}}"
+      params: "{{alert_prep.data.params}}"
+      base: "__AHUB_CYPHER_URL__"
+
+  alert_list_s:
+    component: http_request
+    method: POST
+    url: "__AHUB_CYPHER_URL__/webhooks/named/__AHUB_NS__/ahub__signoff_status/query"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json:
+      method: "GET"
+      path: "{{alert_prep.data.path}}/signoffs"
+      query: {}
       token: "{{credential.ahub_token}}"
       params: "{{alert_prep.data.params}}"
       base: "__AHUB_CYPHER_URL__"
@@ -365,22 +547,27 @@ config:
     component: code
     code: |
       var raw = function (v) { if (typeof v === 'string' && /^\s*\{\{[\w.]+\}\}\s*$/.test(v)) return undefined; return v; };
-      var env = raw(input.list_raw);
-      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
-      var inner = env && typeof env === 'object' ? env.data : null;
-      if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
-      var rows = inner && inner.status === 200 && Array.isArray(inner.body) ? inner.body : [];
+      var rowsOf = function (v) {
+        var env = raw(v);
+        if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+        var inner = env && typeof env === 'object' ? env.data : null;
+        if (inner && typeof inner === 'object' && inner.data && typeof inner.data === 'object' && 'status' in inner.data) inner = inner.data;
+        return inner && inner.status === 200 && inner.body && Array.isArray(inner.body.requests) ? inner.body.requests : null;
+      };
+      var asks = rowsOf(input.list_raw), signs = rowsOf(input.sign_raw);
       var keep = [], withdraw = [];
-      rows.forEach(function (c) {
-        var b = c && typeof c.body === 'string' ? c.body : '';
-        if (!/^\s*【(要求|簽核請求)/.test(b)) return;
-        var id = String(c.id == null ? '' : c.id);
-        if (!/^\d+$/.test(id)) return;
-        if (b.indexOf('每日探針') >= 0) withdraw.push(id); else keep.push(id);
+      (asks || []).forEach(function (r) {
+        if (!r || r.state !== 'waiting' || !/^\d+$/.test(String(r.request_id))) return;
+        if (String(r.title || '').indexOf('每日探針') >= 0) withdraw.push(String(r.request_id)); else keep.push(String(r.request_id));
       });
-      return { success: true, keep: keep, withdraw: withdraw, listed: rows.length };
+      (signs || []).forEach(function (r) {
+        if (!r || r.state !== 'waiting' || !/^\d+$/.test(String(r.request_id))) return;
+        keep.push(String(r.request_id));
+      });
+      return { success: true, keep: keep, withdraw: withdraw, listed: (asks || []).length + (signs || []).length, asks_ok: asks !== null, signs_ok: signs !== null };
     input:
       list_raw: "{{alert_list.data.body}}"
+      sign_raw: "{{alert_list_s.data.body}}"
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536

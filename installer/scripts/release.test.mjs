@@ -239,3 +239,75 @@ test('🔴 #141 向後相容：payload 為空時，指紋與改動前的舊演�
   // 反面：有酬載時**必須**不一樣，否則整張票等於沒修
   assert.notEqual(contentFingerprint(samples[1], 'deadbeef'), legacyFingerprint(samples[1]));
 });
+
+// ── inkstone/arcrun-rag#353：只換 daemon（雲端零件沒動）也要出新的 release 號 ─────────────
+function seedDaemonBundle(dir, daemonVersion) {
+  seedBundle(dir, { content: 'cloud-parts-unchanged' });
+  const m = manifestOf(dir);
+  m.daemon = { version: daemonVersion };
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(m, null, 1));
+}
+
+test('🔴 #353 雲端零件一個位元都沒動、只有 daemon 版本變 ⇒ release 必須跳號（同版號不換包）', () => {
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    writeFileSync(join(repoRoot, 'RELEASE_LINE'), '1.4\n');
+    seedDaemonBundle(dir, '0.18.123');
+    const r1 = syncManifest(dir, { repoRoot, sharedState: true, quiet: true });
+    const r1again = syncManifest(dir, { repoRoot, sharedState: true, quiet: true });
+    assert.equal(r1again.release, r1.release, 'daemon 沒變就不虛增');
+    const m = manifestOf(dir); m.daemon = { version: '0.18.124' };
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(m, null, 1));
+    const r2 = syncManifest(dir, { repoRoot, sharedState: true, quiet: true });
+    assert.notEqual(r2.release, r1.release, '只換 daemon 卻沒跳號 ⇒ 同一個版號換了包');
+    assert.equal(manifestOf(dir).fingerprint_daemon, '0.18.124');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('🔴 #353 verifyManifest：只改 daemon 版本沒跑 syncManifest ⇒ 當場紅', async () => {
+  const { verifyManifest } = await import('./release.mjs');
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    seedDaemonBundle(dir, '0.18.123');
+    syncManifest(dir, { repoRoot, quiet: true });
+    assert.deepEqual(verifyManifest(dir, { repoRoot }).filter((p) => /daemon 版本變了/.test(p)), []);
+    const m = manifestOf(dir); m.daemon = { version: '0.18.124' };
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(m, null, 1));
+    assert.ok(verifyManifest(dir, { repoRoot }).some((p) => /daemon 版本變了但 release 沒 bump/.test(p)));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('🔴 #353 向後相容：#353 之前出的簽核舊版（指紋沒算 daemon）仍能重出，且不被覆蓋成新指紋', async () => {
+  const { contentFingerprint } = await import('./release.mjs');
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    seedDaemonBundle(dir, '0.18.123');
+    syncManifest(dir, { repoRoot, quiet: true });
+    const core = manifestOf(dir).core;
+    const legacy = contentFingerprint(core, '', '');
+    const r = syncManifest(dir, { repoRoot, quiet: true, signed: { release: '1.4.255', fingerprint: legacy, built: '2026-11-21' } });
+    assert.equal(r.release, '1.4.255');
+    assert.equal(r.fingerprint, legacy);
+    assert.equal(manifestOf(dir).fingerprint_daemon, undefined);
+    assert.throws(() => syncManifest(dir, { repoRoot, quiet: true, signed: { release: '1.4.255', fingerprint: 'x'.repeat(64), built: 'b' } }));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#353 沒有 daemon 版本時指紋與舊式子逐位元相同', async () => {
+  const { contentFingerprint } = await import('./release.mjs');
+  const core = [{ name: 'a', sha256: '1' }];
+  assert.equal(contentFingerprint(core, 'p', ''), contentFingerprint(core, 'p'));
+  assert.notEqual(contentFingerprint(core, '', '0.18.124'), contentFingerprint(core, ''));
+});

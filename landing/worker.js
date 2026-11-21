@@ -112,29 +112,70 @@ function wrap76(b64) {
   return b64.replace(/.{1,76}/g, "$&\r\n").trimEnd();
 }
 
-/** 辨識碼信的正體中文 HTML（乾淨簡單、辨識碼大字） */
+/**
+ * 組 multipart/alternative 信（純文字＋HTML 兩個版本）。
+ * 為什麼：只有 text/html、版面像宣傳頁的信，Gmail 容易歸到「促銷內容」（inkstone/arcrun-rag#375）；
+ * 交易信的常見形狀是「有純文字版、版面樸素、少圖少按鈕」。不動寄件身份與 DNS。
+ */
+function buildAlternativeMime({ fromHeader, to, subject, text, html, domain }) {
+  const boundary = `=_arcrun_${crypto.randomUUID().replace(/-/g, "")}`;
+  return [
+    `From: ${fromHeader}`,
+    `To: ${to}`,
+    `Subject: =?utf-8?B?${b64utf8(subject)}?=`,
+    // Message-ID / Date 是 send_email binding 的必要表頭（07-27 真兇，見 sendCodeEmail 註解）
+    `Message-ID: <${crypto.randomUUID()}@${domain}>`,
+    `Date: ${new Date().toUTCString()}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    ``,
+    `--${boundary}`,
+    `Content-Type: text/plain; charset=utf-8`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    wrap76(b64utf8(text)),
+    ``,
+    `--${boundary}`,
+    `Content-Type: text/html; charset=utf-8`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    wrap76(b64utf8(html)),
+    ``,
+    `--${boundary}--`,
+    ``,
+  ].join("\r\n");
+}
+
+/** 辨識碼信純文字版（與 HTML 同內容） */
+function codeEmailText(code, env) {
+  const installUrl = `${installBase(env)}/`;
+  return [
+    "你好！",
+    "",
+    "這是你的 Arcrun RAG 辨識碼：",
+    "",
+    `    ${code}`,
+    "",
+    `接著到安裝頁 ${installUrl}，填入你的 Email 和這組辨識碼，就會開始安裝。`,
+    "",
+    "這封信只用來寄辨識碼給你，不會用你的 email 做別的事。",
+    "",
+    "Arcrun RAG 封測中",
+  ].join("\n");
+}
+
+/** 辨識碼信的正體中文 HTML（刻意樸素：白底、無品牌標頭、無大色塊按鈕，像一封一對一的交易信） */
 function codeEmailHtml(code, env) {
-  // 郵件用 inline hex（email client 不吃 CSS 變數），值照抄 CIS token：
-  // Ink #17181A（強調字）／Paper #FDFCFB／Canvas #F2F1ED（信底）／Relation #B04A2F（CTA）。
   const installUrl = `${installBase(env)}/`;
   return `<!doctype html>
 <html lang="zh-Hant"><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#F2F1ED;">
-<div style="max-width:520px;margin:0 auto;padding:32px 24px;font-family:-apple-system,'PingFang TC','Noto Sans TC','Microsoft JhengHei',system-ui,sans-serif;color:#17181A;">
-  <div style="font-family:-apple-system,'PingFang TC',system-ui,sans-serif;font-weight:600;font-size:26px;letter-spacing:.06em;color:#17181A;text-align:center;">Arcrun RAG</div>
-  <p style="margin:28px 0 10px;font-size:16px;line-height:1.7;">你好！這是你的 Arcrun RAG 辨識碼：</p>
-  <div style="margin:8px 0 20px;text-align:center;">
-    <div style="display:inline-block;padding:18px 30px;border-radius:12px;background:#FDFCFB;border:1px solid rgba(176,74,47,.35);font-family:'Courier New',monospace;font-size:38px;font-weight:700;letter-spacing:.18em;color:#B04A2F;">${code}</div>
-  </div>
-  <p style="margin:20px 0 0;font-size:15px;line-height:1.75;">接著到安裝頁，填入你的 Email 和這組辨識碼，就會開始安裝。</p>
-  <div style="margin:22px 0 6px;text-align:center;">
-    <a href="${installUrl}" style="display:inline-block;padding:14px 28px;border-radius:10px;background:#B04A2F;color:#FDFCFB;font-size:16px;font-weight:700;text-decoration:none;">前往安裝</a>
-  </div>
-  <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:rgba(23,24,26,.55);text-align:center;">或直接開啟：${installUrl}</p>
-  <p style="margin:16px 0 0;font-size:13.5px;line-height:1.7;color:rgba(23,24,26,.6);">這封信只用來寄辨識碼給你，不會用你的 email 做別的事。</p>
-  <hr style="margin:26px 0 0;border:none;border-top:1px solid rgba(154,151,143,.35);">
-  <p style="margin:14px 0 0;font-size:12px;color:rgba(23,24,26,.45);text-align:center;">Arcrun RAG 封測中 · 你的知識庫，永遠是你的</p>
-</div>
+<body style="margin:0;padding:16px;background:#ffffff;font-family:-apple-system,'PingFang TC','Noto Sans TC','Microsoft JhengHei',system-ui,sans-serif;color:#17181A;font-size:15px;line-height:1.7;">
+<p style="margin:0 0 12px;">你好！</p>
+<p style="margin:0 0 12px;">這是你的 Arcrun RAG 辨識碼：</p>
+<p style="margin:0 0 16px;font-family:'Courier New',monospace;font-size:28px;font-weight:700;letter-spacing:.14em;">${code}</p>
+<p style="margin:0 0 12px;">接著到安裝頁 <a href="${installUrl}">${installUrl}</a>，填入你的 Email 和這組辨識碼，就會開始安裝。</p>
+<p style="margin:0 0 12px;color:#555;">這封信只用來寄辨識碼給你，不會用你的 email 做別的事。</p>
+<p style="margin:0;color:#555;">Arcrun RAG 封測中</p>
 </body></html>`;
 }
 
@@ -253,20 +294,14 @@ async function sendCodeEmail(env, email, code) {
   // ——Activity Log 的 Subject/Sender 全空即症狀（CF 解析不出表頭）。
   // 另補 MIME 結尾 CRLF（RFC 5322 §2.1；wrap76 的 trimEnd 會吃掉）。
   const domain = from.split("@")[1] || "arcrun.dev";
-  const messageId = `<${crypto.randomUUID()}@${domain}>`;
-  const raw = [
-    `From: Arcrun RAG <${from}>`,
-    `To: ${email}`,
-    `Subject: =?utf-8?B?${b64utf8(subject)}?=`,
-    `Message-ID: ${messageId}`,
-    `Date: ${new Date().toUTCString()}`,
-    `MIME-Version: 1.0`,
-    `Content-Type: text/html; charset=utf-8`,
-    `Content-Transfer-Encoding: base64`,
-    ``,
-    wrap76(b64utf8(html)),
-    ``,
-  ].join("\r\n");
+  const raw = buildAlternativeMime({
+    fromHeader: `Arcrun RAG <${from}>`,
+    to: email,
+    subject,
+    text: codeEmailText(code, env),
+    html,
+    domain,
+  });
   const message = new EmailMessage(from, email, raw);
   await env.SEND_EMAIL.send(message);
 }
@@ -328,15 +363,25 @@ async function relayQuotaExceeded(env, bucket, limit) {
 }
 
 /** 「修改密碼」信的正體中文 HTML。**刻意把主機寫在信裡**——收信的人要看得出這封是哪台實例請求的。 */
+function resetEmailText(link, host) {
+  return [
+    `有人在 ${host} 這台 Arcrun 實例上按了「忘記密碼」。打開下面的連結就可以直接設定新密碼，不需要輸入現在的密碼：`,
+    "",
+    link,
+    "",
+    "這條連結只能用一次，而且 30 分鐘後就會失效。",
+    "",
+    `如果你沒有在 ${host} 上按過「忘記密碼」，請直接忽略這封信，你的密碼不會有任何變化。`,
+  ].join("\n");
+}
+
 function resetEmailHtml(link, host) {
-  return `<!doctype html><html lang="zh-Hant"><body style="margin:0;padding:24px;background:#F7F5F1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#2B2B2B">
-<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:32px">
-<h1 style="font-size:20px;margin:0 0 16px">修改你的 Arcrun 密碼</h1>
-<p style="font-size:15px;line-height:1.7;margin:0 0 20px">有人在 <strong>${host}</strong> 這台 Arcrun 實例上按了「忘記密碼」。點下面的按鈕就可以直接設定新密碼——<strong>不需要輸入現在的密碼</strong>。</p>
-<p style="margin:0 0 24px"><a href="${link}" style="display:inline-block;background:#2B2B2B;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:16px">設定新密碼</a></p>
-<p style="font-size:13px;line-height:1.7;color:#6B6B6B;margin:0 0 8px">這條連結<strong>只能用一次</strong>，而且<strong>30 分鐘後就會失效</strong>。</p>
-<p style="font-size:13px;line-height:1.7;color:#6B6B6B;margin:0">如果你沒有在 ${host} 上按過「忘記密碼」，請直接忽略這封信——你的密碼不會有任何變化。</p>
-</div></body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"></head><body style="margin:0;padding:16px;background:#ffffff;font-family:-apple-system,'PingFang TC','Noto Sans TC',system-ui,sans-serif;color:#17181A;font-size:15px;line-height:1.7;">
+<p style="margin:0 0 12px;">有人在 <strong>${host}</strong> 這台 Arcrun 實例上按了「忘記密碼」。打開下面的連結就可以直接設定新密碼，<strong>不需要輸入現在的密碼</strong>：</p>
+<p style="margin:0 0 12px;"><a href="${link}">${link}</a></p>
+<p style="margin:0 0 12px;color:#555;">這條連結<strong>只能用一次</strong>，而且<strong>30 分鐘後就會失效</strong>。</p>
+<p style="margin:0;color:#555;">如果你沒有在 ${host} 上按過「忘記密碼」，請直接忽略這封信，你的密碼不會有任何變化。</p>
+</body></html>`;
 }
 
 async function sendResetEmail(env, email, link, host) {
@@ -344,20 +389,14 @@ async function sendResetEmail(env, email, link, host) {
   const from = env.EMAIL_FROM || "noreply@arcrun.dev";
   const subject = "修改你的 Arcrun 密碼";
   const domain = from.split("@")[1] || "arcrun.dev";
-  // Message-ID / Date 是 send_email binding 的必要表頭（07-27 真兇，見 sendCodeEmail 註解）
-  const raw = [
-    `From: Arcrun <${from}>`,
-    `To: ${email}`,
-    `Subject: =?utf-8?B?${b64utf8(subject)}?=`,
-    `Message-ID: <${crypto.randomUUID()}@${domain}>`,
-    `Date: ${new Date().toUTCString()}`,
-    `MIME-Version: 1.0`,
-    `Content-Type: text/html; charset=utf-8`,
-    `Content-Transfer-Encoding: base64`,
-    ``,
-    wrap76(b64utf8(resetEmailHtml(link, host))),
-    ``,
-  ].join("\r\n");
+  const raw = buildAlternativeMime({
+    fromHeader: `Arcrun <${from}>`,
+    to: email,
+    subject,
+    text: resetEmailText(link, host),
+    html: resetEmailHtml(link, host),
+    domain,
+  });
   await env.SEND_EMAIL.send(new EmailMessage(from, email, raw));
 }
 
@@ -481,7 +520,7 @@ async function handleRequestCode(env, request) {
   const lastSent = record.last_sent_at ? Date.parse(record.last_sent_at) : 0;
   if (lastSent && Date.now() - lastSent < RESEND_COOLDOWN_MS) {
     if (stateChanged) await env.SIGNUPS.put(emailKey, JSON.stringify(record));
-    return json({ ok: true, message: "辨識碼剛剛已寄出，請查收信箱（也看一下垃圾信匣）。" });
+    return json({ ok: true, message: "辨識碼剛剛已寄出，請查收信箱。如果沒收到，看一下促銷內容或垃圾信匣。" });
   }
 
   // §3 Bug A：寄信失敗時誠實回報，不再假裝 ok:true（避免用戶空等）
@@ -507,7 +546,7 @@ async function handleRequestCode(env, request) {
   return json({
     ok: true,
     email_sent: true,
-    message: "辨識碼已寄到你的信箱，請查收（也看一下垃圾信匣）。",
+    message: "辨識碼已寄到你的信箱，請查收。如果沒收到，看一下促銷內容或垃圾信匣。",
   });
 }
 

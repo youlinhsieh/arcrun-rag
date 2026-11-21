@@ -103,9 +103,9 @@
  *          inkstone/arcrun-rag#281：核准留在該版自己的票底下，功能票才追得到它有沒有出貨。）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync, mkdtempSync } from 'node:fs';
 import { join, resolve, dirname, relative } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { assertMigrationsComplete, assertGenerationChecksInSync, resolveMigrationSourceRoot } from './migrations-source.mjs';
 import { syncManifest, verifyManifest, RELEASE_STATE_FILE } from './release.mjs';
@@ -200,7 +200,7 @@ import { fill as fillCredentials, describeSources, missingCredentialError } from
 import { cloudflareDeployEnv } from './cf-credential.mjs';
 // inkstone/arcrun-rag#266：登錄簿宣告了 `dist` 的目標（今天只有 stage），桌面安裝檔與「最新版」
 // 指標放 R2、不進 git 歷史、不在 Gitea 網址上（細節見 stage-dist.mjs 檔頭）。
-import { publishDist, ensureLocalExclude, assertDistDeclared, downloadSection, bundleDirUrl } from './stage-dist.mjs';
+import { publishDist, publishAppsFeed, ensureLocalExclude, assertDistDeclared, downloadSection, bundleDirUrl } from './stage-dist.mjs';
 // 🔴 D36 出口遮蔽（inkstone/arcrun-rag#202 c7599）：09-17 prod 第 21 站失敗時，錯誤訊息把
 //   `extraheader=Authorization: Basic <GITHUB_MIRROR_TOKEN 的 base64>` 整行印了出來。
 //   遮蔽長在**出口**（console）與**錯誤來源**（sh／shLive），不再靠每個呼叫點自己記得。
@@ -540,6 +540,24 @@ function shLive(cmd, args, cwd, env) {
 }
 
 /**
+ * R2 一個檔一個 wrangler 呼叫，零件包幾百個檔連打會撞 Cloudflare API 的限速（code 971「Please wait and consider
+ * throttling your request speed」，2026-11-21 雲端實撞：每次約 30 個檔就斷，重跑也一樣）。
+ * put 是冪等的（同 key 同內容覆寫），所以失敗就等一下再試；試滿仍失敗才丟，不吞錯。
+ */
+function r2PutRetry(args, cwd, env, { tries = 8, waitMs = 30_000 } = {}) {
+  let lastErr;
+  for (let i = 1; i <= tries; i++) {
+    try { return shLive('npx', args, cwd, env); } catch (e) {
+      lastErr = e;
+      if (i === tries) break;
+      console.error(`     ⏳ R2 上傳失敗（第 ${i}/${tries} 次，多半是限速），${waitMs / 1000} 秒後重試`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * inkstone/arcrun-rag#266：把這一版放進 R2（登錄簿 `dist`）。回報用的 detail 行。
  * 鑰匙走 cloudflareDeployEnv（登錄簿指名、只進 wrangler 那一個子行程，D36）。
  * wrangler 的 cwd 用安裝器目錄——部署站也在那裡跑 npx wrangler，同一份 node_modules。
@@ -562,10 +580,20 @@ function publishToR2() {
     // cwd 用 bundle 工作區：r2 object put 是帳號層級指令，不需要任何 worker 設定；
     //   在 installer/oauth-prototype 底下跑時 wrangler 會往上讀到 installer/wrangler.jsonc
     //   （安裝器範本，KV id 是空的）而整條設定檢查失敗（2026-10-14 地端實撞）。
-    run: (args) => shLive('npx', args, ctx.bundlesDir, cred.env),
+    run: (args) => r2PutRetry(args, ctx.bundlesDir, cred.env),
   });
   ctx.distPointer = r.pointerUrl;
-  return [`帳號 ${T.dist.accountId}｜bucket ${T.dist.bucket}`, ...cred.lines, ...r.detail, `最新版指標：${r.pointerUrl}`];
+  // inkstone/Arcrun#432、inkstone/InkStoneCo#330：App 市集目錄（安裝站 /apps）。來源 repo 有 app-market/ 才出；
+  // 與零件包同一條路、同一個 commit 算出來——引擎一換版，目錄就跟著對。出版晚於零件包與指標都不影響用戶（目錄是獨立檔案）。
+  const appDir = join(ctx.arcrunRepo, 'app-market');
+  let feedLine = '市集目錄：來源沒有 app-market/，這次不更新 /apps';
+  if (existsSync(join(appDir, 'build-feed.mjs'))) {
+    const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));
+    execFileSync('node', [join(appDir, 'build-feed.mjs'), '--out', feedDir], { cwd: ctx.arcrunRepo, stdio: 'pipe' });
+    const f = publishAppsFeed({ dist: T.dist, feedDir, run: (args) => r2PutRetry(args, ctx.bundlesDir, cred.env) });
+    feedLine = `市集目錄：${f.count} 個 App 包＋index.json → ${f.indexUrl}`;
+  }
+  return [`帳號 ${T.dist.accountId}｜bucket ${T.dist.bucket}`, ...cred.lines, ...r.detail, feedLine, `最新版指標：${r.pointerUrl}`];
 }
 
 /**

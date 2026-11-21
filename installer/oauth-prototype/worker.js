@@ -298,8 +298,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@8e88e89444fefc1171ca310c1c754fbdc60a6e2f';
-const BUNDLE_BUILT = '2026-11-20'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@5b3f213f7a8d595958f5d832bbbdd730ccae402a';
+const BUNDLE_BUILT = '2026-11-21'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -5717,6 +5717,15 @@ export default {
       return distHandle(request, env, pathname);
     }
 
+    // inkstone/Arcrun#432、inkstone/InkStoneCo#330：App 市集目錄。引擎的預設市集來源就是
+    // `<INSTALLER_ORIGIN>/apps`（cypher-executor lib/app-market.ts marketSourceUrls），內容是
+    // `node app-market/build-feed.mjs --out <資料夾>` 的產出（index.json＋packages/）。
+    // 綁了 R2（stage）→ 讀 `apps/` 前綴；沒綁但有 APP_FEED_BASE → 轉去那個靜態目錄；兩者皆無 → 404
+    // （誠實說「這個安裝站沒有市集目錄」，不回空目錄冒充「市集沒有 App」）。
+    if (pathname === "/apps" || pathname.startsWith("/apps/")) {
+      return appsHandle(request, env, pathname);
+    }
+
     if (!env.INSTALLER_KV) {
       return html(
         pageShell(
@@ -5959,13 +5968,41 @@ async function bundleFetch(env, url, init) {
   }
   return fetch(url, init);
 }
-async function distHandle(request, env, pathname) {
+/** 市集目錄只開兩類 key：目錄檔 `apps/index.json`、App 包 `apps/packages/<id>-<版本>.json`。其餘（含 ..）一律 404。 */
+function appsKeyAllowed(key) {
+  if (key.includes('..') || key.includes('//')) return false;
+  return key === 'apps/index.json' || /^apps\/packages\/[a-z][a-z0-9_-]{0,63}-\d+\.\d+\.\d+\.json$/.test(key);
+}
+async function appsHandle(request, env, pathname) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+  }
+  let rel;
+  try { rel = decodeURIComponent(pathname.replace(/^\/apps\/?/, '')); } catch (_) { return new Response('not found', { status: 404 }); }
+  const key = 'apps/' + rel;
+  if (!appsKeyAllowed(key)) return new Response('not found', { status: 404 });
+  if (env.DIST) return distHandle(request, env, pathname, key);
+  const base = String(env.APP_FEED_BASE || '').replace(/\/+$/, '');
+  if (/^https:\/\//i.test(base)) {
+    const up = await fetch(`${base}/${rel}`, { method: request.method, headers: { accept: 'application/json' } });
+    const h = new Headers();
+    h.set('content-type', up.headers.get('content-type') || 'application/json; charset=utf-8');
+    h.set('cache-control', rel === 'index.json' ? 'no-cache' : 'public, max-age=31536000, immutable');
+    return new Response(request.method === 'HEAD' ? null : up.body, { status: up.status, headers: h });
+  }
+  return new Response(JSON.stringify({ error: '這個安裝站沒有 App 市集目錄（沒綁 R2、也沒設 APP_FEED_BASE）' }),
+    { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+}
+async function distHandle(request, env, pathname, keyOverride) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
   }
   let key;
-  try { key = decodeURIComponent(pathname.slice('/dist/'.length)); } catch (_) { return new Response('not found', { status: 404 }); }
-  if (!distKeyAllowed(key)) return new Response('not found', { status: 404 });
+  if (keyOverride) key = keyOverride;
+  else {
+    try { key = decodeURIComponent(pathname.slice('/dist/'.length)); } catch (_) { return new Response('not found', { status: 404 }); }
+    if (!distKeyAllowed(key)) return new Response('not found', { status: 404 });
+  }
   const wantRange = request.headers.has('range');
   const obj = request.method === 'HEAD'
     ? await env.DIST.head(key)

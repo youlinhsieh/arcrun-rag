@@ -26,7 +26,7 @@ export function renderFeedbackProbe(settings = resolveForgeSettings(), opts = {}
   if (String(o.cron).trim().split(/\s+/).length !== 5) throw new Error('cron 要 5 欄');
   const subs = {
     __AHUB_CYPHER_URL__: settings.cypherUrl.replace(/\/+$/, ''), __AHUB_NS__: settings.ns,
-    __ALERT_REPO__: o.alertRepo, __ALERT_NUMBER__: String(o.alertNumber), __PROBE_REPO__: o.probeRepo, __PROBE_CRON__: o.cron, __INBOX_NS__: o.inboxNs,
+    __ALERT_REPO__: o.alertRepo, __ALERT_OWNER__: o.alertRepo.split('/')[0], __ALERT_NAME__: o.alertRepo.split('/')[1], __ALERT_NUMBER__: String(o.alertNumber), __PROBE_REPO__: o.probeRepo, __PROBE_CRON__: o.cron, __INBOX_NS__: o.inboxNs,
   };
   let yaml = readFile(PROBE_FILE);
   for (const [k, v] of Object.entries(subs)) yaml = yaml.split(k).join(v);

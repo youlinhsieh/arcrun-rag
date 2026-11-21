@@ -57,7 +57,7 @@ test('探針：被相近票比對擋下（409 重複候選）→ 帶逐張交代
   assert.equal(bodies.length, 2);
   assert.equal(bodies[0].compared, undefined);
   assert.deepEqual(bodies[1].compared.map((c) => c.ref), ['inkstone/arcrun-rag#242', 'inkstone/arcrun-rag#243', 'inkstone/arcrun-rag#295']);
-  assert.equal(new Set(bodies[1].compared.map((c) => c.reason)).size, 1);
+  assert.equal(new Set(bodies[1].compared.map((c) => c.reason)).size, 3);
 });
 test('探針：重送仍被擋就失敗，只送兩次；非「重複候選」的失敗不重送', async () => {
   let n = 0;
@@ -74,6 +74,30 @@ test('探針：引擎把輸出包兩層 data 也認得票號', async () => {
   const f = async () => ({ ok: true, status: 200, json: async () => ({ success: true, data: { success: true, data: { success: true, number: 777, url: 'u' } }, trace: [{ number: 1 }] }) });
   assert.deepEqual(await probeInbox({ fetchImpl: f }), { ok: true, number: 777, url: 'u' });
 });
+// 真 AHub 的「逐張交代」檢查（Arcrun workflows/ahub/mcp.mjs 開票說明＋workflows/tests/ahub-dedup.test.mjs）：
+// 每張候選都要點名、理由 ≥10 字、各張不同。演練替身沒這條檢查，曾讓「同一句貼給每張」的錯過關（#282 第 38 則）。
+export const strictCompared = (compared, refs) => {
+  if (!Array.isArray(compared) || compared.length !== refs.length) return false;
+  if (!refs.every((r) => compared.some((c) => c.ref === r))) return false;
+  const rs = compared.map((c) => String(c.reason || ''));
+  return rs.every((r) => r.length >= 10) && new Set(rs).size === rs.length;
+};
+test('探針重送的 compared 過得了真 AHub 的逐張交代檢查（理由各不相同）', async () => {
+  const refs = ['inkstone/arcrun-rag#368', 'inkstone/arcrun-rag#369', 'inkstone/arcrun-rag#242'];
+  let n = 0;
+  const f = async (url, init) => {
+    n++;
+    const b = JSON.parse(init.body);
+    if (!b.compared) return { ok: false, status: 409, json: async () => ({ success: false, error: '重複候選=' + refs.join(' ') }) };
+    return strictCompared(b.compared, refs)
+      ? { ok: true, status: 200, json: async () => ({ success: true, data: { number: 5, url: 'u' } }) }
+      : { ok: false, status: 409, json: async () => ({ success: false, error: '重複候選=' + refs.join(' ') }) };
+  };
+  assert.equal((await probeInbox({ fetchImpl: f })).ok, true);
+  assert.equal(n, 2);
+  assert.equal(strictCompared(refs.map((ref) => ({ ref, reason: '同一句話貼給每一張的理由' })), refs), false);
+});
+
 const regOk = { ok: true, status: 200, json: async () => ({ data: { status: 201, body: {} } }) };
 test('種金鑰：原文先寫進收件端、再向 AHub 只送雜湊；回傳不含值', async () => {
   const calls = [];

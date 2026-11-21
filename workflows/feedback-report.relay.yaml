@@ -1,0 +1,95 @@
+# feedback_report（轉送版）— youlin 上的「舊版小幫手相容轉送」（inkstone/arcrun-rag#282）
+#
+# 為什麼有它：已安裝的小幫手 0.18.123（含）以前，`feedbackInboxBase` 寫死 youlin
+# （https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev）。收件端搬到 uncle6 後，這些舊版學員按「?」
+# 仍然打到 youlin 的 `/webhooks/named/inbox-feedback/feedback_report/trigger`，而 youlin 沒有 ahub_token
+# ⇒ 每一則都送不出去。main 上改送 uncle6 的版本要到 0.18.124 才出貨。
+#
+# 這條工作流只做一件事：把收到的回報原樣轉給 uncle6 的同名 trigger，再把 uncle6 的結果整理成
+# 「跟直接打 uncle6 一樣」的回應——成功時有 {repo, number, url}；AHub 判重複時錯誤字串帶 `重複候選=`，
+# 小幫手（feedback.go postFeedbackRef／duplicateCandidates）才會帶 compared 重送。
+#
+# 🔴 youlin 這端不放任何金鑰：沒有 {{credential.*}}、不種 ahub_token。開票的金鑰只在 uncle6。
+# 🔴 這是過渡。youlin 會被重置（youlin-stage-reset.sh），重置後要重推一次：
+#       node installer/scripts/feedback-inbox.mjs deploy-relay
+#    拆除判準寫在 inkstone/arcrun-rag#282。
+# 🔴 輸入驗證與長度上限由 uncle6 那端的 feedback_report 做；這裡只過濾「呼叫端沒帶的欄位」（引擎對沒帶的
+#    {{input.x}} 會留下字面字串），不改寫任何內容。
+
+name: feedback_report
+description: >
+  過渡用轉送（arcrun-rag#282）：舊版小幫手送到 youlin 的回報，原樣轉到 uncle6 的 feedback_report 開票，
+  回應與直接打 uncle6 相同。youlin 不放任何金鑰。
+
+flow:
+  - "input >> ON_SUCCESS >> prep"
+  - "prep >> ON_SUCCESS >> forward"
+  - "forward >> ON_SUCCESS >> after_forward"
+
+config:
+  prep:
+    component: code
+    code: |
+      var raw = function (v) {
+        if (typeof v === 'string' && /^\s*\{\{input\.\w+\}\}\s*$/.test(v)) return undefined;
+        return v;
+      };
+      var payload = {};
+      var keys = ['text', 'version', 'instance', 'os', 'reporter', 'diagnostics', 'event_key', 'compared', 'repo'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = raw(input[keys[i]]);
+        if (v !== undefined && v !== null) payload[keys[i]] = v;
+      }
+      if (payload.text === undefined || String(payload.text).trim() === '') {
+        return { success: false, error: 'feedback_report 缺 text（不能是空白回報）' };
+      }
+      return { success: true, payload: payload };
+    input:
+      text: "{{input.text}}"
+      version: "{{input.version}}"
+      instance: "{{input.instance}}"
+      os: "{{input.os}}"
+      reporter: "{{input.reporter}}"
+      diagnostics: "{{input.diagnostics}}"
+      repo: "{{input.repo}}"
+      event_key: "{{input.event_key}}"
+      compared: "{{input.compared}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536
+
+  forward:
+    component: http_request
+    method: POST
+    url: "https://arcrun-cypher-executor.uncle6-me.workers.dev/webhooks/named/inbox-feedback/feedback_report/trigger"
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_json: "{{prep.data.payload}}"
+
+  after_forward:
+    component: code
+    code: |
+      var env = input.forward_raw;
+      if (typeof env === 'string') { try { env = JSON.parse(env); } catch (e) { env = null; } }
+      var find = function (v, d) {
+        if (!v || typeof v !== 'object' || d > 6) return null;
+        if (typeof v.number === 'number' && v.number > 0 && typeof v.repo === 'string') return v;
+        var ks = Object.keys(v);
+        for (var i = 0; i < ks.length; i++) { var r = find(v[ks[i]], d + 1); if (r) return r; }
+        return null;
+      };
+      var hit = env && env.success !== false ? find(env, 0) : null;
+      if (hit) {
+        return { success: true, repo: hit.repo, number: hit.number, url: String(hit.url || hit.html_url || ''), reporter: hit.reporter };
+      }
+      // 失敗：把 uncle6 的錯誤原樣帶回（含 `重複候選=…`，小幫手靠它帶 compared 重送）。
+      var msg = '';
+      if (env && typeof env === 'object') msg = String(env.error || (env.data && env.data.error) || '');
+      if (!msg) msg = String(input.forward_raw || '').slice(0, 600);
+      return { success: false, error: msg || '轉送失敗：收件端沒有回應內容' };
+    input:
+      forward_raw: "{{forward.data.body}}"
+    limits:
+      timeout_ms: 2000
+      max_output_bytes: 65536

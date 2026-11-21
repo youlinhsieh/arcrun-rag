@@ -94,14 +94,18 @@ export function instancePayloadFingerprint(repoRoot) {
  * 只認「真正會送到用戶機器上的東西」，不含 built/release/source 自己
  * （否則指紋會因為自己變動而變動，永遠停不下來）。
  */
-export function contentFingerprint(core, payloadFingerprint = '') {
+export function contentFingerprint(core, payloadFingerprint = '', daemonVersion = '') {
   const flat = [...core]
     .map((c) => `${c.name}:${c.sha256}`)
     .sort()
     .join('|');
   // 空字串 ⇒ 完全不加後綴 ⇒ 與 2026-09-20 之前算出來的指紋逐位元相同
   // （讀不到酬載的呼叫端不會因為本次改動被迫虛增一版）。
-  const material = payloadFingerprint ? `${flat}#payload:${payloadFingerprint}` : flat;
+  let material = payloadFingerprint ? `${flat}#payload:${payloadFingerprint}` : flat;
+  // 🔴 inkstone/arcrun-rag#353（2026-11-21）：桌面小幫手（daemon）版本也是「送到用戶機器上的東西」。
+  //   只換 daemon、雲端零件沒動時，舊指紋不變 ⇒ release 號不動 ⇒ 同一個 1.4.255 換了包
+  //   （違反 inkstone/Arcrun#464「同版號不換包」）。空字串 ⇒ 不加後綴 ⇒ 與舊指紋逐位元相同。
+  if (daemonVersion) material += `#daemon:${daemonVersion}`;
   return createHash('sha256').update(material).digest('hex');
 }
 
@@ -209,7 +213,16 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
   const core = recomputeShas(bundlesDir, m.core);
   // #141：工作流／skill 也是「這台實例上有什麼」的一部分（見 instancePayloadFingerprint）。
   const payloadFingerprint = instancePayloadFingerprint(repoRoot);
-  const fingerprint = contentFingerprint(core, payloadFingerprint);
+  // #353：daemon 版本進指紋（manifest.daemon.version）。fingerprintDaemon 記下「指紋裡算了哪一版 daemon」，
+  //   verifyManifest 才能用同一個式子重算；舊版（簽核帳上沒算 daemon 的）重出時為空字串＝舊式子。
+  const daemonVersion = m.daemon && m.daemon.version ? String(m.daemon.version).trim() : '';
+  let fingerprintDaemon = daemonVersion;
+  let fingerprint = contentFingerprint(core, payloadFingerprint, fingerprintDaemon);
+  if (signed && fingerprint !== signed.fingerprint) {
+    // 簽核帳上的舊版（#353 之前出的）指紋沒算 daemon：退回舊式子比對，對得上才當作同一份內容。
+    const legacy = contentFingerprint(core, payloadFingerprint, '');
+    if (legacy === signed.fingerprint) { fingerprint = legacy; fingerprintDaemon = ''; }
+  }
   // 🔴 inkstone/arcrun-rag#302：重出「已經簽核的舊版」（signed＝{release, fingerprint, built}，取自 release-ledger）。
   //   這一趟的版號**不由共用狀態推算**（共用狀態已經走到比較新的版，照算會變成新的 patch、對不上簽核），
   //   而是：內容指紋必須等於帳上那一版 ⇒ 版號就是那一版；對不上就丟錯（不出沒被簽的內容）。
@@ -242,6 +255,7 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
     schema: m.schema || 'arcrun-rag-bundles/v1',
     release,                                        // ← 用戶看到的那個號碼（唯一真相源）
     fingerprint,                                    // ← 下次比對用，決定要不要 bump
+    fingerprint_daemon: fingerprintDaemon || undefined, // ← #353：指紋裡算了哪一版 daemon（空＝舊式子）
     // #141：酬載那一半單獨留一格，`verifyManifest` 才有辦法分辨
     //   「這次真的沒有酬載」與「這次讀不到酬載（repoRoot 給錯）」。
     //   後者若靜默通過，版本號會無聲倒退成只認 core 的算法。
@@ -299,7 +313,16 @@ export function verifyManifest(bundlesDir, { repoRoot = process.cwd() } = {}) {
       + `manifest 寫 ${String(m.payload_fingerprint).slice(0, 12)}…，磁碟實檔算出來是 ${payloadFp.slice(0, 12)}…`
       + '（漏跑 syncManifest）。這一格沒跳號 ⇒ portal 會對既有用戶說「已是最新版」⇒ 修法到不了他手上。');
   }
-  const fp = contentFingerprint(core, payloadFp);
+  // #353：daemon 版本在指紋裡。manifest 記了 fingerprint_daemon 就照它算；它必須等於現在宣告的 daemon 版本，
+  //   否則＝只換了 daemon 卻沒跑 syncManifest ⇒ release 沒跳號（同版號換包）。
+  const fpDaemon = m.fingerprint_daemon ? String(m.fingerprint_daemon) : '';
+  const declaredDaemon = m.daemon && m.daemon.version ? String(m.daemon.version).trim() : '';
+  if (fpDaemon && fpDaemon !== declaredDaemon) {
+    problems.push(
+      `daemon 版本變了但 release 沒 bump：指紋算的是 ${fpDaemon}，manifest.daemon.version 是 ${declaredDaemon || '(無)'}`
+      + '（漏跑 syncManifest）。只換小幫手也要出新的 release 號（inkstone/arcrun-rag#353）。');
+  }
+  const fp = contentFingerprint(core, payloadFp, fpDaemon);
   if (m.fingerprint && m.fingerprint !== fp) {
     problems.push(`指紋不符：內容變了但 release 沒 bump（manifest release=${m.release}）`);
   }
