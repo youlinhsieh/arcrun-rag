@@ -140,6 +140,7 @@ import { frontDoorStation } from './front-door.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { syncBundleClone } from './bundle-sync.mjs';
 import { readAhubStage, checkSameVersion } from './same-version-gate.mjs';
+import { appsFeedFingerprint } from './apps-feed-fingerprint.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { runVisaGate, checkTwoPart, alignDoneIntent } from './visa-gate.mjs';
 import { checkDaemonDownload } from './verify-download.mjs';
@@ -2021,6 +2022,8 @@ const STEPS = [
   const shared = T.bundles.remote !== 'local-selftest'; // selftest 本機臨時目標，不進共用版本狀態
   const { release, fingerprint: builtFingerprint } = syncManifest(ctx.bundlesDir, {
     repoRoot: REPO_ROOT, quiet: true, sharedState: shared,
+    // inkstone/Arcrun#471：App 市集目錄（AHub／報社…）進內容指紋——只換 App 也要出新的累計版號（與 #141 工作流、#353 daemon 同病）。
+    appsFingerprint: appsFeedFingerprint(ctx.arcrunRepo),
     // #302：出被簽的舊版——版號取自出貨紀錄、不由共用狀態推算，也不寫回共用狀態（見 release.mjs）。
     signed: ctx.signedEntry ? { release: ctx.signedEntry.version, fingerprint: ctx.signedEntry.fingerprint, built: ctx.signedEntry.built } : null,
   });
@@ -3511,6 +3514,38 @@ const STEPS = [
   // 總監裁決（2026-11-10）：寫不進去不擋、不讓這次出貨紅燈——警告、存待補、報告寫明（stageRecordOutcome）。
   //   stage 已經換版是事實，把它變紅只會讓人重出貨（多換一個版號）；待補清單讓之後一個指令補上。
   return stageRecordOutcome(r, { by, sessionUrl });
+}},
+
+// ── 出 prod 那一刻：把這一版寫進 AHub 的 prod 現況（inkstone/Arcrun#472 B3，總監 comment 1795245326020310）────
+// 沒接之前，AHub 報社的 prod_ship 期刊永遠標「沒有紀錄」，意圖的執行票有沒有上線看不出來。
+// 後端：`POST /ahub/stage` 帶 `target:"prod"`（就地改 prod 那一筆＋記 prod 歷史，不動 stage 現況）；讀用 `GET /ahub/prod`。
+// 🔴 只在 --confirm 且前面每一站都過才寫（擺在最後＝prod 真的上去且驗過才記）；票清單與 stage 站同一套算法（git 祖先），
+//   所以「記的票」就是「這一版來源實際含的票」。
+// 🔴 不擋出貨（同 stage-record 的總監裁決）：prod 已換版是事實；寫不進去警告、存待補，
+//   補寫 `node installer/scripts/stage-record.mjs --retry-pending --target prod`。
+// 🔴 PROD_RECORD_SKIP=<理由> ＝操作者明講不寫。
+{ id: 'prod-record', title: '把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）', mutates: true, async run() {
+  if (TARGET_NAME !== 'prod') return { status: 'skip', detail: ['不是 prod 目標：不寫 prod 現況'] };
+  if (process.env.PROD_RECORD_SKIP) return { status: 'skip', detail: [`⚠️ 操作者明講不寫 prod 現況（PROD_RECORD_SKIP＝${process.env.PROD_RECORD_SKIP}）：AHub 報社的 prod_ship 期刊會標「沒有紀錄」`] };
+  const forge = ticketForge();
+  if (forge.kind !== 'ahub') return { status: 'skip', detail: [`票住在 ${forge.kind}，不是 AHub：沒有 prod 現況可寫`] };
+  const by = process.env.AHUB_STATION || opt('--by') || 'arcrun-rag-hand';
+  const sessionUrl = process.env.SHIP_SESSION_URL || opt('--session-url') || '';
+  let r;
+  try {
+    r = await recordStageShipment({
+      repo: ctx.arcrunRepo, headSha: ctx.arcrunHeadSha, version: ctx.release, by, sessionUrl, target: 'prod',
+      note: `arcrun-rag 出貨線 --target prod｜來源 Arcrun@${String(ctx.arcrunHeadSha || '').slice(0, 7)}`,
+      fetchImpl: forge.fetchImpl, token: ticketToken('ahub'),
+      workdir: join(homedir(), '.arcrun-ship', 'stage-record'),
+    });
+  } catch (e) {
+    r = { ok: false, payload: null, message: `寫入過程出錯：${e && e.message ? e.message : e}` };
+  }
+  const o = stageRecordOutcome(r, { by, sessionUrl });
+  if (!r.ok) o.detail[0] = o.detail[0].replace('stage 現況', 'prod 現況').replace('各線暫時看不到這一版', '報社 prod_ship 期刊暫時看不到這一版');
+  if (!r.ok && r.pending) o.detail[1] = `待補：${r.pending}　→ AHub 可寫之後跑 node installer/scripts/stage-record.mjs --retry-pending --target prod`;
+  return o;
 }},
 ];
 

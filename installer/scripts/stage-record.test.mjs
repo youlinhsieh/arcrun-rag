@@ -179,3 +179,44 @@ test('ship.mjs：preflight 探不到 AHub 只警告、不 throw；寫入站不�
   assert.ok(!/throw new Error/.test(body), 'stage-record 站不准 throw');
   assert.match(body, /stageRecordOutcome/);
 });
+
+// ── prod 現況（inkstone/Arcrun#472 B3）──────────────────────────────────────
+test('prod：payload 帶 target:"prod"、票清單同算法；stage 不帶 target', () => {
+  const repo = tmpRepo(['init', 'feat: a (inkstone/Arcrun#364)', 'feat: b #472']);
+  const head = g(repo, 'rev-parse', 'HEAD');
+  const prod = buildStageRecord({ repo, headSha: head, version: '1.4.260', target: 'prod' });
+  const stg = buildStageRecord({ repo, headSha: head, version: '1.4.260' });
+  assert.equal(prod.target, 'prod');
+  assert.equal(stg.target, undefined);
+  assert.deepEqual(prod.tickets, stg.tickets);
+  assert.deepEqual(prod.tickets, ['inkstone/Arcrun#472', 'inkstone/Arcrun#364']);
+});
+
+test('prod：recordStageShipment 打 POST /ahub/stage 且 body.target＝prod；失敗存到 prod 專用待補檔，不蓋 stage 的', async () => {
+  const repo = tmpRepo(['init', 'feat: x #472']);
+  const head = g(repo, 'rev-parse', 'HEAD');
+  const workdir = mkdtempSync(join(tmpdir(), 'prod-record-wd-'));
+  const calls = [];
+  const r = await recordStageShipment({ repo, headSha: head, version: '1.4.260', by: 'b', fetchImpl: okFetch(calls), token: 't', workdir, target: 'prod' });
+  assert.equal(r.ok, true);
+  assert.match(r.message, /prod 現況/);
+  assert.equal(calls[0].url, 'http://ahub.invalid/api/v1/ahub/stage');
+  assert.equal(JSON.parse(calls[0].init.body).target, 'prod');
+  const bad = async () => new Response('{"message":"boom"}', { status: 500 });
+  const f = await recordStageShipment({ repo, headSha: head, version: '1.4.260', fetchImpl: bad, token: 't', workdir, target: 'prod' });
+  assert.equal(f.ok, false);
+  assert.ok(f.pending.endsWith('prod-record-pending.json'));
+  assert.equal(existsSync(pendingPath(workdir, 'prod')), true);
+  assert.equal(existsSync(pendingPath(workdir)), false);
+  assert.equal(loadPending(workdir, 'prod').target, 'prod');
+});
+
+test('prod：GET /ahub/prod 有對到 AHub 工作流；ship.mjs 的 prod-record 站只在 prod、不 throw', () => {
+  assert.equal(matchAhubRoute('GET', '/ahub/prod').workflow, 'ahub__prod_get');
+  const src = readFileSync(new URL('./ship.mjs', import.meta.url), 'utf8');
+  const st = src.slice(src.indexOf("id: 'prod-record'"));
+  const body = st.slice(0, st.indexOf('}},'));
+  assert.ok(!/throw new Error/.test(body));
+  assert.match(body, /TARGET_NAME !== 'prod'/);
+  assert.match(body, /target: 'prod'/);
+});

@@ -23,6 +23,7 @@ export const STAGE_WINDOW = 300;                         // 與 Arcrun stage-dep
 export const DEFAULT_TICKET_REPO = 'inkstone/Arcrun';    // commit 訊息裡沒寫 repo 的 `#N` 算這個 repo 的票
 export const STAGE_MAX_LIST = 400;                       // AHub 一次最多收的 commits／tickets 筆數（stage_record 路由的上限）
 export const PENDING_NAME = 'stage-record-pending.json';
+export const PROD_PENDING_NAME = 'prod-record-pending.json';   // prod 的待補另存一檔，不和 stage 的混（Arcrun#472 B3）
 
 const git = (repo, args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
 const tryGit = (repo, args) => { try { return git(repo, args); } catch { return null; } };
@@ -42,7 +43,7 @@ export function ticketRefsIn(text, defaultRepo = DEFAULT_TICKET_REPO) {
  * 組出要寫給 AHub 的內容。純 git、不碰網路。headSha 在 repo 裡解不出來就回 null。
  * @returns {object|null} { commit, commits[], tickets[], window, repo, version?, by?, session_url?, note?, discarded? }
  */
-export function buildStageRecord({ repo, headSha, version = '', by = '', sessionUrl = '', note = '', discarded = null, window = STAGE_WINDOW, defaultRepo = DEFAULT_TICKET_REPO }) {
+export function buildStageRecord({ repo, headSha, version = '', by = '', sessionUrl = '', note = '', discarded = null, target = '', window = STAGE_WINDOW, defaultRepo = DEFAULT_TICKET_REPO }) {
   const head = headSha ? (tryGit(repo, ['rev-parse', '--verify', '-q', `${headSha}^{commit}`]) || '').trim() : '';
   if (!/^[0-9a-f]{40}$/i.test(head)) return null;
   const shas = (tryGit(repo, ['rev-list', `--max-count=${window}`, head]) || '').split('\n').map((s) => s.trim()).filter(Boolean);
@@ -54,7 +55,7 @@ export function buildStageRecord({ repo, headSha, version = '', by = '', session
     window: shas.length,
     repo: defaultRepo,
   };
-  for (const [k, v] of [['version', version], ['by', by], ['session_url', sessionUrl], ['note', note], ['discarded', discarded]]) {
+  for (const [k, v] of [['version', version], ['by', by], ['session_url', sessionUrl], ['note', note], ['discarded', discarded], ['target', target === 'prod' ? 'prod' : '']]) {
     if (v) body[k] = v;
   }
   return body;
@@ -83,7 +84,8 @@ export async function postStageRecord({ fetchImpl, token, payload }) {
     return { ok: false, status: 0, message: `連不上 AHub：${e && e.message ? e.message : e}` };
   }
   const text = await res.text().catch(() => '');
-  if (res.status === 201) return { ok: true, status: 201, message: '已寫進 AHub（stage 現況與含的票清單）' };
+  const isProd = payload && payload.target === 'prod';
+  if (res.status === 201) return { ok: true, status: 201, message: isProd ? '已寫進 AHub（prod 現況與含的票清單）' : '已寫進 AHub（stage 現況與含的票清單）' };
   return { ok: false, status: res.status, message: `AHub 沒有回成功（HTTP ${res.status}）：${text.slice(0, 300)}` };
 }
 
@@ -130,48 +132,52 @@ export async function probeStageRecordReady({ fetchImpl, token }) {
   return { ok: false, code: 'unexpected', message: `GET /ahub/stage 回 HTTP ${res.status}：${text.slice(0, 200)}` };
 }
 
-export function pendingPath(workdir) { return join(workdir, PENDING_NAME); }
+export function pendingPath(workdir, target = '') { return join(workdir, target === 'prod' ? PROD_PENDING_NAME : PENDING_NAME); }
 
 export function savePending(workdir, payload) {
-  const p = pendingPath(workdir);
+  const p = pendingPath(workdir, payload && payload.target);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(payload, null, 1));
   return p;
 }
 
-export function loadPending(workdir) {
-  const p = pendingPath(workdir);
+export function loadPending(workdir, target = '') {
+  const p = pendingPath(workdir, target);
   return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
 }
 
-export function clearPending(workdir) {
-  try { unlinkSync(pendingPath(workdir)); } catch { /* 本來就沒有 */ }
+export function clearPending(workdir, target = '') {
+  try { unlinkSync(pendingPath(workdir, target)); } catch { /* 本來就沒有 */ }
 }
 
 /**
  * 出貨一趟的完整動作：組 → 寫 → 寫不進就存 pending。
  * @returns {{ ok:boolean, message:string, payload:object|null, pending?:string }}
  */
-export async function recordStageShipment({ repo, headSha, version, by, sessionUrl, note, discarded, fetchImpl, token, workdir }) {
-  const payload = buildStageRecord({ repo, headSha, version, by, sessionUrl, note, discarded: discardedSha(discarded) });
+export async function recordStageShipment({ repo, headSha, version, by, sessionUrl, note, discarded, fetchImpl, token, workdir, target = '' }) {
+  const payload = buildStageRecord({ repo, headSha, version, by, sessionUrl, note, discarded: discardedSha(discarded), target });
   if (!payload) {
     return { ok: false, payload: null, message: `這一版的 Arcrun 來源 ${String(headSha || '？').slice(0, 12)} 在 ${repo} 找不到，算不出含哪些票` };
   }
   const r = await postStageRecord({ fetchImpl, token, payload });
   if (r.ok) {
-    clearPending(workdir);
+    clearPending(workdir, target);
     return { ok: true, payload, message: `${r.message}：${payload.commit.slice(0, 12)}（${payload.version || '無版號'}），${payload.tickets.length} 張票、往回 ${payload.window} 個 commit` };
   }
   const pending = savePending(workdir, payload);
   return { ok: false, payload, pending, message: r.message };
 }
 
-// ── CLI：補寫上次沒寫成的那份 ─────────────────────────────────────────────
-//   node installer/scripts/stage-record.mjs --retry-pending [--workdir <dir>]
+// ── CLI ─────────────────────────────────────────────────────────────────
+//   補寫上次沒寫成的那份：node installer/scripts/stage-record.mjs --retry-pending [--target prod] [--workdir <dir>]
+//   手動記一筆（演練 prod 路徑用，打的是環境變數指到的那台 AHub）：
+//     node installer/scripts/stage-record.mjs --record --target prod --commit <sha> --version <版號> [--repo <Arcrun 來源目錄>] [--by <工作站>]
 if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
-  if (!argv.includes('--retry-pending')) {
-    console.error('用法：node installer/scripts/stage-record.mjs --retry-pending [--workdir <dir>]\n（平常不必手跑：出貨線 stage-record 站會自己寫）');
+  const arg = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : ''; };
+  const target = arg('--target') === 'prod' ? 'prod' : '';
+  if (!argv.includes('--retry-pending') && !argv.includes('--record')) {
+    console.error('用法：node installer/scripts/stage-record.mjs --retry-pending [--target prod] [--workdir <dir>]\n      node installer/scripts/stage-record.mjs --record --target prod --commit <sha> --version <版號> [--repo <Arcrun 來源目錄>]\n（平常不必手跑：出貨線 stage-record／prod-record 站會自己寫）');
     process.exit(2);
   }
   const { resolve } = await import('node:path');
@@ -181,12 +187,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const repoRoot = resolve(import.meta.dirname, '..', '..');
   const forge = ticketForge();
   prepareShipEnv({ repoRoot, forgeKind: forge.kind });
-  const i = argv.indexOf('--workdir');
-  const workdir = i >= 0 ? argv[i + 1] : join(homedir(), '.arcrun-ship', 'stage-record');
-  const payload = loadPending(workdir);
-  if (!payload) { console.error(`${pendingPath(workdir)} 不存在——沒有待補寫的 stage 紀錄`); process.exit(2); }
+  const workdir = arg('--workdir') || join(homedir(), '.arcrun-ship', 'stage-record');
+  if (argv.includes('--record')) {
+    const r = await recordStageShipment({
+      repo: arg('--repo') || process.cwd(), headSha: arg('--commit'), version: arg('--version'),
+      by: arg('--by') || process.env.AHUB_STATION || 'arcrun-rag-hand', sessionUrl: process.env.SHIP_SESSION_URL || '',
+      note: arg('--note') || `手動記錄（stage-record.mjs --record）`, fetchImpl: forge.fetchImpl, token: ticketToken(forge.kind), workdir, target,
+    });
+    console.log((r.ok ? '✅ ' : '❌ ') + r.message);
+    if (r.payload) console.log(JSON.stringify({ target: r.payload.target || 'stage', commit: r.payload.commit, version: r.payload.version, tickets: r.payload.tickets }));
+    process.exit(r.ok ? 0 : 5);
+  }
+  const payload = loadPending(workdir, target);
+  if (!payload) { console.error(`${pendingPath(workdir, target)} 不存在——沒有待補寫的${target === 'prod' ? ' prod' : ' stage'} 紀錄`); process.exit(2); }
   const r = await postStageRecord({ fetchImpl: forge.fetchImpl, token: ticketToken(forge.kind), payload });
   console.log((r.ok ? '✅ ' : '❌ ') + r.message);
-  if (r.ok) clearPending(workdir);
+  if (r.ok) clearPending(workdir, target);
   process.exit(r.ok ? 0 : 5);
 }

@@ -127,6 +127,7 @@ export const AHUB_ROUTES = [
   // 出貨線每次上 stage 寫一筆（stage-record.mjs）；讀的兩條給驗收與診斷用。
   ['POST', '/ahub/stage', 'ahub__stage_record'],
   ['GET', '/ahub/stage', 'ahub__stage_get'],
+  ['GET', '/ahub/prod', 'ahub__prod_get'],   // prod 現況（出貨線出 prod 時 POST /ahub/stage 帶 target:"prod" 寫；Arcrun#472 B3）
   ['GET', '/repos/:owner/:repo/issues/:index/stage', 'ahub__issue_stage'],
   // 意圖完成簽證的海關（Arcrun AHub 0.39.0，inkstone/Arcrun#438；本 repo 的 inkstone/arcrun-rag#348）：
   // 出 prod 前唯讀問「這個版本有沒有有效簽證」（visa-gate.mjs）。

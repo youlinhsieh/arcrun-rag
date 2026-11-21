@@ -94,7 +94,7 @@ export function instancePayloadFingerprint(repoRoot) {
  * 只認「真正會送到用戶機器上的東西」，不含 built/release/source 自己
  * （否則指紋會因為自己變動而變動，永遠停不下來）。
  */
-export function contentFingerprint(core, payloadFingerprint = '', daemonVersion = '') {
+export function contentFingerprint(core, payloadFingerprint = '', daemonVersion = '', appsFingerprint = '') {
   const flat = [...core]
     .map((c) => `${c.name}:${c.sha256}`)
     .sort()
@@ -106,6 +106,9 @@ export function contentFingerprint(core, payloadFingerprint = '', daemonVersion 
   //   只換 daemon、雲端零件沒動時，舊指紋不變 ⇒ release 號不動 ⇒ 同一個 1.4.255 換了包
   //   （違反 inkstone/Arcrun#464「同版號不換包」）。空字串 ⇒ 不加後綴 ⇒ 與舊指紋逐位元相同。
   if (daemonVersion) material += `#daemon:${daemonVersion}`;
+  // 🔴 inkstone/Arcrun#471（2026-11-21）：App 市集目錄（AHub／報社／迴圈…的版本與包內容）也是「用戶實例能裝到什麼」。
+  //   只換 App、core 與 daemon 沒動時，舊指紋不變 ⇒ AHub 0.50→0.53 出了貨 release 卻不動。空字串 ⇒ 不加後綴 ⇒ 與舊指紋逐位元相同。
+  if (appsFingerprint) material += `#apps:${appsFingerprint}`;
   return createHash('sha256').update(material).digest('hex');
 }
 
@@ -197,7 +200,7 @@ export function writeReleaseState(repoRoot, state) {
  * manifest.json——這樣不同 bundle repo、只要內容指紋相同，就會得到同一個號碼。
  * `sharedState: false`（預設，selftest 等本機臨時目標用）＝舊行為，只跟自己比。
  */
-export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false, sharedState = false, signed = null } = {}) {
+export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = false, sharedState = false, signed = null, appsFingerprint } = {}) {
   const mPath = join(bundlesDir, 'manifest.json');
   if (!existsSync(mPath)) throw new Error(`找不到 ${mPath}`);
   const m = JSON.parse(readFileSync(mPath, 'utf8'));
@@ -217,11 +220,16 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
   //   verifyManifest 才能用同一個式子重算；舊版（簽核帳上沒算 daemon 的）重出時為空字串＝舊式子。
   const daemonVersion = m.daemon && m.daemon.version ? String(m.daemon.version).trim() : '';
   let fingerprintDaemon = daemonVersion;
-  let fingerprint = contentFingerprint(core, payloadFingerprint, fingerprintDaemon);
+  // #471：App 市集目錄指紋。呼叫端沒給（undefined，例如單跑 build-bundles／build-ui-bundle）＝沿用 manifest 上次記的，
+  //   不讓「沒帶」把它靜默丟掉而誤跳號；明確給空字串＝這次沒有目錄。
+  let fingerprintApps = appsFingerprint === undefined ? (m.fingerprint_apps ? String(m.fingerprint_apps) : '') : String(appsFingerprint || '');
+  let fingerprint = contentFingerprint(core, payloadFingerprint, fingerprintDaemon, fingerprintApps);
   if (signed && fingerprint !== signed.fingerprint) {
-    // 簽核帳上的舊版（#353 之前出的）指紋沒算 daemon：退回舊式子比對，對得上才當作同一份內容。
-    const legacy = contentFingerprint(core, payloadFingerprint, '');
-    if (legacy === signed.fingerprint) { fingerprint = legacy; fingerprintDaemon = ''; }
+    // 簽核帳上的舊版（#353／#471 之前出的）指紋沒算 daemon／App：退回舊式子比對，對得上才當作同一份內容。
+    const noApps = contentFingerprint(core, payloadFingerprint, fingerprintDaemon, '');
+    const legacy = contentFingerprint(core, payloadFingerprint, '', '');
+    if (noApps === signed.fingerprint) { fingerprint = noApps; fingerprintApps = ''; }
+    else if (legacy === signed.fingerprint) { fingerprint = legacy; fingerprintDaemon = ''; fingerprintApps = ''; }
   }
   // 🔴 inkstone/arcrun-rag#302：重出「已經簽核的舊版」（signed＝{release, fingerprint, built}，取自 release-ledger）。
   //   這一趟的版號**不由共用狀態推算**（共用狀態已經走到比較新的版，照算會變成新的 patch、對不上簽核），
@@ -256,6 +264,7 @@ export function syncManifest(bundlesDir, { repoRoot = process.cwd(), quiet = fal
     release,                                        // ← 用戶看到的那個號碼（唯一真相源）
     fingerprint,                                    // ← 下次比對用，決定要不要 bump
     fingerprint_daemon: fingerprintDaemon || undefined, // ← #353：指紋裡算了哪一版 daemon（空＝舊式子）
+    fingerprint_apps: fingerprintApps || undefined,     // ← #471：指紋裡算了哪一份 App 目錄（空＝舊式子）
     // #141：酬載那一半單獨留一格，`verifyManifest` 才有辦法分辨
     //   「這次真的沒有酬載」與「這次讀不到酬載（repoRoot 給錯）」。
     //   後者若靜默通過，版本號會無聲倒退成只認 core 的算法。
@@ -322,7 +331,7 @@ export function verifyManifest(bundlesDir, { repoRoot = process.cwd() } = {}) {
       `daemon 版本變了但 release 沒 bump：指紋算的是 ${fpDaemon}，manifest.daemon.version 是 ${declaredDaemon || '(無)'}`
       + '（漏跑 syncManifest）。只換小幫手也要出新的 release 號（inkstone/arcrun-rag#353）。');
   }
-  const fp = contentFingerprint(core, payloadFp, fpDaemon);
+  const fp = contentFingerprint(core, payloadFp, fpDaemon, m.fingerprint_apps ? String(m.fingerprint_apps) : '');
   if (m.fingerprint && m.fingerprint !== fp) {
     problems.push(`指紋不符：內容變了但 release 沒 bump（manifest release=${m.release}）`);
   }

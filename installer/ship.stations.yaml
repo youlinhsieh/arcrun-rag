@@ -134,7 +134,7 @@
       根本不在這個產出物的涵蓋範圍內，**而它一樣有真的使用者**（封測者）。
       名字綁死主機，漏掉的那一半就不會現形——同 `landing` 那次的形狀（arcrun-rag#88）。
 
-# ── 站表：25 站（2026-11-10 新增 stage-record，arcrun-rag#301；instance-update，arcrun-rag#303；兩站都只在 stage 動作，prod 整站跳過）────
+# ── 站表：28 站（2026-11-21 新增 prod-record，Arcrun#472 B3；只在 prod 動作）（2026-11-10 新增 stage-record，arcrun-rag#301；instance-update，arcrun-rag#303；兩站都只在 stage 動作，prod 整站跳過）────
 站:
 
   - id: preflight
@@ -775,6 +775,27 @@
     驗法: |
       `node --test installer/scripts/stage-record.test.mjs`（組出的內容格式、票號去重、丟掉的線上那顆、寫失敗存 pending 不安靜）；
       出貨後從 AHub 讀回：`GET /ahub/stage` 的 commit／version 就是這一版，票詳情「stage」那一行與 MCP get_issue 的 `stage` 顯示「含」。
+
+  - id: prod-record
+    名字: 把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）
+    為什麼有這一站: |
+      inkstone/Arcrun#472 B3（總監 comment 1795245326020310）。AHub 報社的 prod_ship 期刊要讀「prod 現在是哪一版、含哪些票」，
+      沒人寫之前它永遠標「沒有紀錄」，意圖底下的執行票有沒有上線看不出來。
+      後端已接好：`POST /ahub/stage` 帶 `target:"prod"` 就地改 prod 那一筆（另記 prod 歷史，不動 stage 現況）；讀用 `GET /ahub/prod`。
+    只在出貨那一下: |
+      只在 prod 目標、且前面每一站都過（`--confirm`）才寫；不輪詢、不排程、不對任何票留言。票清單與 stage-record 站同一套算法（來源 commit 往回 300 個 commit 的訊息）。
+      寫不進去不擋出貨（同 stage-record 的總監裁決）：警告、內容存 `~/.arcrun-ship/stage-record/prod-record-pending.json`，
+      補寫用 `node installer/scripts/stage-record.mjs --retry-pending --target prod`；`PROD_RECORD_SKIP=<理由>` 可明講不寫。stage 目標整站跳過。
+    憑證: |
+      只碰名字（D36）：權杖由 `ship-env.mjs` 的 prepareShipEnv 取進本行程的 env（AHUB_TOKEN），這裡只讀不印不落檔。
+    用什麼: 本機
+    為什麼不搬: 缺零件
+    要搬需要: 同 stage-record：一顆能算 commit 往回 300 個的 sha 與票號並寫進 AHub 的 Arcrun 零件／recipe。
+    理由: |
+      與 stage-record 共用同一份 git 計算與同一個 AHub 寫入呼叫，只差 payload 多一個 `target:"prod"`；搬不搬跟著 stage-record 走。
+    驗法: |
+      `node --test installer/scripts/stage-record.test.mjs`；演練：用同一支 `stage-record.mjs --record --target prod` 打 stage 實例的 AHub，
+      `GET /ahub/prod` 讀回 commit／version，票清單與該 commit 往回算出的票一致（貼回本票）。
 
 # ── 失敗處理 ────────────────────────────────────────────────────────────────
 失敗處理:

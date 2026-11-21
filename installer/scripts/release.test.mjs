@@ -311,3 +311,66 @@ test('#353 沒有 daemon 版本時指紋與舊式子逐位元相同', async () =
   assert.equal(contentFingerprint(core, 'p', ''), contentFingerprint(core, 'p'));
   assert.notEqual(contentFingerprint(core, '', '0.18.124'), contentFingerprint(core, ''));
 });
+
+// ── inkstone/Arcrun#471：只換 App（AHub 0.50→0.53，core 與 daemon 沒動）也要出新的 release 號 ─────
+test('🔴 #471 core 與 daemon 一個位元都沒動、只有 App 市集目錄變 ⇒ release 必須跳號', () => {
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    writeFileSync(join(repoRoot, 'RELEASE_LINE'), '1.4\n');
+    seedDaemonBundle(dir, '0.18.124');
+    const r1 = syncManifest(dir, { repoRoot, sharedState: true, quiet: true, appsFingerprint: 'apps-A' });
+    const again = syncManifest(dir, { repoRoot, sharedState: true, quiet: true, appsFingerprint: 'apps-A' });
+    assert.equal(again.release, r1.release, '目錄沒變就不虛增');
+    const r2 = syncManifest(dir, { repoRoot, sharedState: true, quiet: true, appsFingerprint: 'apps-B' });
+    assert.notEqual(r2.release, r1.release, '只換 App 卻沒跳號 ⇒ 同一個版號換了包（AHub 0.50→0.53 就是這樣靜默出貨）');
+    assert.equal(manifestOf(dir).fingerprint_apps, 'apps-B');
+    // 沒帶（單跑 build-bundles 之類）＝沿用上次記的，不誤跳號也不丟欄位
+    const kept = syncManifest(dir, { repoRoot, sharedState: true, quiet: true });
+    assert.equal(kept.release, r2.release);
+    assert.equal(manifestOf(dir).fingerprint_apps, 'apps-B');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('🔴 #471 向後相容：App 指紋為空 ⇒ 與舊式子逐位元相同；簽核舊版（沒算 App）仍能重出', async () => {
+  const { contentFingerprint } = await import('./release.mjs');
+  const core = [{ name: 'a', sha256: 'x' }];
+  assert.equal(contentFingerprint(core, 'p', '0.18.1', ''), contentFingerprint(core, 'p', '0.18.1'));
+  assert.notEqual(contentFingerprint(core, 'p', '0.18.1', 'apps'), contentFingerprint(core, 'p', '0.18.1'));
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    seedDaemonBundle(dir, '0.18.124');
+    const m0 = manifestOf(dir);
+    const core0 = syncManifest(dir, { repoRoot, quiet: true }); // 這份 bundle 自洽的舊指紋（沒算 App）
+    const signed = { release: '1.4.77', fingerprint: core0.fingerprint, built: '2026-11-20' };
+    const r = syncManifest(dir, { repoRoot, quiet: true, signed, appsFingerprint: 'apps-NEW' });
+    assert.equal(r.release, '1.4.77');
+    assert.equal(r.fingerprint, signed.fingerprint, '對不上新式子就退回舊式子比對，且不把新指紋寫成簽核版的指紋');
+    assert.equal(manifestOf(dir).fingerprint_apps, undefined);
+    void m0;
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('🔴 #471 verifyManifest：manifest 記了 App 指紋，驗算照它', async () => {
+  const { verifyManifest } = await import('./release.mjs');
+  const repoRoot = tempDir('release-test-repo-');
+  const dir = tempDir('release-test-stage-');
+  try {
+    seedDaemonBundle(dir, '0.18.124');
+    syncManifest(dir, { repoRoot, quiet: true, appsFingerprint: 'apps-A' });
+    assert.deepEqual(verifyManifest(dir, { repoRoot }).filter((p) => /指紋不符/.test(p)), []);
+    const m = manifestOf(dir); m.fingerprint_apps = 'apps-TAMPERED';
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(m, null, 1));
+    assert.ok(verifyManifest(dir, { repoRoot }).some((p) => /指紋不符/.test(p)));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
