@@ -298,7 +298,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@911cdf0e5a4557f0dee414471d85af7a27d3b564';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b63c2127950e4ac161623aaf208793ac1fe26430';
 const BUNDLE_BUILT = '2026-11-21'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -6970,12 +6970,53 @@ function appsKeyAllowed(key) {
   if (key.includes('..') || key.includes('//')) return false;
   return key === 'apps/index.json' || /^apps\/packages\/[a-z][a-z0-9_-]{0,63}-\d+\.\d+\.\d+\.json$/.test(key);
 }
+/**
+ * 市集上架線（inkstone/arcrun-rag#381）的讀取端。市集的家：`market/` 前綴——
+ *   stage＝同一顆 R2（env.DIST）的 `market/`；prod＝`env.MARKET_BASE`（官方服務那一側，與零件包釘子無關）。
+ *   `market/current.json` 指到「最後一次簽過的市集版」；目錄在 `market/index/<版>.json`，App 包在 `market/packages/`。
+ * 回 null＝這個安裝站沒有市集指標（呼叫端退回舊路：跟著零件包釘子走）。
+ * 有指標但取不到它指的檔＝誠實 404／502，不退回舊路（那會讓用戶看到另一份目錄）。
+ */
+async function marketRead(env, rel) {
+  const key = 'market/' + rel;
+  if (env.MARKET_BASE && /^https:\/\//i.test(String(env.MARKET_BASE))) {
+    const up = await fetch(`${String(env.MARKET_BASE).replace(/\/+$/, '')}/${rel}`, { headers: { accept: 'application/json' } });
+    return up.ok ? up : (up.status === 404 ? null : new Response('upstream', { status: 502 }));
+  }
+  if (env.DIST) {
+    const o = await env.DIST.get(key);
+    return o ? new Response(o.body, { status: 200 }) : null;
+  }
+  return null;
+}
+async function marketServe(request, env, rel) {
+  const pr = await marketRead(env, 'current.json');
+  if (!pr) return null;
+  if (pr.status === 502) return new Response(JSON.stringify({ error: '市集來源暫時讀不到' }), { status: 502, headers: { 'content-type': 'application/json; charset=utf-8' } });
+  const pointerText = await pr.text();
+  let pointer;
+  try { pointer = JSON.parse(pointerText); } catch (_) { return new Response(JSON.stringify({ error: '市集指標壞了' }), { status: 502, headers: { 'content-type': 'application/json; charset=utf-8' } }); }
+  const jsonHeaders = (cache) => ({ 'content-type': 'application/json; charset=utf-8', 'cache-control': cache, 'x-arcrun-market-version': String(pointer.version || '') });
+  if (rel === 'current.json') return new Response(request.method === 'HEAD' ? null : pointerText, { status: 200, headers: jsonHeaders('no-cache') });
+  if (!/^\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7}$/.test(String(pointer.version || ''))) return new Response(JSON.stringify({ error: '市集指標的版號不合法' }), { status: 502, headers: { 'content-type': 'application/json; charset=utf-8' } });
+  const target = rel === 'index.json' ? `index/${pointer.version}.json` : rel;
+  const up = await marketRead(env, target);
+  if (!up || up.status === 502) return new Response(JSON.stringify({ error: `市集版 ${pointer.version} 沒有 ${rel}` }), { status: up ? 502 : 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+  return new Response(request.method === 'HEAD' ? null : up.body, { status: 200, headers: jsonHeaders(rel === 'index.json' ? 'no-cache' : 'public, max-age=31536000, immutable') });
+}
 async function appsHandle(request, env, pathname) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
   }
   let rel;
   try { rel = decodeURIComponent(pathname.replace(/^\/apps\/?/, '')); } catch (_) { return new Response('not found', { status: 404 }); }
+  // inkstone/arcrun-rag#381：市集有自己的家與版本（`market/current.json`＝最後一次簽過的市集版）。
+  //   有指標就只認它——與主程式的零件包釘子無關；沒有指標（還沒上過市集線）才退回下面的舊路。
+  if (rel === 'current.json' || appsKeyAllowed('apps/' + rel)) {
+    const m = await marketServe(request, env, rel);
+    if (m) return m;
+  }
+  if (rel === 'current.json') return new Response(JSON.stringify({ error: '這個安裝站還沒有市集指標（市集仍跟著零件包釘子走）' }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
   const key = 'apps/' + rel;
   if (!appsKeyAllowed(key)) return new Response('not found', { status: 404 });
   if (env.DIST) return distHandle(request, env, pathname, key);

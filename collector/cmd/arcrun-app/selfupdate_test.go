@@ -232,3 +232,14 @@ func TestMoveFile_SameDir(t *testing.T) {
 		t.Fatalf("內容不符：got %q want %q", got, want)
 	}
 }
+
+// #382：預解失敗（檔案不存在／格式不認得）不能讓下載整個失敗，也不能憑空生出 AppPath；
+// 按「重啟」時才有機會走原本的即時解並誠實回錯。
+func TestPreUnpackStagedFailureLeavesAppPathEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	in := stagedUpdate{Version: "9.9.9", ZipPath: "/nonexistent/x.bin", Ready: true}
+	out := preUnpackStaged(in)
+	if out.AppPath != "" || !out.Ready || out.Version != "9.9.9" {
+		t.Fatalf("預解失敗應原樣保留、AppPath 為空：%+v", out)
+	}
+}

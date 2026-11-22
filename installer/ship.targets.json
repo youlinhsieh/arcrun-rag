@@ -272,6 +272,19 @@
         "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
         "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
       },
+      "market": {
+        "_": [
+          "inkstone/arcrun-rag#381（leo 2026-11-22：主程式／store／app 三塊要分開，「就像你要上不同網站要先更新瀏覽器」是荒謬的）。",
+          "市集（App 目錄＋App 包）有自己的家、自己的版本、自己的簽核：stage 的家＝同一顆 R2 的 `market/` 前綴，指標 `market/current.json`＝最後一次上架的市集版。",
+          "宣告了本欄的目標：主程式出貨線（ship.mjs）不再帶 App 包、不再放 /apps 目錄；改由 `node installer/scripts/ship-market.mjs --target stage --confirm` 上架。",
+          "安裝站 `/apps` 讀指標指的那一版（worker.js marketServe），網址不變、引擎不用改。stage 是班車，不查簽核；prod 見 ADR 2026-11-22-market-line。",
+          "沒宣告本欄的目標（今天的 prod）仍照舊：目錄跟著零件包釘子走——prod 的市集家（uncle6 官方服務側）建好、宣告 market 之後才切換，切換前 prod 行為一字不變。"
+        ],
+        "bucket": "arcrun-stage-dist",
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist",
+        "installerBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
+      },
       "releaseRecord": {
         "_": [
           "版本發佈紀錄（Leo/arcrun-rag#88，2026-08-16 接上 stage 這一半）。",

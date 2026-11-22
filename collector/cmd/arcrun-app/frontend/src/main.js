@@ -81,6 +81,9 @@ let page = 'home';
 let libTab = {};          // accIdx -> 'sync'|'folders'|'apps'|'usage'|'ai'（每個帳號各記自己停在哪一分頁）
 let appBack = 'home';     // 從 App 詳情「返回」要回哪（首頁，或某個帳號的 App 分頁）
 let updateInfo = null;
+// #382：按下「更新／重啟更新」到真的換版之間（'download'｜'apply'），按鈕要當下變成處理中並鎖住，
+// 不能等後端回來才反應——否則像當機、使用者會再按。放在模組層，因為畫面每秒重畫一次。
+let updBusy = null;
 let obStep = 1;           // 首次啟動精靈目前在第幾步（issue #23，見 onboarding()）
 
 // ── App 啟動器的暫存（arcrun-rag#137）──
@@ -1397,6 +1400,9 @@ function pageUpdate(s) {
     // Store（msix）版：更新只由 Store 發（#352）——不查最新版、不放任何更新按鈕
     action = '';
     note = `<div class="d">由 Microsoft Store 更新</div>`;
+  } else if (updBusy) {
+    action = `<button class="primary" id="uBusy" disabled aria-busy="true">${updBusy === 'download' ? '下載中…' : '正在換版…'}</button>`;
+    note = '';
   } else if (u && u.staged) {
     action = `<button class="primary" id="uApply">重啟更新</button>`;
     note = '';
@@ -2179,13 +2185,19 @@ async function checkUpdate() {
   try { updateInfo = await go.CheckUpdate(); } catch (ex) { updateInfo = { err: String(ex) }; }
   renderPage();
 }
+// 一鍵到位（#382）：按「更新」＝下載＋換版＋重啟，不必再按第二顆。
 async function downloadUpdate() {
-  updateInfo = Object.assign({}, updateInfo, { notes: '下載中…請稍候' }); renderPage();
+  if (updBusy) return;
+  updBusy = 'download'; renderPage();
   try { updateInfo = await go.DownloadUpdate(); } catch (ex) { updateInfo = { err: String(ex) }; }
-  renderPage();
+  if (updateInfo && updateInfo.staged && !updateInfo.err) { return applyUpdate(); }
+  updBusy = null; renderPage();
 }
 async function applyUpdate() {
-  try { await go.ApplyUpdate(); } catch (ex) { updateInfo = { err: String(ex) }; renderPage(); }
+  if (updBusy === 'apply') return;
+  updBusy = 'apply'; renderPage();   // 當下就變「正在換版…」且鎖住；成功時行程會直接結束重開
+  try { await go.ApplyUpdate(); }
+  catch (ex) { updBusy = null; updateInfo = { err: String(ex) }; renderPage(); }
 }
 
 // 匯出診斷檔（t213）：後端 ExportDiagnostics 自己彈系統存檔對話框；回傳空字串＝

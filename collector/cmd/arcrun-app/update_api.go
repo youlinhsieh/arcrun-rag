@@ -103,7 +103,7 @@ func (a *App) DownloadUpdate() UpdateInfo {
 		info.Err = "下載失敗：" + err.Error()
 		return info
 	}
-	currentStaged = stagedUpdate{Version: rel.Version, ZipPath: zip, Ready: true}
+	currentStaged = preUnpackStaged(stagedUpdate{Version: rel.Version, ZipPath: zip, Ready: true})
 	saveStaged(currentStaged)
 	info.Staged = true
 	return info

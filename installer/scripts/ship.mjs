@@ -589,7 +589,11 @@ function publishToR2() {
   // 與零件包同一條路、同一個 commit 算出來——引擎一換版，目錄就跟著對。出版晚於零件包與指標都不影響用戶（目錄是獨立檔案）。
   const appDir = join(ctx.arcrunRepo, 'app-market');
   let feedLine = '市集目錄：來源沒有 app-market/，這次不更新 /apps';
-  if (existsSync(join(appDir, 'build-feed.mjs'))) {
+  if (T.market) {
+    // inkstone/arcrun-rag#381：宣告了 market 的目標，市集有自己的上架線（installer/scripts/ship-market.mjs）、自己的版本與簽核；
+    //   主程式出貨線不再帶 App 包與目錄——主程式出一班車，市集內容不變。
+    feedLine = '市集目錄：本目標的市集走自己的上架線（ship-market.mjs），主程式出貨不帶、不動';
+  } else if (existsSync(join(appDir, 'build-feed.mjs'))) {
     const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));
     // build-feed 靠「argv[1] ＝ 自己的真實路徑」判斷是不是被直接執行；來源 repo 走符號連結時（例 matrix/arcrun）
     // 路徑對不上它會什麼都不做卻回 0——所以一律給真實路徑，並在產出後驗 index.json 真的在。
@@ -2278,7 +2282,7 @@ const STEPS = [
   //   宣告了 dist 的目標（stage）目錄在 R2（push 站放），這裡不重複。
   //   只加不刪：舊版 App 包依版號命名、不可變，留著不會被「刪檔」閘擋；index.json 每次整份覆蓋。
   let appsLine = null;
-  if (!T.dist) {
+  if (!T.dist && !T.market) {
     const appDir = join(ctx.arcrunRepo, 'app-market');
     if (existsSync(join(appDir, 'build-feed.mjs'))) {
       const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));

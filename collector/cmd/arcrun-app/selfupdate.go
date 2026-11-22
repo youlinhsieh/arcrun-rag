@@ -193,6 +193,29 @@ type stagedUpdate struct {
 	Version string `json:"version"`
 	ZipPath string `json:"zip_path"`
 	Ready   bool   `json:"ready"`
+	// AppPath：Mac 上下載當下就先解好的新 .app（#382）。按「重啟」時不必再掛 dmg、複製整包，
+	// 只剩覆蓋＋重開，按鈕才不會「按了沒反應、過一陣子才動」。空字串＝沒預解，按下時再即時解。
+	AppPath string `json:"app_path,omitempty"`
+}
+
+// preUnpackStaged 在「下載備妥」時就把 .app 解出來（Mac），讓重啟那一刻只剩覆蓋與重開。
+// 解不開不算失敗：留空 AppPath，按下時照舊即時解（並照舊回報錯誤）。Windows 的更新檔就是新 exe，不需預解。
+func preUnpackStaged(s stagedUpdate) stagedUpdate {
+	if isWindows() || s.ZipPath == "" {
+		return s
+	}
+	work := updateStagePath("unpack")
+	_ = os.RemoveAll(work)
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return s
+	}
+	app, err := extractAppFrom(s.ZipPath, work)
+	if err != nil {
+		appLog("更新預解失敗（按下重啟時再試）：%v", err)
+		return s
+	}
+	s.AppPath = app
+	return s
 }
 
 var currentStaged stagedUpdate
@@ -282,7 +305,7 @@ func prepareUpdateInBackground() {
 		appLog("自動檢查更新：下載 %s 失敗（%v）", rel.Version, err)
 		return
 	}
-	currentStaged = stagedUpdate{Version: rel.Version, ZipPath: zip, Ready: true}
+	currentStaged = preUnpackStaged(stagedUpdate{Version: rel.Version, ZipPath: zip, Ready: true})
 	saveStaged(currentStaged)
 	appLog("自動檢查更新：%s 已下載備妥，等使用者按「重新啟動以完成更新」", rel.Version)
 }
@@ -323,14 +346,24 @@ func applyStagedAndRestart() error {
 	if isWindows() {
 		return applyWindowsUpdateAndRestart(s.ZipPath)
 	}
-	work := updateStagePath("unpack")
-	_ = os.RemoveAll(work)
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		return err
+	// #382：優先用下載時預解好的 .app；沒有（或被清掉）才即時解。
+	newApp := ""
+	if s.AppPath != "" {
+		if _, err := os.Stat(s.AppPath); err == nil {
+			newApp = s.AppPath
+		}
 	}
-	newApp, err := extractAppFrom(s.ZipPath, work)
-	if err != nil {
-		return err
+	if newApp == "" {
+		work := updateStagePath("unpack")
+		_ = os.RemoveAll(work)
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			return err
+		}
+		var err error
+		newApp, err = extractAppFrom(s.ZipPath, work)
+		if err != nil {
+			return err
+		}
 	}
 	// 🔴 t184（leo 08-04 實撞：Oscar 按更新→顯示「新版 v0.15.6 已就緒」→重啟後**又跳回 v0.15.4**）：
 	//
@@ -355,7 +388,7 @@ func applyStagedAndRestart() error {
 	if out, err := runCmd("open", "-n", target); err != nil {
 		return fmt.Errorf("重新啟動失敗：%v %s", err, out)
 	}
-	go func() { time.Sleep(2 * time.Second); os.Exit(0) }()
+	go func() { time.Sleep(500 * time.Millisecond); os.Exit(0) }()
 	return nil
 }
 
@@ -486,7 +519,7 @@ func applyWindowsUpdateAndRestart(newExePath string) error {
 		// 復原：新版已經在原路徑了，重啟失敗至少別把舊的删了拿不回來
 		return fmt.Errorf("重新啟動失敗：%v %s（新版已就緒於 %s，可手動雙擊開啟）", err, out, cur)
 	}
-	go func() { time.Sleep(2 * time.Second); os.Exit(0) }()
+	go func() { time.Sleep(500 * time.Millisecond); os.Exit(0) }()
 	return nil
 }
 

@@ -85,3 +85,88 @@ test('沒綁 R2 但有 APP_FEED_BASE：轉去該靜態目錄；index 不快取�
     assert.equal((await call({ INSTALLER_KV: kv(), APP_FEED_BASE: 'http://cdn.test' }, '/apps/index.json')).status, 404);
   } finally { restore(); }
 });
+
+// ── inkstone/arcrun-rag#381：市集上架線——/apps 讀「最後一次簽過的市集版」，與零件包釘子無關 ──
+const MV = '2026.11.22-abc1234';
+const MARKET_OBJS = {
+  'market/current.json': JSON.stringify({ schema: 1, version: MV }),
+  [`market/index/${MV}.json`]: '{"schema":1,"apps":[{"id":"ahub"}]}',
+  'market/index/2026.11.20-0000000.json': '{"schema":1,"apps":["old"]}',
+  'market/packages/ahub-1.0.1.json': '{"pkg":"ahub"}',
+  // 舊路（主程式 bundle 帶的目錄）還在 R2 時，有市集指標就不能讀到它
+  'apps/index.json': '{"schema":1,"apps":["LEGACY"]}',
+};
+const withMarketR2 = () => ({ INSTALLER_KV: kv(), DIST: fakeR2(MARKET_OBJS), DIST_BASE: 'https://inst.test/dist' });
+
+test('有市集指標（R2）：/apps/index.json 讀指標指的那一版目錄，不讀舊 apps/；回應帶市集版號', async () => {
+  const e = withMarketR2();
+  const r = await call(e, '/apps/index.json');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-arcrun-market-version'), MV);
+  assert.equal(r.headers.get('cache-control'), 'no-cache');
+  assert.deepEqual(await r.json(), { schema: 1, apps: [{ id: 'ahub' }] });
+  const p = await call(e, '/apps/packages/ahub-1.0.1.json');
+  assert.equal(p.status, 200);
+  assert.match(p.headers.get('cache-control'), /immutable/);
+  assert.equal(await p.text(), '{"pkg":"ahub"}');
+  const c = await call(e, '/apps/current.json');
+  assert.equal((await c.json()).version, MV);
+});
+
+test('指標翻回前一版＝回退：/apps/index.json 立刻是前一版目錄', async () => {
+  const objs = { ...MARKET_OBJS, 'market/current.json': JSON.stringify({ schema: 1, version: '2026.11.20-0000000' }) };
+  const e = { INSTALLER_KV: kv(), DIST: fakeR2(objs), DIST_BASE: 'https://inst.test/dist' };
+  assert.deepEqual(await (await call(e, '/apps/index.json')).json(), { schema: 1, apps: ['old'] });
+});
+
+test('有指標但包不在：誠實 404，不退回舊路', async () => {
+  const e = withMarketR2();
+  assert.equal((await call(e, '/apps/packages/nope-1.0.0.json')).status, 404);
+});
+
+test('指標版號不合法（防路徑被塞進去）：502', async () => {
+  const objs = { ...MARKET_OBJS, 'market/current.json': JSON.stringify({ version: '../manifest' }) };
+  const e = { INSTALLER_KV: kv(), DIST: fakeR2(objs), DIST_BASE: 'https://inst.test/dist' };
+  assert.equal((await call(e, '/apps/index.json')).status, 502);
+});
+
+test('沒有市集指標：舊路照舊（R2 的 apps/），/apps/current.json 誠實 404', async () => {
+  const e = withR2();
+  assert.equal((await call(e, '/apps/index.json')).status, 200);
+  assert.equal((await call(e, '/apps/current.json')).status, 404);
+});
+
+test('prod：MARKET_BASE 指向官方市集，指標與目錄讀那裡；主程式釘子（BUNDLE_BASE）完全不被碰', async () => {
+  const seen = [];
+  globalThis.fetch = async (u) => {
+    seen.push(String(u));
+    if (String(u).endsWith('/current.json')) return new Response(JSON.stringify({ version: MV }));
+    return new Response('{"apps":[]}');
+  };
+  try {
+    const e = { INSTALLER_KV: kv(), MARKET_BASE: 'https://market.test/m/', BUNDLE_BASE: 'https://cdn.jsdelivr.net/gh/x/y@0376ecaabcdef' };
+    const r = await call(e, '/apps/index.json');
+    assert.equal(r.status, 200);
+    assert.deepEqual(seen, ['https://market.test/m/current.json', `https://market.test/m/index/${MV}.json`]);
+    assert.ok(!seen.some((u) => /jsdelivr|raw\.githubusercontent/.test(u)));
+  } finally { restore(); }
+});
+
+test('MARKET_BASE 還沒有指標（404）：退回舊路（跟著釘子），不直接壞掉', async () => {
+  const seen = [];
+  globalThis.fetch = async (u) => { seen.push(String(u)); return String(u).includes('market.test') ? new Response('x', { status: 404 }) : new Response('{"legacy":1}'); };
+  try {
+    const e = { INSTALLER_KV: kv(), MARKET_BASE: 'https://market.test/m', BUNDLE_BASE: 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@0376ecaabcdef' };
+    const r = await call(e, '/apps/index.json');
+    assert.equal(r.status, 200);
+    assert.ok(seen.some((u) => u.includes('raw.githubusercontent.com')));
+  } finally { restore(); }
+});
+
+test('市集來源暫時壞掉（5xx）：502，不退回舊路（免得用戶看到另一份目錄）', async () => {
+  globalThis.fetch = async () => new Response('boom', { status: 500 });
+  try {
+    const e = { INSTALLER_KV: kv(), MARKET_BASE: 'https://market.test/m' };
+    assert.equal((await call(e, '/apps/index.json')).status, 502);
+  } finally { restore(); }
+});
