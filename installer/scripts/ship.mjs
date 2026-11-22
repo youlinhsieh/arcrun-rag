@@ -137,6 +137,7 @@ import { readLedger, recordShipment, resolveSignedVersion, ensureSourceAt, check
 import { checkSourceNotOlder } from './source-regression-gate.mjs';
 import { checkStageQueue } from './stage-queue-gate.mjs';
 import { frontDoorStation } from './front-door.mjs';
+import { userPathUpdateStation, listWorkerSecretNames } from './user-path-update.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { syncBundleClone } from './bundle-sync.mjs';
 import { readAhubStage, checkSameVersion } from './same-version-gate.mjs';
@@ -3441,6 +3442,20 @@ const STEPS = [
 // 對不上就丟例外（紅燈），不准綠燈收工。只認登錄簿的 `instanceUpdate`（prod 沒宣告 ⇒ 整站跳過）。
 // 🔴 擺在 stage-record 之前：AHub 的 stage 現況只記「真的在實例上跑著」的那一版。
 // 🔴 鑰匙只碰名字（D36）：cloudflareDeployEnv 依登錄簿取進 acr 那一個子行程；輸出經 redact 才進報告。
+{ id: 'user-path-update', title: '走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）', mutates: true, async run() {
+  const U = T.userPathUpdate;
+  if (!U) return { status: 'skip', detail: ['本目標沒宣告 userPathUpdate（不是 stage）：prod 的那一次要 geek6688 授權、由 leo 簽 prod 之後才跑（inkstone/arcrun-rag#163）'] };
+  if (!CONFIRM) return { status: 'skip', detail: ['預演：這一站會登入 Portal 並按「立即更新」（真的動實例），只在 --confirm 跑'] };
+  const manifest = JSON.parse(readFileSync(join(ctx.bundlesDir, 'manifest.json'), 'utf8'));
+  const expect = { version: ctx.release || manifest.release, commit: commitFromManifestSource(manifest.source) };
+  // 切換前後各 worker 的 Secret 名單比對（只列名字）：鑰匙走登錄簿指名的那一把（D36）。
+  const cred = cloudflareDeployEnv({ cfg, accountId: T.installer.accountId, startDir: REPO_ROOT });
+  const workers = (manifest.core || []).map((c) => c.name);
+  const secretSnapshot = () => listWorkerSecretNames({ accountId: T.installer.accountId, token: cred.env.CLOUDFLARE_API_TOKEN, workers });
+  const r = await userPathUpdateStation({ cfg: U, expect, secretSnapshot });
+  return { ...r, detail: [...r.detail, ...cred.lines] };
+}},
+
 { id: 'instance-update', title: '讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）', mutates: true, async run() {
   const U = T.instanceUpdate;
   if (!U) return { status: 'skip', detail: ['本目標沒宣告 instanceUpdate（不是 stage）：實例不由出貨線更新（prod 的 leo21c 由 leo 在 Portal 按「立即更新」）'] };

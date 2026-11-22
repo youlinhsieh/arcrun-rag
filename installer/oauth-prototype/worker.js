@@ -298,7 +298,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@7386bf64aeb7b9b348e658f99ba80686d5cbf091';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@911cdf0e5a4557f0dee414471d85af7a27d3b564';
 const BUNDLE_BUILT = '2026-11-21'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -469,6 +469,7 @@ import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from '.
 //     而那個值靠「部署的人記得改」⇒ 實測 prod（1.0.3）與 uncle6 staging（1.0.4）回同一串，
 //     兩個都對不上原始碼。指紋跟著程式碼走，就不再有第二處要記得。
 import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
+import * as AppEntry from './app-entry.mjs';
 // inkstone/arcrun-rag#238（leo 裁決 B）：沒有常駐 CF token 的實例改密碼 → 重新授權一次換一張一次性授權碼
 import { recordInstallEvent, backfillFromKv } from './install-telemetry.mjs'; // inkstone/arcrun-rag#342 匿名安裝遙測
 import { parseGrantTargets, verifyAccountOwnsInstance, GRANT_CODE_RE, GRANT_TTL_SECONDS } from './grant.mjs';
@@ -1240,6 +1241,381 @@ async function getAccessToken(env, sid) {
     expirationTtl: SESSION_TTL,
   });
   return updated.access_token;
+}
+
+// ---------------------------------------------------------------------------
+// 帳號級長期授權（grant）—— 讓「更新」不再是「再裝一次」
+// ---------------------------------------------------------------------------
+//
+// 🔴 這一段在解的病（inkstone/arcrun-rag#163，leo 2026-08-29）：
+//   「在 claude 更新只是關閉重啓，但 **arcrun 更新要重跑一次 install，這其實很荒謬**」
+//
+// ── 實測到的現況（curl 打出來的，不是讀碼推論）────────────────────────────
+//   GET /auth/start?email=<已裝過的信箱>&code=
+//     → 302 https://dash.cloudflare.com/oauth2/auth?...&scope=...+offline_access
+//     → set-cookie: arcrun_sid=...; Max-Age=86400
+//   `/auth/start` **無條件**導去 CF 授權頁——整支程式沒有任何
+//   「這個帳號裝過了 ⇒ 跳過授權」的分支。
+//
+// ── 真正的病灶：長期授權早就拿到了，然後被丟掉 ──────────────────────────
+//   `offline_access` 在 scope 裡 ⇒ CF 會發 refresh_token ⇒ **使用者在第一次安裝
+//   按下「同意」的那一刻，已經授權了長期委任**。handleAuthCallback 也確實收下了，
+//   但它只被寫進 `sess:<sid>`（TTL 86400）⇒ **24 小時後連同 refresh_token 一起蒸發**
+//   ⇒ 一個只是想拿新版程式的人，被迫重登 Cloudflare、重按同意、
+//     再跑一次「建立知識庫資料庫」。
+//
+//   ⇒ 沿用這把 refresh_token **不是繞過同意——那正是同意的內容**。
+//     這裡做的是「把使用者已經給的東西留住」，不是「多要一份權限」。
+//
+// ── 對照組：同一個產品裡，桌面那半已經做對了 ────────────────────────────
+//   `collector/cmd/arcrun-app/selfupdate.go:62` — 匿名抓 manifest.json、比版本、
+//   換掉執行檔，**全程零憑證、零授權、零人工**。雲端這半該長成一樣的形狀。
+//
+// ── 🔴 rotation 陷阱（`system-dev/wiki/decisions-summary.md:2225` 已記載）────
+//   「**refresh_token 是 rotation 制單次有效**」。
+//   ⇒ **同一把 refresh_token 不能有兩個擁有者。** 若 grant 只是「把 session 裡那把
+//     複製一份」，session 之後任何一次 getAccessToken 都會把它輪替掉，
+//     **grant 手上那把當場失效**——而失效的症狀是 invalid_grant，
+//     會被下面的 dropGrant 當成「使用者撤銷了」而刪掉授權。
+//     那會變成「更新功能時好時壞，而且沒人查得出為什麼」。
+//   ⇒ 所以 adoptGrant 的最後一步是**把 refresh_token 從 session 裡拿掉**：
+//     交接，不是複製。**全系統同一時間只有一個擁有者。**
+//   ⇒ 另外用 KV 鎖把 grant 的輪替序列化，避免兩個 cron tick 同時換而互相作廢。
+//
+// ── 保存範圍（票上要求「說得出來」的那四件事）──────────────────────────
+//   存哪   ：安裝器自己的 INSTALLER_KV，key = `grant:<CF 帳號 id>`。
+//            只有安裝器 worker 綁得到這顆 KV；grant **從不回傳給任何前端**。
+//            🔴 **不進 KBDB**：這是憑證，不是知識。憑證進知識庫會被萃取、被搜尋、
+//            被卡片化——那比放在有 TTL 的 KV 危險得多（D36 金鑰鐵律同源）。
+//   存多久 ：GRANT_TTL（90 天）**滾動續期**——每次成功用到就往後延。
+//            連續 90 天沒更新過 ⇒ 自然過期 ⇒ 下次要重新授權。
+//   誰能撤銷：① 使用者到 Cloudflare 後台撤銷這個 OAuth 應用程式的授權（**真正的撤銷**，
+//              我們手上那把立刻失效）；本檔偵測到 invalid_grant 會**自動刪掉本地 grant**，
+//              下一次就退回完整安裝流程去要人重新授權。
+//            ② `POST /api/grant/revoke`（要有當下這次 OAuth 驗過的 session，帳號要對得上）。
+//   被偷了 ：拿到這顆 KV 的人，可以對已授權帳號部署 worker 程式。scope 限
+//            workers-scripts / KV / D1 / vectorize 的 write，**不含帳單、不含 DNS、
+//            不含 zone**。⚠️ 這是**真實擴大的風險**——原本這個能力只存在 24 小時，
+//            現在存在數十天。這一格已寫在 #163 上請 leo 過目，不藏在成功訊息底下。
+
+const GRANT_TTL = 90 * 86400;           // 90 天沒被用到就過期 ⇒ 下次要重新授權
+const GRANT_LOCK_TTL = 120;             // rotation 序列化鎖（秒）
+const grantKey = (accountId) => 'grant:' + accountId;
+const instanceKey = (accountId) => 'instance:' + accountId;
+
+/**
+ * email → CF 帳號 id 的索引鍵。
+ *
+ * 🔴 為什麼非有它不可（#163 第二輪，總管 2026-08-29 在 leo 已登入的 Chrome 上實測打回）：
+ *   第一輪我把授權存成 `grant:<CF 帳號 id>`，但**安裝頁那一刻手上只有 email**——
+ *   帳號 id 要等 OAuth 回來才知道。⇒ 重用只發生在「使用者已經按過同意」之後
+ *   ⇒ 走畫面的人**照樣看到那張同意畫面**，驗收條件 1 等於沒做到。
+ *   實測證據：leo 已登入、已裝過，第二次仍出現 `dash.cloudflare.com/oauth/consent-form`
+ *   （是 consent-form 不是 login，所以沒有「他只是沒登入」的解釋空間）。
+ *
+ * ⇒ 修的是**設計不是參數**：多一條 email → 帳號 id 的索引，
+ *   讓安裝頁在**進 OAuth 之前**就答得出「這個人已經裝好了」。
+ *
+ * 存雜湊不存明文：這條索引的用途只是「比對得上」，不需要能讀回 email。
+ * KV 裡少一份可以被整包讀走的信箱清單。
+ */
+async function emailIndexKey(email) {
+  const norm = String(email || '').trim().toLowerCase();
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode('arcrun-rag:grantmail:' + norm));
+  return 'grantmail:' + Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * 這個 email 有沒有一份還活著的授權？有的話回它的帳號 id。
+ *
+ * fail-closed：索引在但 grant 已經不在（使用者在 CF 撤銷過、或 90 天沒更新過期了）
+ * ⇒ 順手把孤兒索引刪掉，並回 null ⇒ 走完整安裝流程重新要授權。
+ * **這就是「撤銷後下次安裝會重新要求授權」在畫面上的實作。**
+ */
+async function liveGrantForEmail(env, email) {
+  if (!email) return null;
+  const idxKey = await emailIndexKey(email);
+  const accountId = await env.INSTALLER_KV.get(idxKey);
+  if (!accountId) return null;
+  const grant = await env.INSTALLER_KV.get(grantKey(accountId), 'json');
+  if (!grant) {
+    try { await env.INSTALLER_KV.delete(idxKey); } catch (_) { /* 下次再刪 */ } // kv-ok: 刪除孤兒索引，不是新增資料
+    return null;
+  }
+  return accountId;
+}
+
+/**
+ * 實例是不是真的已經不在了（只在「確定不在」時回 true；查不到／連不上一律當還在，保守不擋人）。
+ * 判準：用戶 CF 帳號上的 UI worker（arcrun-rag-ui）查得到 404。
+ * 確定不在時順手清掉部署快照，避免之後的更新／重裝沿用已被刪光的資源。
+ */
+async function instanceIsGone(env, accountId, fetchImpl) {
+  const doFetch = fetchImpl || fetch;
+  try {
+    const tok = await grantAccessToken(env, accountId);
+    const res = await doFetch(`${CF_API}/accounts/${accountId}/workers/scripts/arcrun-rag-ui/settings`, {
+      headers: { authorization: `Bearer ${tok.access_token}` },
+    });
+    if (res.status !== 404) return false;
+    try { await env.INSTALLER_KV.delete(instanceKey(accountId)); } catch (_) { /* 下次再刪 */ } // kv-ok: 實例已不在，刪除過期的部署快照
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 實例在，但還沒有任何管理員帳號（只在「確定沒有」時回 true；查不到／連不上一律當有，保守不擋人）。
+ * inkstone/arcrun-rag#289（leo 2026-11-21：「為什麼跑完跑到這個畫面？我剛剛完成安裝」）：
+ * 沒有管理員的實例，Portal 只會叫人「前往安裝精靈建立帳號」；若安裝頁又說「你已經裝好了」，
+ * 用戶就在兩頁之間繞圈，沒有一頁建得出帳號。建第一個帳號要 Cloudflare 擁有者證明（Arcrun#319），
+ * 只有走完授權＋安裝、在完成頁的建帳號視窗裡才拿得到 ⇒ 這種實例不算「已裝好」，照常帶去授權。
+ * 判準取自實例自己的 `/console/auth-status`（configured）；網址用部署快照裡的 apiUrl，不另呼叫 CF API（不動 grant 輪替）。
+ */
+async function instanceHasNoAdmin(env, accountId, fetchImpl) {
+  try {
+    const snap = await env.INSTALLER_KV.get(instanceKey(accountId), 'json');
+    return await apiHasNoAdmin(snap && snap.result && snap.result.apiUrl, fetchImpl);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 回訪時直接回到建帳號那一步（arcrun-rag#289，leo 2026-11-21）：
+ * 「沒有管理員帳號就沒有略過按鈕，如果你關掉頁面下次回來還是這裡」。
+ * 條件全部成立才算：這個瀏覽器帶著安裝時發的 session cookie（＝就是做完 OAuth 安裝的那個人）、
+ * 這個 session 的安裝已完成、實例現在仍沒有管理員。只有 email、沒有 cookie 的人照舊走 CF 授權
+ * ——owner proof（Arcrun#319）不放寬。
+ */
+async function revisitNeedsAdmin(request, env, fetchImpl) {
+  try {
+    const sid = getCookie(request, SESSION_COOKIE);
+    if (!sid) return false;
+    const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
+    if (!sess) return false;
+    const progress = await readProgress(env, sid);
+    if (!progress || progress.state !== 'done' || !progress.result) return false;
+    return await apiHasNoAdmin(progress.result.apiUrl, fetchImpl);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function apiHasNoAdmin(api, fetchImpl) {
+  return (await apiAdminConfigured(api, fetchImpl)) === false;
+}
+
+/** 實例現在有沒有管理員：true／false；問不到回 null（呼叫端照舊，不猜）。 */
+async function apiAdminConfigured(api, fetchImpl) {
+  try {
+    if (!api) return null;
+    const res = await (fetchImpl || fetch)(`${api}/console/auth-status`, {
+      headers: { 'user-agent': 'curl/8.5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const d = await res.json().catch(() => null);
+    return d && typeof d.configured === 'boolean' ? d.configured : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** grant 不見了／被撤銷了。呼叫端據此退回「請使用者重新授權」，不是報一個技術錯誤。 */
+class GrantUnavailable extends Error {
+  constructor(reason) {
+    super('no usable grant: ' + reason);
+    this.reason = reason;
+  }
+}
+
+/**
+ * 安裝成功時，把「使用者已經給過的長期授權」**從 session 交接到帳號名下**。
+ *
+ * 🔴 交接不是複製——見上方 rotation 陷阱。最後一步會把 refresh_token 從 session 移除。
+ * 只在**安裝真的成功**時呼叫：半途失敗的安裝不該留下一把可以部署的鑰匙。
+ */
+async function adoptGrant(env, sid, accountId, email) {
+  if (!accountId) return null;
+  try {
+    const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
+    if (!sess || !sess.refresh_token) return null;   // 沒拿到長期委任就不硬造一個
+    const rec = {
+      refresh_token: sess.refresh_token,
+      scope: sess.scope || OAUTH_SCOPES,
+      email: email || sess.inviteEmail || null,
+      inviteCode: sess.inviteCode || null,
+      accountId,
+      grantedAt: Date.now(),
+      lastUsedAt: Date.now(),
+      lastCheckedAt: 0,
+    };
+    await env.INSTALLER_KV.put(grantKey(accountId), JSON.stringify(rec), { expirationTtl: GRANT_TTL }); // kv-ok: OAuth refresh_token 是憑證不是知識，rotation 制、90 天 TTL、CF 端撤銷即失效；憑證進 KBDB 會被萃取成卡片，比放有 TTL 的 KV 更危險（D36）
+
+    // email → 帳號 id 索引：讓安裝頁在**進 OAuth 之前**就認得出這個人（見 emailIndexKey）。
+    // 與 grant 同一個 TTL：grant 死了索引也該跟著死，不留下指向空氣的指標。
+    const idxEmail = rec.email;
+    if (idxEmail) {
+      await env.INSTALLER_KV.put(await emailIndexKey(idxEmail), accountId, { expirationTtl: GRANT_TTL }); // kv-ok: 授權的附屬索引，與 grant 同生共死、同 TTL；存的是雜湊→帳號 id，沒有明文信箱
+    }
+
+    // 交接完成：session 不再持有 refresh_token，之後它不可能再把 grant 那把輪替掉。
+    // access_token 留著（還有十幾小時），成功頁若要再打 CF 仍然打得動；
+    // 真的過期時 getAccessToken 會走既有的「授權已過期，請回首頁」——與本次改動前同行為。
+    const stripped = Object.assign({}, sess);
+    delete stripped.refresh_token;
+    stripped.grant_adopted_at = Date.now();
+    await env.INSTALLER_KV.put(`sess:${sid}`, JSON.stringify(stripped), { expirationTtl: SESSION_TTL }); // kv-ok: 就地改寫既有 session 條目（同 key 同 TTL），這是移除一個欄位，不是新增資料類型
+    return rec;
+  } catch (_) {
+    return null;   // 留不住授權只代表「下次要再授權一次」，不該讓已經成功的安裝變成失敗
+  }
+}
+
+/** 刪掉本地 grant。使用者撤銷、或偵測到 CF 端已撤銷時用。 */
+async function dropGrant(env, accountId, why) {
+  // 先讀出 email 才刪得掉索引——刪了 grant 就再也查不到它屬於誰。
+  let email = null;
+  try {
+    const rec = await env.INSTALLER_KV.get(grantKey(accountId), 'json');
+    email = rec && rec.email;
+  } catch (_) { /* 讀不到就只刪 grant，索引留給 liveGrantForEmail 當孤兒回收 */ }
+  try { await env.INSTALLER_KV.delete(grantKey(accountId)); } catch (_) { /* 刪不掉下輪再刪 */ } // kv-ok: 這是刪除（退休戰方向），把憑證從 KV 移除，不是新增資料
+  if (email) {
+    try { await env.INSTALLER_KV.delete(await emailIndexKey(email)); } catch (_) { /* 同上 */ } // kv-ok: 刪除附屬索引
+  }
+  await writeUpdateLog(env, accountId, { state: 'grant_revoked', detail: String(why || '').slice(0, 200) });
+}
+
+/**
+ * 用 grant 換一把可用的 access token。**完全不經瀏覽器、不經 OAuth 授權頁。**
+ *
+ * rotation 制：換完一定要把新的存回去，且**同一時間只准一個換**（KV 鎖）——
+ * 兩個 cron tick 同時換會互相作廢，症狀是「更新偶爾失敗且無法重現」。
+ *
+ * 換不到且是 invalid_grant（＝使用者在 CF 後台撤銷了）⇒ 把本地 grant 刪掉，
+ * 下一次自然退回完整安裝流程要人重新授權——**這就是「撤銷後會重新要求授權」的實作**。
+ */
+async function grantAccessToken(env, accountId) {
+  const lockKey = 'grantlock:' + accountId;
+  if (await env.INSTALLER_KV.get(lockKey)) throw new GrantUnavailable('busy');
+  await env.INSTALLER_KV.put(lockKey, String(Date.now()), { expirationTtl: GRANT_LOCK_TTL }); // kv-ok: 一次性互斥鎖，TTL 120 秒後自動消失——這是 nonce，不是資料
+  try {
+    const rec = await env.INSTALLER_KV.get(grantKey(accountId), 'json');
+    if (!rec || !rec.refresh_token) throw new GrantUnavailable('missing');
+
+    let fresh;
+    try {
+      fresh = await refreshTokens(rec.refresh_token);
+    } catch (e) {
+      const detail = String((e && e.detail) || (e && e.message) || e);
+      // invalid_grant＝那把已經不被承認（使用者撤銷、或被輪替掉）。
+      // 這是**確定性失敗**，重試沒有意義 ⇒ 刪掉，退回人閘。
+      if (/invalid_grant|unauthorized_client/i.test(detail)) {
+        await dropGrant(env, accountId, detail);
+        throw new GrantUnavailable('revoked');
+      }
+      // 暫時性（CF 掛了／網路問題）⇒ **不刪 grant**，下一輪 cron 再試。
+      throw new GrantUnavailable('refresh_failed:' + detail.slice(0, 120));
+    }
+
+    const updated = Object.assign({}, rec, {
+      refresh_token: fresh.refresh_token || rec.refresh_token,
+      lastUsedAt: Date.now(),
+    });
+    await env.INSTALLER_KV.put(grantKey(accountId), JSON.stringify(updated), { expirationTtl: GRANT_TTL }); // kv-ok: 同上，rotation 制必須把輪替後的那把存回去，否則下次就用不了
+    return {
+      access_token: fresh.access_token,
+      refresh_token: updated.refresh_token,
+      expires_at: Date.now() + (Number(fresh.expires_in) || 57600) * 1000,
+      scope: fresh.scope || rec.scope || OAUTH_SCOPES,
+      email: rec.email,
+      inviteCode: rec.inviteCode || null,
+    };
+  } finally {
+    try { await env.INSTALLER_KV.delete(lockKey); } catch (_) { /* TTL 兜底 */ } // kv-ok: 這是刪除（釋放上面那把 nonce 鎖），不是新增資料
+  }
+}
+
+/**
+ * 安裝成功時把「這台實例長什麼樣」拍一張快照。
+ *
+ * 為什麼要有它：更新的定義是「**只換程式，不重建資源**」。要做到不重建，
+ * 就得知道上次建了什麼（KV id、D1 id、vectorize index、子網域、命名 suffix…）。
+ * 更新時把這些填回 progress.result、並把資源步驟預先標成 done，
+ * runInstall 既有的「接力續跑」路徑就會**沿用而不重建**——那條路每天都在跑，
+ * 不是為了更新新寫的分支。
+ *
+ * 🔴 **不存 kbdbToken**：它是金鑰，而且本來就有自己的家（`kbdbtok:<accountId>`），
+ *    ensureKbdbToken 會自己補回來。多存一份＝多一個會漂的真相（D36 同款）。
+ */
+async function saveInstanceSnapshot(env, accountId, progress) {
+  if (!accountId) return;
+  try {
+    const r = Object.assign({}, progress.result || {});
+    delete r.kbdbToken;                       // 金鑰不進快照
+    const snap = { at: Date.now(), result: r, bundleBase: bundleBase(env) };
+    await env.INSTALLER_KV.put(instanceKey(accountId), JSON.stringify(snap), { expirationTtl: GRANT_TTL }); // kv-ok: 部署現況快取，真相源是使用者自己的 CF 帳號（隨時可重查）；與既有 deployed:<帳號>:<子網域> 同層級同性質，有 TTL
+  } catch (_) { /* 快照存不下＝下次更新退回完整安裝，不該讓安裝失敗 */ }
+}
+
+/**
+ * 這台實例專用的「請幫我更新」權杖（#163 第三輪，leo 2026-08-29 改方向）。
+ *
+ * leo：「**如果要更新，不應重新 install，如果他已經在 portal 登入狀態，應該可以直接更新**」
+ *
+ * ── 為什麼需要它 ────────────────────────────────────────────────────────
+ * 更新搬進 Portal 之後，鏈是：
+ *   使用者在自己的 Portal 登入（**我們自己的登入**，不是 Cloudflare 的）
+ *     → 他的實例（cypher-executor）拿這把權杖打安裝器
+ *       → 安裝器用 grant 換 CF token → 只換有變的 worker
+ * **全程不繞 dash.cloudflare.com** ⇒ 不會再出現那張同意畫面。
+ *
+ * ── 🔴 憑證問答（票上紅線第 3 條，不准含糊帶過）──────────────────────────
+ *   怎麼來 ：安裝器產生，安裝時以既有的 putWorkerSecretDirect 寫進使用者實例
+ *            （D36 認可的那條路，不另開第二套金鑰傳遞法）。
+ *   存多久 ：與實例同壽。使用者重裝會沿用同一把（跟 kbdbtok 同個道理——
+ *            換新的會讓實例身上那把與這裡不同步）。
+ *   誰能撤銷：使用者在 Cloudflare 撤銷安裝器的授權 ⇒ grant 死 ⇒ 這把權杖立刻
+ *            **什麼也做不了**（它本身沒有任何 CF 權限，只是「請安裝器代勞」的門票）。
+ *   被偷了 ：拿到它的人只能做一件事——**讓那一個帳號重新部署成當前官方版本**。
+ *            它不能讀資料、不能指定要裝什麼版本、不能碰別的帳號、
+ *            **本身完全沒有 Cloudflare 權限**。最壞情況是被拿去反覆觸發重部署燒額度，
+ *            所以下面有冷卻期擋連打。
+ *   🔴 **Portal 手上永遠不會有能動 CF 資源的憑證**——那把只住在安裝器的 KV 裡。
+ *      Portal 拿到的是「請求權」，不是「權限」。這是刻意的：
+ *      被打穿的是 Portal 時，攻擊者拿不到部署權。
+ */
+async function ensureUpdateToken(env, accountId) {
+  const k = 'updtok:' + accountId;
+  let saved = await env.INSTALLER_KV.get(k).catch(() => null);
+  if (!saved) {
+    const tb = crypto.getRandomValues(new Uint8Array(32));
+    saved = Array.from(tb, (b) => b.toString(16).padStart(2, '0')).join('');
+    await env.INSTALLER_KV.put(k, saved).catch(() => {}); // kv-ok: 與實例同壽的實例識別權杖，跟既有 kbdbtok:<帳號> 同層級同性質；它不是知識，是憑證
+  }
+  return saved;
+}
+
+/** 定時比較，避免用字串相等洩漏前綴（這支是對外端點，值得多這幾行）。 */
+function timingSafeEqual(a, b) {
+  const x = String(a || ''), y = String(b || '');
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+/** 更新紀錄寫進同一條 `log:` 流（kind='update'），沿用既有的 GET /admin/logs，不另開端點。 */
+async function writeUpdateLog(env, accountId, extra) {
+  try {
+    const now = Date.now();
+    const key = 'log:' + now + '-upd' + String(accountId || '').slice(0, 4);
+    const rec = Object.assign({ at: now, kind: 'update', accountId: accountId || null, bundleBase: bundleBase(env) }, extra || {});
+    await env.INSTALLER_KV.put(key, JSON.stringify(rec), { expirationTtl: 90 * 86400 }); // kv-ok: 沿用既有 log: 流的同一條慣例（writeInstallLog 已在用），90 天 TTL 的營運紀錄，不記 token/secret
+  } catch (_) { /* log 寫不進去不該炸更新 */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -3130,6 +3506,101 @@ async function readLiveArtifactsNamespace(token, accountId, script) {
   } catch (_) { return null; }
 }
 
+/**
+ * 把「已準備好的未啟用版本」切成線上版本（100%）。只是一個很小的 API 呼叫，不重傳程式。
+ * #163／Arcrun#184：這就是「按下才切換」那一下。
+ */
+async function activatePreparedVersion(token, accountId, scriptName, versionId) {
+  await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/deployments`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ strategy: 'percentage', versions: [{ percentage: 100, version_id: versionId }] }),
+  });
+}
+
+/** 這顆 worker 某一版身上掛著哪些 secret（只讀名字，值本來就讀不出來）。 */
+async function secretNamesOfVersion(token, accountId, scriptName, versionId) {
+  const v = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/versions/${versionId}`);
+  const bindings = (v && (v.resources || (v.result && v.result.resources)) || {}).bindings || [];
+  return bindings.filter((b) => b.type === 'secret_text' || b.type === 'secret_key').map((b) => b.name);
+}
+async function currentVersionId(token, accountId, scriptName) {
+  const d = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/deployments`);
+  const deps = (d && (d.deployments || (d.result && d.result.deployments))) || [];
+  const top = deps[0];
+  return (top && top.versions && top.versions[0] && top.versions[0].version_id) || null;
+}
+
+/** 這顆 worker 最新上傳的那一版（不管有沒有被部署）。CF 的 Secret 寫入與 keep_bindings 都以它為底。 */
+async function latestVersionId(token, accountId, scriptName) {
+  const r = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${scriptName}/versions`);
+  const items = (r && (r.items || (r.result && r.result.items))) || [];
+  let top = null;
+  for (const it of items) if (it && it.id && (!top || (it.number || 0) > (top.number || 0))) top = it;
+  return top ? top.id : null;
+}
+
+/**
+ * 準備新版之前先看鏈有沒有斷（#377，stage 2026-11-21 實撞）：
+ *   CF 的 Secret 寫入與 keep_bindings 都以「最新版本」為底，而且要求最新版本＝現役版本。
+ *   最新版若已是沒帶 Secret 的準備版（被前一代安裝器污染），再疊一版只會讓污染傳下去、Secret 寫入繼續 10215。
+ *   ⇒ 最新版＝現役版（鏈乾淨）才準備；最新版不是現役、且名單沒涵蓋現役的 Secret ⇒ 略過這顆，不疊版。
+ *   讀不到名單 ⇒ 不能確認 ⇒ 略過（寧可晚一輪備好，也不把鏈疊壞）。
+ * 回 { ok:true } 或 { ok:false, reason }。
+ */
+async function prepareChainGuard(token, accountId, scriptName) {
+  try {
+    const liveId = await currentVersionId(token, accountId, scriptName);
+    if (!liveId) return { ok: false, reason: '讀不到目前跑的是哪一版，無法確認準備版帶不帶得齊金鑰' };
+    const latestId = await latestVersionId(token, accountId, scriptName);
+    if (!latestId) return { ok: false, reason: '讀不到最新上傳的版本，無法確認準備版帶不帶得齊金鑰' };
+    if (latestId === liveId) return { ok: true };
+    const live = await secretNamesOfVersion(token, accountId, scriptName, liveId);
+    const latest = await secretNamesOfVersion(token, accountId, scriptName, latestId);
+    const missing = live.filter((n) => !latest.includes(n));
+    if (missing.length) return { ok: false, reason: `最新上傳的版本不是現役版、且少了 ${missing.length} 把金鑰（${missing.join('、')}），再疊一版會讓金鑰寫入永遠失敗，略過這顆` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `查不到版本與金鑰名單（${(e && e.message) || e}），無法確認安全，略過這顆` };
+  }
+}
+
+/**
+ * 切換，但不准把使用者的 secret 帶走（#163，stage 2026-11-21 11:09 實撞：切換後 Portal 帳號與憑證全沒了）。
+ *   ① 切之前：備好的那一版的 secret 名單要涵蓋現在這一版的名單，少一把就**不切**。
+ *   ② 切之後：再讀一次現在跑的那一版，少了就立刻切回原本那一版（那一版還握著所有 secret）。
+ * 回 { switched:true } 或 { switched:false, reason }——呼叫端拿到 false 就改走直接部署（PUT 不會洗 secret）。
+ * 讀不到名單 ⇒ 當作不能確認 ⇒ 不切（寧可慢一點走直接部署，也不賭使用者的帳號）。
+ */
+async function switchWithSecretGuard(token, accountId, scriptName, preparedVersionId) {
+  let before, prevId;
+  try {
+    prevId = await currentVersionId(token, accountId, scriptName);
+    if (!prevId) return { switched: false, reason: '讀不到目前跑的是哪一版，無法確認金鑰會不會被帶走' };
+    before = await secretNamesOfVersion(token, accountId, scriptName, prevId);
+    const next = await secretNamesOfVersion(token, accountId, scriptName, preparedVersionId);
+    const missing = before.filter((n) => !next.includes(n));
+    if (missing.length) return { switched: false, reason: `備好的新版少了 ${missing.length} 把金鑰（${missing.join('、')}），切過去會把你的帳號或憑證帶走，所以改走直接部署` };
+  } catch (e) {
+    return { switched: false, reason: `查不到金鑰名單（${(e && e.message) || e}），無法確認安全，改走直接部署` };
+  }
+  await activatePreparedVersion(token, accountId, scriptName, preparedVersionId);
+  try {
+    const nowId = await currentVersionId(token, accountId, scriptName);
+    const after = nowId ? await secretNamesOfVersion(token, accountId, scriptName, nowId) : [];
+    const lost = before.filter((n) => !after.includes(n));
+    if (lost.length) {
+      await activatePreparedVersion(token, accountId, scriptName, prevId); // 切回去
+      return { switched: false, reason: `切過去後少了 ${lost.length} 把金鑰（${lost.join('、')}），已自動切回原本的版本，改走直接部署` };
+    }
+  } catch (e) {
+    // 切完卻讀不回名單：不確定有沒有少，保守切回
+    try { await activatePreparedVersion(token, accountId, scriptName, prevId); } catch (_) { /* 切回也失敗就往上拋 */ }
+    return { switched: false, reason: `切換後查不到金鑰名單（${(e && e.message) || e}），已切回原本的版本，改走直接部署` };
+  }
+  return { switched: true };
+}
+
 async function deployBundledWorker(env, token, accountId, entry, resources, inject) {
   const base = bundleBase(env);
   // 1. 抓主模組 + wasm 模組（fetchBundleAsset：3 次重試 + GitHub raw 備援）
@@ -3349,6 +3820,11 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   const buildForm = (bs) => {
     const metadata = {
       main_module: entry.main_module,
+      // 🔴 #163 stage 實撞（2026-11-21 11:09）：versions 上傳的 bindings 是「這一版自己的」——沒有宣告 keep_bindings，
+      //   新版就**不帶**使用者另外寫進去的 secret（ARCRUN_AUTH_STORE＝Portal 的帳號與密碼雜湊、ARCRUN_UPDATE_TOKEN…）。
+      //   切換那一刻 cypher 身上 10 把 secret 變 0，Portal 全部登入 401。PUT /scripts（直接部署）不會這樣，
+      //   所以這個洞只出現在「背景準備→切換」這條新路。versionOnly 一律保留既有的 secret 類 binding。
+      ...(inject.versionOnly ? { keep_bindings: ['secret_text', 'secret_key'] } : {}),
       compatibility_date: entry.compat_date || COMPAT_DATE,
       compatibility_flags: entry.compat_flags || [],
       bindings: bs,
@@ -3362,6 +3838,27 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   };
 
   let artifactsBindingSkipped = false;
+
+  // #163（Arcrun#184 第二條）：只「準備」新版——上傳成**未啟用的版本**，不動線上正在跑的那一份。
+  // 用的是 Cloudflare 官方的 versions 端點，上傳內容（程式、binding、var）與 PUT 完全同一份，
+  // 差別只有「不會被部署」。真正切換另走 activatePreparedVersion（一個很小的 API 呼叫）。
+  // 不開子網域：它不會改變，切換時那顆 worker 本來就開著。
+  if (inject.versionOnly) {
+    let up;
+    try {
+      up = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}/versions`, { method: 'POST', body: buildForm(bindings) });
+    } catch (e) {
+      if (!artifactsReq) throw e;
+      up = await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}/versions`, { method: 'POST', body: buildForm(bindings.filter((b) => b.type !== 'artifacts')) });
+      artifactsBindingSkipped = true;
+    }
+    const versionId = up && (up.id || (up.result && up.result.id)) || null;
+    if (!versionId) throw new InstallError(`${entry.name} 的新版上傳了，但沒拿到版本編號`, { detail: 'versions upload returned no id' });
+    return { name: entry.name, versionId, usedFallback, routeWarning: null, carriedVars, artifactsBindingSkipped,
+      artifactsNamespace: artifactsPick ? artifactsPick.namespace : null,
+      artifactsWarning: artifactsPick ? (artifactsPick.warning || null) : null };
+  }
+
   try {
     await cfFetch(token, `/accounts/${accountId}/workers/scripts/${entry.name}`, { method: 'PUT', body: buildForm(bindings) });
   } catch (e) {
@@ -3684,6 +4181,13 @@ export {
   //   （credential 沒種成就不准回「一切正常」）——匯出讓單元測試直接證明兩件事。
   seedCredentialWithRetry,
   verifyStepVerdict,
+  // #163 更新≠安裝：帳號級長期授權與更新路徑，供離線測試斷言
+  // 「第二次不再需要授權／第一次仍然要人／撤銷後會重新要求」這三件事。
+  adoptGrant, grantAccessToken, dropGrant, saveInstanceSnapshot, sweepUpdates, runUpdate,
+  GrantUnavailable, GRANT_TTL, UPDATE_REUSE_STEPS,
+  readPrepared, writePrepared, activatePreparedVersion, switchWithSecretGuard, prepareChainGuard, handleInstanceUpdateStatus,
+  emailIndexKey, liveGrantForEmail, instanceIsGone, ensureUpdateToken, timingSafeEqual, alreadyInstalledPage,
+  backfillEmailIndex,
 };
 
 /**
@@ -4367,7 +4871,7 @@ async function runInstallSteps(env, sid, progress, force) {
         // 留痕：這一輪為什麼沒有整批跳過。少了什麼要看得見，不是安靜地多推幾顆。
         progress.result.accountMissingAtStart = missingAll;
       }
-      if (!force && !instanceStale && mcpLagging !== true && accountAllPresent && prevFingerprint && prevFingerprint === manifestFingerprint) {
+      if (!force && !instanceStale && mcpLagging !== true && accountAllPresent && progress.updateMode !== 'prepare' && prevFingerprint && prevFingerprint === manifestFingerprint) {
         progress.result.deployedNames = manifest.core.map((c) => c.name);
         progress.result.deployed = progress.result.deployedNames.length;
         progress.result.skippedAll = true;
@@ -4471,7 +4975,55 @@ async function runInstallSteps(env, sid, progress, force) {
         // KV 裡留下的仍是「接力中」而不是「running」，前端就會自動接手（不會永久卡住）。
         progress.state = 'paused_continue';
         await writeProgress(env, sid, progress);
-        const r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant, carryExistingVars: true, bundleBuilt: manifest.built, bundleRelease: manifest.release, bundleSource: manifest.source });
+        // #163（Arcrun#184 第二條）：更新分兩段——背景「準備」（上傳成未啟用版本）、按下「切換」。
+        //   prepare：只上傳不啟用，且**不寫已部署帳本**（它還沒部署，帳本不准說謊，#179）。
+        //   switch ：這顆已有同內容的準備版 ⇒ 只切換；沒有（或內容對不上）就走原本的直接部署。
+        const prepRec = progress.preparedVersions && progress.preparedVersions[entry.name];
+        const prepReady = !!(prepRec && prepRec.id && prepRec.sha === entry.sha256);
+        if (progress.updateMode === 'prepare' && prepReady) {
+          // 上一輪已經準備過同一份內容——不重傳。
+          progress.result.deployedNames.push(entry.name);
+          budget--;
+          await writeProgress(env, sid, progress);
+          continue;
+        }
+        const versionOnly = progress.updateMode === 'prepare';
+        if (versionOnly) {
+          const cg = await prepareChainGuard(token, accountId, entry.name);
+          if (!cg.ok) {
+            // 不疊版：這顆不記準備版（切換時沒有準備版就走直接部署）；原因留在結果裡看得見。
+            if (!Array.isArray(progress.result.prepareGuards)) progress.result.prepareGuards = [];
+            progress.result.prepareGuards.push(`${entry.name}：${cg.reason}`);
+            progress.result.deployedNames.push(entry.name);
+            budget--;
+            await writeProgress(env, sid, progress);
+            continue;
+          }
+        }
+        let r;
+        let guardRefused = null;
+        if (progress.updateMode === 'switch' && prepReady) {
+          const g = await switchWithSecretGuard(token, accountId, entry.name, prepRec.id);
+          if (g.switched) {
+            r = { name: entry.name, usedFallback: false, routeWarning: null, switchedFromPrepared: true };
+            progress.result.switchedNames = (progress.result.switchedNames || []).concat(entry.name);
+          } else {
+            guardRefused = g.reason;
+            if (!Array.isArray(progress.result.switchGuards)) progress.result.switchGuards = [];
+            progress.result.switchGuards.push(`${entry.name}：${g.reason}`);
+          }
+        }
+        if (!r) {
+          r = await deployBundledWorker(env, token, accountId, entry, resources, { accountId, subdomain, tenant, carryExistingVars: true, bundleBuilt: manifest.built, bundleRelease: manifest.release, bundleSource: manifest.source, versionOnly });
+        }
+        if (versionOnly) {
+          progress.preparedVersions = progress.preparedVersions || {};
+          progress.preparedVersions[entry.name] = { id: r.versionId, sha: entry.sha256 || null };
+          progress.result.deployedNames.push(r.name);
+          budget--;
+          await writeProgress(env, sid, progress);
+          continue;
+        }
         progress.result.deployedNames.push(r.name);
         progress.state = 'running'; // 這一顆平安做完，恢復 running（上面是被砍時的保底）
         if (r.usedFallback) progress.result.bundleFallbackUsed = true;
@@ -4510,6 +5062,16 @@ async function runInstallSteps(env, sid, progress, force) {
         progress.state = 'paused_continue';
         const s3 = progress.steps.find((x) => x.id === 'deploy');
         if (s3) s3.note = `已裝 ${progress.result.deployedNames.length}/${manifest.core.length}，接力中…`;
+        await writeProgress(env, sid, progress);
+        return;
+      }
+      // #163：背景「準備」到這裡就結束——新版已經上傳成未啟用版本，**線上什麼都沒換**。
+      // 不跑後面的收尾檢查、種金鑰、推工作流：那些屬於「切換」那一下。
+      if (progress.updateMode === 'prepare') {
+        progress.state = 'prepared';
+        progress.currentStep = null;
+        progress.finishedAt = Date.now();
+        await setStep('deploy', 'done', `${Object.keys(progress.preparedVersions || {}).length} 個服務的新版已在背景準備好（還沒啟用）`);
         await writeProgress(env, sid, progress);
         return;
       }
@@ -4713,6 +5275,16 @@ async function runInstallSteps(env, sid, progress, force) {
           + `三顆 worker 現在金鑰不一致，彼此互打會開始 401。失敗細節：`
           + failed.map((f) => `${f.script}=${f.error}`).join('；')
         );
+      }
+      // #163：Portal 要能自己發動更新，它的後端（cypher-executor）得有一把
+      // 「我就是這台實例」的門票。刻意**不重用 KBDB_INTERNAL_TOKEN**——
+      // 那把是知識庫的內部認證，被偷會讀到資料；這把被偷只能觸發一次重部署。
+      // 一把鑰匙一個用途，被偷的後果才說得清楚。
+      try {
+        await putWorkerSecretDirect(token, accountId, 'arcrun-cypher-executor',
+          'ARCRUN_UPDATE_TOKEN', await ensureUpdateToken(env, accountId));
+      } catch (e) {
+        progress.result.updateTokenError = String((e && e.message) || e);
       }
     }
 
@@ -4932,6 +5504,225 @@ async function runInstallSteps(env, sid, progress, force) {
   progress.finishedAt = Date.now();
   await writeProgress(env, sid, progress);
   await writeInstallLog(env, sid, progress); // t120
+
+  // #163：安裝**成功**了才把長期授權收下、才拍實例快照。
+  // 兩件都是「下一次更新不必再麻煩使用者」的前提；失敗的安裝不留鑰匙也不留快照。
+  // 順序有意義：先拍快照再收授權——快照失敗最多讓下次退回完整安裝（安全的那邊），
+  // 而 adoptGrant 會把 refresh_token 從 session 移走（見它的檔頭：交接不是複製）。
+  await saveInstanceSnapshot(env, progress.result.accountId, progress);
+  await adoptGrant(env, sid, progress.result.accountId, progress.result.email);
+}
+
+// ---------------------------------------------------------------------------
+// 更新（≠ 安裝）—— 只換程式，不重建資源，不需要任何人在場
+// ---------------------------------------------------------------------------
+//
+// leo 2026-08-29：「**更新就是更新——把程式換成新版，不重建資源、不重新授權**」
+//
+// 🔴 這裡**刻意不寫第二套部署邏輯**。更新＝拿上次安裝的實例快照，把資源類的步驟
+//   預先標成 done，然後走 runInstall **既有的「接力續跑」路徑**。
+//   ⇒ 「沿用而不重建」不是為更新新寫的分支，是 t26 分批接力每天都在跑的那條路
+//     （`if (stepDone('account')) { accountId = progress.result.accountId; … }`）。
+//   ⇒ 只換有變的 worker 也不是新寫的：t132 的指紋比對本來就會跳過沒變的那些。
+//   為什麼堅持這樣：**兩套部署邏輯一定會漂**（D36 金鑰鐵律點名的同一個病），
+//   而漂掉的那一天，症狀會是「更新裝出來的實例跟安裝裝出來的不一樣」。
+
+/** 更新時要沿用（不准重建）的步驟。deploy／workflows／verify 才是更新要做的事。 */
+const UPDATE_REUSE_STEPS = ['account', 'cache', 'database', 'schema'];
+
+/**
+ * 對一個已安裝的帳號跑一次更新。**不經瀏覽器、不經 OAuth、不需要人在場。**
+ *
+ * @returns {Promise<{ok:boolean, reason?:string, state?:string, deployed?:number}>}
+ *          reason 是**給機器看的短碼**（no_grant/no_snapshot/…），
+ *          出貨管線據此說得出「卡在哪一站」。
+ */
+async function runUpdate(env, accountId, mode = 'direct') {
+  const snap = await env.INSTALLER_KV.get(instanceKey(accountId), 'json');
+  if (!snap || !snap.result) {
+    // 沒有快照＝我們不知道它上次建了什麼 ⇒ **不猜**，退回完整安裝（fail-closed）。
+    await writeUpdateLog(env, accountId, { state: 'skipped', reason: 'no_snapshot' });
+    return { ok: false, reason: 'no_snapshot' };
+  }
+
+  let tok;
+  try {
+    tok = await grantAccessToken(env, accountId);
+  } catch (e) {
+    const reason = e instanceof GrantUnavailable ? e.reason : String((e && e.message) || e);
+    await writeUpdateLog(env, accountId, { state: 'skipped', reason });
+    return { ok: false, reason };
+  }
+
+  // 借一個**只給這次更新用**的 sid：runInstall 全程用 `sess:<sid>` 拿 token，
+  // 這是「不改 runInstall 就能餵它一把 grant 換來的 token」的接點。
+  const sid = 'upd-' + randomB64(12);
+  const sess = {
+    access_token: tok.access_token,
+    refresh_token: null,          // 🔴 rotation：refresh 的擁有者只有 grant，session 不碰
+    expires_at: tok.expires_at,
+    scope: tok.scope,
+    inviteEmail: snap.result.email || tok.email || null,
+    inviteCode: tok.inviteCode || null,
+    inviteVerified: true,         // 已經裝過的帳號＝早就過了辨識碼閘（t154 同一個判準）
+    createdAt: Date.now(),
+    updateRun: true,
+  };
+  await env.INSTALLER_KV.put(`sess:${sid}`, JSON.stringify(sess), { expirationTtl: 3600 }); // kv-ok: 這次更新專用的臨時 session，1 小時 TTL，跑完就沒用了
+
+  // 把上次安裝的資源填回去，並把資源步驟標成 done ⇒ runInstall 會沿用而不重建。
+  const progress = freshProgress();
+  progress.result = Object.assign({}, snap.result);
+  delete progress.result.kbdbToken;          // 讓 ensureKbdbToken 從 kbdbtok:<帳號> 取回唯一那把
+  // 🔴 #163 實測抓到（stage，1.4.261→1.4.262）：快照裡存著上一輪的「接力游標」deployedNames（全部 25 顆）。
+  //   原樣帶進來，deploy 迴圈會把每一顆都當成「上一輪已裝過」而 continue——**更新一顆 worker 都不會推**，
+  //   卻照樣回報「更新完成」。游標只屬於「同一次執行」的接力，不屬於跨次的快照 ⇒ 每次更新從零開始，
+  //   跳不跳過交給迴圈裡的 sha256 與印記判準（canSkipWorker）。
+  for (const k of ['deployedNames', 'deployed', 'skippedAll', 'switchedNames', 'deployVerifyRounds', 'accountMissingAfterDeploy', 'accountMissingAtStart', 'workflowsWaitRounds', 'routedAttempt']) {
+    delete progress.result[k];
+  }
+  for (const s of progress.steps) {
+    if (UPDATE_REUSE_STEPS.includes(s.id)) { s.state = 'done'; s.note = '沿用你已經有的（更新不重建）'; }
+  }
+  progress.isUpdate = true;
+
+  // #163（Arcrun#184 第二條）：更新分兩段。
+  //   prepare ：背景把新版上傳成「未啟用版本」，線上不動（沿用上次已準備好、內容沒變的）。
+  //   switch  ：使用者按下才跑；有對得上的準備版就只切換，其餘走原本的直接部署。
+  //   direct  ：原本的一次做完（準備＋啟用），給「沒有準備版」與舊呼叫端。
+  const prepared = await readPrepared(env, accountId);
+  const preparedUsable = !!(prepared && prepared.bundleBase === bundleBase(env));
+  if (mode === 'prepare') {
+    progress.updateMode = 'prepare';
+    progress.preparedVersions = preparedUsable ? Object.assign({}, prepared.versions) : {};
+  } else if (mode === 'switch' && preparedUsable) {
+    progress.updateMode = 'switch';
+    progress.preparedVersions = Object.assign({}, prepared.versions);
+  }
+  await writeProgress(env, sid, progress);
+
+  try {
+    await runInstall(env, sid, progress, false);   // force=false ⇒ 指紋沒變就整段跳過
+  } catch (e) {
+    await writeUpdateLog(env, accountId, { state: 'error', reason: 'run_failed', detail: String((e && e.message) || e).slice(0, 300) });
+    return { ok: false, reason: 'run_failed' };
+  }
+
+  const after = await readProgress(env, sid);
+  const state = (after && after.state) || 'unknown';
+  const deployed = (after && after.result && Array.isArray(after.result.deployedNames)) ? after.result.deployedNames.length : 0;
+
+  if (mode === 'prepare') {
+    // 準備段：不碰快照、不動線上。把「準備到哪一顆」記下來，下一輪接著做、按下時據此切換。
+    const versions = (after && after.preparedVersions) || {};
+    if (state === 'prepared' || state === 'paused_continue') {
+      await writePrepared(env, accountId, {
+        bundleBase: bundleBase(env),
+        preparedAt: (preparedUsable && prepared.preparedAt) || Date.now(),
+        complete: state === 'prepared',
+        versions,
+      });
+    }
+    await writeUpdateLog(env, accountId, { state, mode: 'prepare', prepared: Object.keys(versions).length });
+    return { ok: state === 'prepared' || state === 'paused_continue', state, prepared: Object.keys(versions).length,
+      reason: (state === 'prepared' || state === 'paused_continue') ? undefined : state };
+  }
+
+  await writeUpdateLog(env, accountId, {
+    state,
+    deployed,
+    failedStep: after && after.error ? after.error.step : null,
+    errorMessage: after && after.error ? after.error.message : null,
+  });
+
+  if (state === 'done') {
+    // 更新成功 ⇒ 快照跟著前進，下一次更新才知道現在長什麼樣。
+    await saveInstanceSnapshot(env, accountId, after);
+    // 準備版用完了（切換過或已被直接部署蓋掉）——不留一份會被誤用的舊紀錄。
+    await env.INSTALLER_KV.delete(preparedKey(accountId)).catch(() => {});
+  }
+  const switched = (after && after.result && after.result.switchedNames) || [];
+  const res = (after && after.result) || {};
+  // 診斷欄位（給出貨線與 Portal 後端看，說得出「這次到底為什麼推／沒推」）：實例當時是哪一版、舊的程度。
+  return { ok: state === 'done', state, deployed, switched: switched.length,
+    from: res.instanceVersion || null, to: res.wantVersion || null, staleScope: res.staleScope || null,
+    guards: Array.isArray(res.switchGuards) ? res.switchGuards : [],
+    reason: state === 'done' ? undefined : state };
+}
+
+// ---------------------------------------------------------------------------
+// 「準備好的新版」紀錄（#163／Arcrun#184 第二條）
+// ---------------------------------------------------------------------------
+// 存的是**版本編號**（Cloudflare 上那份未啟用版本的 id）與它對應的零件內容指紋，不是程式碼、也不是憑證。
+// 被讀到最多知道「這台有一份等著切換的新版」；要切換仍然需要更新權杖。
+const preparedKey = (accountId) => 'prepared:' + accountId;
+
+async function readPrepared(env, accountId) {
+  try {
+    const rec = await env.INSTALLER_KV.get(preparedKey(accountId), 'json');
+    // 🔴 安裝器 1.0.89～1.0.90 備的版本沒有保留 secret（切換會清空使用者的帳號與金鑰）——沒有 v:2 印記的一律當作沒備過，
+    //   cron 會重備；否則修好之後按下去，切換的還是那批有毒的版本。
+    return rec && rec.v === PREPARED_SCHEMA ? rec : null;
+  } catch (_) { return null; }
+}
+const PREPARED_SCHEMA = 2;
+async function writePrepared(env, accountId, rec) {
+  // 45 天：新版沒人按、之後又有更新的新版時，舊的準備版自然過期（bundleBase 對不上也不會被用）
+  await env.INSTALLER_KV.put(preparedKey(accountId), JSON.stringify({ ...rec, v: PREPARED_SCHEMA }), { expirationTtl: 45 * 86400 }); // kv-ok: 準備版的版本編號（非憑證、非知識），TTL 到期自動消失，對不上目前 bundleBase 就不使用
+}
+
+/**
+ * 補上 email → 帳號 id 的索引（#163 第二輪加的東西，但**授權可能是更早存的**）。
+ *
+ * 🔴 為什麼一定要有這支：`grantmail:` 這條索引是後來才加的，
+ *   在它之前完成安裝的人，`grant:` 有、索引沒有
+ *   ⇒ `liveGrantForEmail` 查不到 ⇒ **他們還是會被送去 Cloudflare 看同意畫面**
+ *   ⇒ 對那些人來說這張票等於沒修。
+ *
+ * 新功能加索引時最容易漏掉的就是存量資料。這支每輪 cron 順手補，
+ * 補完就不再做（有索引就跳過），成本是每個帳號一次 KV 讀取。
+ */
+async function backfillEmailIndex(env, list) {
+  for (const k of (list && list.keys) || []) {
+    const accountId = k.name.slice('grant:'.length);
+    try {
+      const rec = await env.INSTALLER_KV.get(k.name, 'json');
+      if (!rec || !rec.email) continue;
+      const idxKey = await emailIndexKey(rec.email);
+      if (await env.INSTALLER_KV.get(idxKey)) continue;           // 已經有了
+      await env.INSTALLER_KV.put(idxKey, accountId, { expirationTtl: GRANT_TTL }); // kv-ok: 補既有授權的附屬索引，與 grant 同生共死、同 TTL；存雜湊不存明文信箱
+    } catch (_) { /* 單筆補不起來不該擋住整輪 */ }
+  }
+}
+
+/**
+ * 掃一輪「該更新的帳號」。cron 呼叫。
+ *
+ * 判準刻意用**最便宜**的那個：快照記的 bundleBase ≠ 現在這條通道的 bundleBase
+ * ⇒ 釘子換了 ⇒ 有新版。不必為了判斷「要不要更新」去對每個帳號抓一次 manifest。
+ * （真正「哪幾顆要重推」的細判仍然是 t132 的指紋，在 runInstall 裡做。）
+ */
+async function sweepUpdates(env, budget) {
+  const out = [];
+  const list = await env.INSTALLER_KV.list({ prefix: 'grant:' });
+  await backfillEmailIndex(env, list);
+  for (const k of list.keys) {
+    if (out.length >= budget) break;
+    const accountId = k.name.slice('grant:'.length);
+    const snap = await env.INSTALLER_KV.get(instanceKey(accountId), 'json').catch(() => null);
+    if (!snap) continue;
+    if (snap.bundleBase === bundleBase(env)) continue;   // 已經是這一版，沒事做
+    // #163（Arcrun#184 第二條）：背景只「準備」新版，不啟用——按下「立即更新」才切換。
+    //   UPDATE_MODE=auto 才維持舊行為（背景直接部署）。預設是 prepare。
+    if (String(env.UPDATE_MODE || 'prepare') !== 'auto') {
+      const prep = await readPrepared(env, accountId);
+      if (prep && prep.bundleBase === bundleBase(env) && prep.complete) continue;   // 已經準備好了，等人按
+      out.push(Object.assign({ accountId }, await runUpdate(env, accountId, 'prepare')));
+      continue;
+    }
+    out.push(Object.assign({ accountId }, await runUpdate(env, accountId)));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -5017,6 +5808,47 @@ footer{margin-top:44px;font-size:13px;color:var(--muted);text-align:center}
 @media (max-width:520px){ .wrap{padding:32px 16px 60px} h2{font-size:23px} }
 `;
 
+/**
+ * #163：已經裝好的人看到的畫面——取代「再走一次安裝」。
+ *
+ * 文案鐵律（本 repo）：講他的狀態、講他要不要做事，
+ * **不出現狀態碼／token／模型名這類詞**。
+ *
+ * 三件事講完就好：
+ *   ① 你已經裝好了（所以不用再裝一次）
+ *   ② 新版會自己換上，你不必做任何事
+ *   ③ 真的想重來的話，這裡有路（而且會**明說**要重新授權——不騙他）
+ */
+function alreadyInstalledPage(env, email) {
+  const safeEmail = escapeHtml(email || '');
+  return pageShell(
+    '你已經裝好了',
+    `<h2>你已經裝好了，不用再裝一次</h2>
+     <p class="lead">這組信箱（<b>${safeEmail}</b>）的 Arcrun RAG 已經在你的 Cloudflare 帳號上跑著。</p>
+
+     <div class="card">
+       <h3>新版會先在背景準備好</h3>
+       <p>有新版本時，我們會先在背景把新的程式準備好，<b>你到 Arcrun 的設定頁按一下「立即更新」</b>就會換上——
+          不用回到這一頁，也不用再授權一次。</p>
+       <p class="hint">換的只有程式。你的知識庫內容、帳號、已經同步的檔案都不會被動到。</p>
+     </div>
+
+     <div class="card">
+       <h3>想停掉自動更新？</h3>
+       <p>到 Cloudflare 後台把「Arcrun RAG 安裝器」的授權收回即可。
+          收回之後我們就換不了新版，等你哪天想再開，回這一頁重新安裝一次就好。</p>
+     </div>
+
+     <div style="margin-top:22px;display:flex;flex-direction:column;gap:12px">
+       <a class="btn" href="/auth/start?email=${encodeURIComponent(email || '')}&amp;agree=1&amp;reinstall=1">我要重新安裝一次</a>
+       <a class="btn secondary" href="${escapeHtml(siteBase(env))}">回首頁</a>
+     </div>
+     <p class="hint">重新安裝會請你再授權一次 Cloudflare——只有在你的服務真的出問題、想整個重來時才需要。</p>`,
+    '',
+    env
+  );
+}
+
 function pageShell(title, bodyHtml, extraHead = '', env = null) {
   // 導覽列連結：env 有值就照該環境算（stage 導去 stage、prod 導去 prod）；
   // env 沒傳（少數呼叫端還沒線）就落回 prod 網址——與改動前行為一致，不會變更壞。
@@ -5083,7 +5915,7 @@ async function homePage(notice, env, release) {
     `
 ${noticeHtml}
 <h2>把你的知識庫<br>裝到你自己的雲端空間</h2>
-<p class="lead" style="margin-bottom:6px"><b>已經裝過的人也從這裡更新</b>（同一組 Email＋辨識碼，資料不會動到）。</p>
+<p class="lead" style="margin-bottom:6px"><b>已經裝過的人不用再來這裡</b>——有新版時會自動換上，你不必做任何事。</p>
 <p class="lead">不需要安裝任何軟體，也不需要懂技術。裝好之後，這套系統完全屬於你，資料只存在你自己的帳號裡。</p>
 
 <div class="card">
@@ -5102,7 +5934,7 @@ ${noticeHtml}
   <label for="code">辨識碼</label>
   <!-- t154：required 拔掉——更新者（帳號已有部署紀錄）免碼，授權後自動核可 -->
   <input id="code" name="code" type="text" placeholder="例如 BLKYLR9M（更新可留空）" autocomplete="off" spellcheck="false">
-  <p class="hint">填你登記那封信裡的 Email 和辨識碼——這是確認你有封測資格，不是要你的密碼。<b>已經裝過、回來更新？辨識碼可以留空</b>，我們認得你的帳號。</p>
+  <p class="hint">填你登記那封信裡的 Email 和辨識碼——這是確認你有封測資格，不是要你的密碼。<b>已經裝過的？辨識碼留空即可</b>，我們認得你的帳號。</p>
   <!-- t153（leo 07-31：「要更新時已經距離申請一陣子了，誰知道辨識碼跑到哪裡去？」）：
        提示放在真的會缺的那個位置（07-27 鐵律）——就在辨識碼欄下方，不事先預告。
        同 email 重申請＝landing 冪等重寄同一組碼（handleRequestCode），這條路已實測走得通。 -->
@@ -5141,15 +5973,15 @@ ${noticeHtml}
 </script>
 
 <div class="card" id="update-card">
-  <h3>已經裝過了？想更新到最新版</h3>
+  <h3>已經裝過了？你不用再授權</h3>
   <p style="margin:0 0 12px;color:var(--muted);font-size:14px">
-    用<b>同一組 Email 和辨識碼</b>再跑一次上面的流程就會更新——
-    系統會沿用你原本的資料庫，<b>資料、帳號、已同步的檔案都不會動到</b>，
-    只把程式換成最新版。
+    我們出了新版之後，會先在背景幫你把新的程式準備好，你在 Arcrun 設定頁按一下「立即更新」就換上——
+    <b>不用回到這一頁，也不用再授權一次</b>。
+    換的只有程式：<b>你的資料、帳號、已同步的檔案都不會被動到</b>。
   </p>
   <p style="margin:0;color:var(--muted);font-size:14px">
-    什麼時候需要更新？<b>我們修好了某個問題、但你這邊還是舊的樣子</b>時
-    （例如畫面上少了某個按鈕、某個功能存不進去）。
+    真的想整個重來（例如服務出了狀況想重裝）？填上面的 Email 送出，
+    下一頁會給你「重新安裝」的入口——那條路會請你再授權一次 Cloudflare。
   </p>
 </div>
 
@@ -5428,11 +6260,15 @@ function renderDone(p){
 // 沒用」——不再要求使用者自己點連結。
 function showAccountModal(r){
   if (document.getElementById('acct-modal-overlay')) return; // 避免重複觸發（poll 可能不只打一次 done）
+  // 安裝當下讀回的 /health：auth_store.console.configured===false ＝這台還沒有任何管理員（arcrun-rag#289）。
+  // 讀不到欄位（舊實例）就照舊給略過，不因新欄位沒鋪到而把更新的人困住。
+  var hc = r.health && r.health.auth_store && r.health.auth_store.console;
+  var needsAdmin = !!hc && hc.configured === false;
   var overlay = document.createElement('div');
   overlay.id = 'acct-modal-overlay';
   overlay.innerHTML =
     '<div class="card" role="dialog" aria-modal="true" aria-labelledby="acct-modal-title">'
-    + '<h3 id="acct-modal-title" style="font-size:20px">管理員</h3>'
+    + '<h3 id="acct-modal-title" style="font-size:20px">' + (needsAdmin ? '建立管理員帳號' : '管理員') + '</h3>'
     + '<label for="acct-email">Email</label>'
     + '<input id="acct-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false" required>'
     + '<div style="height:12px"></div>'
@@ -5444,7 +6280,8 @@ function showAccountModal(r){
     + '<div style="height:16px"></div>'
     + '<button class="btn" id="acct-submit">建立登入</button>'
     + '<p id="acct-status" style="margin:12px 0 0;color:var(--muted);font-size:14px"></p>'
-    + '<button type="button" class="modal-skip" id="acct-skip" title="這是更新，已有帳號，直接前往 Portal">略過 →</button>'
+    // inkstone/arcrun-rag#289：實例還沒有管理員時不給「略過」——略過就落到 Portal 一個建不出帳號的頁面。
+    + (needsAdmin ? '' : '<button type="button" class="modal-skip" id="acct-skip" title="這是更新，已有帳號，直接前往 Portal">略過 →</button>')
     + '</div>';
   document.body.appendChild(overlay);
 
@@ -5481,7 +6318,11 @@ function showAccountModal(r){
         // 這台機器之前就設過帳密了（多半是走「更新」的人誤觸這個彈窗）——
         // 不要一直勸他重試，直接給「前往 portal 用原本帳密登入」的路。
         st.textContent = '⚠ 已設定過';
-        if (skipBtn) { skipBtn.textContent = '登入 →'; skipBtn.title = '前往 Portal，用原本的帳密登入'; }
+        if (!skipBtn) {  // 沒給略過（當時判定沒有管理員），但其實已有人建過：補一顆去登入的路，不困住人
+          skipBtn = document.createElement('button'); skipBtn.type = 'button'; skipBtn.className = 'modal-skip';
+          skipBtn.addEventListener('click', goToPortal); st.parentNode.appendChild(skipBtn);
+        }
+        skipBtn.textContent = '登入 →'; skipBtn.title = '前往 Portal，用原本的帳密登入';
       } else {
         st.textContent = '⚠ 失敗 HTTP ' + x.status; st.title = clip((x.d && x.d.error) || '', 25);
       }
@@ -5676,6 +6517,15 @@ export default {
         try { await env.INSTALLER_KV.delete(lockKey); } catch (_) { /* TTL 兜底 */ }
       }
     }
+
+    // #163：同一支 cron 順帶掃「該更新的帳號」。
+    // 🔴 這不是輪詢外部服務——掃的是**自己 worker 的 KV**，跟上面那段自續同一個性質
+    //    （D20 管的是 GitHub，這裡一次都沒碰）。
+    // 預算刻意小（每輪最多 2 個帳號）：cron 每 2 分鐘一次，落後的帳號會在後續幾輪
+    // 陸續補完，不必也不該在單一輪把所有人都推一遍。
+    try {
+      await sweepUpdates(env, 2);
+    } catch (_) { /* 這輪掃失敗＝下輪再掃；每個帳號的結果已各自寫進 log */ }
   },
   async fetch(request, env, ctx) {
     attachKvShim(env);
@@ -5741,6 +6591,12 @@ export default {
     }
 
     try {
+      // inkstone/arcrun-rag#379：每個 App 一個入口網址（清單只從 /apps/index.json 來）
+      if (pathname === '/app' || pathname === '/app/' || pathname.startsWith('/app/')) {
+        const r = await handleAppRoute(request, env, url);
+        if (r) return r;
+      }
+      if (pathname === '/api/app/install' && request.method === 'POST') return handleAppInstall(request, env);
       switch (`${request.method} ${url.pathname}`) {
         case 'GET /':
           return handleHome(request, env, url);
@@ -5750,6 +6606,10 @@ export default {
           return handleAuthCallback(request, env, url);
         case 'GET /install':
           return handleInstallPage(request, env);
+        case 'GET /app-install.js':
+          return new Response(AppEntry.appInstallScript(), {
+            headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' },
+          });
         case 'GET /install.js':
           return new Response(INSTALL_SCRIPT, {
             headers: {
@@ -5776,8 +6636,21 @@ export default {
           return handleAdminLogs(request, env, url);
         case 'POST /admin/installs-backfill':
           return handleAdminInstallsBackfill(env, url);
+        case 'POST /api/grant/revoke':
+          return handleGrantRevoke(request, env);
+        case 'POST /api/instance/update-status':
+          return handleInstanceUpdateStatus(request, env);
+        case 'POST /api/instance/update':
+          return handleInstanceUpdate(request, env);
+        case 'POST /admin/update-sweep':
+          return handleAdminUpdateSweep(request, env, url);
         default:
           if (url.pathname === '/healthz') return json({ ok: true });
+          {
+            // #379：沒有別的路由認領的 /<app id>（既有路由永遠優先，所以 App id 不會蓋掉它們）
+            const appRes = await handleAppRoute(request, env, url);
+            if (appRes) return appRes;
+          }
           return html(
             pageShell(
               '找不到這個頁面',
@@ -5968,6 +6841,130 @@ async function bundleFetch(env, url, init) {
   }
   return fetch(url, init);
 }
+// ---------------------------------------------------------------------------
+// inkstone/arcrun-rag#379（母票 inkstone/InkStoneCo#334）：每個 App 一個入口網址
+//   GET  /app            App 清單（從 /apps/index.json 現算）
+//   GET  /<id>           那個 App 的頁（商店頁連的格式；/app/<id> 是別名；目錄沒有的 id → 說明頁）
+//   GET  /<id>/go        驗 Email＋辨識碼；沒 Arcrun → 走原本的 OAuth 安裝並帶著 app；
+//                        已有 Arcrun（安裝站存著授權、實例還在）→ 只裝這個 App，不碰 Cloudflare
+//   POST /api/app/install 前端接力（身分只認 cookie 對應的伺服器端紀錄，不收 appId／帳號參數）
+// 🔴 App 清單的唯一來源是 appsHandle（R2／APP_FEED_BASE／釘子）——這裡沒有第二份名單。
+// ---------------------------------------------------------------------------
+async function appsFile(env, origin, rel) {
+  return appsHandle(new Request(`${origin}/apps/${rel}`), env, `/apps/${rel}`);
+}
+async function loadAppIndex(env, origin) {
+  try {
+    const res = await appsFile(env, origin, 'index.json');
+    if (!res.ok) return null;
+    return AppEntry.parseIndex(await res.text());
+  } catch (_) { return null; }
+}
+async function validAppId(env, url, raw) {
+  const id = String(raw || '').trim();
+  if (!id || !AppEntry.APP_ID_RE.test(id)) return null;
+  const idx = await loadAppIndex(env, url.origin);
+  return idx && AppEntry.findApp(idx, id) ? id : null;
+}
+
+async function handleAppRoute(request, env, url) {
+  if (request.method !== 'GET') return null;
+  let parts = url.pathname.split('/').filter(Boolean); // ['app', id?, 'go'?] 或 [id, 'go'?]
+  const aliased = parts[0] === 'app';               // /app/<id> 是 /<id> 的別名；/app 本身＝清單
+  if (aliased) parts = parts.slice(1);
+  // 正門格式是 /<app id>（商店頁 inkstone/Arcrun#478 的 appInstallUrl）；不像 App id 的路徑不是我們的事
+  if (!aliased && !(parts.length >= 1 && parts.length <= 2 && AppEntry.APP_ID_RE.test(parts[0]))) return null;
+  const ctx = { esc: escapeHtml, siteUrl: siteBase(env) };
+  const idx = await loadAppIndex(env, url.origin);
+  if (!idx) {
+    // 目錄讀不到：只有明確走 /app 的才說「目錄讀不到」；其他 /<id> 形狀的路徑照一般 404（不能因此把每個亂打的網址都變成 503）
+    return aliased ? html(pageShell('App 目錄暫時讀不到', AppEntry.appUnavailableBody(), '', env), 503) : null;
+  }
+  if (parts.length === 0) return html(pageShell('選一個 App 來裝', AppEntry.appIndexBody(AppEntry.listedApps(idx), ctx), '', env));
+  if (parts.length > 2) return null;
+  let id;
+  try { id = decodeURIComponent(parts[0]); } catch (_) { id = ''; }
+  const row = AppEntry.findApp(idx, id);
+  if (!row) return html(pageShell('市集裡沒有這個 App', AppEntry.appNotFoundBody(id.slice(0, 64), AppEntry.listedApps(idx), ctx), '', env), 404);
+  if (parts.length === 1) {
+    return html(pageShell(`安裝${row.name}`, AppEntry.appEntryBody(row, { ...ctx, errorKey: url.searchParams.get('error') }), '', env));
+  }
+  if (parts[1] === 'go') return handleAppGo(env, url, row);
+  return null;
+}
+
+async function handleAppGo(env, url, row) {
+  const back = (k) => Response.redirect(`${url.origin}/${row.id}?error=${k}`, 302);
+  if (url.searchParams.get('agree') !== '1') return back('agree');
+  const email = (url.searchParams.get('email') || '').trim().slice(0, 254).toLowerCase();
+  const code = (url.searchParams.get('code') || '').trim().slice(0, 64);
+  if (!email || !code) return back('code');
+
+  // 已有 Arcrun？（授權在、實例還在）
+  let accountId = await liveGrantForEmail(env, email).catch(() => null);
+  if (accountId && await instanceIsGone(env, accountId)) accountId = null;
+  if (accountId) accountId = await liveGrantForEmail(env, email).catch(() => null);
+
+  if (!accountId) {
+    // 沒有 → 原本的安裝流程（辨識碼閘、OAuth、裝主程式都在 /auth/start），多帶 app
+    const q = new URLSearchParams({ agree: '1', email, code, app: row.id });
+    return Response.redirect(`${url.origin}/auth/start?${q}`, 302);
+  }
+
+  // 有 → 只裝 App。只知道 Email 不夠：要驗得過辨識碼（fail-closed）。
+  const verdict = await verifyInviteCode(env, email, code);
+  if (!verdict.ok) {
+    return back(verdict.reason === 'unreachable' ? 'code_unreachable' : verdict.reason === 'rate' ? 'code_rate' : 'code');
+  }
+  const sid = randomB64(18);
+  await env.INSTALLER_KV.put(`appins:${sid}`, JSON.stringify({ accountId, app: row.id, createdAt: Date.now() }), { expirationTtl: 1800 }); // kv-ok: 30 分鐘的一次性安裝憑條（nonce），過期自動消失，不是資料
+  const body = AppEntry.appProgressBody(row, { esc: escapeHtml })
+    + `<script>window.ARCRUN_APP=${JSON.stringify({ id: row.id, name: row.name, wait: false }).replace(/</g, '\\u003c')};</script><script src="/app-install.js"></script>`;
+  return html(pageShell(`正在裝${row.name}`, body, '', env), 200, { 'set-cookie': sessionCookie(sid), 'cache-control': 'no-store' });
+}
+
+/** 這個請求要裝哪個帳號的哪個 App——只從伺服器端紀錄推，不信請求內容。 */
+async function resolveAppInstallTarget(request, env) {
+  const sid = getCookie(request, SESSION_COOKIE);
+  if (!sid) return null;
+  const tix = await env.INSTALLER_KV.get(`appins:${sid}`, 'json');
+  if (tix && tix.accountId && tix.app) return { accountId: tix.accountId, app: tix.app };
+  const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
+  if (sess && sess.app && sess.inviteVerified === true) {
+    const progress = await readProgress(env, sid);
+    if (progress && progress.state === 'done' && progress.result && progress.result.accountId) {
+      return { accountId: progress.result.accountId, app: sess.app };
+    }
+  }
+  return null;
+}
+
+async function handleAppInstall(request, env) {
+  const target = await resolveAppInstallTarget(request, env);
+  if (!target) return json({ state: 'error', message: '這個安裝連結過期了，請回到 App 的頁面重新按一次安裝。' }, 401);
+  let body = {};
+  try { body = await request.json(); } catch (_) { /* 空 body＝從頭 */ }
+  const origin = new URL(request.url).origin;
+  const idx = await loadAppIndex(env, origin);
+  const row = idx && AppEntry.findApp(idx, target.app);
+  if (!row) return json({ state: 'error', message: '這個 App 已經不在市集裡了。' }, 404);
+  const snap = await env.INSTALLER_KV.get(instanceKey(target.accountId), 'json').catch(() => null);
+  const r = snap && snap.result;
+  const apiUrl = r && r.apiUrl;
+  const ns = r && (r.tenant || r.suffix);
+  if (!apiUrl || !ns) return json({ state: 'error', message: '找不到你的 Arcrun 資料，請到安裝首頁重新安裝一次。' }, 409);
+  const kbdbToken = await env.INSTALLER_KV.get('kbdbtok:' + target.accountId).catch(() => null);
+  const got = await AppEntry.fetchPackage(row, (rel) => appsFile(env, origin, rel));
+  if (!got.ok) return json({ state: 'error', message: got.message });
+  const out = await AppEntry.importIntoInstance({
+    apiUrl, pkg: got.pkg, name: row.name,
+    authHeaders: await cypherAuthHeaders(ns, kbdbToken),
+    from: body.from, hash: body.h,
+  });
+  if (out.state === 'done') out.url = r.url || null;
+  return json(out);
+}
+
 /** 市集目錄只開兩類 key：目錄檔 `apps/index.json`、App 包 `apps/packages/<id>-<版本>.json`。其餘（含 ..）一律 404。 */
 function appsKeyAllowed(key) {
   if (key.includes('..') || key.includes('//')) return false;
@@ -6225,6 +7222,146 @@ async function handleAdminLogs(request, env, url) {
   return json(logs.filter(Boolean));
 }
 
+/**
+ * POST /api/grant/revoke — 使用者主動收回「自動更新」的授權（#163 驗收條件 4）。
+ *
+ * 認證：要有**當下這次 OAuth 驗過的 session**，而且它摸得到的帳號要跟要撤的那個對得上。
+ * ⇒ 不是「知道帳號 id 就能撤」——那會變成任何人都能把別人的自動更新關掉。
+ *
+ * 🔴 這支只是方便。**真正的撤銷在 Cloudflare 後台**（撤銷這個 OAuth 應用程式的授權）：
+ *    那會讓我們手上的 refresh_token 立刻失效，grantAccessToken 收到 invalid_grant
+ *    就會自己把本地 grant 刪掉。兩條路殊途同歸，後者不需要我們配合。
+ */
+async function handleGrantRevoke(request, env) {
+  const sid = getCookie(request, SESSION_COOKIE);
+  if (!sid) return json({ ok: false, error: 'no_session' }, 401);
+  const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
+  if (!sess || !sess.access_token) return json({ ok: false, error: 'no_session' }, 401);
+
+  // 用這把 token 去問 CF「你是誰」，只撤它自己摸得到的帳號。
+  let accounts = [];
+  try {
+    accounts = await cfFetch(sess.access_token, '/accounts?per_page=10');
+  } catch (_) {
+    return json({ ok: false, error: 'cf_unreachable' }, 502);
+  }
+  const ids = (accounts || []).map((a) => a && a.id).filter(Boolean);
+  if (!ids.length) return json({ ok: false, error: 'no_account' }, 403);
+
+  for (const id of ids) await dropGrant(env, id, 'user_revoked');
+  return json({
+    ok: true,
+    revoked: ids.length,
+    // 文案是給人看的（產品文案鐵律：不出現狀態碼／token 這種詞）
+    message: '已經關閉自動更新。以後有新版時不會自動幫你換，你可以隨時回安裝頁重新開啟。',
+  });
+}
+
+/**
+ * POST /api/instance/update — **Portal 的「更新到最新版」按鈕打的就是這支。**
+ *
+ * leo 2026-08-29：「如果他已經在 portal 登入狀態，應該可以直接更新」
+ *
+ * 認證：`authorization: Bearer <ARCRUN_UPDATE_TOKEN>` ＋ body 的 accountId。
+ * 那把權杖是安裝器自己發、自己寫進使用者實例的（見 ensureUpdateToken），
+ * 所以「打得出這個請求」就等於「你是那台實例」。
+ *
+ * 🔴 **這不是 AI 專用旁路**：這支是使用者按下 Portal 按鈕時，他的實例代他打的。
+ *    AI 要走這條路，得跟使用者一樣先登入 Portal、按同一顆按鈕。
+ *
+ * 🔴 **不接受「要裝哪一版」參數**：永遠裝當前官方版本。
+ *    讓呼叫方指定版本＝把「裝什麼」的決定權交出去，那才是真的旁路。
+ */
+async function handleInstanceUpdate(request, env) {
+  const auth = request.headers.get('authorization') || '';
+  const presented = auth.replace(/^Bearer\s+/i, '').trim();
+
+  let body = {};
+  try { body = await request.json(); } catch { /* 空 body 照樣往下，會在缺 accountId 時被擋 */ }
+  const accountId = String((body && body.accountId) || '').trim().slice(0, 64);
+
+  // 沒帶齊就拒絕——文案講人話，不吐狀態碼／token 這種詞給使用者看。
+  if (!presented || !accountId) {
+    return json({ ok: false, error: 'unauthorized', message: '這個更新要求沒有通過驗證，請重新登入你的 Arcrun 再試一次。' }, 401);
+  }
+
+  const expected = await env.INSTALLER_KV.get('updtok:' + accountId).catch(() => null);
+  if (!expected || !timingSafeEqual(presented, expected)) {
+    return json({ ok: false, error: 'unauthorized', message: '這個更新要求沒有通過驗證，請重新登入你的 Arcrun 再試一次。' }, 401);
+  }
+
+  // 冷卻期：擋連打（同一台實例 60 秒內只跑一次）。
+  // 更新是冪等的，但每一次都會吃使用者自己帳號的 CF 額度——不該讓一顆按鈕能被連按成災。
+  const cool = 'updcool:' + accountId;
+  if (await env.INSTALLER_KV.get(cool)) {
+    return json({ ok: true, state: 'busy', message: '正在幫你更新，請稍候再重新整理。' });
+  }
+  await env.INSTALLER_KV.put(cool, '1', { expirationTtl: 60 }); // kv-ok: 60 秒冷卻標記，過期自動消失——這是節流用的 nonce，不是資料
+
+  const startedAt = Date.now();
+  const r = await runUpdate(env, accountId, 'switch');
+
+  // 使用者看得懂的話（產品文案鐵律：不出現狀態碼、模型名、token）
+  const message = r.ok
+    ? (r.deployed
+      ? ('更新完成，已經換成最新版了。' + ((r.guards && r.guards.length) ? '（有幾個服務為了保護你的帳號與金鑰，改用比較慢但安全的方式更新。）' : ''))
+      : '你已經是最新版，沒有需要更新的東西。')
+    : (r.reason === 'no_grant' || r.reason === 'missing' || r.reason === 'revoked')
+      ? '我們已經沒有幫你更新的權限了——你之前可能在 Cloudflare 收回了授權。到安裝頁重新安裝一次就會恢復。'
+      : '這次更新沒有完成，稍後會自動再試一次。如果一直沒好，請把這個畫面告訴我們。';
+
+  return json({ ok: !!r.ok, state: r.state || null, deployed: r.deployed || 0, switched: r.switched || 0, guards: r.guards || [], from: r.from || null, to: r.to || null, staleScope: r.staleScope || null, ms: Date.now() - startedAt, reason: r.reason || null, message });
+}
+
+/**
+ * POST /api/instance/update-status — 這台實例有沒有「背景準備好、等人按」的新版。
+ * 同樣要更新權杖（Portal 的後端用同一把）。只回數量與時間，不回任何版本編號。
+ */
+async function handleInstanceUpdateStatus(request, env) {
+  const auth = request.headers.get('authorization') || '';
+  const presented = auth.replace(/^Bearer\s+/i, '').trim();
+  let body = {};
+  try { body = await request.json(); } catch { /* 缺 accountId 時被擋 */ }
+  const accountId = String((body && body.accountId) || '').trim().slice(0, 64);
+  const expected = (presented && accountId) ? await env.INSTALLER_KV.get('updtok:' + accountId).catch(() => null) : null;
+  if (!expected || !timingSafeEqual(presented, expected)) {
+    return json({ ok: false, error: 'unauthorized', message: '這個要求沒有通過驗證，請重新登入你的 Arcrun 再試一次。' }, 401);
+  }
+  const snap = await env.INSTALLER_KV.get(instanceKey(accountId), 'json').catch(() => null);
+  const prep = await readPrepared(env, accountId);
+  const usable = !!(prep && prep.bundleBase === bundleBase(env));
+  return json({
+    ok: true,
+    upToDate: !!(snap && snap.bundleBase === bundleBase(env)),
+    prepared: usable && !!prep.complete,
+    preparing: usable && !prep.complete,
+    preparedWorkers: usable ? Object.keys(prep.versions || {}).length : 0,
+    preparedAt: usable ? prep.preparedAt : null,
+  });
+}
+
+/**
+ * POST /admin/update-sweep?key=<ADMIN_LOG_KEY> — 立刻掃一輪更新，回每個帳號的結果。
+ *
+ * 誰在用：**出貨管線**（#163 驗收條件 3）——出貨後打這支，就知道
+ * 「已安裝的帳號有沒有真的拿到新版」，以及**沒拿到的是卡在哪一站**（reason 短碼）。
+ * 平常不需要人打：cron 每 2 分鐘自己會掃（見 scheduled）。
+ */
+async function handleAdminUpdateSweep(request, env, url) {
+  const adminKey = url.searchParams.get('key');
+  if (!adminKey || !env.ADMIN_LOG_KEY || adminKey !== env.ADMIN_LOG_KEY) {
+    return new Response(null, { status: 404 });
+  }
+  const budget = Math.min(Number(url.searchParams.get('budget')) || 10, 25);
+  const results = await sweepUpdates(env, budget);
+  return json({
+    ok: results.every((r) => r.ok !== false),
+    bundleBase: bundleBase(env),
+    checked: results.length,
+    results,
+  });
+}
+
 // --- handlers --------------------------------------------------------------
 
 async function handleHome(request, env, url) {
@@ -6272,18 +7409,59 @@ async function handleHome(request, env, url) {
       body: '填辨識碼，或到官網申請',
     };
   }
+  if (!err && await revisitNeedsAdmin(request, env)) {
+    return Response.redirect(`${url.origin}/install`, 302);
+  }
   return html(await homePage(notice, env, await releaseOf(env)));
 }
 
 async function handleAuthStart(request, env, url) {
   // inkstone/arcrun-rag#238（leo 裁決 B）：portal 改密碼寫不進 → 導來這裡授權一次（不是安裝、不要辨識碼）
   if (url.searchParams.get('grant') === '1') return handleGrantStart(request, env, url);
+  // arcrun-rag#289：同一個瀏覽器裝完、還沒建管理員 ⇒ 直接回完成頁的建帳號視窗，不必再授權一次
+  if (url.searchParams.get('reinstall') !== '1' && await revisitNeedsAdmin(request, env)) {
+    return Response.redirect(`${url.origin}/install`, 302);
+  }
   // arcrun-rag#205：安裝／更新前必須取得授權同意（表單 checkbox 之外，伺服器端也擋）。
   if (url.searchParams.get('agree') !== '1') {
     return Response.redirect(`${url.origin}/?error=agree`, 302);
   }
   const inviteCode = (url.searchParams.get('code') || '').trim().slice(0, 64);
   const inviteEmail = (url.searchParams.get('email') || '').trim().slice(0, 254).toLowerCase();
+  // #379：從 App 入口來的，OAuth 一路帶著要裝哪個 App（只收目錄裡真的有的 id）
+  const wantApp = await validAppId(env, url, url.searchParams.get('app'));
+
+  // ── #163：已經裝好的人，**在進 OAuth 之前**就攔下來 ───────────────────────
+  //
+  // leo 2026-08-29：「更新就是更新——把程式換成新版，不重建資源、不重新授權」
+  //
+  // 這一段是這張票的核心，位置也是重點：**必須在下面任何 OAuth 動作之前**。
+  // 第一輪我把重用寫在 callback 之後（拿到帳號 id 才查得到授權），
+  // 結果走畫面的人照樣看到 CF 同意畫面——總管在 leo 已登入的 Chrome 上實測打回。
+  // ⇒ 攔截點錯了，不是參數錯了。
+  //
+  // 已經裝好的人不需要做任何事：新版由背景自動換上（見 scheduled/sweepUpdates），
+  // 所以這裡**不觸發任何部署**，只告訴他「你已經好了」。
+  // 🔴 刻意不做「立即更新」按鈕：那會變成「知道別人的 email 就能對他的帳號發動部署」，
+  //   雖然裝的是同一個官方版本、不碰資料，但足以拿去燒掉別人的額度。
+  //   自動更新本來就會做這件事，不需要為此開一個誰都按得動的入口。
+  if (inviteEmail && url.searchParams.get('reinstall') !== '1') {
+    let grantedAccount = await liveGrantForEmail(env, inviteEmail).catch(() => null);
+    // 「已裝好」以實例真的還在為準：授權還在但 Cloudflare 上的實例已被刪光（例如整個重置過），
+    // 就不能再說「已經裝好」——否則用戶被關在這個畫面進不了安裝（arcrun-rag#289）。
+    if (grantedAccount && await instanceIsGone(env, grantedAccount)) {
+      grantedAccount = null;
+    } else if (grantedAccount && await instanceHasNoAdmin(env, grantedAccount)) {
+      // 實例在但沒有管理員：不是「已裝好」，帶去授權＋安裝，完成頁會跳出建帳號視窗（arcrun-rag#289）
+      grantedAccount = null;
+    } else if (grantedAccount) {
+      // 換 token 時若發現授權已被撤銷，grant 會被清掉，這裡再確認一次
+      grantedAccount = await liveGrantForEmail(env, inviteEmail).catch(() => null);
+    }
+    if (grantedAccount) {
+      return html(alreadyInstalledPage(env, inviteEmail));
+    }
+  }
 
   // P0-1：辨識碼閘。驗不過就不進 OAuth（避免用戶白授權一次才被拒），
   // 也擋掉「任何拿到網址的人都能裝」。fail-closed：連不上中央服務也拒。
@@ -6313,7 +7491,7 @@ async function handleAuthStart(request, env, url) {
   await env.INSTALLER_KV.put(
     `state:${state}`,
     // t154：有碼＝已驗過（上方閘）；無碼＝false，callback 以部署紀錄補驗（更新者路徑）
-    JSON.stringify({ verifier, sid, inviteCode, inviteEmail, inviteVerified: !!inviteCode, createdAt: Date.now() }),
+    JSON.stringify({ verifier, sid, inviteCode, inviteEmail, inviteVerified: !!inviteCode, app: wantApp || null, createdAt: Date.now() }),
     { expirationTtl: STATE_TTL }
   );
 
@@ -6447,6 +7625,7 @@ async function handleAuthCallback(request, env, url) {
       inviteCode: stored.inviteCode || null,
       inviteEmail: stored.inviteEmail || null,
       inviteVerified, // P0-1：有碼在 /auth/start 已驗；無碼在上方以部署紀錄補驗（t154）
+      app: stored.app || null, // #379：裝完主程式後要接著裝的 App
       createdAt: Date.now(),
     }),
     { expirationTtl: SESSION_TTL }
@@ -6467,7 +7646,17 @@ async function handleInstallPage(request, env) {
   if (!sid) return Response.redirect(new URL('/', request.url).toString(), 302);
   const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
   if (!sess) return Response.redirect(new URL('/?error=state', request.url).toString(), 302);
-  return html(installPage(env).replace('</body>', '<script src="/install.js"></script></body>'));
+  let extra = '';
+  if (sess.app) {
+    const idx = await loadAppIndex(env, new URL(request.url).origin);
+    const row = idx && AppEntry.findApp(idx, sess.app);
+    if (row) {
+      extra = `<div id="app-wrap">${AppEntry.appProgressBody(row, { esc: escapeHtml })}</div>`
+        + `<script>window.ARCRUN_APP=${JSON.stringify({ id: row.id, name: row.name, wait: true }).replace(/</g, '\\u003c')};</script>`
+        + `<script src="/app-install.js"></script>`;
+    }
+  }
+  return html(installPage(env).replace('</body>', extra + '<script src="/install.js"></script></body>'));
 }
 
 async function handleInstallStart(request, env, ctx) {
@@ -6819,8 +8008,20 @@ async function handleInstallStatus(request, env) {
   // （也是「有 N 件事沒有裝起來」數的那些）；`internalNotes` 是用戶做不了任何事、
   // 講的是我們自己的出貨的那些——不畫成卡，但仍原樣送出去給技術細節那一段印。
   const allWarnings = installWarnings(progress.result);
+  // arcrun-rag#289：完成頁的建帳號視窗看「現在」有沒有管理員，不看安裝當下的快照
+  // ——回訪時要照實決定有沒有「略過」（沒有管理員就不給略過）。只改回應，不落庫。
+  let result = progress.result;
+  if (progress.state === 'done' && result && result.apiUrl) {
+    const live = await apiAdminConfigured(result.apiUrl);
+    if (live !== null) {
+      const h = result.health || {};
+      const as = h.auth_store || {};
+      result = { ...result, health: { ...h, auth_store: { ...as, console: { ...(as.console || {}), configured: live } } } };
+    }
+  }
   return json({
     ...progress,
+    result,
     warnings: userFacingWarnings(allWarnings),
     internalNotes: internalOnlyWarnings(allWarnings),
   });
@@ -6969,13 +8170,24 @@ async function handleSetupAccount(request, env) {
   //   report 只留 HTTP 狀態與訊息），這把 token 本來就已經活在 session 裡（`getAccessToken`
   //   是既有函式，這裡沒有新增任何持久化）。session 過期就直接把錯誤往上拋，讓用戶
   //   回首頁重新連結——跟原本 getAccessToken 在別處被呼叫時的失敗語意一致。
-  let cfToken;
+  let cfToken = null;
+  let tokenErr = null;
   try {
     cfToken = await getAccessToken(env, sid);
   } catch (e) {
+    tokenErr = e;
+    // arcrun-rag#289：裝完後 session 的長期委任已移交給這個帳號（adoptGrant），
+    // 隔幾小時回來 session 裡的短期 token 過期就換不了。這個 session 就是做完安裝的那一個
+    // （cookie＋安裝完成都在），改用移交後的委任換一把，用完不落地。
+    const acct = progress.result && progress.result.accountId;
+    if (acct) {
+      try { cfToken = (await grantAccessToken(env, acct)).access_token; } catch (_) { cfToken = null; }
+    }
+  }
+  if (!cfToken) {
     return json({
       ok: false,
-      error: (e instanceof InstallError && e.message) || '你的授權已經過期，請回到首頁重新連結你的 Cloudflare 帳號。',
+      error: (tokenErr instanceof InstallError && tokenErr.message) || '你的授權已經過期，請回到首頁重新連結你的 Cloudflare 帳號。',
     }, 401);
   }
   const secretsHeader = { 'x-cf-secrets-token': cfToken };

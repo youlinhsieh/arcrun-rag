@@ -1274,6 +1274,31 @@ test('inkstone/Arcrun#416 deployBundledWorker：manifest 要 Artifacts → 帶�
   } finally { restoreFetch(); }
 });
 
+test('#163 背景準備（versions 上傳）一定要宣告保留使用者的 secret——否則切換那刻 Portal 帳號與密碼雜湊全沒了（stage 2026-11-21 11:09 實撞）', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  let meta = null, method = null, path = null;
+  installFetch(async (url, init) => {
+    const m = (init.method || 'GET').toUpperCase();
+    if (m === 'POST' && /\/workers\/scripts\/[^/]+\/versions$/.test(url)) {
+      method = m; path = url; meta = JSON.parse(await init.body.get('metadata').text());
+      return cfOk({ id: 'ver-1' });
+    }
+    if (m === 'PUT' || (m === 'POST' && url.endsWith('/subdomain'))) { throw new Error('準備段不准直接部署：' + m + ' ' + url); }
+    return new Response('export default {}', { status: 200 });
+  });
+  try {
+    const r = await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, { ...baseInject, versionOnly: true });
+    assert.equal(r.versionId, 'ver-1');
+    assert.deepEqual(meta.keep_bindings, ['secret_text', 'secret_key'], 'versions 上傳沒帶 keep_bindings ⇒ 切換後所有 secret 消失');
+  } finally { restoreFetch(); }
+  // 直接部署（PUT）不需要也不該多帶它：secret 掛在 script 外部，本來就不會被洗掉
+  const a = installBundleFetch();
+  try {
+    await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
+    assert.equal(a.captured().keep_bindings, undefined);
+  } finally { restoreFetch(); }
+});
+
 test('P0-4 deployBundledWorker：注入安裝期才知道的值（account/subdomain/kbdb）', async () => {
   const env = { BUNDLE_BASE: BASE };
   const { captured } = installBundleFetch();
@@ -3717,8 +3742,9 @@ async function loadInstallScript() {
   const document = {
     getElementById: (id) => els[id] || null,
     createElement: () => mkEl(),
-    body: { appendChild() {} },
+    body: { appendChild(el) { appended.push(el); } },
   };
+  const appended = [];
   const window = { location: { search: '' } };
   let statusBody = {};
   const fetchStub = async () => ({ status: 200, json: async () => statusBody, body: null });
@@ -3728,8 +3754,26 @@ async function loadInstallScript() {
     emitted + '\nreturn { renderDone, renderError, poll };'
   );
   const api = factory(document, window, fetchStub, setTimeoutStub, { clipboard: { writeText: async () => {} } });
-  return { els, setStatus: (b) => { statusBody = b; }, ...api };
+  return { els, appended, setStatus: (b) => { statusBody = b; }, ...api };
 }
+
+// inkstone/arcrun-rag#289 第 4 則：裝完還沒有任何管理員時，建帳號視窗不准給「略過」
+// （略過就落到 Portal 一個建不出帳號、叫人回安裝頁的畫面）；已有帳號的更新照舊可略過。
+test('#289 前端實跑：實例沒有管理員 ⇒ 建帳號視窗沒有「略過」、標題講明要建帳號；已有管理員 ⇒ 照舊可略過', async () => {
+  const none = await loadInstallScript();
+  none.renderDone({ result: { url: 'https://x.acme.workers.dev/portal/', health: { auth_store: { console: { configured: false } } } }, warnings: [] });
+  const html0 = none.appended.map((e) => e.innerHTML).join('');
+  assert.match(html0, /建立管理員帳號/);
+  assert.ok(!/acct-skip/.test(html0), '沒有管理員時不可以有略過');
+
+  const has = await loadInstallScript();
+  has.renderDone({ result: { url: 'https://x.acme.workers.dev/portal/', health: { auth_store: { console: { configured: true } } } }, warnings: [] });
+  assert.match(has.appended.map((e) => e.innerHTML).join(''), /acct-skip/, '已有管理員的更新要能略過');
+
+  const old = await loadInstallScript();
+  old.renderDone({ result: { url: 'https://x.acme.workers.dev/portal/' }, warnings: [] });
+  assert.match(old.appended.map((e) => e.innerHTML).join(''), /acct-skip/, '讀不到欄位（舊實例）照舊給略過，不困住更新的人');
+});
 
 test('inkstone/Arcrun#190 前端實跑：有東西沒裝起來時，完成頁必須把它畫出來（不准只寫在變數裡）', async () => {
   const { els, renderDone } = await loadInstallScript();

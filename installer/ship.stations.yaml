@@ -134,7 +134,7 @@
       根本不在這個產出物的涵蓋範圍內，**而它一樣有真的使用者**（封測者）。
       名字綁死主機，漏掉的那一半就不會現形——同 `landing` 那次的形狀（arcrun-rag#88）。
 
-# ── 站表：28 站（2026-11-21 新增 prod-record，Arcrun#472 B3；只在 prod 動作）（2026-11-10 新增 stage-record，arcrun-rag#301；instance-update，arcrun-rag#303；兩站都只在 stage 動作，prod 整站跳過）────
+# ── 站表：29 站（2026-11-21 新增 user-path-update，arcrun-rag#163；只在 stage 動作）（2026-11-21 新增 prod-record，Arcrun#472 B3；只在 prod 動作）（2026-11-10 新增 stage-record，arcrun-rag#301；instance-update，arcrun-rag#303；兩站都只在 stage 動作，prod 整站跳過）────
 站:
 
   - id: preflight
@@ -704,6 +704,28 @@
 
       ⇒ **這一站不是純過渡品，拆完不要整支刪掉**：改的是「查哪個 repo」，不是「要不要查」。
       理由寫在這裡，免得日後留下一道沒人知道為什麼存在的閘（那本身也是一種扭曲）。
+
+  - id: user-path-update
+    名字: 走使用者那條路更新 youlin（安裝頁認得已授權帳號、Portal「立即更新」、讀回版號與耗時）
+    為什麼有這一站: |
+      inkstone/arcrun-rag#163 驗收 2（leo 2026-08-29：「用 acr update 來安裝跟用戶不同，你每次的安裝都不能實現用戶的痛苦」）。
+      出貨線以前只用 `acr update` 把實例換版，那條路不經過安裝頁、不經過授權，等於在測一條沒有人走的路。
+    怎麼做: |
+      三段，全是使用者真的會走的：① 拿已授權帳號的 Email 打安裝頁 /auth/start，要看到「你已經裝好了」，被送去 Cloudflare 授權頁＝紅燈；
+      ② 以 stage 管理員登入實例 Portal，打「立即更新」按鈕背後那支 `POST /portal/admin/update`，回報耗時與「只切換背景準備好的版本」還是「直接部署」；
+      ③ 讀回實例 /health，版號與 commit 要對上這一版（有界重試，只在本站內）。
+      ④ 按之前與讀回之後，各讀一次每顆 core worker 的 Secret 名單（只列名字、不列值，鑰匙走登錄簿指名那把），比對後印出；切換後少任何一把＝站紅燈（使用者的帳號與金鑰被洗掉）；讀不到名單視為不能確認，同樣紅燈（arcrun-rag#163 c1795271425526904）。擺在 instance-update 之前：實例已被這一站換到這一版，
+      instance-update 讀到版號相符就不重複跑 `acr update`（它退為保險，不是正路）。
+    只在 stage: 登錄簿 `targets.stage.userPathUpdate` 才生效；prod 沒宣告整站跳過——prod 那一次要 geek6688 在安裝頁授權過一次、並由 leo 簽 prod 之後才跑。
+    不是旁路: 沒有測試模式、隱藏參數或免授權端點；第一次授權仍然是人做的（沒授權過會在①當場紅燈並說明）。
+    憑證: 只碰名字（D36）：管理員帳密讀環境變數 STAGE_USERNAME_YOULIN／STAGE_PASSWORD_YOULIN，Email 讀 YOULIN_INSTALL_EMAIL 或登錄簿；值不印不落檔。
+    用什麼: 本機
+    為什麼不搬: 物理限制
+    理由: |
+      要用 stage 管理員帳密登入 Portal，帳密只在出貨這台機器的環境變數裡（同 instance-update 的憑證處理）；沒有第二個地方放。
+    驗法: |
+      `node --test installer/scripts/user-path-update.test.mjs`（安裝頁被送去 Cloudflare 要擋、舊實例回 fallback 要擋、版號不符要擋）；
+      出貨後在本票貼這一站的輸出（耗時與切換數）。
 
   - id: instance-update
     名字: 讓 youlin 實例真的換到這一版（更新後讀回 /health 的版號與 commit）

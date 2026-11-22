@@ -165,6 +165,19 @@
         "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
         "accountNote": "youlin（AI stage，#216 起；資料與帳密與 uncle6 staging／prod 完全分離）"
       },
+      "userPathUpdate": {
+        "_": [
+          "inkstone/arcrun-rag#163 驗收 2：走使用者那條路更新（安裝頁認得已授權帳號、Portal「立即更新」、讀回版號）。只寫環境變數名與公開網址，不寫值。",
+          "第一次授權是人做的（leo 2026-11-21 在 youlin 完成）；沒授權過這一站在安裝頁那一步紅燈。"
+        ],
+        "installerOrigin": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev",
+        "cypherUrl": "https://arcrun-cypher-executor.arcrun-yuga3bse.workers.dev",
+        "prepareWaitMs": 240000,
+ "emailEnv": "YOULIN_INSTALL_EMAIL",
+        "email": "youlin.hsieh.dev@gmail.com",
+        "usernameEnv": "STAGE_USERNAME_YOULIN",
+        "passwordEnv": "STAGE_PASSWORD_YOULIN"
+      },
       "instanceUpdate": {
         "_": [
           "inkstone/arcrun-rag#303（總監 2026-11-10）：出貨線以前只把零件包與安裝器「發出去」，沒有任何一站更新 youlin 實例本身，",

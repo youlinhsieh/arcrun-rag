@@ -877,7 +877,64 @@
    "fingerprint": "60b8534e6ed4cd4d07f4c3c41798cb1a12431940c8ffb17e709a2b5674a8de2d",
    "built": "2026-11-21",
    "shipped": {
-    "stage": "2026-11-21T09:10:49.543Z"
+    "stage": "2026-11-21T09:10:49.543Z",
+    "prod": "2026-11-21T09:24:09.141Z"
+   }
+  },
+  "1.4.261": {
+   "commit": "d0f92e404022a674ffd50f107271dba8b9256511",
+   "fingerprint": "fadbedd587fec6b0b3ee1864fb0b8c97232327c4ff1b517e1fd831b221d13c30",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T09:56:41.842Z"
+   }
+  },
+  "1.4.262": {
+   "commit": "bd82e76334d3752b5f3cb5b548267d80d1af8798",
+   "fingerprint": "eca320b2b1a3aea0200a52401f4b5866374390de8b635a77de2e8c078f86ceaa",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T10:37:32.556Z"
+   }
+  },
+  "1.4.263": {
+   "commit": "bc709cd6ef564d8b64f7effb059489e151d0bf84",
+   "fingerprint": "677e3656012eb72b3a22e94805197db6dab494bed7c39e32921ba4867f7c31f6",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T11:10:12.234Z"
+   }
+  },
+  "1.4.267": {
+   "commit": "c5d7192d25c82e4f754e0c04f8f92c708e8e1138",
+   "fingerprint": "995c19a449b1e0e47b5e6a893f7576a06f064783f2382e20342aa12158ea8611",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T16:28:33.715Z"
+   }
+  },
+  "1.4.268": {
+   "commit": "7b52e768171ef4499d822cf64d592424b6d63860",
+   "fingerprint": "f8fd0c26c0fab7e2e13e2b6b9b77545b8558fa1346544eeade5ccea1a308d66c",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T17:26:42.970Z"
+   }
+  },
+  "1.4.269": {
+   "commit": "e752f1d4f524fcd5406fcaff49e7d444cb5c9430",
+   "fingerprint": "7deb13cef2c8dc42b03a599945eb497bda0262be3e0cb387f3f7397fc307388a",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T18:18:22.162Z"
+   }
+  },
+  "1.4.270": {
+   "commit": "8b90d468bf8e281d7b78461391dd4335d2bfb524",
+   "fingerprint": "7a296e327d8623cc501322af9a5083be8b08989bc2c0169a245168ff872d66d6",
+   "built": "2026-11-21",
+   "shipped": {
+    "stage": "2026-11-21T19:56:50.604Z"
    }
   }
  }
