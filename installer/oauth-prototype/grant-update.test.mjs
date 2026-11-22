@@ -216,9 +216,10 @@ test('#163 紅線：即使已經有 grant，安裝頁的 /auth/start 仍然導�
 
 // --- ② 更新不重建資源 -------------------------------------------------------
 
-test('#163 更新沿用的是資源類步驟——deploy/workflows/verify 不在沿用清單裡', () => {
-  assert.deepEqual(UPDATE_REUSE_STEPS, ['account', 'cache', 'database', 'schema']);
-  for (const s of ['deploy', 'workflows', 'verify']) {
+test('#163 更新沿用的是資源類步驟——schema／deploy/workflows/verify 不在沿用清單裡', () => {
+  assert.deepEqual(UPDATE_REUSE_STEPS, ['account', 'cache', 'database']);
+  // inkstone/arcrun-rag#381：schema 是跟著程式版本走的資料層升級，更新一定要做（否則新增 migration 的版本更新後資料層落後一代）。
+  for (const s of ['schema', 'deploy', 'workflows', 'verify']) {
     assert.ok(!UPDATE_REUSE_STEPS.includes(s), `${s} 是更新真正要做的事，不能被跳過`);
   }
 });

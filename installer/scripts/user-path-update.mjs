@@ -47,8 +47,20 @@ export async function checkInstallPage({ cfg, fetchImpl }) {
   return { detail: [`安裝頁：已授權帳號看到「${ALREADY_INSTALLED}」，沒有被送去 Cloudflare`] };
 }
 
+/** 授權類原因：使用者的授權沒了／沒裝過——這種「實例已是新版」也不能放行。 */
+const AUTH_CLASS_REASONS = ['no_grant', 'missing', 'revoked', 'no_snapshot', 'unauthorized'];
+
+/** 把更新鈕回的診斷欄位串成一行（只含短碼，沒有憑證）。 */
+export function describeRefusal(uj) {
+  const parts = [];
+  if (uj && uj.reason) parts.push(`reason=${uj.reason}`);
+  if (uj && uj.installer_state) parts.push(`安裝器狀態=${uj.installer_state}`);
+  if (uj && uj.failed_step) parts.push(`卡在步驟=${uj.failed_step}`);
+  return parts.join('、');
+}
+
 /** ② 登入 Portal、按「立即更新」背後那一支。 */
-export async function pressUpdate({ cfg, fetchImpl, now = () => Date.now() }) {
+export async function pressUpdate({ cfg, fetchImpl, now = () => Date.now(), sleepMs = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const base = need(cfg, 'cypherUrl');
   const user = process.env[need(cfg, 'usernameEnv')];
   const pass = process.env[need(cfg, 'passwordEnv')];
@@ -59,14 +71,31 @@ export async function pressUpdate({ cfg, fetchImpl, now = () => Date.now() }) {
   const lj = await lr.json().catch(() => ({}));
   if (!lr.ok || !lj.session_token) throw new Error(`Portal 登入失敗（HTTP ${lr.status}）：${lj.error || '沒有 session_token'}`);
   const t0 = now();
-  const ur = await fetchImpl(`${base}/portal/admin/update`, { method: 'POST', headers: { authorization: `Bearer ${lj.session_token}` } });
+  // 更新是分批的：回 busy（含「這一批做完、還有下一批」）就隔過冷卻期再按，直到 updated／up_to_date。
+  // 每一次都照實記下來，報告上寫「按了幾次」，不把多按幾次說成一次。
+  let ur; let uj; let presses = 0;
+  for (;;) {
+    presses++;
+    ur = await fetchImpl(`${base}/portal/admin/update`, { method: 'POST', headers: { authorization: `Bearer ${lj.session_token}` } });
+    uj = await ur.json().catch(() => ({}));
+    if (!(ur.ok && uj && uj.ok && uj.state === 'busy') || presses >= (cfg.maxPresses || 8)) break;
+    await sleepMs(cfg.pressGapMs || 65000);
+  }
   const ms = now() - t0;
-  const uj = await ur.json().catch(() => ({}));
   if (uj && uj.fallback_to_installer) throw new Error('實例回「需先用安裝頁更新」——這台還沒有更新權（舊實例要用新安裝器重新授權一次）');
-  if (!ur.ok || !uj.ok) throw new Error(`立即更新沒成功（HTTP ${ur.status}）：${uj.message || uj.reason || JSON.stringify(uj).slice(0, 200)}`);
+  if (!ur.ok || !uj.ok) {
+    // #163：把引擎帶出來的 reason／installer_state／failed_step 一併印出——不再只有一句「沒辦法幫你更新」。
+    const why = describeRefusal(uj);
+    const err = new Error(`立即更新沒成功（HTTP ${ur.status}）：${uj.message || uj.reason || JSON.stringify(uj).slice(0, 200)}${why ? `｜${why}` : ''}`);
+    // 只有「安裝器有回話、而且不是授權類失敗」才允許站去核對實例實際版本；其餘（連不上、被收回授權）照舊紅燈。
+    err.pressReply = uj;
+    err.softRefusal = ur.ok && !AUTH_CLASS_REASONS.includes(String(uj.reason || ''));
+    throw err;
+  }
+  if (uj.state === 'busy') throw new Error(`按了 ${presses} 次「立即更新」還在分批更新中（state=busy）：${uj.message || ''}`);
   const switched = Number(uj.switched || 0);
-  return { ms, state: uj.state, switched, deployed: Number(uj.deployed || 0),
-    detail: [`Portal「立即更新」：${ms} ms｜${switched > 0 ? `用背景準備好的版本，只切換了 ${switched} 個服務` : '沒有準備好的版本，走直接部署'}｜state=${uj.state}`] };
+  return { ms, presses, state: uj.state, switched, deployed: Number(uj.deployed || 0),
+    detail: [`Portal「立即更新」：${ms} ms｜${switched > 0 ? `用背景準備好的版本，只切換了 ${switched} 個服務` : '沒有準備好的版本，走直接部署'}｜按了 ${presses} 次｜state=${uj.state}`] };
 }
 
 /** ③ 讀回實例 /health，版號要對上。有界重試（只在本站內，不是背景輪詢）。 */
@@ -136,8 +165,24 @@ export async function userPathUpdateStation({ cfg, expect, fetchImpl = fetch, no
     }
   }
   const before = secretSnapshot ? await secretSnapshot() : null;
-  const press = await pressUpdate({ cfg, fetchImpl, now });
-  const back = await readBack({ cfg, expect, fetchImpl, sleep });
+  let press;
+  let softNote = null;
+  try {
+    press = await pressUpdate({ cfg, fetchImpl, now });
+  } catch (e) {
+    // 「立即更新」回沒完成，但實例其實可能已經換到這一版（#163 c47：youlin 已是 1.4.274 卻回 refused）。
+    // 不是加 skip：照樣讀回 /health 核對版號與 commit，對得上才綠，並把原因印進結果；對不上就帶著原因紅燈。
+    if (!e || !e.softRefusal) throw e;
+    const why = describeRefusal(e.pressReply) || '安裝器沒有給原因';
+    try {
+      const back = await readBack({ cfg, expect, fetchImpl, sleep });
+      softNote = `⚠️ 「立即更新」回沒完成（${why}），但實例讀回已是目標版——這一站依實際版本放行；原因照樣要查`;
+      press = { ms: 0, switched: 0, detail: [softNote], softBack: back };
+    } catch (e2) {
+      throw new Error(`${e.message}\n     而且實例讀回也還不是這一版：${e2.message}`);
+    }
+  }
+  const back = press.softBack || await readBack({ cfg, expect, fetchImpl, sleep });
   let secretDetail = [];
   if (secretSnapshot) {
     const after = await secretSnapshot();

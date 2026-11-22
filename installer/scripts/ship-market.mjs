@@ -16,8 +16,8 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   marketVersionOf, diffMarket, hasChanges, renderDiff, planMarket, publishMarket, assertMarketDeclared,
@@ -89,9 +89,11 @@ async function main() {
   // ④ 放上去：包 → 這一版目錄 → 指標最後
   const cred = cloudflareDeployEnv({ cfg, accountId: T.market.accountId, startDir: REPO_ROOT });
   const plan = planMarket({ feedDir, marketVersion, diff, ticket, previous: live && live.pointer ? live.pointer.version : null });
+  // cwd 用系統暫存目錄：r2 object put 是帳號層級指令，不需要任何 worker 設定；在 installer/ 底下跑時
+  //   wrangler 會讀到 installer/wrangler.jsonc（安裝器範本，KV id 是空的）而整條設定檢查失敗（2026-11-22 實撞）。
   const run = (args, { label }) => {
     for (let i = 1; i <= 8; i++) {
-      try { execFileSync('npx', args, { cwd: join(REPO_ROOT, 'installer'), env: { ...process.env, ...cred.env }, stdio: 'pipe' }); return; }
+      try { execFileSync('npx', args, { cwd: tmpdir(), env: { ...process.env, ...cred.env }, stdio: 'pipe' }); return; }
       catch (e) { if (i === 8) throw new Error(`上傳 ${label} 失敗：${String(e.stderr || e.message).slice(0, 300)}`); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000); }
     }
   };

@@ -65,7 +65,9 @@ const OAUTH_SCOPES = [...OAUTH_BASE_SCOPES, OAUTH_TOKEN_MINT_SCOPE, OAUTH_ARTIFA
 const GRANT_SCOPES = OAUTH_BASE_SCOPES.join(' ');
 
 const SESSION_COOKIE = 'arcrun_sid';
-const STATE_TTL = 600;          // OAuth state 10 分鐘
+// #383：10 分鐘 → 60 分鐘。leo 2026-11-22 更新 geek 時在 Cloudflare 授權頁停太久，回來撞到「連結無效」。
+// state 綁 cookie sid＋PKCE verifier，放長不增加風險；真的過期了也有 recoveryNoticeFor 接住。
+const STATE_TTL = 3600;
 const SESSION_TTL = 86400;      // session 本身 1 天
 const PROGRESS_TTL = 86400;
 
@@ -298,8 +300,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b63c2127950e4ac161623aaf208793ac1fe26430';
-const BUNDLE_BUILT = '2026-11-21'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@465d5bb59e2f60e7fe8687ef0f4d8beba8a48562';
+const BUNDLE_BUILT = '2026-11-22'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -470,6 +472,7 @@ import { isStampTarget, versionStampVars, sourceCommitOf, commitsAgree } from '.
 //     兩個都對不上原始碼。指紋跟著程式碼走，就不再有第二處要記得。
 import { INSTALLER_VERSION, INSTALLER_SRC_SHA } from './version.mjs';
 import * as AppEntry from './app-entry.mjs';
+import * as Recovery from './recovery.mjs'; // inkstone/arcrun-rag#383：錯誤畫面一律「發生什麼／你的東西現在怎樣／接著做的按鈕」
 // inkstone/arcrun-rag#238（leo 裁決 B）：沒有常駐 CF token 的實例改密碼 → 重新授權一次換一張一次性授權碼
 import { recordInstallEvent, backfillFromKv } from './install-telemetry.mjs'; // inkstone/arcrun-rag#342 匿名安裝遙測
 import { parseGrantTargets, verifyAccountOwnsInstance, GRANT_CODE_RE, GRANT_TTL_SECONDS } from './grant.mjs';
@@ -1795,6 +1798,13 @@ const GENERATION_CHECKS = [
       { kind: 'trigger', name: 'field_value_index_ai' },
       { kind: 'trigger', name: 'field_value_index_au' },
       { kind: 'trigger', name: 'field_value_index_ad' },
+    ] },
+  { n: 17, checks: [
+      { kind: 'entries_column', name: 'props' },
+      { kind: 'entries_column', name: 'tpl_id' },
+      { kind: 'entries_column', name: 'fmt' },
+      // idx_entries_tpl_member 刻意不列為必備（inkstone/Arcrun#481）：它是可重建的加速索引（D100），
+      // 預算規則可能先跳過它；與 Arcrun kbdb/src/actions/schema-generation.ts 同步。
     ] },
 ];
 
@@ -5527,8 +5537,13 @@ async function runInstallSteps(env, sid, progress, force) {
 //   為什麼堅持這樣：**兩套部署邏輯一定會漂**（D36 金鑰鐵律點名的同一個病），
 //   而漂掉的那一天，症狀會是「更新裝出來的實例跟安裝裝出來的不一樣」。
 
-/** 更新時要沿用（不准重建）的步驟。deploy／workflows／verify 才是更新要做的事。 */
-const UPDATE_REUSE_STEPS = ['account', 'cache', 'database', 'schema'];
+/** 更新時要沿用（不准重建）的步驟。deploy／workflows／verify 才是更新要做的事。
+ *
+ *  🔴 schema 不在沿用清單（inkstone/arcrun-rag#381，總管 2026-11-22 裁示）：資料庫本身（database）要沿用、不重建，
+ *     但 schema 是**跟著程式版本走的資料層升級**——它冪等、按代數只送缺的句子（migrationStatementsFrom），
+ *     已是最新時只多一次讀代數的探針。過去把它標成沿用，Portal「立即更新」永遠不套 migration，
+ *     新增 migration 的版本一更新資料層就落後一代（youlin 停在第 16 代缺 0017、/health degraded）。 */
+const UPDATE_REUSE_STEPS = ['account', 'cache', 'database'];
 
 /**
  * 對一個已安裝的帳號跑一次更新。**不經瀏覽器、不經 OAuth、不需要人在場。**
@@ -5647,6 +5662,8 @@ async function runUpdate(env, accountId, mode = 'direct') {
   return { ok: state === 'done', state, deployed, switched: switched.length,
     from: res.instanceVersion || null, to: res.wantVersion || null, staleScope: res.staleScope || null,
     guards: Array.isArray(res.switchGuards) ? res.switchGuards : [],
+    // #163：沒做完時說得出卡在哪一步（短 id，不含訊息內文；內文只進更新紀錄）。
+    failedStep: (after && after.error && after.error.step) ? String(after.error.step).slice(0, 64) : null,
     reason: state === 'done' ? undefined : state };
 }
 
@@ -5895,7 +5912,7 @@ body{margin-top:0 !important}
 </html>`;
 }
 
-async function homePage(notice, env, release) {
+async function homePage(notice, env, release, prefillEmail = '') {
   const stagingTag = env && env.DEPLOY_ENV === 'staging' ? '（測試站）' : '';
   // 2026-08-02：改用 manifest.release 這個單一真相源（例 `1.4.2`）。
   // leo：「不要這麼難懂的版本號，傳統數字顯示就好了」——舊的 `2026-07-31+8e83589`
@@ -5906,9 +5923,7 @@ async function homePage(notice, env, release) {
   //  同日另一分支 fix/oauth-installer-worker-count 把 ×1 手改成 ×6——同一種錯，不採用）。
   const counts = await manifestCountsOf(env);
   const fmtCount = (n) => (n == null ? '讀不到（manifest 暫時抓不到）' : `×${n}`);
-  const noticeHtml = notice
-    ? `<div class="card" style="border-color:var(--err)"><h3 style="color:var(--err)" title="${escapeHtml(notice.body)}">${escapeHtml(notice.title)}</h3></div>`
-    : '';
+  const noticeHtml = notice ? (notice.html || '') : '';
 
   return pageShell(
     '安裝 Arcrun 知識庫',
@@ -5929,7 +5944,7 @@ ${noticeHtml}
 
 <form class="card" method="GET" action="/auth/start">
   <label for="email">你登記用的 Email</label>
-  <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false" required>
+  <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false" required${prefillEmail ? ` value="${escapeHtml(prefillEmail)}"` : ''}>
   <div style="height:14px"></div>
   <label for="code">辨識碼</label>
   <!-- t154：required 拔掉——更新者（帳號已有部署紀錄）免碼，授權後自動核可 -->
@@ -6392,7 +6407,7 @@ async function poll(){
       stopped = true;
       titleEl.textContent = '請重新連結';
       subEl.textContent = '';
-      errorEl.innerHTML = '<div class="err-card"><h3>授權過期</h3><a class="btn" href="/">首頁</a></div>';
+      errorEl.innerHTML = '<div class="err-card"><h3>登入過期 已裝好的都還在</h3><a class="btn" href="/?error=session">接著做</a></div>';
       return;
     }
     const p = await res.json();
@@ -6941,18 +6956,18 @@ async function resolveAppInstallTarget(request, env) {
 
 async function handleAppInstall(request, env) {
   const target = await resolveAppInstallTarget(request, env);
-  if (!target) return json({ state: 'error', message: '這個安裝連結過期了，請回到 App 的頁面重新按一次安裝。' }, 401);
+  if (!target) return json({ state: 'error', message: '這個安裝連結過期了，你的 Arcrun 沒有被動到。回到 App 的頁面重新按一次安裝就好。', action: { label: '重新開始', href: '/' } }, 401);
   let body = {};
   try { body = await request.json(); } catch (_) { /* 空 body＝從頭 */ }
   const origin = new URL(request.url).origin;
   const idx = await loadAppIndex(env, origin);
   const row = idx && AppEntry.findApp(idx, target.app);
-  if (!row) return json({ state: 'error', message: '這個 App 已經不在市集裡了。' }, 404);
+  if (!row) return json({ state: 'error', message: '這個 App 已經不在市集裡了，你的 Arcrun 沒有被動到。', action: { label: '看其他 App', href: '/' } }, 404);
   const snap = await env.INSTALLER_KV.get(instanceKey(target.accountId), 'json').catch(() => null);
   const r = snap && snap.result;
   const apiUrl = r && r.apiUrl;
   const ns = r && (r.tenant || r.suffix);
-  if (!apiUrl || !ns) return json({ state: 'error', message: '找不到你的 Arcrun 資料，請到安裝首頁重新安裝一次。' }, 409);
+  if (!apiUrl || !ns) return json({ state: 'error', message: '我們找不到你的 Arcrun 安裝紀錄，什麼都沒有被動到。回安裝首頁重新連結一次就能繼續。', action: { label: '回安裝首頁', href: '/' } }, 409);
   const kbdbToken = await env.INSTALLER_KV.get('kbdbtok:' + target.accountId).catch(() => null);
   const got = await AppEntry.fetchPackage(row, (rel) => appsFile(env, origin, rel));
   if (!got.ok) return json({ state: 'error', message: got.message });
@@ -7343,15 +7358,23 @@ async function handleInstanceUpdate(request, env) {
   const r = await runUpdate(env, accountId, 'switch');
 
   // 使用者看得懂的話（產品文案鐵律：不出現狀態碼、模型名、token）
+  // 更新要分批做（一次請求的額度用完就停在 paused_continue）：這不是失敗，是「還在更新、再按一次或等自動接力」。
+  //   過去這裡回 ok:false，Portal 就顯示「沒辦法更新」，使用者以為壞了（inkstone/arcrun-rag#381）。
+  if (!r.ok && r.state === 'paused_continue') {
+    return json({ ok: true, state: 'busy', deployed: r.deployed || 0, switched: r.switched || 0, reason: 'paused_continue',
+      ms: Date.now() - startedAt, message: '更新分批進行中，這一批做完了，還有下一批。請再按一次「立即更新」，或稍後重新整理。' });
+  }
   const message = r.ok
     ? (r.deployed
       ? ('更新完成，已經換成最新版了。' + ((r.guards && r.guards.length) ? '（有幾個服務為了保護你的帳號與金鑰，改用比較慢但安全的方式更新。）' : ''))
       : '你已經是最新版，沒有需要更新的東西。')
     : (r.reason === 'no_grant' || r.reason === 'missing' || r.reason === 'revoked')
       ? '我們已經沒有幫你更新的權限了——你之前可能在 Cloudflare 收回了授權。到安裝頁重新安裝一次就會恢復。'
-      : '這次更新沒有完成，稍後會自動再試一次。如果一直沒好，請把這個畫面告訴我們。';
+      : '這次更新沒有完成，稍後會自動再試一次。如果一直沒好，請把這個畫面告訴我們。'
+        // 短代號（停在哪一站）：Portal 把這句原樣轉給使用者，客服才查得到卡在哪；不含任何憑證或內部位址。
+        + '（代號：' + String(r.reason || 'unknown').slice(0, 40) + (r.failedStep ? '／' + String(r.failedStep).slice(0, 40) : '') + '）';
 
-  return json({ ok: !!r.ok, state: r.state || null, deployed: r.deployed || 0, switched: r.switched || 0, guards: r.guards || [], from: r.from || null, to: r.to || null, staleScope: r.staleScope || null, ms: Date.now() - startedAt, reason: r.reason || null, message });
+  return json({ ok: !!r.ok, state: r.state || null, deployed: r.deployed || 0, switched: r.switched || 0, guards: r.guards || [], from: r.from || null, to: r.to || null, staleScope: r.staleScope || null, ms: Date.now() - startedAt, reason: r.reason || null, failedStep: r.failedStep || null, message });
 }
 
 /**
@@ -7406,54 +7429,50 @@ async function handleAdminUpdateSweep(request, env, url) {
 // --- handlers --------------------------------------------------------------
 
 async function handleHome(request, env, url) {
-  let notice = null;
   const err = url.searchParams.get('error');
-  if (err === 'state') {
-    notice = {
-      title: '連結失效',
-      body: '重新按一次按鈕',
-    };
-  } else if (err === 'denied') {
-    notice = {
-      title: '已取消授權',
-      body: '重新按一次按鈕',
-    };
-  } else if (err === 'token') {
-    notice = {
-      title: '連結失敗',
-      body: '重新按一次按鈕',
-    };
-  } else if (err === 'code') {
-    notice = {
-      title: '辨識碼不符',
-      body: '核對 Email 與辨識碼',
-    };
-  } else if (err === 'agree') {
-    notice = {
-      title: '請先同意授權條款',
-      body: '勾選同意後再按一次',
-    };
-  } else if (err === 'code_rate') {
-    notice = {
-      title: '太頻繁',
-      body: '稍後再試',
-    };
-  } else if (err === 'code_unreachable') {
-    notice = {
-      title: '驗證服務斷線',
-      body: '稍後再試，持續請回報',
-    };
-  } else if (err === 'need_code') {
-    // t154：無碼進 OAuth 但帳號沒有部署紀錄＝第一次安裝，要辨識碼
-    notice = {
-      title: '需要辨識碼',
-      body: '填辨識碼，或到官網申請',
-    };
-  }
+  // #383：每一種錯誤都畫成「發生什麼／你的東西現在怎樣／接著做的按鈕」，目錄在 recovery.mjs
+  const notice = err ? await recoveryNoticeFor(request, env, err) : null;
   if (!err && await revisitNeedsAdmin(request, env)) {
     return Response.redirect(`${url.origin}/install`, 302);
   }
-  return html(await homePage(notice, env, await releaseOf(env)));
+  return html(await homePage(notice, env, await releaseOf(env), (url.searchParams.get('email') || '').trim().slice(0, 254)));
+}
+
+/** #383：記住「這個瀏覽器剛才在做什麼」——授權過期回來時才能接著做、也才認得出「其實已經更新好了」。
+ *  key 是 session cookie 的 sid（隨機 18 bytes，猜不到、也偽造不了別人的）。 */
+async function readResume(request, env) {
+  try {
+    const sid = getCookie(request, SESSION_COOKIE);
+    if (!sid) return null;
+    const r = await env.INSTALLER_KV.get(`resume:${sid}`, 'json');
+    return r && r.email ? r : null;
+  } catch (_) { return null; }
+}
+
+/** #383：首頁 ?error=<碼> 的完整提示（含按鈕要去哪）。授權過期（state／session）會先查：
+ *  這個瀏覽器剛才要更新的實例其實已經是最新版嗎？是 ⇒ 顯示「已經更新好了」，不是錯誤。 */
+async function recoveryNoticeFor(request, env, err) {
+  const key = Recovery.RECOVERY[err] ? err : 'token'; // 沒看過的碼也要給三件事，不留空白錯誤
+  const resume = await readResume(request, env);
+  const retry = Recovery.resumeHref(resume);
+  if (key === 'state' || key === 'session') {
+    if (resume && resume.email) {
+      try {
+        const accountId = await liveGrantForEmail(env, resume.email);
+        const snap = accountId ? await env.INSTALLER_KV.get(instanceKey(accountId), 'json') : null;
+        const portal = snap && snap.result && snap.result.url;
+        if (portal && snap.bundleBase === bundleBase(env)) {
+          return { html: Recovery.renderRecoveryCard(Recovery.buildRecovery('state_done', { primaryHref: portal, version: await releaseOf(env), secondaryHref: '/', secondaryLabel: '回首頁' })) };
+        }
+      } catch (_) { /* 查不到就照一般過期處理，不猜 */ }
+      return { html: Recovery.renderRecoveryCard(Recovery.buildRecovery(key === 'state' ? 'state_resume' : 'session', { primaryHref: retry })) };
+    }
+    return { html: Recovery.renderRecoveryCard(Recovery.buildRecovery(key, { primaryHref: '/' })) };
+  }
+  const em = resume && resume.email ? `/?email=${encodeURIComponent(resume.email)}#email` : '/#email';
+  const href = (key === 'denied' || key === 'token') ? retry
+    : (key === 'code' || key === 'agree' || key === 'code_rate' || key === 'need_code') ? em : '/';
+  return { html: Recovery.renderRecoveryCard(Recovery.buildRecovery(key, { primaryHref: href })) };
 }
 
 async function handleAuthStart(request, env, url) {
@@ -7535,6 +7554,10 @@ async function handleAuthStart(request, env, url) {
     JSON.stringify({ verifier, sid, inviteCode, inviteEmail, inviteVerified: !!inviteCode, app: wantApp || null, createdAt: Date.now() }),
     { expirationTtl: STATE_TTL }
   );
+  // #383：記住這個瀏覽器在做什麼（只存 Email／App／有沒有用辨識碼，不存辨識碼本身）
+  if (inviteEmail) {
+    await env.INSTALLER_KV.put(`resume:${sid}`, JSON.stringify({ email: inviteEmail, app: wantApp || null, hadCode: !!inviteCode, createdAt: Date.now() }), { expirationTtl: SESSION_TTL }); // kv-ok: 授權過期後「接著做」的一次性續做紀錄，綁 session cookie，1 天自動消失，不是資料
+  }
 
   const redirectUri = `${url.origin}/auth/callback`;
   const authUrl = new URL(OAUTH_AUTH_URL);
@@ -7686,7 +7709,7 @@ async function handleInstallPage(request, env) {
   const sid = getCookie(request, SESSION_COOKIE);
   if (!sid) return Response.redirect(new URL('/', request.url).toString(), 302);
   const sess = await env.INSTALLER_KV.get(`sess:${sid}`, 'json');
-  if (!sess) return Response.redirect(new URL('/?error=state', request.url).toString(), 302);
+  if (!sess) return Response.redirect(new URL('/?error=session', request.url).toString(), 302);
   let extra = '';
   if (sess.app) {
     const idx = await loadAppIndex(env, new URL(request.url).origin);

@@ -1,0 +1,82 @@
+{
+  "entries": [
+    {
+      "version": "2026.11.22-15bb4e9",
+      "target": "stage",
+      "at": "2026-11-22T07:22:05.282Z",
+      "ticket": null,
+      "previous": null,
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.60.0",
+          "to": "0.62.0",
+          "kind": "updated"
+        },
+        {
+          "id": "paper",
+          "from": "0.4.0",
+          "to": "0.5.0",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.22-bf5d727",
+      "target": "stage",
+      "at": "2026-11-22T09:37:52.776Z",
+      "ticket": null,
+      "previous": "2026.11.22-d39def0",
+      "changes": [
+        {
+          "id": "loops",
+          "from": "0.4.0",
+          "to": "0.4.1",
+          "kind": "updated"
+        },
+        {
+          "id": "notes",
+          "from": "1.4.0",
+          "to": "1.5.0",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.22-8104582",
+      "target": "stage",
+      "at": "2026-11-22T10:14:42.466Z",
+      "ticket": null,
+      "previous": "2026.11.22-bf5d727",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.63.0",
+          "to": "0.63.1",
+          "kind": "updated"
+        },
+        {
+          "id": "company_rules",
+          "from": null,
+          "to": "0.1.0",
+          "kind": "added"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.22-d2d9bd1",
+      "target": "stage",
+      "at": "2026-11-22T10:59:08.077Z",
+      "ticket": null,
+      "previous": "2026.11.22-8104582",
+      "changes": [
+        {
+          "id": "notes",
+          "from": "1.5.0",
+          "to": "1.5.1",
+          "kind": "updated"
+        }
+      ]
+    }
+  ]
+}

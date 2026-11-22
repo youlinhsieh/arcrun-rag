@@ -585,9 +585,13 @@ test('#215 applyMigrations：真 kbdb migrations.json 對真 SQLite——全新�
     const runSql = makeRunSql(db);
     const wrapped = async (sql) => { calls.push(sql); return runSql(sql); };
     const { tolerated } = await applyMigrations(wrapped, MIGRATIONS.statements);
-    // 整批失敗(1) + 安全批(0..21)(1) + 逐句 ALTER×3(3) + 安全批(25..60)(1) = 6 次
-    assert.equal(calls.length, 6, `已裝過全部該打 6 次，實際 ${calls.length} 次`);
-    assert.equal(tolerated, 3, '三句 ALTER 全部容忍（早就套過）');
+    // 整批失敗(1) + 安全批(1) + 逐句 ALTER×3(3，0007) + 安全批(1) + 逐句 ALTER×8(8，0017) + 安全批(1) = 15 次。
+    // 0017（一張卡一列，inkstone/Arcrun#481）又加了 8 句 ALTER，且後面接著依賴新欄位的語句，
+    // 所以多出一段「逐句 ALTER ＋ 安全批」。每多一代加欄位的 migration，這裡就要照樣加一段（inkstone/arcrun-rag#381）。
+    const nAlter = MIGRATIONS.statements.filter((s) => MIGRATION_ALTER_ADD_COLUMN.test(s)).length;
+    assert.equal(nAlter, 11, `ALTER ADD COLUMN 共 11 句（0007 三句＋0017 八句），實際 ${nAlter}`);
+    assert.equal(calls.length, 15, `已裝過全部該打 15 次，實際 ${calls.length} 次`);
+    assert.equal(tolerated, 11, '11 句 ALTER 全部容忍（早就套過）');
     db.close();
   }
 

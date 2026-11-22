@@ -1,9 +1,9 @@
 {
- "fingerprint": "18b7e47a1b3fd4e3d7ea1dd7e5cb5fe262b5dae8226ebebc74901a29d69b79c6",
- "release": "1.4.271",
+ "fingerprint": "cd361cd0f218c9d5112ff4034f71b12f265382e68f7636be8d3ad14f330e0895",
+ "release": "1.4.282",
  "built": "2026-11-22",
  "installer": {
-  "fingerprint": "3451f7eeaafa969935ea7ae47bfaefddcce4f223177994f0b494f3cd0c5e5a02",
-  "version": "1.0.96"
+  "fingerprint": "f7854ad677e4006d15880e743966517b20ea88586c545193cf7fe2f582784e4e",
+  "version": "1.0.103"
  }
 }

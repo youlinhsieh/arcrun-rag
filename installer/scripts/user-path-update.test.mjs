@@ -75,3 +75,40 @@ test('整站：切換後 Secret 少一把 ⇒ 站紅燈；沒少 ⇒ 印出名�
   const r = await userPathUpdateStation({ ...args, secretSnapshot: mk({ w: ['A', 'B'] }, { w: ['A', 'B'] }) });
   assert.ok(r.detail.some((d) => /前 2 把／後 2 把｜A、B/.test(d)));
 });
+
+test('按更新：第一次回 busy（分批還有下一批）⇒ 隔冷卻期再按，直到完成，並記下按了幾次', async () => {
+  let n = 0;
+  const f = async (u) => u.endsWith('/portal/login') ? resp(200, { session_token: 't' })
+    : resp(200, ++n < 3 ? { ok: true, state: 'busy', message: '分批' } : { ok: true, state: 'updated', deployed: 4 });
+  const r = await pressUpdate({ cfg, fetchImpl: f, sleepMs: async () => {} });
+  assert.equal(r.presses, 3);
+  assert.match(r.detail[0], /按了 3 次/);
+});
+test('按更新：一直 busy 超過上限 ⇒ 紅燈，不假裝成功', async () => {
+  const f = async (u) => u.endsWith('/portal/login') ? resp(200, { session_token: 't' }) : resp(200, { ok: true, state: 'busy', message: '分批' });
+  await assert.rejects(() => pressUpdate({ cfg: { ...cfg, maxPresses: 2 }, fetchImpl: f, sleepMs: async () => {} }), /還在分批更新中/);
+});
+test('#163：更新鈕回 refused 但實例已是目標版 ⇒ 站放行並印出 reason／狀態／步驟；不是 skip', async () => {
+  const f = async (u) => u.includes('/auth/start') ? resp(200, '你已經裝好了')
+    : u.endsWith('/portal/login') ? resp(200, { session_token: 't' })
+    : u.endsWith('/portal/admin/update') ? resp(200, { ok: false, state: 'refused', reason: 'paused_continue', installer_state: 'paused_continue', failed_step: 'deploy', message: '這次更新沒有完成' })
+    : resp(200, { bundle_version: '1.4.274', bundle_commit: 'abcdef1234' });
+  const r = await userPathUpdateStation({ cfg, expect: { version: '1.4.274', commit: 'abcdef1' }, fetchImpl: f, sleep: async () => {} });
+  assert.equal(r.status, 'done');
+  const all = r.detail.join('\n');
+  assert.match(all, /reason=paused_continue/); assert.match(all, /卡在步驟=deploy/); assert.match(all, /依實際版本放行/);
+});
+test('#163：更新鈕回 refused 而且實例不是目標版 ⇒ 紅燈，訊息帶 reason', async () => {
+  const f = async (u) => u.includes('/auth/start') ? resp(200, '你已經裝好了')
+    : u.endsWith('/portal/login') ? resp(200, { session_token: 't' })
+    : u.endsWith('/portal/admin/update') ? resp(200, { ok: false, state: 'refused', reason: 'error', failed_step: 'database' })
+    : resp(200, { bundle_version: '1.4.273', bundle_commit: 'abcdef1234' });
+  await assert.rejects(() => userPathUpdateStation({ cfg, expect: { version: '1.4.274', commit: '' }, fetchImpl: f, sleep: async () => {} }), /reason=error.*卡在步驟=database[\s\S]*還不是這一版/);
+});
+test('#163：授權類原因（no_grant）即使實例已是目標版也紅燈——授權沒了不能被版號蓋掉', async () => {
+  const f = async (u) => u.includes('/auth/start') ? resp(200, '你已經裝好了')
+    : u.endsWith('/portal/login') ? resp(200, { session_token: 't' })
+    : u.endsWith('/portal/admin/update') ? resp(200, { ok: false, state: 'refused', reason: 'no_grant' })
+    : resp(200, { bundle_version: '1.4.274', bundle_commit: 'abcdef1234' });
+  await assert.rejects(() => userPathUpdateStation({ cfg, expect: { version: '1.4.274', commit: '' }, fetchImpl: f, sleep: async () => {} }), /reason=no_grant/);
+});

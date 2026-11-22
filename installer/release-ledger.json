@@ -943,7 +943,72 @@
    "fingerprint": "18b7e47a1b3fd4e3d7ea1dd7e5cb5fe262b5dae8226ebebc74901a29d69b79c6",
    "built": "2026-11-22",
    "shipped": {
-    "stage": "2026-11-22T05:48:06.585Z"
+    "stage": "2026-11-22T05:48:06.585Z",
+    "prod": "2026-11-22T06:32:03.791Z"
+   }
+  },
+  "1.4.273": {
+   "commit": "38b73f92d74a0b60cb2f0201d6c7888015ff1bc8",
+   "fingerprint": "6fd53e283b2a3f307225ffd2c5bfe66a2d7f71a1adbc5c087cca754dbbf982e5",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T07:45:32.412Z"
+   }
+  },
+  "1.4.276": {
+   "commit": "4fda2db7f5a4a023ea2a32c4d2becf87cd0a253f",
+   "fingerprint": "6488c8fbbad3678fc4b2a5cef56bcd70e7b712a7df05632fe5f59de3cb7883b0",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T08:53:20.081Z"
+   }
+  },
+  "1.4.277": {
+   "commit": "8d90881ad685fc52dbb35c7e0ebbc97207ead54a",
+   "fingerprint": "596ce662773295678dbd36456a19a42e53cf196e3e8bd7e5f09e414b29d0584d",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T09:13:20.550Z"
+   }
+  },
+  "1.4.278": {
+   "commit": "232f91ecd170cc86151eeb0dace9430beefb6bd8",
+   "fingerprint": "209ddbc9e98a7dfee4e91ad5d0f89039e36fd5f5c2a7436f2e8e7a76e90c838b",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T09:34:26.914Z"
+   }
+  },
+  "1.4.279": {
+   "commit": "a6ac4ded861e31b0f444aaa2d35ee221ba166242",
+   "fingerprint": "87cf0e57d9b62ce329b3f88a1682fead51f93114a9f1ab150c170e3837ea470e",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T09:54:51.016Z"
+   }
+  },
+  "1.4.280": {
+   "commit": "0b8009a75d9f845ec8a160afb443940c4d0f444f",
+   "fingerprint": "4b4c9aca58b665442d97b58d44147bfe9e3c766cdbd44b433e75f617a89e467e",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T10:35:14.563Z"
+   }
+  },
+  "1.4.281": {
+   "commit": "4058c5ce15cae76d4ba66ccd7907d6592d5de431",
+   "fingerprint": "96eb9e325743f437159773406ecb2c26d457f9973b75df5275919d2aeabf10a4",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T10:57:33.306Z"
+   }
+  },
+  "1.4.282": {
+   "commit": "b769604f8e991b9b4ec5eb681e0cbbc3ec7d46d3",
+   "fingerprint": "cd361cd0f218c9d5112ff4034f71b12f265382e68f7636be8d3ad14f330e0895",
+   "built": "2026-11-22",
+   "shipped": {
+    "stage": "2026-11-22T11:22:50.798Z"
    }
   }
  }

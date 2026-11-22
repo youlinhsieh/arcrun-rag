@@ -15,7 +15,8 @@
     "0013_embed_pending_index.sql",
     "0014_card_write_trim.sql",
     "0015_kind_is_template.sql",
-    "0016_field_value_index.sql"
+    "0016_field_value_index.sql",
+    "0017_card_row.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -146,7 +147,16 @@
     "CREATE INDEX IF NOT EXISTS idx_fvi_cell ON field_value_index(cell_id)",
     "CREATE TRIGGER IF NOT EXISTS field_value_index_ai AFTER INSERT ON entries\n  WHEN new.rel_id IS NOT NULL AND new.dst_id IS NOT NULL\n   AND EXISTS (SELECT 1 FROM field_value_index_spec s WHERE s.rel_id = new.rel_id)\nBEGIN\n  INSERT OR REPLACE INTO field_value_index (rel_row, rel_id, value, owner, seq, record_id, cell_id)\n  SELECT new.id, new.rel_id, v.content, COALESCE(new.owner_id, ''),\n         COALESCE((SELECT r.rowid FROM entries r WHERE r.id = new.src_id), new.rowid), new.src_id, v.id\n    FROM entries v WHERE v.id = new.dst_id AND v.content IS NOT NULL;\nEND",
     "CREATE TRIGGER IF NOT EXISTS field_value_index_au AFTER UPDATE OF content ON entries\n  WHEN old.content IS NOT new.content\n   AND EXISTS (SELECT 1 FROM field_value_index f WHERE f.cell_id = new.id)\nBEGIN\n  UPDATE field_value_index SET value = new.content WHERE cell_id = new.id AND new.content IS NOT NULL;\n  DELETE FROM field_value_index WHERE cell_id = new.id AND new.content IS NULL;\nEND",
-    "CREATE TRIGGER IF NOT EXISTS field_value_index_ad AFTER DELETE ON entries\n  WHEN EXISTS (SELECT 1 FROM field_value_index f WHERE f.rel_row = old.id OR f.cell_id = old.id)\nBEGIN\n  DELETE FROM field_value_index WHERE rel_row = old.id;\n  DELETE FROM field_value_index WHERE cell_id = old.id;\nEND"
+    "CREATE TRIGGER IF NOT EXISTS field_value_index_ad AFTER DELETE ON entries\n  WHEN EXISTS (SELECT 1 FROM field_value_index f WHERE f.rel_row = old.id OR f.cell_id = old.id)\nBEGIN\n  DELETE FROM field_value_index WHERE rel_row = old.id;\n  DELETE FROM field_value_index WHERE cell_id = old.id;\nEND",
+    "ALTER TABLE entries ADD COLUMN props TEXT",
+    "ALTER TABLE entries ADD COLUMN tpl_id TEXT",
+    "ALTER TABLE entries ADD COLUMN fmt INTEGER",
+    "ALTER TABLE templates ADD COLUMN card_format INTEGER",
+    "ALTER TABLE templates ADD COLUMN fields_json TEXT",
+    "ALTER TABLE templates ADD COLUMN card_state TEXT",
+    "ALTER TABLE templates ADD COLUMN card_cursor TEXT",
+    "ALTER TABLE templates ADD COLUMN card_verify_cursor TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_entries_tpl_member ON entries(tpl_id, created_at) WHERE tpl_id IS NOT NULL"
   ],
   "generationStarts": [
     0,
@@ -164,6 +174,7 @@
     52,
     54,
     61,
-    122
+    122,
+    129
   ]
 }

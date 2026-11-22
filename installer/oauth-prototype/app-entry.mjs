@@ -9,6 +9,8 @@
  * 都由 worker.js 以參數傳進來，所以測試可以直接餵假的。
  */
 
+import { RECOVERY, buildRecovery, renderRecoveryCard } from './recovery.mjs';
+
 export const APP_ID_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 /** 單一請求內最多接力幾輪（Workers 每請求 subrequest 有上限；剩下的交回前端再打）。 */
@@ -152,20 +154,10 @@ export async function importIntoInstance({ apiUrl, authHeaders, pkg, name, from 
 // 頁面主體（外框 pageShell 由 worker.js 套）。esc 由呼叫端傳入，避免兩份實作漂移。
 // ---------------------------------------------------------------------------
 
-const ERR = {
-  agree: ['請先同意授權條款', '勾選同意後再按一次'],
-  code: ['辨識碼不符', '核對 Email 與辨識碼'],
-  code_rate: ['太頻繁', '稍後再試'],
-  code_unreachable: ['驗證服務斷線', '稍後再試，持續請回報'],
-  state: ['連結失效', '重新按一次按鈕'],
-  token: ['連結失敗', '重新按一次按鈕'],
-  denied: ['已取消授權', '重新按一次按鈕'],
-  need_code: ['需要辨識碼', '填辨識碼，或到官網申請'],
-};
-
 export function appEntryBody(row, { esc, siteUrl, errorKey }) {
-  const e = errorKey && ERR[errorKey] ? ERR[errorKey] : null;
-  const notice = e ? `<div class="card" style="border-color:var(--err)"><h3 style="color:var(--err)" title="${esc(e[1])}">${esc(e[0])}</h3></div>` : '';
+  // #383：錯誤提示統一用 recovery.mjs 的目錄（發生什麼／你的東西現在怎樣／按鈕），按鈕回這頁的表單
+  const key = errorKey === 'session' ? 'state' : errorKey;
+  const notice = key && RECOVERY[key] ? renderRecoveryCard(buildRecovery(key, { primaryHref: '#email' })) : '';
   return `
 ${notice}
 <h2>${esc(row.icon)} ${esc(row.name)}</h2>
@@ -236,10 +228,15 @@ export function appInstallScript() {
   var acts = document.getElementById('app-actions');
   if (!box) return;
   function say(t){ if (msg) msg.textContent = t; }
-  function fin(ok, t, extra){
+  function esc(x){ return String(x).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  // #383：失敗一定有一顆接著做的按鈕——伺服器給 action（{label,href}）就用它，沒有才是「再試一次」
+  function fin(ok, t, extra, action){
     box.style.borderColor = ok ? 'var(--ok)' : 'var(--err)';
     say(t);
-    if (acts) acts.innerHTML = (extra || '') + (ok ? '' : '<a class="btn" style="margin-top:12px" href="">再試一次</a>');
+    var btn = ok ? '' : (action && action.href
+      ? '<a class="btn" style="margin-top:12px" href="' + esc(action.href) + '">' + esc(action.label || '繼續') + '</a>'
+      : '<a class="btn" style="margin-top:12px" href="">再試一次</a>');
+    if (acts) acts.innerHTML = (extra || '') + btn;
   }
   var from = 0, hash = '', tries = 0;
   function step(){
@@ -250,7 +247,7 @@ export function appInstallScript() {
         if (j.state === 'done') { fin(true, j.message || '裝好了', j.url ? '<a class="btn" style="margin-top:12px" href="' + j.url + '">打開我的 Arcrun</a>' : ''); return; }
         if (j.state === 'in_progress') { from = j.resume_from || 0; hash = j.resume_hash || ''; say('還在裝，請稍候…'); setTimeout(step, 300); return; }
         if (j.state === 'retry') { if (++tries > 20) { fin(false, j.message || '暫時連不上，請稍後再試一次。'); return; } from = j.resume_from || from; hash = j.resume_hash || hash; say(j.message || '稍等一下…'); setTimeout(step, 6000); return; }
-        fin(false, j.message || '這次安裝沒有完成，請再試一次。');
+        fin(false, j.message || '這次安裝沒有完成，請再試一次。', '', j.action);
       })
       .catch(function(){ if (++tries > 20) { fin(false, '網路好像斷了，請再試一次。'); return; } setTimeout(step, 4000); });
   }
