@@ -1,4 +1,5 @@
 # round3.ps1 — 前兩輪在 runner 上都重現不了（三種啟動法都活著、WACK 全 PASS、Defender 乾淨）
+# 第四輪（同檔）：第三輪證明點設定流程正常；重做斷網（上輪舊實例沒殺掉）與標準使用者（上輪 Add-Type 失敗沒真的啟動）
 # 第三輪補審核員會做、runner 還沒做的三件事（票：inkstone/arcrun-rag#387）：
 #   1. 點下去：開始設定 → 連線 → 返回 → 免費申請（審核員一定會點）
 #   2. 斷網啟動（審核機可能沒網路或擋外連）
@@ -27,7 +28,15 @@ function Report($label) {
   $p = Alive
   if ($p.Count -gt 0) { Log "[$label] ALIVE pids=$(($p | ForEach-Object Id) -join ',') title='$($p[0].MainWindowTitle)'" } else { Log "[$label] NOT RUNNING" }
 }
-function Kill() { Stop-Process -Name Arcrun -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
+function Kill() {
+  for ($i = 0; $i -lt 5; $i++) {
+    Get-Process -Name Arcrun -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    & taskkill.exe /F /T /IM Arcrun.exe 2>&1 | Out-Null
+    Start-Sleep 2
+    if (-not (Alive)) { Log "kill: Arcrun gone"; return }
+  }
+  Log "kill: Arcrun STILL RUNNING pids=$((Alive | ForEach-Object Id) -join ',')"
+}
 
 # 簽名＋安裝（同 probe.ps1）
 $work = "$env:RUNNER_TEMP\r3"; Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue; New-Item -ItemType Directory $work | Out-Null
@@ -49,40 +58,13 @@ $aumid = "$($pkg.PackageFamilyName)!Arcrun"
 $exeInPkg = Join-Path $pkg.InstallLocation 'Arcrun.exe'
 Log "installed $($pkg.PackageFullName)"
 
-# ── 1. 點下去 ─────────────────────────────────────────────────
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-function Click($text) {
-  $root = [Windows.Automation.AutomationElement]::RootElement
-  $cond = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::NameProperty), $text
-  for ($i = 0; $i -lt 20; $i++) {
-    $el = $root.FindFirst([Windows.Automation.TreeScope]::Descendants, $cond)
-    if ($el) {
-      try { $el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); Log "clicked '$text'"; return $true }
-      catch { Log "invoke '$text' failed: $_"; return $false }
-    }
-    Start-Sleep -Milliseconds 500
-  }
-  Log "button '$text' not found"; return $false
-}
-Log "1. click-through"
-Start-Process explorer.exe "shell:AppsFolder\$aumid"; Start-Sleep 12; Report 'after-launch'
-$null = Click '開始設定'; Start-Sleep 3; Report 'after-開始設定'; Shot 'click-1'
-$null = Click '連線';     Start-Sleep 3; Report 'after-連線';     Shot 'click-2'
-# 連線表單 → 回到上一頁（找得到就按）
-$null = Click '‹ 返回';   Start-Sleep 2
-$null = Click '免費申請'; Start-Sleep 6; Report 'after-免費申請'; Shot 'click-3'
-# 關視窗（按 ×）＝收到托盤，程序應該還在
-$p = Alive; if ($p) { $null = $p[0].CloseMainWindow(); Start-Sleep 3; Report 'after-close-window' }
-# 再從開始功能表點一次（第二個實例要叫醒第一個，不是開第二個）
-Start-Process explorer.exe "shell:AppsFolder\$aumid"; Start-Sleep 8; Report 'after-second-launch'; Shot 'click-4'
-Kill
-Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
 # ── 2. 斷網啟動 ───────────────────────────────────────────────
-Log "2. offline launch"
+Log "2. offline launch"; Kill; Report 'before-offline'
 New-NetFirewallRule -DisplayName 'arcrun-offline' -Direction Outbound -Program $exeInPkg -Action Block | Out-Null
 New-NetFirewallRule -DisplayName 'arcrun-offline-wv' -Direction Outbound -Program 'C:\Program Files (x86)\Microsoft\EdgeWebView\Application\*\msedgewebview2.exe' -Action Block -ErrorAction SilentlyContinue | Out-Null
-Start-Process explorer.exe "shell:AppsFolder\$aumid"; Start-Sleep 30; Report 'offline-30s'; Shot 'offline'
+Start-Process explorer.exe "shell:AppsFolder\$aumid"; Start-Sleep 30; Report 'offline-30s'
+$p = Alive; if ($p) { Log "offline pid start time: $($p[0].StartTime.ToString('o'))" }
+Shot 'offline'
 Kill
 Remove-NetFirewallRule -DisplayName 'arcrun-offline','arcrun-offline-wv' -ErrorAction SilentlyContinue
 
@@ -102,13 +84,15 @@ L "whoami: $(whoami) admin=$(([Security.Principal.WindowsPrincipal][Security.Pri
 try { Add-AppxPackage -Path C:\probe-r3\signed.msix -ErrorAction Stop; L 'Add-AppxPackage OK' } catch { L "Add-AppxPackage FAILED: $_" }
 $pkg = Get-AppxPackage -Name 'NAME_PLACEHOLDER'
 L "pkg: $($pkg.PackageFullName)"
-Add-Type -TypeDefinition @"
+try {
+Add-Type -ErrorAction Stop -TypeDefinition @"
 using System; using System.Runtime.InteropServices;
 [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IApplicationActivationManager { int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string id, [MarshalAs(UnmanagedType.LPWStr)] string args, int options, out uint pid); }
 [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")] public class AAM { }
 public static class Act { public static uint Run(string id) { uint pid; ((IApplicationActivationManager)new AAM()).ActivateApplication(id, null, 0, out pid); return pid; } }
 "@
+} catch { L "Add-Type failed: $_" }
 try { $id = [Act]::Run("$($pkg.PackageFamilyName)!Arcrun"); L "activated pid=$id" } catch { L "activate failed: $_" }
 Start-Sleep 40
 $p = @(Get-Process -Name Arcrun -IncludeUserName -ErrorAction SilentlyContinue | Where-Object UserName -like '*arctest')
@@ -121,7 +105,7 @@ Set-Content C:\probe-r3\stduser.ps1 $child
 icacls C:\probe-r3 /grant 'Users:(OI)(CI)M' | Out-Null
 $cred = New-Object Management.Automation.PSCredential ('arctest', $sec)
 try {
-  $sp = Start-Process powershell.exe -Credential $cred -LoadUserProfile -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\probe-r3\stduser.ps1' -PassThru -ErrorAction Stop
+  $sp = Start-Process (Get-Command pwsh).Source -Credential $cred -LoadUserProfile -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\probe-r3\stduser.ps1' -PassThru -ErrorAction Stop
   if (-not $sp.WaitForExit(180000)) { Log "std user script timeout" }
 } catch { Log "Start-Process as arctest failed: $_" }
 Shot 'stduser'
