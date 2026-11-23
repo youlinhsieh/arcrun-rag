@@ -20,12 +20,9 @@ jobs:
       - name: Probe each msix
         shell: pwsh
         run: |
-          foreach ($m in Get-ChildItem ci/msix-probe/*.msix | Sort-Object Name) {
-            Write-Host "===================== $($m.Name) ====================="
-            & ./ci/msix-probe/probe.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\$($m.BaseName)"
-            Write-Host "===================== ROUND2 $($m.Name) ====================="
-            & ./ci/msix-probe/round2.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\$($m.BaseName)-r2"
-          }
+          $m = Get-Item ci/msix-probe/a-submitted-0.18.120.msix
+          Write-Host "===================== ROUND3 $($m.Name) ====================="
+          & ./ci/msix-probe/round3.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\r3"
           Write-Host "===================== SUMMARY ====================="
           Get-ChildItem "$env:RUNNER_TEMP\out" -Recurse -Filter result.txt | ForEach-Object { Write-Host "$($_.Directory.Name): $(Get-Content $_.FullName)" }
           Get-ChildItem "$env:RUNNER_TEMP\out" -Recurse -Filter events-application.txt | ForEach-Object { Write-Host "---- $($_.FullName)"; Get-Content $_.FullName | Select-Object -First 80 }
