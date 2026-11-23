@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	winopts "github.com/wailsapp/wails/v2/pkg/options/windows"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -109,6 +110,8 @@ func main() {
 		//      ⇒ 綠色按鈕被停用。Windows 沒有這段，所以只有 Mac 壞。
 		//    解＝給一個**空的** Mac options（DisableZoom 預設 false ⇒ zoomable=true）。
 		Mac: &mac.Options{},
+		// Store 版（msix）把 WebView2 資料夾放進 ~/.arcrun-rag（inkstone/arcrun-rag#387，見 webview_datadir.go）。
+		Windows: &winopts.Options{WebviewUserDataPath: webviewUserDataPath()},
 		OnStartup: func(ctx wailsCtx) {
 			app.startup(ctx)
 			// 🔴 必須在 NSApp 起來之後才切 Accessory——Wails 在
