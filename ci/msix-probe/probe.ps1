@@ -11,6 +11,16 @@ function Shot($name) {
     $bmp = New-Object Drawing.Bitmap $b.Width, $b.Height
     $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size)
     $bmp.Save("$Out\$name.png"); Log "screenshot $name.png"
+    # artifact 從雲端 session 下載不到 ⇒ 縮小成 JPEG 直接印進 log
+    $sm = New-Object Drawing.Bitmap $bmp, ([int]($b.Width * 0.6)), ([int]($b.Height * 0.6))
+    $ms = New-Object IO.MemoryStream
+    $enc = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg'
+    $ep = New-Object Drawing.Imaging.EncoderParameters 1
+    $ep.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality), 55L
+    $sm.Save($ms, $enc, $ep)
+    Write-Host "SHOT-BEGIN $([IO.Path]::GetFileName($Out))-$name"
+    Write-Host ([Convert]::ToBase64String($ms.ToArray()))
+    Write-Host "SHOT-END"
   } catch { Log "screenshot failed: $_" }
 }
 function Watch($label, $sec) {
