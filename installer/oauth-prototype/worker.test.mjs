@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, landingBase, resolveInstanceTenant, rememberTenant,
+  deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, landingBase, resolveInstanceTenant, rememberTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -6032,4 +6032,11 @@ test('inkstone/Arcrun#416／#415／arcrun-rag#367 Artifacts namespace：env > �
     assert.equal(r.artifactsNamespace, 'InkStoneCo');
     assert.match(r.artifactsWarning, /default.*不存在/);
   } finally { restoreFetch(); }
+});
+
+test('inkstone/Arcrun#501 帳號裡其餘 namespace 各綁一個 ARTIFACTS_NS_<名字>（主 binding 那個不重綁、怪名字不綁）', () => {
+  const rows = [{ namespace: 'InkStoneCo', repo_count: 24 }, { namespace: 'Leo', repo_count: 1 }, { namespace: 'bad-name' }, { namespace: 'Leo' }];
+  assert.deepEqual(extraArtifactsNsBindings(rows, 'InkStoneCo'), [{ type: 'artifacts', name: 'ARTIFACTS_NS_Leo', namespace: 'Leo' }]);
+  assert.deepEqual(extraArtifactsNsBindings(['default', 'ns416b'], 'default'), [{ type: 'artifacts', name: 'ARTIFACTS_NS_ns416b', namespace: 'ns416b' }]);
+  assert.deepEqual(extraArtifactsNsBindings(null, 'default'), []);
 });

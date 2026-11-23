@@ -112,3 +112,12 @@ test('#163：授權類原因（no_grant）即使實例已是目標版也紅燈�
     : resp(200, { bundle_version: '1.4.274', bundle_commit: 'abcdef1234' });
   await assert.rejects(() => userPathUpdateStation({ cfg, expect: { version: '1.4.274', commit: '' }, fetchImpl: f, sleep: async () => {} }), /reason=no_grant/);
 });
+
+test('#384 安裝器回 reason=background ⇒ 只按一次、不再按，標成背景接力', async () => {
+  let presses = 0;
+  const f = async (u) => { if (u.endsWith('/portal/login')) return resp(200, { session_token: 't' }); presses++; return resp(200, { ok: true, state: 'busy', reason: 'background', message: '更新正在背景進行' }); };
+  const r = await pressUpdate({ cfg, fetchImpl: f, sleepMs: async () => { throw new Error('不該再等下一次按'); } });
+  assert.equal(presses, 1);
+  assert.equal(r.background, true);
+  assert.match(r.detail[0], /只按了 1 次/);
+});

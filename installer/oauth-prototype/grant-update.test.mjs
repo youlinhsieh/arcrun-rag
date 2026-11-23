@@ -34,6 +34,7 @@ import worker, {
   readPrepared,
   writePrepared,
   activatePreparedVersion, switchWithSecretGuard, prepareChainGuard,
+  runUpdateChainBatch, kickUpdateChain, readUpdateChain,
 } from './worker.js';
 
 // --- 測試替身 -------------------------------------------------------------
@@ -779,4 +780,80 @@ test('準備鏈護欄：讀不到名單 ⇒ 不能確認，略過', async () => 
   installFetch(() => ({ status: 500, json: { success: false, errors: [{ message: 'boom' }] } }));
   let r; try { r = await prepareChainGuard('tok', 'acct', 'w'); } finally { restoreFetch(); }
   assert.equal(r.ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// inkstone/arcrun-rag#384：更新分批時，安裝器自己串下一批（不靠畫面、不靠 cron）
+// ---------------------------------------------------------------------------
+
+test('#384 一批做完還有下一批 ⇒ 自己交棒給下一棒，直到做完；紀錄收乾淨', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  await ensureUpdateToken(env, 'acct-chain');
+  const answers = [{ ok: false, state: 'paused_continue' }, { ok: false, state: 'paused_continue' }, { ok: true, state: 'done', deployed: 3 }];
+  const sent = [];
+  const run = async () => answers.shift();
+  // 假的「對自己打」：把下一棒直接交給 runUpdateChainBatch（等於真的 worker 收到 202 後在背景跑）
+  const fetchImpl = async (url, init) => {
+    const b = JSON.parse(init.body);
+    sent.push(b.chain);
+    assert.match(init.headers.authorization, /^Bearer .{64}$/);
+    await runUpdateChainBatch(env, 'acct-chain', b.chain, { run, fetchImpl, origin: 'https://i.test' });
+    return { status: 202 };
+  };
+  await env.INSTALLER_KV.put('updchain:acct-chain', JSON.stringify({ n: 0, at: Date.now(), startedAt: Date.now() }));
+  const r = await kickUpdateChain(env, 'acct-chain', 1, 'https://i.test', fetchImpl);
+  assert.equal(r, true);
+  assert.deepEqual(sent, [1, 2, 3], '第 1 批（按下時）之後交出第 1、2、3 棒；第 3 棒做完就不再交');
+  assert.equal(answers.length, 0);
+  assert.equal(await readUpdateChain(env, 'acct-chain'), null, '做完要清掉接力紀錄');
+});
+
+test('#384 序號對不上的接力請求不會跑（重複／偽造的接力不能讓更新多開）', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const tok = await ensureUpdateToken(env, 'acct-forge');
+  const mk = (chain) => new Request('https://i.test/api/instance/update', {
+    method: 'POST', headers: { authorization: 'Bearer ' + tok },
+    body: JSON.stringify({ accountId: 'acct-forge', chain }) });
+  const r1 = await worker.fetch(mk(1), env, { waitUntil() {} });
+  assert.equal((await r1.json()).reason, 'chain_stale', '沒有接力紀錄 ⇒ 不跑');
+  await env.INSTALLER_KV.put('updchain:acct-forge', JSON.stringify({ n: 5, at: Date.now() }));
+  const r2 = await worker.fetch(mk(1), env, { waitUntil() {} });
+  assert.equal((await r2.json()).reason, 'chain_stale', '序號不是「上一棒+1」 ⇒ 不跑');
+});
+
+test('#384 背景正在接力時再按，不會再開一串，也不叫人再按', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const tok = await ensureUpdateToken(env, 'acct-live');
+  await env.INSTALLER_KV.put('updchain:acct-live', JSON.stringify({ n: 2, at: Date.now() }));
+  const res = await worker.fetch(new Request('https://i.test/api/instance/update', {
+    method: 'POST', headers: { authorization: 'Bearer ' + tok },
+    body: JSON.stringify({ accountId: 'acct-live' }) }), env, { waitUntil() {} });
+  const b = await res.json();
+  assert.equal(b.state, 'busy');
+  assert.equal(b.reason, 'background');
+  assert.ok(!/請再按|再按一次/.test(b.message), '文案不能叫人再按');
+  assert.match(b.message, /背景/);
+});
+
+test('#384 接力有上限：超過棒數就停手並留紀錄，不會變成永遠走不完', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  await ensureUpdateToken(env, 'acct-cap');
+  const r = await runUpdateChainBatch(env, 'acct-cap', 30, {
+    run: async () => ({ ok: false, state: 'paused_continue' }), origin: 'https://i.test',
+    fetchImpl: async () => { throw new Error('不該再交棒'); } });
+  assert.equal(r.reason, 'chain_limit');
+  assert.equal(await readUpdateChain(env, 'acct-cap'), null);
+});
+
+test('#384 第一批放進 waitUntil：回應先回 202（沒等到做完），工作仍在背景做完並交棒', async () => {
+  const env = { INSTALLER_KV: makeKV() };
+  const tok = await ensureUpdateToken(env, 'acct-first');
+  const pending = [];
+  // 只確認結構：第一批 promise 必須交給 ctx.waitUntil（client 斷線不能取消它）
+  const res = await worker.fetch(new Request('https://i.test/api/instance/update', {
+    method: 'POST', headers: { authorization: 'Bearer ' + tok },
+    body: JSON.stringify({ accountId: 'acct-first' }) }), env, { waitUntil(p) { pending.push(p); } });
+  assert.ok(pending.length >= 1, '第一批沒有交給 waitUntil ＝ client 斷線就取消');
+  await Promise.all(pending);
+  assert.ok(res.status < 600);
 });

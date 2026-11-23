@@ -300,7 +300,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@465d5bb59e2f60e7fe8687ef0f4d8beba8a48562';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@c09ef2f8dbf75fb288c632a373f46da7224c8ea6';
 const BUNDLE_BUILT = '2026-11-22'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -3486,6 +3486,19 @@ async function resolveWorkerPlacement(token, accountId, scriptName, d1Id) {
  * 🔴 不准靜默：不是靠「查得到的帳號事實」選出來的，都回 warning，部署報告要印出來。
  * @returns {{namespace:string, source:'env'|'live'|'account'|'manifest', warning?:string}}
  */
+/** inkstone/Arcrun#501：主 binding 以外，帳號裡每個 namespace 一個 `ARTIFACTS_NS_<名字>`（只收英數底線開頭為字母的名字）。 */
+function extraArtifactsNsBindings(accountNamespaces, mainNs) {
+  const out = [];
+  const seen = new Set();
+  for (const r of Array.isArray(accountNamespaces) ? accountNamespaces : []) {
+    const ns = r && (typeof r === 'string' ? r : r.namespace);
+    if (!ns || ns === mainNs || seen.has(ns) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(ns)) continue;
+    seen.add(ns);
+    out.push({ type: 'artifacts', name: `ARTIFACTS_NS_${ns}`, namespace: ns });
+  }
+  return out;
+}
+
 function pickArtifactsNamespace(declared, accountNamespaces, envNs, liveNs) {
   if (envNs && String(envNs).trim()) return { namespace: String(envNs).trim(), source: 'env' };
   const live = (liveNs || '').trim() || null;
@@ -3670,6 +3683,15 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     bindings.push({ type: 'artifacts', name: artifactsReq.binding || 'ARTIFACTS', namespace: picked.namespace });
     // binding 本身不告訴你它綁到哪；寫一個 plain var 讓引擎 /artifacts/status 回報（與 Arcrun 側同名）
     bindings.push({ type: 'plain_text', name: 'ARTIFACTS_NAMESPACE', text: picked.namespace });
+    // inkstone/Arcrun#501：帳號裡其餘每個 namespace 各綁一個 ARTIFACTS_NS_<名字>（規章放在 InkStoneCo 這類 namespace）。
+    // 規則與 Arcrun cli/src/lib/bundle-deploy.ts 的 withArtifactsNamespace 一致；只到得了本帳號，不需要金鑰。
+    if (!Array.isArray(accountNs)) {
+      try {
+        const rows = await cfFetch(token, `/accounts/${accountId}/artifacts/namespaces`);
+        if (Array.isArray(rows)) accountNs = rows;
+      } catch (_) { /* 查不到就只綁主 binding；引擎會照實說「還沒綁上這個命名空間」 */ }
+    }
+    bindings.push(...extraArtifactsNsBindings(accountNs, picked.namespace));
   }
   // t151：還原被 strip 掉的 service binding（見 SERVICE_BINDINGS 那張表的說明）。
   // 病灶＝安裝器一個都沒注入 ⇒ env.KBDB／CYPHER_EXECUTOR／COMPONENT_REGISTRY 全 undefined
@@ -4145,7 +4167,7 @@ async function seedSkillsTo(cypherBase, ns, kbdbToken) {
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
   installPage, INSTALL_SCRIPT,
-  fetchBundleManifest, deployBundledWorker, pickArtifactsNamespace, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
+  fetchBundleManifest, deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
@@ -4193,7 +4215,7 @@ export {
   verifyStepVerdict,
   // #163 更新≠安裝：帳號級長期授權與更新路徑，供離線測試斷言
   // 「第二次不再需要授權／第一次仍然要人／撤銷後會重新要求」這三件事。
-  adoptGrant, grantAccessToken, dropGrant, saveInstanceSnapshot, sweepUpdates, runUpdate,
+  adoptGrant, grantAccessToken, dropGrant, saveInstanceSnapshot, sweepUpdates, runUpdate, runUpdateChainBatch, kickUpdateChain, readUpdateChain, UPDATE_CHAIN_MAX,
   GrantUnavailable, GRANT_TTL, UPDATE_REUSE_STEPS,
   readPrepared, writePrepared, activatePreparedVersion, switchWithSecretGuard, prepareChainGuard, handleInstanceUpdateStatus,
   emailIndexKey, liveGrantForEmail, instanceIsGone, ensureUpdateToken, timingSafeEqual, alreadyInstalledPage,
@@ -6656,7 +6678,7 @@ export default {
         case 'POST /api/instance/update-status':
           return handleInstanceUpdateStatus(request, env);
         case 'POST /api/instance/update':
-          return handleInstanceUpdate(request, env);
+          return handleInstanceUpdate(request, env, ctx);
         case 'POST /admin/update-sweep':
           return handleAdminUpdateSweep(request, env, url);
         default:
@@ -7328,7 +7350,7 @@ async function handleGrantRevoke(request, env) {
  * 🔴 **不接受「要裝哪一版」參數**：永遠裝當前官方版本。
  *    讓呼叫方指定版本＝把「裝什麼」的決定權交出去，那才是真的旁路。
  */
-async function handleInstanceUpdate(request, env) {
+async function handleInstanceUpdate(request, env, ctx) {
   const auth = request.headers.get('authorization') || '';
   const presented = auth.replace(/^Bearer\s+/i, '').trim();
 
@@ -7346,23 +7368,62 @@ async function handleInstanceUpdate(request, env) {
     return json({ ok: false, error: 'unauthorized', message: '這個更新要求沒有通過驗證，請重新登入你的 Arcrun 再試一次。' }, 401);
   }
 
+  // inkstone/arcrun-rag#384：自己串起來的下一批（由上一批的請求打來，帶同一把更新權杖＋序號）。
+  // 立刻回 202、實際工作放 waitUntil（一批 ≤ DEPLOY_TIME_BUDGET_MS，在 waitUntil 的 30 秒內）。
+  const chainN = Number.isInteger(body && body.chain) ? body.chain : 0;
+  if (chainN > 0) {
+    const rec = await readUpdateChain(env, accountId);
+    if (!rec || rec.n !== chainN - 1) {
+      // 序號對不上＝重複／偽造的接力，不跑（接力只能是「上一批」交來的下一棒）
+      return json({ ok: true, state: 'busy', reason: 'chain_stale', message: UPDATE_BACKGROUND_MESSAGE }, 202);
+    }
+    const work = runUpdateChainBatch(env, accountId, chainN, { origin: new URL(request.url).origin });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
+    return json({ ok: true, state: 'busy', reason: 'background', message: UPDATE_BACKGROUND_MESSAGE }, 202);
+  }
+
+  // 已經有一串在背景跑（最近 CHAIN_STALE_MS 內有批次在動）：不再開第二串，直接說「在背景做」。
+  const live = await readUpdateChain(env, accountId);
+  if (live && Date.now() - Number(live.at || 0) < UPDATE_CHAIN_STALE_MS) {
+    return json({ ok: true, state: 'busy', reason: 'background', message: UPDATE_BACKGROUND_MESSAGE });
+  }
+
   // 冷卻期：擋連打（同一台實例 60 秒內只跑一次）。
   // 更新是冪等的，但每一次都會吃使用者自己帳號的 CF 額度——不該讓一顆按鈕能被連按成災。
   const cool = 'updcool:' + accountId;
   if (await env.INSTALLER_KV.get(cool)) {
-    return json({ ok: true, state: 'busy', message: '正在幫你更新，請稍候再重新整理。' });
+    return json({ ok: true, state: 'busy', reason: 'background', message: UPDATE_BACKGROUND_MESSAGE });
   }
   await env.INSTALLER_KV.put(cool, '1', { expirationTtl: 60 }); // kv-ok: 60 秒冷卻標記，過期自動消失——這是節流用的 nonce，不是資料
 
   const startedAt = Date.now();
-  const r = await runUpdate(env, accountId, 'switch');
-
-  // 使用者看得懂的話（產品文案鐵律：不出現狀態碼、模型名、token）
-  // 更新要分批做（一次請求的額度用完就停在 paused_continue）：這不是失敗，是「還在更新、再按一次或等自動接力」。
-  //   過去這裡回 ok:false，Portal 就顯示「沒辦法更新」，使用者以為壞了（inkstone/arcrun-rag#381）。
+  // inkstone/arcrun-rag#384（總管 c8 實測：按一次、4 秒後斷線 ⇒ 背景沒在跑）：
+  // 第一批也要放進 waitUntil——client 一斷線，請求裡同步跑的工作會跟著被取消，接力根本沒起頭。
+  // 做法：第一批整段（含交棒）包成一個 promise 交給 waitUntil；請求最多等 FIRST_BATCH_WAIT_MS，
+  // 做完就照舊回完整結果（小更新、已是最新版），沒做完就先回 202「背景進行中」。
+  const first = (async () => {
+    let res;
+    try { res = await runUpdate(env, accountId, 'switch'); }
+    catch (_) { res = { ok: false, reason: 'update_exception' }; }
+    // 更新要分批做（一次請求的額度用完就停在 paused_continue）：這不是失敗，也不用人再按——
+    // 由這一次按下的請求自己把下一批串起來（不是 cron、不是畫面接力），畫面關掉也會做完。
+    if (!res.ok && res.state === 'paused_continue') {
+      await writeUpdateChain(env, accountId, { n: 0, at: Date.now(), startedAt });
+      await kickUpdateChain(env, accountId, 1, new URL(request.url).origin);
+    }
+    return res;
+  })();
+  const canDetach = !!(ctx && ctx.waitUntil);
+  if (canDetach) ctx.waitUntil(first.catch(() => {}));
+  const r = canDetach
+    ? await Promise.race([first, new Promise((res) => setTimeout(() => res(null), FIRST_BATCH_WAIT_MS))])
+    : await first;
+  if (r === null) {
+    return json({ ok: true, state: 'busy', reason: 'background', ms: Date.now() - startedAt, message: UPDATE_BACKGROUND_MESSAGE }, 202);
+  }
   if (!r.ok && r.state === 'paused_continue') {
-    return json({ ok: true, state: 'busy', deployed: r.deployed || 0, switched: r.switched || 0, reason: 'paused_continue',
-      ms: Date.now() - startedAt, message: '更新分批進行中，這一批做完了，還有下一批。請再按一次「立即更新」，或稍後重新整理。' });
+    return json({ ok: true, state: 'busy', deployed: r.deployed || 0, switched: r.switched || 0, reason: 'background',
+      ms: Date.now() - startedAt, message: UPDATE_BACKGROUND_MESSAGE });
   }
   const message = r.ok
     ? (r.deployed
@@ -7375,6 +7436,68 @@ async function handleInstanceUpdate(request, env) {
         + '（代號：' + String(r.reason || 'unknown').slice(0, 40) + (r.failedStep ? '／' + String(r.failedStep).slice(0, 40) : '') + '）';
 
   return json({ ok: !!r.ok, state: r.state || null, deployed: r.deployed || 0, switched: r.switched || 0, guards: r.guards || [], from: r.from || null, to: r.to || null, staleScope: r.staleScope || null, ms: Date.now() - startedAt, reason: r.reason || null, failedStep: r.failedStep || null, message });
+}
+
+// ---------------------------------------------------------------------------
+// 更新自己接力（inkstone/arcrun-rag#384）
+// ---------------------------------------------------------------------------
+// leo 11-22：「一個按鈕按一次，還要一直按？」——分批做完一批後，過去要人（或開著的分頁）再按一次。
+// 現在：按下去的那個請求在一批做完、還有下一批時，**自己對自己打一個新請求**（新請求＝新的 invocation＝新的 subrequest 額度），
+// 下一批再串下一批，直到做完。不靠 cron、不靠畫面、不盯別的實例；每一棒只能由上一棒交出。
+//   - 接力紀錄 `updchain:<帳號>`：{n 第幾棒, at 這棒開始時間, startedAt}。序號對不上＝重複或偽造 ⇒ 不跑。
+//   - 一串最多 UPDATE_CHAIN_MAX 棒、最長 UPDATE_CHAIN_MAX_MS；超過就停手（紀錄留下 updatelog，不再自動試）。
+//   - 某一棒被平台砍掉沒交棒 ⇒ 紀錄 `at` 過了 UPDATE_CHAIN_STALE_MS 就視為斷線，下一次按（或舊畫面的接力）會重新起一串。
+const UPDATE_CHAIN_MAX = 30;
+const UPDATE_CHAIN_MAX_MS = 20 * 60 * 1000;
+const UPDATE_CHAIN_STALE_MS = 90 * 1000;
+// 第一批：請求最多等這麼久就先回 202（工作本身在 waitUntil 裡繼續，不受 client 斷線影響）
+const FIRST_BATCH_WAIT_MS = 8000;
+const UPDATE_BACKGROUND_MESSAGE = '更新正在背景進行，關掉這個畫面也會自己做完，不用再按。';
+const updateChainKey = (accountId) => 'updchain:' + accountId;
+
+async function readUpdateChain(env, accountId) {
+  try { return await env.INSTALLER_KV.get(updateChainKey(accountId), 'json'); } catch (_) { return null; }
+}
+async function writeUpdateChain(env, accountId, rec) {
+  await env.INSTALLER_KV.put(updateChainKey(accountId), JSON.stringify(rec), { expirationTtl: 3600 }); // kv-ok: 接力棒紀錄（序號與時間，非資料），1 小時 TTL 自動消失
+}
+
+/** 對自己打下一棒。有 SELF 服務綁定就走它，沒有就打自己的網址。回應只等「收到」（202），不等那一批做完。 */
+async function kickUpdateChain(env, accountId, n, origin, fetchImpl) {
+  try {
+    const tok = await env.INSTALLER_KV.get('updtok:' + accountId);
+    if (!tok) return false;
+    const f = fetchImpl || (env.SELF && env.SELF.fetch ? env.SELF.fetch.bind(env.SELF) : fetch);
+    const res = await f(origin + '/api/instance/update', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok },
+      body: JSON.stringify({ accountId, chain: n }),
+    });
+    return !!(res && res.status < 300);
+  } catch (_) { return false; }
+}
+
+/** 第 n 棒：跑一批；還有下一批就交棒，做完／出錯就收尾。 */
+async function runUpdateChainBatch(env, accountId, n, opts = {}) {
+  const run = opts.run || runUpdate;
+  const prev = await readUpdateChain(env, accountId);
+  const startedAt = (prev && prev.startedAt) || Date.now();
+  await writeUpdateChain(env, accountId, { n, at: Date.now(), startedAt });
+  let r;
+  try { r = await run(env, accountId, 'switch'); }
+  catch (e) { r = { ok: false, reason: 'chain_exception' }; }
+  if (r && !r.ok && r.state === 'paused_continue') {
+    if (n >= UPDATE_CHAIN_MAX || Date.now() - startedAt > UPDATE_CHAIN_MAX_MS) {
+      await writeUpdateLog(env, accountId, { state: 'chain_limit', n, reason: 'chain_limit' });
+      await env.INSTALLER_KV.delete(updateChainKey(accountId)).catch(() => {});
+      return { ok: false, reason: 'chain_limit', n };
+    }
+    await writeUpdateChain(env, accountId, { n, at: Date.now(), startedAt });
+    const kicked = await kickUpdateChain(env, accountId, n + 1, opts.origin || '', opts.fetchImpl);
+    return { ok: true, handedOver: kicked, n };
+  }
+  await env.INSTALLER_KV.delete(updateChainKey(accountId)).catch(() => {});
+  return { ok: !!(r && r.ok), done: true, n, reason: r && r.reason };
 }
 
 /**

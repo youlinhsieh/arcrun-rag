@@ -78,6 +78,9 @@ export async function pressUpdate({ cfg, fetchImpl, now = () => Date.now(), slee
     presses++;
     ur = await fetchImpl(`${base}/portal/admin/update`, { method: 'POST', headers: { authorization: `Bearer ${lj.session_token}` } });
     uj = await ur.json().catch(() => ({}));
+    // inkstone/arcrun-rag#384：安裝器回 reason=background ＝後面的批次它自己在背景接力，**不准再按**——
+    // 這一站只按這一次，之後只讀回 /health（驗「按一次就夠」，不是驗「按到成功」）。
+    if (ur.ok && uj && uj.ok && uj.state === 'busy' && uj.reason === 'background') break;
     if (!(ur.ok && uj && uj.ok && uj.state === 'busy') || presses >= (cfg.maxPresses || 8)) break;
     await sleepMs(cfg.pressGapMs || 65000);
   }
@@ -91,6 +94,10 @@ export async function pressUpdate({ cfg, fetchImpl, now = () => Date.now(), slee
     err.pressReply = uj;
     err.softRefusal = ur.ok && !AUTH_CLASS_REASONS.includes(String(uj.reason || ''));
     throw err;
+  }
+  if (uj.state === 'busy' && uj.reason === 'background') {
+    return { ms, presses, state: 'background', switched: 0, deployed: Number(uj.deployed || 0), background: true,
+      detail: [`Portal「立即更新」：只按了 ${presses} 次，安裝器回「${uj.message || ''}」，之後由安裝器背景接力，這一站不再按、只讀回 /health`] };
   }
   if (uj.state === 'busy') throw new Error(`按了 ${presses} 次「立即更新」還在分批更新中（state=busy）：${uj.message || ''}`);
   const switched = Number(uj.switched || 0);
@@ -182,7 +189,8 @@ export async function userPathUpdateStation({ cfg, expect, fetchImpl = fetch, no
       throw new Error(`${e.message}\n     而且實例讀回也還不是這一版：${e2.message}`);
     }
   }
-  const back = press.softBack || await readBack({ cfg, expect, fetchImpl, sleep });
+  // 背景接力：最多等 15 分鐘（90 次 × 10 秒），中間沒有任何人再按。
+  const back = press.softBack || await readBack({ cfg, expect, fetchImpl, sleep, ...(press.background ? { tries: 90, gapMs: 10000 } : {}) });
   let secretDetail = [];
   if (secretSnapshot) {
     const after = await secretSnapshot();
