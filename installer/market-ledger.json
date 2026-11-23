@@ -134,6 +134,27 @@
           "kind": "updated"
         }
       ]
+    },
+    {
+      "version": "2026.11.23-8f591c4",
+      "target": "stage",
+      "at": "2026-11-23T12:10:14.104Z",
+      "ticket": null,
+      "previous": "2026.11.22-7253a5f",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.64.2",
+          "to": "0.64.3",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.18",
+          "to": "0.9.19",
+          "kind": "updated"
+        }
+      ]
     }
   ]
 }
