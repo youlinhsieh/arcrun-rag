@@ -7,6 +7,9 @@
 #   ./install.sh status       這台現在的狀態（啟用／精靈／知識庫筆數）
 #   ./install.sh import       把大前知識庫放進這一台（要在走精靈之前做；啟用前後都可以）
 #   ./install.sh n8n-test     用這台的 MCP 金鑰實打一次（金鑰不印出來），給 n8n 改完網址前先驗
+#   ./install.sh import-app [檔…]  把同仁用的小幫手安裝檔（.dmg／.exe）放到這台，Portal 的「下載」就從這台給（不連外網）。
+#                              沒給檔名＝放 apps/ 資料夾裡的全部
+#   ./install.sh set-url <網頁網址> <API 網址>  對外網址填錯（例如存成 127.0.0.1）時改對，不用重走精靈、資料不動
 #
 # 可用環境變數改預設：NAME（容器名 arcrun）VOLUME（資料卷 arcrun-data）UI_PORT（8080）API_PORT（8081）
 #                    ARCRUN_NETWORK（指定 docker 網路；預設用主機的 -p 對外開埠）
@@ -69,7 +72,12 @@ cmd_up() {
   say "起容器 $NAME（租戶 $T，資料卷 $VOLUME）"
   local net=(-p "$UI_PORT:8080" -p "$API_PORT:8081")
   [ -n "${ARCRUN_NETWORK:-}" ] && net=(--network "$ARCRUN_NETWORK")
-  docker run -d --name "$NAME" --restart unless-stopped -e "ARCRUN_TENANT=$T" "${net[@]}" -v "$VOLUME:/data" "$tag" >/dev/null
+  # 精靈的網址預設值：用這台主機的內網位址（不是瀏覽器地址列的 localhost）——同仁電腦要連的是它（inkstone/arcrun-rag#389）
+  local adv=()
+  if [ -z "${ARCRUN_NETWORK:-}" ] && [ -n "$(host_ip)" ]; then
+    adv=(-e "ARCRUN_ADVERTISE_UI_URL=http://$(host_ip):$UI_PORT" -e "ARCRUN_ADVERTISE_API_URL=http://$(host_ip):$API_PORT")
+  fi
+  docker run -d --name "$NAME" --restart unless-stopped -e "ARCRUN_TENANT=$T" "${adv[@]}" "${net[@]}" -v "$VOLUME:/data" "$tag" >/dev/null
   wait_healthy
   echo
   echo "✓ 容器已起來。這一台目前是「未啟用」狀態（精靈與 API 都鎖著，正常）。"
@@ -152,7 +160,40 @@ cmd_n8n_test() {
     })().catch(e=>{console.error("✗ "+e.message);process.exit(1)})'
 }
 
+cmd_import_app() {
+  exists || die "找不到容器 $NAME（先跑 ./install.sh up）"
+  shift || true
+  local files=("$@")
+  if [ "${#files[@]}" -eq 0 ]; then
+    shopt -s nullglob; files=("$HERE"/apps/*.dmg "$HERE"/apps/*.exe "$HERE"/apps/*.msix "$HERE"/apps/*.zip); shopt -u nullglob
+  fi
+  [ "${#files[@]}" -gt 0 ] || die "沒有要放的安裝檔：把 .dmg（Mac）／.exe（Windows）放進 $HERE/apps/，或把檔名寫在指令後面"
+  docker exec "$NAME" mkdir -p /data/downloads
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || die "找不到 $f"
+    docker cp "$f" "$NAME:/data/downloads/$(basename "$f")"
+    say "已放到這台：$(basename "$f")（$(du -h "$f" | cut -f1)）"
+  done
+  say "Portal「設定」裡同仁按下載就會從這台拿；現在可下載的："
+  docker exec "$NAME" node -e "fetch('http://127.0.0.1:8080/downloads/index.json').then(r=>r.text()).then(console.log)" 2>/dev/null \
+    || docker exec "$NAME" ls -1 /data/downloads
+}
+
+cmd_set_url() {
+  exists || die "找不到容器 $NAME（先跑 ./install.sh up）"
+  local ui="${2:-}" api="${3:-}"
+  [ -n "$ui" ] && [ -n "$api" ] || die "用法：./install.sh set-url http://<內網位址>:8080 http://<內網位址>:8081"
+  docker exec -i "$NAME" node -e "
+    let s='';process.stdin.on('data',d=>s+=d).on('end',async()=>{
+      const r=await fetch('http://127.0.0.1:8090/set-public-urls',{method:'POST',headers:{'content-type':'application/json'},body:s});
+      const t=await r.text();console.log(r.status+' '+t);process.exit(r.ok?0:1)})" <<<"{\"ui_url\":\"$ui\",\"api_url\":\"$api\"}" \
+    || die "沒改成（上面是原因）"
+  wait_healthy
+  say "改好了。同仁的小幫手要用新的網頁網址重新連線一次。"
+}
+
 case "${1:-}" in
   check) cmd_check;; up) cmd_up;; status) cmd_status;; import) cmd_import;; n8n-test) cmd_n8n_test;;
-  *) sed -n '2,12p' "$0"; exit 1;;
+  import-app) cmd_import_app "$@";; set-url) cmd_set_url "$@";;
+  *) sed -n '2,16p' "$0"; exit 1;;
 esac

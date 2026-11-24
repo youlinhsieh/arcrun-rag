@@ -1062,6 +1062,8 @@ const TAB_ICONS = {
 const LIB_TABS = [['sync', '同步'], ['folders', '資料夾'], ['apps', 'App'], ['cards', '知識卡'], ['usage', '用量'], ['ai', '設定']];
 
 function libPortalURL(a) {
+  // 企業私有雲：網頁與 API 不同埠、常是 http，後端連線時記下網頁網址（inkstone/arcrun-rag#389）
+  if (a.portalUrl) return a.portalUrl.replace(/\/+$/, '') + '/portal/';
   return 'https://' + a.host.replace('arcrun-cypher-executor.', 'arcrun-rag-ui.') + '/portal/';
 }
 

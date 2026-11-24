@@ -63,6 +63,10 @@ type accountCfg struct {
 	InstanceName string   `json:"instance_name,omitempty"`
 	Email        string   `json:"email,omitempty"`
 	CypherURL    string   `json:"cypher_url"`
+	// PortalURL＝這個帳號的「網頁（Portal）」網址，只有企業私有雲才會有（網頁與 API 不同埠，例：:8080 與 :8081）。
+	// 雲端帳號靠網址規則換算，不存。App 端獨有的欄位（collector 讀 config 時忽略，見下面 PortalSession 的說明）。
+	// inkstone/arcrun-rag#389：以前「開啟知識庫網頁」一律用 https://＋API 位址換算，私有雲會開到 https://主機:8081。
+	PortalURL    string   `json:"portal_url,omitempty"`
 	Namespace    string   `json:"namespace"`
 	APIKey       string   `json:"api_key,omitempty"`
 	WatchFolders []string `json:"watch_folders,omitempty"`
@@ -342,6 +346,8 @@ type UIFolder struct {
 type UIAccount struct {
 	Name    string     `json:"name"`
 	Host    string     `json:"host"`
+	// PortalURL＝私有雲帳號的網頁網址（雲端帳號空字串，畫面照舊用網址規則換算）。inkstone/arcrun-rag#389
+	PortalURL string `json:"portalUrl,omitempty"`
 	Folders []UIFolder `json:"folders"`
 	// t215（2026-08-08，leo：「在每個知識庫上顯示是否要更新，如果要，加開啓 install 頁的
 	// 連結」）——一個使用者可能連著不只一個知識庫，之前只有小幫手自己的版本會提示更新，
@@ -828,7 +834,7 @@ func (a *App) GetState() UIState {
 	qn := pickQuotaNotice(sync, time.Now())
 	reports := loadStallReports()
 	for i, acc := range cfg.Accounts {
-		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email}
+		ui := UIAccount{Name: accountName(acc), Host: shortHost(acc.CypherURL), Email: acc.Email, PortalURL: acc.PortalURL}
 		var folderP []collector.SyncProgress
 		var folderKnown []bool
 		for _, f := range acc.WatchFolders {

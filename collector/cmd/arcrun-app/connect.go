@@ -34,6 +34,10 @@ type daemonConfigResp struct {
 	Success bool         `json:"success"`
 	Config  daemonConfig `json:"config"`
 	Error   string       `json:"error"`
+	// reached＝這次實際連得通的 API 位址（不是伺服器自己說的）。inkstone/arcrun-rag#389：
+	// 伺服器若把自己的對外網址存成 127.0.0.1（地端精靈填錯），回給小幫手的 cypher_url 也是 127.0.0.1，
+	// 小幫手就會連到「同仁自己的電腦」。有了這欄就能用「剛剛連得通的那個位址」把它換回來。
+	reached string
 }
 
 // normalizePortalURL 把用戶貼的東西變成可打的 origin。
@@ -78,12 +82,14 @@ func fetchConfigByLogin(portalURL, email, password string) (*daemonConfigResp, e
 	if err != nil {
 		return nil, err
 	}
+	reached := base
 	if out == nil && (status == 0 || status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusOK) {
 		if api := discoverAPIBase(base); api != "" && api != base {
 			out, status, err = postDaemonConfig(api, email, password)
 			if err != nil {
 				return nil, err
 			}
+			reached = api
 		}
 	}
 	if out == nil {
@@ -98,6 +104,8 @@ func fetchConfigByLogin(portalURL, email, password string) (*daemonConfigResp, e
 		}
 		return nil, errors.New("連線失敗，請稍後再試一次")
 	}
+	out.reached = reached
+	out.Config.CypherURL = fixLoopbackURL(out.Config.CypherURL, reached)
 	return out, nil
 }
 
@@ -121,7 +129,33 @@ func postDaemonConfig(base, email, password string) (*daemonConfigResp, int, err
 	return &out, res.StatusCode, nil
 }
 
-var apiBaseInConfigJS = regexp.MustCompile(`apiBase\s*:\s*["']([^"']+)["']`)
+var apiBaseInConfigJS = regexp.MustCompile(`["']?apiBase["']?\s*:\s*["']([^"']+)["']`)
+
+// fixLoopbackURL：伺服器回的位址是 localhost／127.0.0.1／0.0.0.0，而我們連得通的位址不是 ⇒ 伺服器存錯了對外網址
+// （大前試裝 7b：精靈在 server 本機開，網址存成 127.0.0.1），同仁電腦上的 127.0.0.1 是他自己，永遠連不到。
+// 把主機換成「剛剛連得通的那個」，埠與協定沿用伺服器說的（網頁 :8080／API :8081 這類不同埠才不會弄混）。
+// 兩邊都不是回送位址、或我們連的本來就是回送位址（同一台機器上試）＝原樣不動。
+func fixLoopbackURL(got, reached string) string {
+	g, err1 := neturl.Parse(strings.TrimSpace(got))
+	r, err2 := neturl.Parse(strings.TrimSpace(reached))
+	if err1 != nil || err2 != nil || g.Host == "" || r.Host == "" || !isLoopbackHost(g.Hostname()) || isLoopbackHost(r.Hostname()) {
+		return got
+	}
+	host := r.Hostname()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if p := g.Port(); p != "" {
+		host += ":" + p
+	}
+	g.Host = host
+	return strings.TrimRight(g.String(), "/")
+}
+
+func isLoopbackHost(h string) bool {
+	h = strings.ToLower(strings.Trim(h, "[]"))
+	return h == "localhost" || h == "::1" || h == "::" || h == "0.0.0.0" || strings.HasPrefix(h, "127.")
+}
 
 // discoverAPIBase 讀 portal 的 `/config.js`（安裝器／私有雲映像檔注入的 `apiBase`）。找不到回 ""。
 func discoverAPIBase(base string) string {
@@ -142,7 +176,8 @@ func discoverAPIBase(base string) string {
 	if err != nil {
 		return ""
 	}
-	return api
+	// 網頁的 /config.js 若寫著 127.0.0.1（伺服器存錯），換成我們打進來的那台主機（#389）
+	return fixLoopbackURL(api, base)
 }
 
 // Connect 是前端「連線」按鈕的入口：帳密換設定 → append 成新帳號（或更新既有同實例帳號）。
@@ -154,12 +189,21 @@ func (a *App) Connect(portalURL, email, password string) error {
 		return err
 	}
 	cfg, _ := loadCfg()
+	// 用戶貼的是網頁網址、而實際連到的 API 是另一個位址（私有雲網頁與 API 不同埠）⇒ 記下網頁網址，
+	// 「開啟知識庫網頁」才開得對（inkstone/arcrun-rag#389）。貼的就是 API 位址時不知道網頁在哪，留空。
+	webURL := ""
+	if typed, err := normalizePortalURL(portalURL); err == nil && typed != r.reached {
+		webURL = typed
+	}
 
 	newHost := hostOf(r.Config.CypherURL)
 	for i := range cfg.Accounts {
 		if hostOf(cfg.Accounts[i].CypherURL) == newHost {
 			// 同一個實例＝更新連線資訊，**保留既有 watch_folders**（改密碼不該清掉資料夾）
 			cfg.Accounts[i].CypherURL = r.Config.CypherURL
+			if webURL != "" {
+				cfg.Accounts[i].PortalURL = webURL
+			}
 			cfg.Accounts[i].Namespace = r.Config.Namespace
 			cfg.Accounts[i].APIKey = r.Config.Namespace
 			if r.Config.KbdbKey != "" { // 舊雲端不回這欄：不要把已存的憑證洗成空
@@ -181,6 +225,7 @@ func (a *App) Connect(portalURL, email, password string) error {
 		InstanceName: r.Config.InstanceName,
 		Email:        r.Config.Email,
 		CypherURL:    r.Config.CypherURL,
+		PortalURL:    webURL,
 		Namespace:    r.Config.Namespace,
 		APIKey:       r.Config.Namespace,
 		KbdbKey:      r.Config.KbdbKey,

@@ -1,8 +1,8 @@
-出貨報告　release 1.4.295／小幫手 0.18.124／安裝器 1.0.106　共 29 站（上次（1.4.294／小幫手 0.18.124／安裝器 1.0.106）29 站　無增減）
-來源（stage）＝Arcrun@c07f423184f2　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.296／小幫手 0.18.124／安裝器 1.0.106　共 29 站（上次（1.4.295／小幫手 0.18.124／安裝器 1.0.106）29 站　無增減）
+來源（stage）＝Arcrun@ff655d248683　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝c07f423184f2；這版多帶 1 筆，票：inkstone/Arcrun#506
+🧾 stage 佇列：上一顆（線上當時）＝ff655d248683；這版多帶 1 筆，票：inkstone/Arcrun#510
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |
@@ -44,8 +44,8 @@
    · stage｜visa-gate：stage 沒宣告 visaGate（不是 prod）：測試版不查簽證
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
-   · stage｜pin：釘子沒動（built 2026-11-23）；安裝器原始碼指紋 b54d35f4bccf（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.295／pin ab6bb39／安裝器原始碼 b54d35f4bccf 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜pin：釘子沒動（built 2026-11-24）；安裝器原始碼指紋 b54d35f4bccf（烙在 version.mjs，不寫這裡）
+   · stage｜deploy：線上已是 1.4.296／pin 2803082／安裝器原始碼 b54d35f4bccf 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜release-record：⏭ 內部版本物件｜安裝器 1.0.106 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.106
    · stage｜prod-record：不是 prod 目標：不寫 prod 現況
 
