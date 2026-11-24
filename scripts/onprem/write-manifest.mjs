@@ -35,6 +35,7 @@ if (process.argv[2] === '--check') {
     by_entry_type: by, vectors: vecs,
     user_version: db.prepare('PRAGMA user_version').get().user_version,
     filter: JSON.parse(fs.readFileSync(`${o}/filter.json`, 'utf8')),
+    ...(fs.existsSync(`${o}/scrub.json`) ? { scrub: JSON.parse(fs.readFileSync(`${o}/scrub.json`, 'utf8')) } : {}),
     sha256: { 'kbdb.sqlite': sha(`${o}/kbdb.sqlite`), 'vectors.sqlite': sha(`${o}/vectors.sqlite`) },
   };
   fs.writeFileSync(`${o}/MANIFEST.json`, JSON.stringify(m, null, 2));

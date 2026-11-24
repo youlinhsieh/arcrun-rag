@@ -616,6 +616,12 @@ func (c *DirectConfig) postJSONAs(step callStep, url string, body any, retry boo
 		//    而那串原文會帶著上游寫死的「修復: 編輯 credentials.yaml…」一起印到使用者畫面上
 		//    ——一句叫他去修一個沒壞的東西的指示。認得出來就換成人話（見 triggeroutcome.go）；
 		//    認不出來才保留原本的技術字串（額度／401 那些路徑另有判準在讀它）。
+		if msg := memberACLSentence(resp.StatusCode, string(full)); msg != "" { // #390：庫歸屬／權限擋下
+			return resp.StatusCode, string(snippet), &triggerFailure{
+				sentence: msg,
+				raw:      fmt.Sprintf("HTTP %d：%s", resp.StatusCode, strings.TrimSpace(string(snippet))),
+			}
+		}
 		if msg := triggerRejectedSentence(string(full), c.credentialDirectoryProbe()); msg != "" {
 			return resp.StatusCode, string(snippet), &triggerFailure{
 				sentence: msg,
@@ -3023,6 +3029,8 @@ func runDirect(args []string) int {
 	if *strict {
 		cfg.LintStrict = true // CLI 旗標覆蓋 config
 	}
+	// #390：連在公司那台的一般同仁，把整台租戶金鑰換成綁本人的憑證（換不到不擋啟動）。
+	upgradeMemberKeys(cfg, *configPath)
 	// #201：每一次被算進斷路器的失敗，當下就印一行帶時間的紀錄進 collector.log。
 	routeFailureLog = announceRouteFailure
 

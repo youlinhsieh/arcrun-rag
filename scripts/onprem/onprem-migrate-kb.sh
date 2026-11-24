@@ -65,6 +65,10 @@ do_export() {
   say "2/4 拿掉來源自己的營運資料（只動複本）"
   node --no-warnings "$HERE/filter-snapshot.mjs" "$OUT/kbdb.sqlite" > "$OUT/filter.json"; cat "$OUT/filter.json"
 
+  say "2b/4 洗掉原廠機器名（出處行與 metadata；只動複本，inkstone/arcrun-rag#389）"
+  node --no-warnings "$HERE/scrub-snapshot.mjs" "$OUT/kbdb.sqlite" > "$OUT/scrub.json" || { cat "$OUT/scrub.json"; die "機器名沒洗乾淨，看 $OUT/scrub.json"; }
+  cat "$OUT/scrub.json"
+
   say "3/4 Vectorize → 向量檔"
   rm -f "$OUT/vectors.sqlite" "$OUT/vectors.jsonl"
   CF_ACCOUNT="$ACCOUNT" CF_TOKEN="$CLOUDFLARE_API_TOKEN" INDEX="$VEC" OUT="$OUT/vectors.jsonl" node "$HERE/vec-export.mjs" | tail -1

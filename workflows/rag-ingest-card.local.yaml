@@ -1007,6 +1007,7 @@ config:
     input:
       card: "{{input.card_content}}"
       page_name: "{{input.page_name}}"
+      library: "{{input.library}}"
       rel_offset: "{{prep.data.rel_offset}}"
       rel_limit: "{{prep.data.rel_limit}}"
     code: |
@@ -1060,7 +1061,11 @@ config:
         if (descOf[order[n]]) it.description = descOf[order[n]];
         items.push(it);
       }
-      return { success: true, items: items, item_count: items.length, truncated: order.length - items.length, page_name: pageName };
+      // inkstone/arcrun-rag#391：受限庫的卡萃出的實體歸那張卡的庫。沒帶庫（或模板沒代入）＝空字串，
+      // KBDB 當「沒給 library」＝從前的行為（歸 general），所以一般庫收卡不變。
+      var rawLib = input.library;
+      var entityLibrary = (rawLib == null || unresolvedTpl(rawLib)) ? '' : String(rawLib).trim();
+      return { success: true, items: items, item_count: items.length, truncated: order.length - items.length, page_name: pageName, library: entityLibrary };
     limits:
       timeout_ms: 2000
       max_output_bytes: 65536
@@ -1076,6 +1081,7 @@ config:
     body_json:
       owner_id: "__NAMESPACE__"
       items: "{{prep_entity_resolve.data.items}}"
+      library: "{{prep_entity_resolve.data.library}}"
 
   # 純吸收節點：舊版 KBDB 沒有 /entities/resolve（404）、額度用完（429）、網路失敗——
   # 這條分支沒發生，卡片本身早在 parse_card 那兩條 FOREACH 寫完，不波及外層 success。

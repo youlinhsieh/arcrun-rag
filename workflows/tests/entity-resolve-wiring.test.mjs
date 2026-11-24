@@ -97,3 +97,22 @@ for (const f of ['installer/src/workflows.json', 'installer/oauth-prototype/work
       assert.ok(ids.includes(n), '預編圖缺節點 ' + n);
   });
 }
+
+// inkstone/arcrun-rag#391：受限庫的卡萃出的實體歸那張卡的庫（別庫沒授權的人搜不到實體詞條）。
+test('庫：resolve 請求帶 library；卡有庫就帶庫，沒庫＝空字串（KBDB 當沒給，一般庫不變）', () => {
+  const blk = y.match(/  resolve_entities:[\s\S]*?(?=\n  #|\n  [a-z_]+:)/)[0];
+  assert.match(blk, /library: "\{\{prep_entity_resolve\.data\.library\}\}"/);
+  assert.match(y.match(/  prep_entity_resolve:[\s\S]*?code: \|/)[0], /library: "\{\{input\.library\}\}"/);
+  const base = { card: CARD, page_name: '黃仁勳', rel_offset: 0, rel_limit: 0 };
+  assert.equal(prep({ ...base, library: 'sales-docs' }).library, 'sales-docs');
+  assert.equal(prep({ ...base, library: '  sales-docs ' }).library, 'sales-docs');
+  assert.equal(prep({ ...base }).library, '');
+  assert.equal(prep({ ...base, library: '' }).library, '');
+  assert.equal(prep({ ...base, library: '{{input.library}}' }).library, '');
+});
+
+test('庫：預編圖（workflows.json）也帶 library', () => {
+  const wf = JSON.parse(read('installer/src/workflows.json')).find((w) => w.name === 'rag_ingest_card');
+  const cfg = wf.config.resolve_entities;
+  assert.equal((cfg.body_json ?? cfg.body).library, '{{prep_entity_resolve.data.library}}');
+});
