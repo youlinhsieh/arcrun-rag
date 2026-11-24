@@ -10,6 +10,8 @@ on:
     paths: ['ci/msix-probe/**', '.github/workflows/msix-launch-probe.yml', 'collector/cmd/arcrun-app/**']
 env:
   APP_VERSION: '0.18.125'
+  # Windows 的 Python 預設用 cp1252 讀檔，CHANGELOG 是 UTF-8 ⇒ 第五輪 run 45341373211 在版本檢查就死掉
+  PYTHONUTF8: '1'
 jobs:
   probe:
     runs-on: windows-latest
@@ -41,7 +43,8 @@ jobs:
         shell: pwsh
         working-directory: collector/cmd/arcrun-app
         run: |
-          $ld = "-X main.version=$env:APP_VERSION -X arcrun-rag/collector.version=$env:APP_VERSION"
+          $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ld = "-X main.version=$env:APP_VERSION -X main.buildTime=$bt -X arcrun-rag/collector.version=$env:APP_VERSION -X arcrun-rag/collector.buildTime=$bt"
           wails build -platform windows/amd64 -clean -ldflags "$ld"
           if (-not (Test-Path build/bin/arcrun-app.exe)) { throw 'build failed' }
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\exe" | Out-Null
