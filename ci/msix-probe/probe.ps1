@@ -1,6 +1,6 @@
 # probe.ps1 — 在 Windows runner 上側載一顆 msix、照使用者的路啟動、收當機證據
 # 票：inkstone/arcrun-rag#387（Store 審核 10.1.2.10「啟動即當」）
-param([string]$Msix, [string]$Out, [int]$WaitSec = 45)
+param([string]$Msix, [string]$Out, [int]$WaitSec = 45, [string]$ExpectVersion = '')
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 function Log($m) { $line = "$(Get-Date -Format o)  $m"; Write-Host $line; Add-Content -Path "$Out\probe.log" -Value $line }
@@ -124,6 +124,20 @@ if (Test-Path $pkgData) { Get-ChildItem $pkgData -Recurse -Force -Depth 4 -Error
 if (Test-Path "$env:USERPROFILE\.arcrun-rag") { Get-ChildItem "$env:USERPROFILE\.arcrun-rag" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | Select-Object FullName, Length | Out-File "$Out\home-arcrun-tree.txt" -Width 400 }
 Get-ChildItem "$env:APPDATA" -Directory -Filter 'Arcrun*' -ErrorAction SilentlyContinue | ForEach-Object { Log "APPDATA has $($_.FullName)" }
 Get-ChildItem "$env:USERPROFILE\.arcrun-rag\*.log" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$Out\applog-$($_.Name)"; Log "---- $($_.Name)"; Get-Content $_.FullName -Tail 40 | ForEach-Object { Log "  $_" } }
+
+# 7) 首次啟動紀錄檢查（#387 第五輪）：全新環境第一次啟動就要有 app.log，且記到「啟動」與「視窗已建立」
+if ($ExpectVersion) {
+  $al = "$env:USERPROFILE\.arcrun-rag\app.log"
+  if (-not (Test-Path $al)) { Log "APPLOG-CHECK FAIL: $al 不存在" }
+  else {
+    $txt = Get-Content $al -Raw -Encoding UTF8
+    $first = (Get-Content $al -Encoding UTF8 | Select-Object -First 1)
+    Log "APPLOG first line: $first"
+    foreach ($need in @("啟動 Arcrun $ExpectVersion", 'Microsoft Store 套件內＝true', 'WebView2：', '視窗已建立', '畫面載入完成')) {
+      if ($txt.Contains($need)) { Log "APPLOG-CHECK PASS: 有「$need」" } else { Log "APPLOG-CHECK FAIL: 缺「$need」" }
+    }
+  }
+}
 
 Log "RESULT A_store_path_alive=$aliveA B_in_package_alive=$aliveB C_bare_alive=$aliveC"
 Set-Content "$Out\result.txt" "A=$aliveA B=$aliveB C=$aliveC"

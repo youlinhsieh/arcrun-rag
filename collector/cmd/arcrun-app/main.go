@@ -60,6 +60,16 @@ func main() {
 		os.Exit(collector.Run(os.Args[2:]))
 	}
 
+	// 🔴 inkstone/arcrun-rag#387：先留啟動紀錄、並讓 panic 也留下堆疊（見 bootlog.go）。
+	//    放在 collector 分派之後——子行程模式有自己的 log，不要把每輪同步都寫成一次「啟動」。
+	defer func() {
+		if r := recover(); r != nil {
+			logBootPanic(r)
+			os.Exit(2)
+		}
+	}()
+	bootTrace()
+
 	// 清掉上一輪 Windows 自我更新留下的 `<exe>.old`（見 selfupdate.go cleanupOldExe）。
 	// 必須在這裡（新行程剛啟動、舊行程已結束）才刪得掉；Mac 上是 no-op。
 	cleanupOldExe()
@@ -111,6 +121,7 @@ func main() {
 		Mac: &mac.Options{},
 		OnStartup: func(ctx wailsCtx) {
 			app.startup(ctx)
+			appLog("視窗已建立（OnStartup）")
 			// 🔴 必須在 NSApp 起來之後才切 Accessory——Wails 在
 			//    applicationWillFinishLaunching 硬設 Regular，會蓋掉 Info.plist 的
 			//    LSUIElement。詳見 dock_darwin.go（取回 604704a 的原版）。
@@ -146,6 +157,7 @@ func main() {
 			wruntime.WindowHide(ctx)
 			return true // true＝攔下關閉（按 × 只是收起來）
 		},
+		OnDomReady:        func(ctx wailsCtx) { appLog("畫面載入完成（OnDomReady）") },
 		HideWindowOnClose: true,
 		// Dock 不出現 icon：Wails v2.13 的 mac.ActivationPolicy 還沒開放（原始碼裡是註解掉的），
 		// 而 Info.plist 的 LSUIElement **會被 Wails 啟動時的 Regular policy 蓋掉**
@@ -155,7 +167,11 @@ func main() {
 	})
 	if err != nil {
 		println("Error:", err.Error())
+		// Windows 的 GUI 程式沒有主控台，上面那行 println 哪裡都看不到。
+		appLog("🔴 wails.Run 失敗：%v", err)
+		return
 	}
+	appLog("Arcrun 正常結束")
 }
 
 // screenFraction 是預設視窗佔螢幕長寬的比例。

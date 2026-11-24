@@ -1,33 +1,98 @@
 name: msix-launch-probe
-# inkstone/arcrun-rag#387：Store 審核「啟動即當」的重現與驗證。
+# inkstone/arcrun-rag#387：Store 審核「啟動即當」——第五輪：驗 0.18.125（首次啟動就留 app.log）。
+# 在 Windows 上從原始碼編 0.18.125、用送審那顆的 manifest（Identity 不進 repo，取自 a-submitted-0.18.120.msix）
+# 重打 msix，側載後走 probe.ps1（三種開法＋首次啟動紀錄檢查）與 round2.ps1（WACK＋Defender）。
 # 只在這條分支推送／手動時跑，不碰其他 repo、不 fan-out、沒有排程。
 on:
   workflow_dispatch:
   push:
     branches: [claude/project-thread-muh91u]
-    paths: ['ci/msix-probe/**', '.github/workflows/msix-launch-probe.yml']
+    paths: ['ci/msix-probe/**', '.github/workflows/msix-launch-probe.yml', 'collector/cmd/arcrun-app/**']
+env:
+  APP_VERSION: '0.18.125'
 jobs:
   probe:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: collector/cmd/arcrun-app/go.mod
+          cache-dependency-path: collector/cmd/arcrun-app/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - name: Check version matches source
+        shell: bash
+        run: |
+          v="$(python3 collector/cmd/arcrun-app/daemon-version.py)"
+          echo "daemon-version.py => $v"
+          test "$v" = "$APP_VERSION"
+      - name: Unit tests (first-run app.log)
+        shell: pwsh
+        working-directory: collector/cmd/arcrun-app
+        run: |
+          cd frontend; npm ci --silent; npm run build; cd ..
+          go test -run 'TestAppLog|TestLogBoot|Store' .
+      - name: Build exe
+        shell: pwsh
+        working-directory: collector/cmd/arcrun-app
+        run: |
+          $ld = "-X main.version=$env:APP_VERSION -X arcrun-rag/collector.version=$env:APP_VERSION"
+          wails build -platform windows/amd64 -clean -ldflags "$ld"
+          if (-not (Test-Path build/bin/arcrun-app.exe)) { throw 'build failed' }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\exe" | Out-Null
+          Copy-Item build/bin/arcrun-app.exe "$env:RUNNER_TEMP\exe\new.exe"
+          Write-Host "exe sha256 $((Get-FileHash build/bin/arcrun-app.exe).Hash)"
+      - name: Repack msix (same manifest as submitted, version bumped)
+        shell: pwsh
+        run: |
+          $makeappx = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $d = "$env:RUNNER_TEMP\pack"; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
+          [IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path ci/msix-probe/a-submitted-0.18.120.msix), $d)
+          Remove-Item "$d\AppxBlockMap.xml" -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$d\[Content_Types].xml" -Force -ErrorAction SilentlyContinue
+          Copy-Item "$env:RUNNER_TEMP\exe\new.exe" "$d\Arcrun.exe" -Force
+          $m = Get-Content "$d\AppxManifest.xml" -Raw
+          $m = $m -replace 'Version="0\.18\.120\.0"', "Version=`"$env:APP_VERSION.0`""
+          Set-Content "$d\AppxManifest.xml" $m -NoNewline
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\store" | Out-Null
+          $out = "$env:RUNNER_TEMP\store\Arcrun-$env:APP_VERSION-store.msix"
+          & $makeappx pack /o /d $d /p $out
+          if (-not (Test-Path $out)) { throw 'makeappx failed' }
+          Write-Host "MSIX $out"
+          Write-Host "MSIX sha256 $((Get-FileHash $out).Hash)"
+          Write-Host "MSIX size $((Get-Item $out).Length)"
+          Select-String -Path "$d\AppxManifest.xml" -Pattern '<Identity' | ForEach-Object { Write-Host ($_.Line -replace 'Name="[^"]*"','Name="…"' -replace 'Publisher="[^"]*"','Publisher="…"') }
+          Copy-Item $out "ci\msix-probe\new-$env:APP_VERSION.msix"
       - name: Enable sideloading
         shell: pwsh
         run: |
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowAllTrustedApps" /d "1"
-      - name: Probe each msix
+      - name: Probe new msix (fresh machine => first launch)
         shell: pwsh
         run: |
-          $m = Get-Item ci/msix-probe/a-submitted-0.18.120.msix
-          Write-Host "===================== ROUND3 $($m.Name) ====================="
-          & ./ci/msix-probe/round3.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\r3"
+          $m = Get-Item "ci/msix-probe/new-$env:APP_VERSION.msix"
+          Write-Host "===================== PROBE $($m.Name) ====================="
+          & ./ci/msix-probe/probe.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\probe" -ExpectVersion $env:APP_VERSION
+          Write-Host "===================== ROUND2 (WACK + Defender) ====================="
+          & ./ci/msix-probe/round2.ps1 -Msix $m.FullName -Out "$env:RUNNER_TEMP\out\r2"
           Write-Host "===================== SUMMARY ====================="
           Get-ChildItem "$env:RUNNER_TEMP\out" -Recurse -Filter result.txt | ForEach-Object { Write-Host "$($_.Directory.Name): $(Get-Content $_.FullName)" }
+          Get-ChildItem "$env:RUNNER_TEMP\out" -Recurse -Filter *.log | ForEach-Object { Select-String -Path $_.FullName -Pattern 'APPLOG|WACK OVERALL|mpcmdrun exit|ALIVE|EXITED' | ForEach-Object { Write-Host $_.Line } }
           Get-ChildItem "$env:RUNNER_TEMP\out" -Recurse -Filter events-application.txt | ForEach-Object { Write-Host "---- $($_.FullName)"; Get-Content $_.FullName | Select-Object -First 80 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: probe-out
           path: ${{ runner.temp }}/out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: store-msix
+          path: ${{ runner.temp }}/store/Arcrun-*-store.msix
