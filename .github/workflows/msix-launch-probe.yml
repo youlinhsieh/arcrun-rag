@@ -38,7 +38,7 @@ jobs:
         working-directory: collector/cmd/arcrun-app
         run: |
           cd frontend; npm ci --silent; npm run build; cd ..
-          go test -run 'TestAppLog|TestLogBoot|Store' .
+          go test -run 'TestAppLog|TestLogBoot|TestIncludeFolder' .
       - name: Build exe
         shell: pwsh
         working-directory: collector/cmd/arcrun-app
