@@ -46,10 +46,12 @@ export async function readAhubStage({ fetchImpl, token }) {
 const norm = (v) => String(v || '').replace(/^[vV]/, '');
 
 /**
- * @param {{ledger:{releases:object}, release:string, fingerprint:string, commit:string, ahubStage?:{known:boolean,version?:string,commit?:string,reason?:string}}} o
+ * @param {{ledger:{releases:object}, release:string, fingerprint:string, commit:string, ahubStage?:{known:boolean,version?:string,commit?:string,reason?:string}, isAncestor?:(older:string, newer:string)=>boolean|null}} o
+ *   isAncestor（inkstone/arcrun-rag#331）：給了才啟用「指紋相同但來源 commit 不同」那一關——
+ *   舊 commit 是新 commit 的祖先（同一條線往前走）⇒ 放行；不是祖先（兩條線分岔／倒退）或查不出來（null）⇒ 擋。
  * @returns {{ok:boolean, message:string}}
  */
-export function checkSameVersion({ ledger, release, fingerprint, commit, ahubStage }) {
+export function checkSameVersion({ ledger, release, fingerprint, commit, ahubStage, isAncestor }) {
   const prev = ledger && ledger.releases && ledger.releases[release];
   if (prev && prev.fingerprint && fingerprint && prev.fingerprint !== fingerprint) {
     return { ok: false, message:
@@ -58,6 +60,17 @@ export function checkSameVersion({ ledger, release, fingerprint, commit, ahubSta
       `     同一個版號不能換成另一包——使用者與簽核人看到的是版號。在任何部署、推送、寫 AHub 之前擋下。\n` +
       `     → 通常是這份 checkout 的 installer/release-state.json 落後（別條線已經出過新版）：先取得 main 最新再出；` +
       `不要手改出貨紀錄或版號。` };
+  }
+  if (prev && prev.fingerprint && fingerprint && prev.fingerprint === fingerprint
+      && prev.commit && commit && prev.commit !== commit && typeof isAncestor === 'function') {
+    const anc = isAncestor(prev.commit, commit);
+    if (anc !== true) {
+      return { ok: false, message:
+        `版號 ${release} 出貨紀錄記的來源是 Arcrun@${String(prev.commit).slice(0, 12)}，這次來自 Arcrun@${String(commit).slice(0, 12)}，` +
+        `內容指紋雖然一樣，但${anc === false ? '前者不是後者的祖先（兩條線分岔，或這次的來源比紀錄的還舊）' : '這份 checkout 查不到前者（沒辦法確認是同一條線）'}。\n` +
+        `     同一個版號只能對應同一條線上的來源 ⇒ 擋下，不讓版本號說謊（inkstone/arcrun-rag#331）。\n` +
+        `     → 先把 Arcrun main 與出貨紀錄（git pull／git fetch）取到最新；來源在紀錄那顆之後的同一條線上、內容指紋也沒變，就會原樣放行。` };
+    }
   }
   const a = ahubStage;
   if (a && a.known && norm(a.version) === norm(release) && a.commit && commit && a.commit !== commit && !prev) {
@@ -68,4 +81,46 @@ export function checkSameVersion({ ledger, release, fingerprint, commit, ahubSta
   }
   const how = a && a.known ? `AHub stage 現況 ${a.version}` : `AHub stage 現況沒查到（${(a && a.reason) || '未查'}）`;
   return { ok: true, message: `同版號查核通過：${release} ${prev ? '出貨紀錄已有、內容指紋一致' : '出貨紀錄沒有這一版（新版號）'}；${how}` };
+}
+
+/**
+ * 遠端 bundle repo 上的「號碼預留」（inkstone/arcrun-rag#331）：推之前看遠端已經有沒有 `ship <版號>：…` 這個 commit，
+ * 有而且當時的 manifest 指紋跟這次不同 ⇒ 擋（別條線已經用掉這個號碼，且內容不一樣）。
+ * 為什麼要有這一關：出貨紀錄與 AHub stage 現況都是「出完才寫」，兩條線前後腳出貨時，
+ * 先出的那條還沒落帳、後出的那條就查不到——只有遠端 bundle repo 的歷史是推上去那一刻就有的。
+ * @param {{git:(args:string[])=>string, remoteRef:string, release:string}} o
+ * @returns {{known:boolean, entries:{sha:string, fingerprint:string, source:string}[], reason?:string}}
+ */
+export function readRemoteReservations({ git, remoteRef, release }) {
+  try {
+    git(['rev-parse', '--verify', '-q', remoteRef]);
+  } catch {
+    return { known: false, entries: [], reason: `本機沒有 ${remoteRef}` };
+  }
+  try {
+    const shas = git(['log', remoteRef, '-n', '20', `--grep=^ship ${release.replace(/\./g, '\\.')}：`, '--format=%H']).split('\n').map((x) => x.trim()).filter(Boolean);
+    const entries = [];
+    for (const sha of shas) {
+      let m = {};
+      try { m = JSON.parse(git(['show', `${sha}:manifest.json`])); } catch { /* 看不懂的 manifest：略過 */ }
+      if (m.release && norm(m.release) !== norm(release)) continue; // commit 訊息寫了這個號、manifest 卻是別的：不算預留
+      entries.push({ sha, fingerprint: String(m.fingerprint || ''), source: String(m.source || '') });
+    }
+    return { known: true, entries };
+  } catch (e) {
+    return { known: false, entries: [], reason: `讀遠端歷史失敗：${e && e.message ? e.message : e}` };
+  }
+}
+
+/** @returns {{ok:boolean, message:string}} */
+export function checkRemoteReservation({ release, fingerprint, remote }) {
+  if (!remote || !remote.known) return { ok: true, message: `遠端號碼預留沒查到（${(remote && remote.reason) || '未查'}）——出貨紀錄與 AHub 那兩關仍有效` };
+  const other = remote.entries.find((e) => e.fingerprint && fingerprint && e.fingerprint !== fingerprint);
+  if (other) {
+    return { ok: false, message:
+      `遠端 bundle repo 已經有一個 \`ship ${release}\` commit（${other.sha.slice(0, 7)}，${other.source || '來源不明'}），它的內容指紋是 ${other.fingerprint.slice(0, 12)}…，` +
+      `這次是 ${String(fingerprint).slice(0, 12)}…。\n     同一個版號不能換成另一包——別條線已經用掉 ${release}，擋在推送之前。\n` +
+      `     → 先把含那一版出貨紀錄的 main 取到最新（git pull）再重跑，這次會拿到下一個號碼；不要手改版號或出貨紀錄。` };
+  }
+  return { ok: true, message: `遠端號碼預留查核通過：${release} ${remote.entries.length ? '遠端已有同內容的出貨 commit' : '遠端還沒有人用過'}` };
 }

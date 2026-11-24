@@ -140,7 +140,7 @@ import { frontDoorStation } from './front-door.mjs';
 import { userPathUpdateStation, listWorkerSecretNames } from './user-path-update.mjs';
 import { ensureInstanceOnRelease, readInstanceHealth, commitFromManifestSource, findAcr, acrEnv, defaultRunAcr } from './instance-update.mjs';
 import { syncBundleClone } from './bundle-sync.mjs';
-import { readAhubStage, checkSameVersion } from './same-version-gate.mjs';
+import { readAhubStage, checkSameVersion, checkRemoteReservation, readRemoteReservations } from './same-version-gate.mjs';
 import { appsFeedFingerprint } from './apps-feed-fingerprint.mjs';
 import { recordStageShipment, probeStageRecordReady, stageRecordOutcome } from './stage-record.mjs';
 import { runVisaGate, checkTwoPart, alignDoneIntent } from './visa-gate.mjs';
@@ -2041,10 +2041,16 @@ const STEPS = [
   //   不等最後落帳（那時 stage 已換版、AHub 現況已寫）。簽好的舊版（ctx.signedEntry）本來就由紀錄決定，不重查。
   if (shared && !ctx.signedEntry) {
     const forgeSv = ticketForge();
+    // inkstone/arcrun-rag#331：指紋相同但來源 commit 不同時，要看舊來源是不是這次來源的祖先（同一條線）。
+    //   0＝是、1＝不是；其餘（本機沒有那顆 commit 等）＝查不出來 ⇒ null，閘會擋。
+    const sourceIsAncestor = (older, newer) => {
+      try { execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: ctx.arcrunRepo, stdio: 'ignore', timeout: 30_000 }); return true; }
+      catch (e) { return e && e.status === 1 ? false : null; }
+    };
     const ahubStage = (T.stageQueue && forgeSv.kind === 'ahub')
       ? await readAhubStage({ fetchImpl: forgeSv.fetchImpl, token: ticketToken('ahub') })
       : { known: false, reason: '本目標不寫 AHub stage 現況' };
-    const sv = checkSameVersion({ ledger: readLedger(REPO_ROOT), release, fingerprint: builtFingerprint, commit: ctx.arcrunHeadSha, ahubStage });
+    const sv = checkSameVersion({ ledger: readLedger(REPO_ROOT), release, fingerprint: builtFingerprint, commit: ctx.arcrunHeadSha, ahubStage, isAncestor: sourceIsAncestor });
     if (!sv.ok) throw new Error(sv.message);
     console.log(`   ${sv.message}`);
   }
@@ -2337,6 +2343,18 @@ const STEPS = [
     return onlyDist
       ? { status: 'done', detail: ['git 已與遠端同步，沒有要推的', ...onlyDist] }
       : { status: 'skip', detail: ['已與遠端同步，沒有要推的'] };
+  }
+  // inkstone/arcrun-rag#331：推之前看遠端 bundle repo 有沒有別條線用掉這個版號（內容指紋不同）。
+  //   出貨紀錄與 AHub stage 現況都是「出完才寫」，兩條線前後腳時後出的那條查不到；遠端歷史是推上去那刻就有的。
+  //   抓不到遠端 ⇒ 不擋、明說沒查到（那兩關仍有效）；擋下時整趟在任何東西推出去之前中止。
+  if (ctx.release && ctx.contentFingerprint && !ctx.signedEntry) {
+    try { sh('git', ['fetch', '-q', 'origin', T.bundles.branch], ctx.bundlesDir); } catch { /* 離線／大 repo 抓不動：用現有 ref，下面會講查到什麼 */ }
+    const rr = checkRemoteReservation({
+      release: ctx.release, fingerprint: ctx.contentFingerprint,
+      remote: readRemoteReservations({ git: (a) => sh('git', a, ctx.bundlesDir), remoteRef: `origin/${T.bundles.branch}`, release: ctx.release }),
+    });
+    if (!rr.ok) throw new Error(rr.message);
+    console.log(`     ${rr.message}`);
   }
   // 🔴 人閘（InkStoneCo#56）：產物倉庫的分支就是 `main`（登錄簿寫死）⇒ 這一行每次出貨
   //   都在推 main，而殼層那道閘看不見它。這裡不做例外——**declared 的目的地也是目的地**，

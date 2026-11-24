@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkSameVersion, readAhubStage, stageFromResponse } from './same-version-gate.mjs';
+import { checkSameVersion, readAhubStage, stageFromResponse, readRemoteReservations, checkRemoteReservation } from './same-version-gate.mjs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const FP_A = 'a'.repeat(64); const FP_B = 'b'.repeat(64);
 const C1 = '1'.repeat(40); const C2 = '2'.repeat(40);
@@ -71,4 +74,53 @@ test('接線：ship.mjs 的 version 站在 verifyManifest 之前呼叫；且早�
   assert.ok(iCheck > 0, 'ship.mjs 沒呼叫 checkSameVersion');
   assert.ok(iCheck < iVerify && iVerify < iStageRec, '順序要是 同版號查核 → manifest 機械閘 → … → stage-record 站');
   assert.match(src, /if \(!sv\.ok\) throw new Error\(sv\.message\)/);
+});
+
+// ── inkstone/arcrun-rag#331 ────────────────────────────────────────────────────────────
+const G = (cwd, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd, encoding: 'utf8' }).trim();
+
+test('#331 形狀一（11-18）：同版號、指紋相同、來源 commit 不同——同一條線往前走放行；分岔／倒退／查不到祖先 ⇒ 擋', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'svg-src-'));
+  G(repo, 'init', '-q', '-b', 'main');
+  writeFileSync(join(repo, 'a'), '1'); G(repo, 'add', '.'); G(repo, 'commit', '-q', '-m', 'c1'); const c1 = G(repo, 'rev-parse', 'HEAD');
+  writeFileSync(join(repo, 'a'), '2'); G(repo, 'commit', '-qam', 'c2'); const c2 = G(repo, 'rev-parse', 'HEAD');
+  G(repo, 'checkout', '-q', '-b', 'other', c1);
+  writeFileSync(join(repo, 'b'), 'x'); G(repo, 'add', '.'); G(repo, 'commit', '-q', '-m', 'o1'); const o1 = G(repo, 'rev-parse', 'HEAD');
+  const isAncestor = (older, newer) => {
+    try { execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: repo, stdio: 'ignore' }); return true; }
+    catch (e) { return e.status === 1 ? false : null; }
+  };
+  const led = { releases: { '1.4.246': { commit: c1, fingerprint: FP_A } } };
+  const run = (commit) => checkSameVersion({ ledger: led, release: '1.4.246', fingerprint: FP_A, commit, isAncestor });
+  assert.equal(run(c2).ok, true, '同一條線往前（c1 是 c2 的祖先）放行');
+  assert.equal(run(c1).ok, true, '同顆 commit 放行');
+  const fork = checkSameVersion({ ledger: { releases: { '1.4.246': { commit: c2, fingerprint: FP_A } } }, release: '1.4.246', fingerprint: FP_A, commit: o1, isAncestor }); assert.equal(fork.ok, false, '分岔（兩條線）擋'); assert.match(fork.message, /兩條線分岔/); assert.match(fork.message, /#331/);
+  const unknown = run('f'.repeat(40)); assert.equal(unknown.ok, false, '查不到這顆 commit 擋'); assert.match(unknown.message, /查不到前者/);
+  // 倒退：紀錄記 c2，這次來源是 c1
+  assert.equal(checkSameVersion({ ledger: { releases: { '1.4.246': { commit: c2, fingerprint: FP_A } } }, release: '1.4.246', fingerprint: FP_A, commit: c1, isAncestor }).ok, false);
+  // 沒給 isAncestor ＝ 舊行為（相容）
+  assert.equal(checkSameVersion({ ledger: { releases: { '1.4.246': { commit: c2, fingerprint: FP_A } } }, release: '1.4.246', fingerprint: FP_A, commit: o1 }).ok, true);
+});
+
+test('#331 形狀二（11-23）：兩條線前後腳，後出的在遠端 bundle repo 看到同版號、不同指紋 ⇒ 擋；同指紋重出 ⇒ 放行', () => {
+  const remote = mkdtempSync(join(tmpdir(), 'svg-remote-'));
+  G(remote, 'init', '-q', '--bare', '-b', 'main');
+  const clone = (n) => { const d = mkdtempSync(join(tmpdir(), `svg-${n}-`)); G(d, 'clone', '-q', remote, d); return d; };
+  const ship = (d, release, fp, src) => {
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify({ release, fingerprint: fp, source: src }));
+    G(d, 'add', '.'); G(d, 'commit', '-q', '-m', `ship ${release}：${src}`); G(d, 'push', '-q', 'origin', 'HEAD:main');
+  };
+  const lineA = clone('A'); const lineB = clone('B'); // 兩條線在同一個 main 上各自 clone（還沒人出貨）
+  ship(lineA, '1.4.292', FP_A, 'Arcrun@aaaaaaa');      // A 先出、還沒落帳進 arcrun-rag main
+  G(lineB, 'fetch', '-q', 'origin');                   // B 推之前抓遠端
+  const remoteRead = (d, release) => readRemoteReservations({ git: (a) => G(d, ...a), remoteRef: 'origin/main', release });
+  const blocked = checkRemoteReservation({ release: '1.4.292', fingerprint: FP_B, remote: remoteRead(lineB, '1.4.292') });
+  assert.equal(blocked.ok, false); assert.match(blocked.message, /已經有一個 `ship 1\.4\.292`/); assert.match(blocked.message, /下一個號碼/);
+  assert.equal(checkRemoteReservation({ release: '1.4.292', fingerprint: FP_A, remote: remoteRead(lineB, '1.4.292') }).ok, true, '同內容重出放行');
+  assert.equal(checkRemoteReservation({ release: '1.4.293', fingerprint: FP_B, remote: remoteRead(lineB, '1.4.293') }).ok, true, '新版號放行');
+  // 版號裡的點不是萬用字元：1.4.292 不會被 1x4y292 之類誤認（此處只驗不丟例外且不誤擋別的版號）
+  assert.equal(remoteRead(lineB, '1.4.29').entries.length, 0);
+  // 遠端讀不到 ⇒ 不擋、明說沒查到
+  const nb = checkRemoteReservation({ release: '1.4.292', fingerprint: FP_B, remote: readRemoteReservations({ git: (a) => G(lineB, ...a), remoteRef: 'origin/nope', release: '1.4.292' }) });
+  assert.equal(nb.ok, true); assert.match(nb.message, /沒查到/);
 });
