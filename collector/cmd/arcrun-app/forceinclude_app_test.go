@@ -13,6 +13,7 @@ import (
 func TestIncludeFolder_WritesStoreAndTriggersSync(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)            // appDir() 走 os.UserHomeDir()，Linux 上吃 $HOME
+	t.Setenv("USERPROFILE", home)     // Windows 上 UserHomeDir 吃 %USERPROFILE%（#387 第五輪在 Windows runner 撞到）
 	t.Setenv("XDG_CONFIG_HOME", home) // 保險：某些平台 UserHomeDir 會看它
 	appdir := filepath.Join(home, ".arcrun-rag")
 

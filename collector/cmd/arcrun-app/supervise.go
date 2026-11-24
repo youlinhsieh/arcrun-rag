@@ -88,6 +88,10 @@ func startSupervisor() {
 // appLog 把 App 層的關鍵事件寫進 ~/.arcrun-rag/app.log。
 // 沒有這個，「為什麼沒同步」就只能用猜的（leo 這次就卡在這）。
 func appLog(format string, args ...any) {
+	// 🔴 inkstone/arcrun-rag#387：資料夾不存在就先建。以前這裡直接開檔，全新用戶第一次啟動時
+	//    ~/.arcrun-rag 還不存在 ⇒ OpenFile 失敗 ⇒ 靜默 return ⇒ **第一次啟動什麼紀錄都沒有**。
+	//    Microsoft Store 審核回報「一開就當掉、錯誤訊息 NA」時，我們就是因此查不到任何證據。
+	_ = os.MkdirAll(appDir(), 0o755)
 	f, err := os.OpenFile(filepath.Join(appDir(), "app.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
