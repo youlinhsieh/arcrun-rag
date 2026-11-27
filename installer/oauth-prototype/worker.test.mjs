@@ -23,7 +23,7 @@ import worker, {
   resolveResourcesByRule,
   VECTORIZE_INDEX,
   MIGRATION_SQL,
-  deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, landingBase, resolveInstanceTenant, rememberTenant,
+  deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, ensureD1ReadReplication, landingBase, resolveInstanceTenant, rememberTenant,
   SERVICE_BINDINGS,
   reorderForServiceBindings,
   // inkstone/arcrun-rag#212：cron trigger（script API 不吃 wrangler.toml 的 [triggers]）
@@ -5755,8 +5755,10 @@ test('#325 placementRegionForD1：依 D1 區域換算，未知不猜', () => {
 test('#325 deployBundledWorker：arcrun-kbdb 的 metadata 帶讀回來的 D1 區域；其他 worker 不帶', async () => {
   const env = { BUNDLE_BASE: BASE };
   let meta = null;
+  const replicaCalls = [];
   const calls = installFetch(async (url, init) => {
     const method = (init.method || 'GET').toUpperCase();
+    if (method === 'PATCH' && /\/d1\/database\/db-1$/.test(url)) { replicaCalls.push('PATCH'); return cfOk({ read_replication: { mode: 'auto' } }); }
     if (method === 'GET' && /\/d1\/database\/db-1$/.test(url)) return cfOk({ running_in_region: 'WEUR' });
     if (method === 'PUT' && /\/workers\/scripts\/[^/]+$/.test(url)) {
       meta = JSON.parse(await init.body.get('metadata').text());
@@ -5771,7 +5773,11 @@ test('#325 deployBundledWorker：arcrun-kbdb 的 metadata 帶讀回來的 D1 區
     await deployBundledWorker(env, 'tok', 'acct-123', kbdb, { kv: {}, d1Id: 'db-1' }, baseInject);
     assert.deepEqual(meta.placement, { region: 'aws:eu-west-1' });
     await deployBundledWorker(env, 'tok', 'acct-123', baseEntry, baseResources, baseInject);
-    assert.equal('placement' in meta, false, '非 KBDB 的 worker 不帶 placement');
+    assert.equal('placement' in meta, false, '不在名單上的 worker 不帶 placement');
+    // inkstone/Arcrun#536 第五輪：引擎跟 KBDB 放同一區（同一顆 D1 算出來的值）
+    await deployBundledWorker(env, 'tok', 'acct-123', { ...baseEntry, name: 'arcrun-cypher-executor' }, baseResources, baseInject);
+    assert.deepEqual(meta.placement, { region: 'aws:eu-west-1' }, '引擎與 KBDB 同一區');
+    assert.ok(replicaCalls.some((c) => c === 'PATCH'), '引擎部署時也會確認／打開 D1 讀取副本（KBDB 沒動的版本也到得了舊實例）');
   } finally {
     restoreFetch();
   }
@@ -6039,4 +6045,73 @@ test('inkstone/Arcrun#501 帳號裡其餘 namespace 各綁一個 ARTIFACTS_NS_<�
   assert.deepEqual(extraArtifactsNsBindings(rows, 'InkStoneCo'), [{ type: 'artifacts', name: 'ARTIFACTS_NS_Leo', namespace: 'Leo' }]);
   assert.deepEqual(extraArtifactsNsBindings(['default', 'ns416b'], 'default'), [{ type: 'artifacts', name: 'ARTIFACTS_NS_ns416b', namespace: 'ns416b' }]);
   assert.deepEqual(extraArtifactsNsBindings(null, 'default'), []);
+});
+
+// ─── inkstone/Arcrun#536 第四輪：引擎→KBDB service binding 由 manifest requires.services 帶 ───
+const cypherEntry536 = {
+  name: 'arcrun-cypher-executor',
+  main_file: 'tier2/cypher/index.js',
+  main_module: 'index.js',
+  modules: [],
+  compat_date: '2024-11-27',
+  compat_flags: ['nodejs_compat'],
+  requires: { kv: [], d1: [], ai: false, vars: {}, services: [{ binding: 'KBDB', service: 'arcrun-kbdb' }] },
+  stripped_services: ['SVC_IF_CONTROL', 'SVC_SWITCH', 'SVC_WAIT'], // 13 個 SVC_* 是故意剝掉的（D28）
+};
+
+test('#536：manifest requires.services 的 KBDB 綁到引擎（目標在 bundle 裡），SVC_* 仍不綁', async () => {
+  const env = { BUNDLE_BASE: BASE };
+  const { captured } = installBundleFetch();
+  try {
+    const entry = reorderForServiceBindings({ core: [{ name: 'arcrun-kbdb' }, cypherEntry536] }).core.find((c) => c.name === 'arcrun-cypher-executor');
+    assert.deepEqual(entry.service_bindings, { KBDB: 'arcrun-kbdb' });
+    await deployBundledWorker(env, 'tok', 'acct', entry, { kv: {}, d1Id: 'db-1' }, mcpInject);
+    assert.deepEqual(servicesOf(captured()), { KBDB: 'arcrun-kbdb' });
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('#536：目標 worker 不在這包 bundle ⇒ 安靜不綁（引擎退回 HTTPS），不擋安裝', () => {
+  const out = reorderForServiceBindings({ core: [cypherEntry536] }).core[0];
+  assert.deepEqual(out.service_bindings, {});
+});
+
+test('#536：manifest 沒宣告 services 的引擎（舊 manifest）行為與以前完全一樣：不進 dependents、不綁', () => {
+  const old = { ...cypherEntry536, requires: { kv: [], d1: [], ai: false, vars: {} } };
+  delete old.service_bindings; // 前一條測試會把解析結果釘在共用的 cypherEntry536 上
+  const out = reorderForServiceBindings({ core: [old, { name: 'arcrun-kbdb' }] }).core;
+  assert.equal(out[0].name, 'arcrun-cypher-executor');
+  assert.equal(out[0].service_bindings, undefined);
+});
+
+// inkstone/Arcrun#536 第五輪：D1 讀取副本只在沒開時才開、失敗不擋
+test('#536 ensureD1ReadReplication：disabled → PATCH auto；已是 auto → 不寫；沒權限 → 回原因不丟錯', async () => {
+  const calls = [];
+  let mode = 'disabled', patchOk = true;
+  installFetch(async (url, init) => {
+    const method = (init.method || 'GET').toUpperCase();
+    calls.push(method);
+    if (/\/d1\/database\/db-1$/.test(url) && method === 'GET') return cfOk({ read_replication: { mode } });
+    if (/\/d1\/database\/db-1$/.test(url) && method === 'PATCH') {
+      if (!patchOk) return new Response('{"success":false,"errors":[{"message":"nope"}]}', { status: 403 });
+      assert.equal(init.body, JSON.stringify({ read_replication: { mode: 'auto' } }));
+      return cfOk({ read_replication: { mode: 'auto' } });
+    }
+    throw new Error('未預期的 URL：' + url);
+  });
+  try {
+    assert.equal((await ensureD1ReadReplication('tok', 'acct-123', 'db-1')).changed, true);
+    assert.deepEqual(calls, ['GET', 'PATCH']);
+    calls.length = 0; mode = 'auto';
+    assert.equal((await ensureD1ReadReplication('tok', 'acct-123', 'db-1')).changed, false);
+    assert.deepEqual(calls, ['GET'], '已是 auto 不寫');
+    mode = 'disabled'; patchOk = false;
+    const r = await ensureD1ReadReplication('tok', 'acct-123', 'db-1');
+    assert.equal(r.changed, false);
+    assert.ok(r.reason);
+    assert.equal((await ensureD1ReadReplication('tok', 'acct-123', '')).reason, 'no_d1_id');
+  } finally {
+    restoreFetch();
+  }
 });

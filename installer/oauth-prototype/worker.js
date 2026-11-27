@@ -300,7 +300,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@769a54ae7c0ebb088e40f7ec07eb7a94fba1c402';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@6236f00c91c6377641970f9beb34783cfcf1ba34';
 const BUNDLE_BUILT = '2026-11-27'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -2670,6 +2670,34 @@ const SERVICE_BINDINGS = {
 };
 
 /**
+ * inkstone/Arcrun#536 第四輪：manifest 的 `requires.services`（Arcrun 的 build-worker-artifacts.mjs 從 wrangler.toml 的
+ * `[[services]]` 抽出，已排除被剝掉的 `SVC_*`）＝「平台固定依賴」的 service binding，例：引擎 → KBDB。
+ * leo 2026-11-27 16:51：「如果它是不會變的東西，就可以用 service binding」——不會隨用戶的工作流改變，所以可以綁。
+ *
+ * 它們一律 optional：目標 worker 不在這包 bundle 裡就安靜不綁（引擎找不到 binding 會退回 HTTPS，行為不變），
+ * 不讓安裝為了一個效能優化失敗。上面那張白名單表仍然管「必要」的依賴（KBDB／CYPHER_EXECUTOR 對 MCP 是命脈）。
+ * 白名單裡已有的 binding 名以白名單為準（不被 manifest 覆蓋）。
+ */
+function manifestServiceSpec(entry) {
+  const rows = entry && entry.requires && entry.requires.services;
+  if (!Array.isArray(rows)) return null;
+  const out = {};
+  for (const r of rows) {
+    if (r && typeof r.binding === 'string' && typeof r.service === 'string' && r.binding && r.service) {
+      out[r.binding] = { service: r.service, optional: true };
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** 白名單（必要依賴）＋ manifest 宣告（選配依賴）合起來的 spec；兩邊都沒有＝null。 */
+function serviceSpecFor(entryName, extraSpec) {
+  const base = SERVICE_BINDINGS[entryName] || null;
+  if (!base && !extraSpec) return null;
+  return { ...(extraSpec || {}), ...(base || {}) };
+}
+
+/**
  * 這顆 worker 在**這包 manifest** 底下真正綁得起來的 service binding：{binding: 目標worker}。
  * 必要目標缺席＝丟 InstallError（fail-closed）；optional 目標缺席＝安靜不綁。
  *
@@ -2677,8 +2705,8 @@ const SERVICE_BINDINGS = {
  * 不是「這個帳號現在有什麼」——後者會讓 stage（youlin 帳號裡還留著上個世代的
  * `arcrun-registry`）驗到一條新用戶根本走不到的路，也就是又一次「測試場與出貨物不同」。
  */
-function resolveServiceBindings(entryName, names) {
-  const spec = SERVICE_BINDINGS[entryName];
+function resolveServiceBindings(entryName, names, extraSpec) {
+  const spec = serviceSpecFor(entryName, extraSpec);
   if (!spec) return null;
   const out = {};
   for (const [binding, def] of Object.entries(spec)) {
@@ -2811,7 +2839,7 @@ function reorderForServiceBindings(manifest) {
   const dependents = [];
   const rest = [];
   for (const entry of manifest.core) {
-    (SERVICE_BINDINGS[entry.name] ? dependents : rest).push(entry);
+    (SERVICE_BINDINGS[entry.name] || manifestServiceSpec(entry) ? dependents : rest).push(entry);
   }
   if (!dependents.length) return manifest;
   // 必要目標若根本不在這包 manifest 裡＝打包漏了，寧可當場失敗也不要裝出一顆呼叫即 500 的 worker。
@@ -2820,7 +2848,7 @@ function reorderForServiceBindings(manifest) {
   // 那就是兩套判準（這包有什麼 vs 這個帳號有什麼），必然漂移。一次解析、一個答案。
   const names = new Set(manifest.core.map((c) => c.name));
   for (const entry of dependents) {
-    entry.service_bindings = resolveServiceBindings(entry.name, names);
+    entry.service_bindings = resolveServiceBindings(entry.name, names, manifestServiceSpec(entry));
   }
   manifest.core = [...rest, ...dependents];
   return manifest;
@@ -3446,7 +3474,9 @@ export async function resolveInstanceTenant(token, accountId, emailTenant, kv) {
  *    所以每次部署都要帶。與 Arcrun 的 `acr update`（cli/src/lib/bundle-deploy.ts）同一張表、同一個判準。
  * 放置只是優化：任何一步查不到都回 null（維持 CF 預設），絕不擋住安裝。
  */
-const PLACEMENT_WORKERS = new Set(['arcrun-kbdb']);
+// inkstone/Arcrun#536 第五輪：引擎也放到同一區——引擎一次動作打 3～11 趟 KBDB，KBDB 在 D1 區、引擎在離呼叫端最近的 colo，
+// 每趟多付一次跨區來回（youlin 實測 ORD↔SIN 約 230 ms／趟）。與 `acr update`（Arcrun cli bundle-deploy.ts）同一張名單。
+const PLACEMENT_WORKERS = new Set(['arcrun-kbdb', 'arcrun-cypher-executor']);
 const D1_REGION_TO_PLACEMENT = {
   WNAM: 'aws:us-west-2',
   ENAM: 'aws:us-east-1',
@@ -3457,6 +3487,28 @@ const D1_REGION_TO_PLACEMENT = {
 };
 function placementRegionForD1(region) {
   return D1_REGION_TO_PLACEMENT[String(region || '').toUpperCase()] || null;
+}
+/**
+ * 把 KBDB 的 D1 打開讀取副本（inkstone/Arcrun#536 第五輪）。冪等（已是 auto 就不寫）、失敗不擋安裝。
+ * 程式端（kbdb/src/storage/replica.ts）早已備好 session／bookmark，只差資料庫自己的這個開關；
+ * D1 自己執行一句只要 0.2 ms，慢的是每句的來回——副本讓讀走離 worker 近的那份。與 `acr update` 同一個行為。
+ */
+async function ensureD1ReadReplication(token, accountId, d1Id) {
+  try {
+    if (!d1Id) return { changed: false, reason: 'no_d1_id' };
+    const path = `/accounts/${accountId}/d1/database/${d1Id}`;
+    const db = await cfFetch(token, path);
+    const mode = db && db.read_replication && db.read_replication.mode;
+    if (mode === 'auto') return { changed: false, mode };
+    const out = await cfFetch(token, path, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ read_replication: { mode: 'auto' } }),
+    });
+    return { changed: true, mode: (out && out.read_replication && out.read_replication.mode) || 'auto' };
+  } catch (e) {
+    return { changed: false, reason: String(e && e.message ? e.message : e).slice(0, 120) };
+  }
 }
 async function resolveWorkerPlacement(token, accountId, scriptName, d1Id) {
   try {
@@ -3698,9 +3750,10 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   // ⇒ 用戶的 AI 一呼叫工具就爆（實測 MCP client 回「KBDB service binding unavailable」）。
   // `service_bindings` 由 reorderForServiceBindings 依**這包 manifest** 解析後釘在 entry 上。
   // 沒被釘過（單顆重推等路徑）就退回照表解析，但此時無從得知 manifest ⇒ 只認必要目標。
+  const specNow = serviceSpecFor(entry.name, manifestServiceSpec(entry));
   const svc = entry.service_bindings
-    ?? (SERVICE_BINDINGS[entry.name]
-      ? Object.fromEntries(Object.entries(SERVICE_BINDINGS[entry.name])
+    ?? (specNow
+      ? Object.fromEntries(Object.entries(specNow)
         .filter(([, d]) => !d.optional).map(([b, d]) => [b, d.service]))
       : null);
   if (svc) {
@@ -3708,8 +3761,9 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     // 照本檔既有 fail-closed 慣例（缺一即失敗、不假綠）當場擋下，而不是裝出半通的 worker。
     // ⚠️ 只認「表裡完全沒有這個 binding」＝真漂移；表裡有但因目標不在 bundle 而 optional 略過的
     //    不算漂移（那是已知取捨，見 SERVICE_BINDINGS 說明）。
+    // 只對白名單裡的 worker 做漂移檢查：cypher 的 SVC_* 是故意剝掉的（D28），它只靠 manifest 的 requires.services 帶選配 binding。
     const known = SERVICE_BINDINGS[entry.name] || {};
-    for (const stripped of entry.stripped_services || []) {
+    for (const stripped of (SERVICE_BINDINGS[entry.name] ? entry.stripped_services || [] : [])) {
       if (!known[stripped]) {
         throw new InstallError(`${entry.name} 需要的服務 ${stripped} 沒有對應目標`, {
           detail: `manifest.stripped_services 有 ${stripped}，但 SERVICE_BINDINGS[${entry.name}] 沒有它`,
@@ -3843,12 +3897,12 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
   }
 
   // 3. multipart PUT /scripts
+  const placementD1 = resolvedFor('d1', (entry.requires?.d1?.[0]?.binding) || 'DB') || resources.d1Id;
   const placementRegion = PLACEMENT_WORKERS.has(entry.name)
-    ? await resolveWorkerPlacement(
-        token, accountId, entry.name,
-        resolvedFor('d1', (entry.requires?.d1?.[0]?.binding) || 'DB') || resources.d1Id,
-      )
+    ? await resolveWorkerPlacement(token, accountId, entry.name, placementD1)
     : null;
+  // 引擎每一版都會被重部、KBDB 不一定——開關放在「任一顆名單上的 worker 部署時」才不會因為 KBDB 沒動而永遠到不了舊實例（冪等：已是 auto 只多一次讀）
+  if (PLACEMENT_WORKERS.has(entry.name)) await ensureD1ReadReplication(token, accountId, placementD1);
   const buildForm = (bs) => {
     const metadata = {
       main_module: entry.main_module,
@@ -4167,7 +4221,7 @@ async function seedSkillsTo(cypherBase, ns, kbdbToken) {
 // 具名匯出僅供離線測試用（CF Worker runtime 只認 default.fetch，多這幾個無副作用）。
 export {
   installPage, INSTALL_SCRIPT,
-  fetchBundleManifest, deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, bundleBase, landingBase, mailRelayBase,
+  fetchBundleManifest, deployBundledWorker, pickArtifactsNamespace, extraArtifactsNsBindings, placementRegionForD1, ensureD1ReadReplication, bundleBase, landingBase, mailRelayBase,
   slugFromEmail, verifyInviteCode, MIGRATION_SQL,
   // arcrun-rag#215 c11101：分批容錯的邏輯抽成獨立函式，測試直接注入假 runSql
   // 證明「重跑只打幾次 HTTP」，不必繞整個 runInstall／真 Cloudflare。
