@@ -182,6 +182,90 @@
           "kind": "updated"
         }
       ]
+    },
+    {
+      "version": "2026.11.27-9a294bb",
+      "target": "stage",
+      "at": "2026-11-27T08:10:00.000Z",
+      "ticket": null,
+      "previous": "2026.11.27-b248b66",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.64.4",
+          "to": "0.66.2",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.20",
+          "to": "0.9.24",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.27-4c9ba58",
+      "target": "stage",
+      "at": "2026-11-27T09:35:08.069Z",
+      "ticket": null,
+      "previous": "2026.11.27-9a294bb",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.66.2",
+          "to": "0.67.0",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.24",
+          "to": "0.9.25",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.27-17741b5",
+      "target": "stage",
+      "at": "2026-11-27T10:31:09.363Z",
+      "ticket": null,
+      "previous": "2026.11.27-4c9ba58",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.67.0",
+          "to": "0.69.0",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.25",
+          "to": "0.9.26",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.27-95227f2",
+      "target": "stage",
+      "at": "2026-11-27T11:13:40.410Z",
+      "ticket": null,
+      "previous": "2026.11.27-17741b5",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.69.0",
+          "to": "0.69.1",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.26",
+          "to": "0.9.27",
+          "kind": "updated"
+        }
+      ]
     }
   ]
 }

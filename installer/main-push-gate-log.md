@@ -730,3 +730,11 @@
 | 2026-11-26 13:58:32 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward a984664→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-27 05:46:41 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 52fd05d→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
 | 2026-11-27 06:12:59 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 5d5154d→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 06:53:21 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward c154189→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 07:32:40 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward b64c30d→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 08:41:15 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 3819e11→HEAD，5 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 09:07:51 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 22b0590→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 09:42:37 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 27ba011→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 09:58:15 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 09c425d→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 10:29:42 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 4eca9bc→HEAD，3 個檔有變、沒有刪檔、.gitignore 沒變短 |
+| 2026-11-27 11:04:21 | 51a01bfa2665bd7bc3fd080dc40cf3e1.artifacts.cloudflare.net/git/inkstoneco/arcrun-rag-bundles-staging | main | ✅ 放行 | 機械檢查（stage）：fast-forward 7e19f7a→HEAD，4 個檔有變、沒有刪檔、.gitignore 沒變短 |
