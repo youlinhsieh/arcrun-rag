@@ -2885,3 +2885,6 @@
 | 2026-11-27 14:55Z | prod | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（0 天前） |
 | 2026-11-27 14:55Z | prod | 點名 | arcrun-hand/435-dedup | c1795783415675010 已交回（0 天前） |
 | 2026-11-27 14:55Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 14:59Z | prod | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（0 天前） |
+| 2026-11-27 14:59Z | prod | 點名 | arcrun-hand/435-dedup | c1795783415675010 已交回（0 天前） |
+| 2026-11-27 14:59Z | prod | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
