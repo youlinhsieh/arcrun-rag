@@ -136,6 +136,14 @@
       "status": "不必換",
       "reason": "測試樣本：證明帶帳密的 remote 網址會被遮蔽。"
     },
+    "installer/scripts/onprem-line.mjs": {
+      "status": "不必換",
+      "reason": "『地端更新檔的 publicBase 不准指到 git.uncle6.me』的守門規則（arcrun-rag#394，同 stage-dist.mjs），不是連線。"
+    },
+    "installer/scripts/onprem-line.test.mjs": {
+      "status": "不必換",
+      "reason": "測試樣本：證明 publicBase 指回舊家會被擋。"
+    },
     "installer/scripts/stage-dist.test.mjs": {
       "status": "不必換",
       "reason": "測試樣本：證明 publicBase 指回舊家會被擋。"

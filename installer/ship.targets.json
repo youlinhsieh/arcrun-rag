@@ -285,6 +285,17 @@
         "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist",
         "installerBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev"
       },
+      "onprem": {
+        "_": [
+          "inkstone/arcrun-rag#394（母票 inkstone/InkStoneCo#325）：官方地端更新檔的家。`node installer/scripts/ship-onprem.mjs --target stage --confirm` 打包簽好、放進這顆 R2 的 `onprem/` 前綴、從 publicBase 讀回驗。",
+          "stage：同一顆 R2（arcrun-stage-dist，安裝器 binding DIST）的 `onprem/`，由安裝站的 `/onprem/*` 服務（worker.js onpremHandle）。班車，不查簽核。",
+          "signUrl＝arcrun-release-signer（uncle6，Arcrun#527）的簽章端點基底網址（/sign 由 build-update.mjs 補上）；呼叫憑證走環境變數 CLOUDFLARE_API_TOKEN_UNCLE6_CC_USE，不進版控。"
+        ],
+        "bucket": "arcrun-stage-dist",
+        "accountId": "1129efd7df2e8899d537e9c8fbabb6cb",
+        "publicBase": "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/onprem",
+        "signUrl": "https://arcrun-release-signer.uncle6-me.workers.dev"
+      },
       "releaseRecord": {
         "_": [
           "版本發佈紀錄（Leo/arcrun-rag#88，2026-08-16 接上 stage 這一半）。",
@@ -539,6 +550,19 @@
         "refreshKind": "強制重讀",
         "waitMs": 20000,
         "maxTries": 4
+      },
+      "onprem": {
+        "_": [
+          "inkstone/arcrun-rag#394（母票 inkstone/InkStoneCo#325）：官方地端更新檔，用戶的 Portal 抓 https://install.arcrun.dev/onprem/latest.json。",
+          "prod：uncle6 帳號的專用 R2 `arcrun-onprem`（要先建；安裝站 wrangler.toml 綁 ONPREM 後 `/onprem/*` 才有東西——見該檔 prod 段落註解，兩者都是 prod 部署前的 Human 前置）。",
+          "放行：這一班主程式版號要已被簽核人放行（AHub 簽核，同一次 prod 出貨），沒簽不放；不自己部署 prod。",
+          "signUrl 與 stage 同一個端點：簽章金鑰只有一把（arcrun-release-signer 的 CF Secret），stage 與 prod 的更新檔同一把章、同一個映像內建公鑰。"
+        ],
+        "requiresSignoff": true,
+        "bucket": "arcrun-onprem",
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "publicBase": "https://install.arcrun.dev/onprem",
+        "signUrl": "https://arcrun-release-signer.uncle6-me.workers.dev"
       },
       "releaseRecord": {
         "_": [

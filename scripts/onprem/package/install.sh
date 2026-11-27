@@ -13,12 +13,16 @@
 #
 # 可用環境變數改預設：NAME（容器名 arcrun）VOLUME（資料卷 arcrun-data）UI_PORT（8080）API_PORT（8081）
 #                    ARCRUN_NETWORK（指定 docker 網路；預設用主機的 -p 對外開埠）
+#                    ARCRUN_UPDATE_FEED（Portal「立即更新」去哪抓原廠更新檔；預設 https://install.arcrun.dev/onprem/latest.json）
+#                      不能連外的公司：ARCRUN_UPDATE_FEED= ./install.sh up   （設成空字串＝不設更新來源，之後用 Portal 的「上傳更新檔」）
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME="${NAME:-arcrun}"; VOLUME="${VOLUME:-arcrun-data}"
 UI_PORT="${UI_PORT:-8080}"; API_PORT="${API_PORT:-8081}"
 KB="$HERE/kb"
+# 原廠更新來源（inkstone/arcrun-rag#394）。注意是 `-` 不是 `:-`：呼叫者明確給空字串＝要清掉，不會被預設值補回來。
+UPDATE_FEED="${ARCRUN_UPDATE_FEED-https://install.arcrun.dev/onprem/latest.json}"
 
 die() { echo "✗ $*" >&2; exit 2; }
 say() { echo "▶ $*"; }
@@ -77,12 +81,16 @@ cmd_up() {
   if [ -z "${ARCRUN_NETWORK:-}" ] && [ -n "$(host_ip)" ]; then
     adv=(-e "ARCRUN_ADVERTISE_UI_URL=http://$(host_ip):$UI_PORT" -e "ARCRUN_ADVERTISE_API_URL=http://$(host_ip):$API_PORT")
   fi
-  docker run -d --name "$NAME" --restart unless-stopped -e "ARCRUN_TENANT=$T" "${adv[@]}" "${net[@]}" -v "$VOLUME:/data" "$tag" >/dev/null
+  local feed=()
+  [ -n "$UPDATE_FEED" ] && feed=(-e "ARCRUN_UPDATE_FEED=$UPDATE_FEED")
+  docker run -d --name "$NAME" --restart unless-stopped -e "ARCRUN_TENANT=$T" "${adv[@]}" "${feed[@]}" "${net[@]}" -v "$VOLUME:/data" "$tag" >/dev/null
   wait_healthy
   echo
   echo "✓ 容器已起來。這一台目前是「未啟用」狀態（精靈與 API 都鎖著，正常）。"
   echo "  安裝識別碼：$(jget "$(adm license)" 'j.install_id')"
   echo "  UI 網址　　：$(ui_url)"
+  if [ -n "$UPDATE_FEED" ]; then echo "  更新來源　 ：$UPDATE_FEED（Portal 設定 → 版本 →「立即更新」；這台不能連外就改用「上傳更新檔」）"
+  else echo "  更新來源　 ：未設（這台不連外；更新用 Portal 設定 → 版本 →「上傳更新檔」）"; fi
   echo
   echo "下一步：把「安裝識別碼」交給原廠換啟用碼 → 瀏覽器開 UI 網址貼上啟用碼 → ./install.sh import → 走精靈。"
 }
@@ -195,5 +203,5 @@ cmd_set_url() {
 case "${1:-}" in
   check) cmd_check;; up) cmd_up;; status) cmd_status;; import) cmd_import;; n8n-test) cmd_n8n_test;;
   import-app) cmd_import_app "$@";; set-url) cmd_set_url "$@";;
-  *) sed -n '2,16p' "$0"; exit 1;;
+  *) sed -n '2,18p' "$0"; exit 1;;
 esac

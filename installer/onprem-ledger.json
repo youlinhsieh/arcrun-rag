@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "version": "1.4.295-onprem.7",
+      "target": "stage",
+      "at": "2026-11-27T05:36:02.141Z",
+      "release": "1.4.295",
+      "ticket": null,
+      "sha256": "d396e8541715e2239728a629ded66ce5815d6a530c726a2b985a8ab2b55afaa1",
+      "previous": null
+    }
+  ]
+}

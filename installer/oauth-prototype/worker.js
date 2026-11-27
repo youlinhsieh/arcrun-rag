@@ -300,8 +300,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@337ec0baf142a8edee09e2b8ba92d2de16d65237';
-const BUNDLE_BUILT = '2026-11-24'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@b088784e3cd28fa33a1cefcae9ce4e9800356517';
+const BUNDLE_BUILT = '2026-11-25'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -6604,6 +6604,14 @@ export default {
       return distHandle(request, env, pathname);
     }
 
+    // inkstone/arcrun-rag#394（母票 inkstone/InkStoneCo#325）：官方「地端更新檔」。
+    //   `/onprem/latest.json`＝最新版指標（{version,url,sha256,size,notes}），`/onprem/<版本>.tgz`＝簽好的更新檔。
+    //   地端私有雲 Portal 的「立即更新」讀的就是這個網址（容器環境變數 ARCRUN_UPDATE_FEED，安裝包預設指到這裡）。
+    //   家：env.ONPREM（專用 R2，prod）＞ env.DIST 的 `onprem/` 前綴（stage）＞ env.ONPREM_BASE（轉讀某個靜態網址）。三者皆無＝404（誠實說沒有）。
+    if (pathname === "/onprem" || pathname.startsWith("/onprem/")) {
+      return onpremHandle(request, env, pathname);
+    }
+
     // inkstone/Arcrun#432、inkstone/InkStoneCo#330：App 市集目錄。引擎的預設市集來源就是
     // `<INSTALLER_ORIGIN>/apps`（cypher-executor lib/app-market.ts marketSourceUrls），內容是
     // `node app-market/build-feed.mjs --out <資料夾>` 的產出（index.json＋packages/）。
@@ -7077,6 +7085,34 @@ async function appsHandle(request, env, pathname) {
   }
   return new Response(JSON.stringify({ error: '這個安裝站沒有 App 市集目錄（沒綁 R2、也沒設 APP_FEED_BASE）' }),
     { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+}
+/** 地端更新檔只開兩類 key：指標 `latest.json`、更新檔 `<版本>.tgz`（版本格式＝引擎 updater 認的 1.4.296 或 1.4.296-onprem.1）。其餘（含 ..）一律 404。 */
+function onpremKeyAllowed(rel) {
+  if (rel.includes('..') || rel.includes('//')) return false;
+  return rel === 'latest.json' || /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[A-Za-z0-9][A-Za-z0-9.]{0,30})?\.tgz$/.test(rel);
+}
+async function onpremHandle(request, env, pathname) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+  }
+  let rel;
+  try { rel = decodeURIComponent(pathname.replace(/^\/onprem\/?/, '')); } catch (_) { return new Response('not found', { status: 404 }); }
+  if (!onpremKeyAllowed(rel)) return new Response('not found', { status: 404 });
+  const store = env.ONPREM || env.DIST;
+  if (store) {
+    const res = await distHandle(request, { DIST: store }, pathname, 'onprem/' + rel);
+    if (res.status === 404) return new Response(JSON.stringify({ error: `地端更新檔 ${rel} 還沒有上架` }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+    if (rel === 'latest.json') { const h = new Headers(res.headers); h.set('cache-control', 'no-cache'); h.set('content-type', 'application/json; charset=utf-8'); return new Response(res.body, { status: res.status, headers: h }); }
+    return res;
+  }
+  if (env.ONPREM_BASE && /^https:\/\//i.test(String(env.ONPREM_BASE))) {
+    const up = await fetch(`${String(env.ONPREM_BASE).replace(/\/+$/, '')}/${rel}`, { method: request.method, headers: request.headers.has('range') ? { range: request.headers.get('range') } : {} });
+    if (up.status === 404) return new Response(JSON.stringify({ error: `地端更新檔 ${rel} 還沒有上架` }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+    const h = new Headers(up.headers);
+    h.set('cache-control', rel === 'latest.json' ? 'no-cache' : 'public, max-age=31536000, immutable');
+    return new Response(request.method === 'HEAD' ? null : up.body, { status: up.status, headers: h });
+  }
+  return new Response(JSON.stringify({ error: '這個安裝站沒有地端更新檔（沒綁 R2、也沒設 ONPREM_BASE）' }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
 async function distHandle(request, env, pathname, keyOverride) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {

@@ -2854,3 +2854,21 @@
 | 2026-11-25 04:23Z | stage | 點名 | arcrun-hand/493-save-2s | c1795346464103441 已交回（2 天前） |
 | 2026-11-25 04:23Z | stage | 點名 | arcrun-hand/497-no-busy-toast | c1795350485590892 已交回（2 天前） |
 | 2026-11-25 04:23Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-25 12:48Z | stage | ⛔ 擋下 | arcrun-hand/493-save-2s | c1795346464103441 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天） |
+| 2026-11-25 12:48Z | stage | ⛔ 擋下 | arcrun-hand/497-no-busy-toast | c1795350485590892 已交回（3 天前）；交回後放著 3 天沒進版（門檻 3 天） |
+| 2026-11-25 12:48Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-25 12:50Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:31Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:32Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:34Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:35Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:36Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:38Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-26 01:50Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:45Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:46Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:47Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:49Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:51Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 04:57Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |
+| 2026-11-27 05:10Z | stage | 點名 | fix/303-agent-skill-cards | 標籤 s/review 已交回 |

@@ -1,13 +1,54 @@
 {
-  "arcrun-hand/284-stage-with-283": {"tip": "a6bdd14", "reason": "已放棄：內容另走 #283 進版，留 archive/ tag（inkstone/InkStoneCo#139 分類）"},
-  "feat/222-execution-log-out-of-kbdb": {"tip": "a3262d7", "reason": "已放棄：#222 改走 v2 分支，留 archive/ tag（inkstone/InkStoneCo#139 分類）"},
-  "feat/311-trigger-compact-trace": {"tip": "7d89bba", "reason": "已放棄：留 archive/ tag（inkstone/InkStoneCo#139 分類）"},
-  "arcrun-hand/318-partial-update": {"tip": "ab5e4c8", "reason": "已被取代：同一修正已在 Arcrun main（e874236 重放、e92fb7f 縮短文字、b916683 重編）；此為重放前的舊分支（inkstone/arcrun-rag#307 逐行比對，新增行僅 1 行被刻意改寫）"},
-  "feat/277-provider-list": {"tip": "0dd9956", "reason": "已被取代：提供商清單與現場取模型選單已在 Arcrun main（0a1a508／7dbee2d／1823767／5155c10，3ae95ee 重編；main 的 extract-ai-providers.ts 含 models_url）；此分支只剩舊 base 的重編成品（inkstone/arcrun-rag#307、Arcrun#277 c1793507939556225）"},
-  "fix/312-by-source-ghost": {"tip": "30347f0", "reason": "已被取代：同一修正已在 Arcrun main（8ea830c，69efd7d 重編）；此為改 base 前的舊 commit（inkstone/arcrun-rag#307）"},
-  "perf/290-app-action-roundtrips": {"tip": "5517afa", "reason": "已被取代：往返 7 趟→3 趟的修正已在 Arcrun main（228d5d8 rebase 版、4749192 型別修正；main 的 portal-data.ts 有 prefetchAppAction）；此為 rebase 前的舊 commit（inkstone/arcrun-rag#307）"},
-  "stage/299-with-246fnum": {"tip": "78f4a1e", "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#299 內容已在 Arcrun main（d216dbd、051c52b 等）（inkstone/arcrun-rag#307）"},
-  "stage/300-with-299-246fnum": {"tip": "3f27857", "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#300 內容已在 Arcrun main（98ef009、8e4bc14）（inkstone/arcrun-rag#307）"},
-  "arcrun-351-close": {"tip": "2ee4685", "reason": "已被取代：工人自述此分支 build(workers) commit 用符號連結 node_modules 重編而壞，改推 arcrun-351-close-v2 → arcrun-351-lists，已進 main 51d26b9（Arcrun#351 c1794211212620492、c1794216882706089）"},
-  "arcrun-hand/400-data-tables": {"tip": "0186cbf", "reason": "已被取代：三個 commit 皆已以 rebase 版進 Arcrun main（c6e779b、ff18f0a、c0ba3eb，同訊息；衝突只在重編產物 arcrun-a2ui.js），第三輪 bc61633 為 fast-forward；此為 rebase 前舊分支，11-17 起擋下每次 prod 出貨（inkstone/Arcrun#400、InkStoneCo#277 立會 11-18 早）"}
+  "arcrun-hand/284-stage-with-283": {
+    "tip": "a6bdd14",
+    "reason": "已放棄：內容另走 #283 進版，留 archive/ tag（inkstone/InkStoneCo#139 分類）"
+  },
+  "feat/222-execution-log-out-of-kbdb": {
+    "tip": "a3262d7",
+    "reason": "已放棄：#222 改走 v2 分支，留 archive/ tag（inkstone/InkStoneCo#139 分類）"
+  },
+  "feat/311-trigger-compact-trace": {
+    "tip": "7d89bba",
+    "reason": "已放棄：留 archive/ tag（inkstone/InkStoneCo#139 分類）"
+  },
+  "arcrun-hand/318-partial-update": {
+    "tip": "ab5e4c8",
+    "reason": "已被取代：同一修正已在 Arcrun main（e874236 重放、e92fb7f 縮短文字、b916683 重編）；此為重放前的舊分支（inkstone/arcrun-rag#307 逐行比對，新增行僅 1 行被刻意改寫）"
+  },
+  "feat/277-provider-list": {
+    "tip": "0dd9956",
+    "reason": "已被取代：提供商清單與現場取模型選單已在 Arcrun main（0a1a508／7dbee2d／1823767／5155c10，3ae95ee 重編；main 的 extract-ai-providers.ts 含 models_url）；此分支只剩舊 base 的重編成品（inkstone/arcrun-rag#307、Arcrun#277 c1793507939556225）"
+  },
+  "fix/312-by-source-ghost": {
+    "tip": "30347f0",
+    "reason": "已被取代：同一修正已在 Arcrun main（8ea830c，69efd7d 重編）；此為改 base 前的舊 commit（inkstone/arcrun-rag#307）"
+  },
+  "perf/290-app-action-roundtrips": {
+    "tip": "5517afa",
+    "reason": "已被取代：往返 7 趟→3 趟的修正已在 Arcrun main（228d5d8 rebase 版、4749192 型別修正；main 的 portal-data.ts 有 prefetchAppAction）；此為 rebase 前的舊 commit（inkstone/arcrun-rag#307）"
+  },
+  "stage/299-with-246fnum": {
+    "tip": "78f4a1e",
+    "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#299 內容已在 Arcrun main（d216dbd、051c52b 等）（inkstone/arcrun-rag#307）"
+  },
+  "stage/300-with-299-246fnum": {
+    "tip": "3f27857",
+    "reason": "已放棄：只是 2026-10-10 stage 暫用的疊版分支（只有 build 重出＋merge）；#300 內容已在 Arcrun main（98ef009、8e4bc14）（inkstone/arcrun-rag#307）"
+  },
+  "arcrun-351-close": {
+    "tip": "2ee4685",
+    "reason": "已被取代：工人自述此分支 build(workers) commit 用符號連結 node_modules 重編而壞，改推 arcrun-351-close-v2 → arcrun-351-lists，已進 main 51d26b9（Arcrun#351 c1794211212620492、c1794216882706089）"
+  },
+  "arcrun-hand/400-data-tables": {
+    "tip": "0186cbf",
+    "reason": "已被取代：三個 commit 皆已以 rebase 版進 Arcrun main（c6e779b、ff18f0a、c0ba3eb，同訊息；衝突只在重編產物 arcrun-a2ui.js），第三輪 bc61633 為 fast-forward；此為 rebase 前舊分支，11-17 起擋下每次 prod 出貨（inkstone/Arcrun#400、InkStoneCo#277 立會 11-18 早）"
+  },
+  "arcrun-hand/493-save-2s": {
+    "tip": "01f170b",
+    "reason": "已被取代：淨改動（Server-Timing）已以 7118df60 進 Arcrun main，後續修法 c5826101/53708df6 另行快轉進 main（inkstone/Arcrun#493 第 8、24 則）"
+  },
+  "arcrun-hand/497-no-busy-toast": {
+    "tip": "606f513",
+    "reason": "已被取代：同一修正以 fb150bba（AHub 0.64.1）進 Arcrun main（inkstone/Arcrun#497）"
+  }
 }

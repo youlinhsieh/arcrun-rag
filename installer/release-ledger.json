@@ -1150,7 +1150,64 @@
    "fingerprint": "eb98fd8d4a5c45fcbffdd889a9abdc134cb8b79106e77145ac97c2e3d5b5b058",
    "built": "2026-11-25",
    "shipped": {
-    "stage": "2026-11-25T04:29:57.307Z"
+    "stage": "2026-11-25T04:29:57.307Z",
+    "prod": "2026-11-25T07:32:40.110Z"
+   }
+  },
+  "1.4.300": {
+   "commit": "53708df65cc8f949e8d027154be24577bff1598e",
+   "fingerprint": "5c6e0dd91269bc9919dcf004490b62a56433581a061ac6e5180c90a3c4a2012a",
+   "built": "2026-11-25",
+   "shipped": {
+    "stage": "2026-11-25T13:04:22.538Z"
+   }
+  },
+  "1.4.301": {
+   "commit": "620a995678da7f5705863080227a9bef478cdffb",
+   "fingerprint": "2ff0496a4846419cbd12978152fe023675cffb2abeb246c3308109761b0effc9",
+   "built": "2026-11-26",
+   "shipped": {
+    "stage": "2026-11-26T01:57:34.978Z"
+   }
+  },
+  "1.4.302": {
+   "commit": "58709b462d490be2209f2a27a02d974780fcf6a7",
+   "fingerprint": "8c03446e5df2b99c4362c27577fea05f93a0876dc285262da64c449198081a32",
+   "built": "2026-11-26",
+   "shipped": {
+    "stage": "2026-11-26T06:00:51.087Z"
+   }
+  },
+  "1.4.303": {
+   "commit": "e5cf0dbae3fbed7b24c2f45dc10bba7d81850f9c",
+   "fingerprint": "9e90d4da41dbffe7b19d042dea6861b6a1ea8d5acd6150afeb59d417d25998b5",
+   "built": "2026-11-26",
+   "shipped": {
+    "stage": "2026-11-26T12:53:41.449Z"
+   }
+  },
+  "1.4.304": {
+   "commit": "41244f80fe8befb681c9abd89b05fae400d17481",
+   "fingerprint": "4838193787fa1838e98650695eca977293d3a73dfd8f5b4369b7ec03a0c6bff1",
+   "built": "2026-11-26",
+   "shipped": {
+    "stage": "2026-11-26T13:35:20.824Z"
+   }
+  },
+  "1.4.305": {
+   "commit": "2e937a57b9938f81f683dd4e8fcaa1e09dfe89e4",
+   "fingerprint": "db493e8a4428c4715f6db4f3a417ac7d5085ef17ad0b6b8eed4ec358fa067552",
+   "built": "2026-11-26",
+   "shipped": {
+    "stage": "2026-11-26T14:29:14.010Z"
+   }
+  },
+  "1.4.307": {
+   "commit": "02fc7631856d9b0ad4079729f32261a3bf40307a",
+   "fingerprint": "23da903f3c65c7ff6743f4d9840f380079bcb7b1714391cebd360c50bc969a30",
+   "built": "2026-11-27",
+   "shipped": {
+    "stage": "2026-11-27T05:22:43.050Z"
    }
   }
  }

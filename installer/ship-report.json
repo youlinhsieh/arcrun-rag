@@ -16235,6 +16235,2063 @@
      }
     ]
    }
+  },
+  "prod": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "skip",
+     "note": "本目標沒宣告 userPathUpdate（不是 stage）：prod 的那一次要 geek6688 授權、由 leo 簽 prod 之後才跑（inkstone/arcrun-rag#163）"
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "skip",
+     "note": "本目標沒宣告 instanceUpdate（不是 stage）：實例不由出貨線更新（prod 的 leo21c 由 leo 在 Portal 按「立即更新」）"
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "skip",
+     "note": "本目標沒宣告 frontDoor（登錄簿）：不由出貨線走正門（prod 的 leo21c／geek6688 由總管用 MCP 連線各走一次，貼票）"
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "skip",
+     "note": "本目標沒宣告 stageQueue（不是 stage）：不寫 stage 現況"
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "done",
+     "note": null
+    }
+   ],
+   "sourceCommit": "Arcrun@b67301dfdfd5",
+   "machine": "b603c18c637e",
+   "ts": 1795591959945
+  }
+ },
+ "1.4.300／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@c58261013fc8",
+   "machine": "b603c18c637e",
+   "ts": 1795611862486,
+   "queue": {
+    "status": "descendant",
+    "live": "b67301dfdfd5",
+    "carriedTickets": [
+     "inkstone/Arcrun#493",
+     "#517",
+     "#518",
+     "inkstone/Arcrun#519"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "53708df6",
+      "subject": "build: 重編成品（cypher-executor、kbdb），repo_dirty=false (inkstone/Arcrun#493)",
+      "tickets": [
+       "inkstone/Arcrun#493"
+      ]
+     },
+     {
+      "sha": "c5826101",
+      "subject": "perf(notes): 存檔回應不再含 organize 觸發與冷的 KV 讀；KBDB 建 record／驗 session 少幾趟 (inkstone/Arcrun#493)",
+      "tickets": [
+       "inkstone/Arcrun#493"
+      ]
+     },
+     {
+      "sha": "94fe6920",
+      "subject": "build: 重編 arcrun-mcp 成品記帳（stage 驗收腳本動過 mcp/，成品位元組不變）",
+      "tickets": [
+       "#517",
+       "#518",
+       "inkstone/Arcrun#519"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.301／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-26）；安裝器原始碼指紋 3e3566e3208b（烙在 version.mjs，不寫這裡）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.301／pin e56ee60／安裝器原始碼 3e3566e3208b 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.107 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.107"
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@d34036dc86fa",
+   "machine": "b603c18c637e",
+   "ts": 1795658254949,
+   "queue": {
+    "status": "descendant",
+    "live": "d34036dc86fa",
+    "carriedTickets": [
+     "inkstone/Arcrun#493"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "620a9956",
+      "subject": "build: 重編成品（arcrun-rag-ui），repo_dirty=false (inkstone/Arcrun#493)",
+      "tickets": [
+       "inkstone/Arcrun#493"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.302／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-26）；安裝器原始碼指紋 3e3566e3208b（烙在 version.mjs，不寫這裡）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.302／pin 1295621／安裝器原始碼 3e3566e3208b 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.107 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.107"
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@724a12c03c54",
+   "machine": "b603c18c637e",
+   "ts": 1795672851054,
+   "queue": {
+    "status": "descendant",
+    "live": "724a12c03c54",
+    "carriedTickets": [
+     "inkstone/Arcrun#522"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "58709b46",
+      "subject": "#522: 重編 cypher-executor／rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#522"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.303／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@122831956826",
+   "machine": "b603c18c637e",
+   "ts": 1795697621380,
+   "queue": {
+    "status": "descendant",
+    "live": "724a12c03c54",
+    "carriedTickets": [
+     "inkstone/Arcrun#521",
+     "#519",
+     "inkstone/Arcrun#526",
+     "#517",
+     "#518",
+     "inkstone/Arcrun#522"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "e5cf0dba",
+      "subject": "#521: 重編 cypher-executor／rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#521"
+      ]
+     },
+     {
+      "sha": "12283195",
+      "subject": "#521: 畫面字數預算（無舊紀錄說明縮短）",
+      "tickets": [
+       "inkstone/Arcrun#521"
+      ]
+     },
+     {
+      "sha": "295b176c",
+      "subject": "#521: 更新已裝 App 時，新版多用金鑰或多送資料到新網站先列差異請使用者同意",
+      "tickets": [
+       "inkstone/Arcrun#521",
+       "#519"
+      ]
+     },
+     {
+      "sha": "40605b98",
+      "subject": "#526: 真 Lemonade（官方容器＋真 GGUF）驗收腳本：無金鑰 34/34、有金鑰 38/38",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "3aa53708",
+      "subject": "#526: 驗收腳本收尾時一併把真 Lemonade 容器從實驗室網路拆下",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "ed8be538",
+      "subject": "#526: 重編 rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "e683a492",
+      "subject": "#526: 搜尋設定套用後選單不再變空白（回應不帶清單時沿用載入時那份）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "a58fb40a",
+      "subject": "#526: 重編 cypher-executor／rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "e6258d0b",
+      "subject": "#526: 列模型可用「剛打、還沒存」的金鑰（POST，金鑰不進網址）；加 Chrome 截圖驗收腳本",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "8f80f81c",
+      "subject": "#526: Lemonade 驗收腳本（A 新版無金鑰／B 新版有金鑰＋真容器／C 舊版 /api/v1／U 由 onprem.1 升級）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "a2afee5f",
+      "subject": "#526: 重編 cypher-executor 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "86b226eb",
+      "subject": "#526: 探測回非 JSON 時講人話；私有雲內部位址 *.priv.local 視同本機（否則出廠 RAG 工作流被 S1 擋下）",
+      "tickets": [
+       "inkstone/Arcrun#526",
+       "#517",
+       "#518"
+      ]
+     },
+     {
+      "sha": "83256152",
+      "subject": "#526: lemonade.mjs 進建置 context 白名單",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "7356e753",
+      "subject": "#526: 重編 cypher-executor／kbdb／rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "7dfb8e1f",
+      "subject": "feat(onprem): Lemonade（地端）可選為萃取／問答 AI 與搜尋嵌入／判定，金鑰只拿名字",
+      "tickets": [
+       "inkstone/Arcrun#526"
+      ]
+     },
+     {
+      "sha": "58709b46",
+      "subject": "#522: 重編 cypher-executor／rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#522"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.304／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-26）；安裝器原始碼指紋 3e3566e3208b（烙在 version.mjs，不寫這裡）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.304／pin a984664／安裝器原始碼 3e3566e3208b 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.107 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.107"
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@151a3a63e99b",
+   "machine": "b603c18c637e",
+   "ts": 1795700120775,
+   "queue": {
+    "status": "descendant",
+    "live": "151a3a63e99b",
+    "carriedTickets": [
+     "inkstone/Arcrun#521"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "41244f80",
+      "subject": "#521: 重編 arcrun-mcp 成品（只有驗收腳本進了 mcp/，內容位元組不變；source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#521"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.305／小幫手 0.18.124／安裝器 1.0.107": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-26）；安裝器原始碼指紋 3e3566e3208b（烙在 version.mjs，不寫這裡）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.305／pin a3fcc8a／安裝器原始碼 3e3566e3208b 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.107 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.107"
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@65a69e243fa6",
+   "machine": "b603c18c637e",
+   "ts": 1795703353963,
+   "queue": {
+    "status": "descendant",
+    "live": "65a69e243fa6",
+    "carriedTickets": [
+     "inkstone/Arcrun#521"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "2e937a57",
+      "subject": "#521: 重編 cypher-executor／rag-ui／mcp 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#521"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.306／小幫手 0.18.124／安裝器 1.0.108": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-27）；安裝器原始碼指紋 7c1e2e3dc8e5（烙在 version.mjs，不寫這裡）"
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "skip",
+     "note": "線上已是 1.4.306／pin 35ca0ab／安裝器原始碼 7c1e2e3dc8e5 未變，且釘子沒動 ⇒ 不重複部署"
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "failed"
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "not-run"
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "not-run"
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "not-run"
+    }
+   ],
+   "sourceCommit": "Arcrun@12e0403d2943",
+   "machine": "b603c18c637e",
+   "ts": 1795756177076,
+   "queue": {
+    "status": "descendant",
+    "live": "65a69e243fa6",
+    "carriedTickets": [
+     "inkstone/Arcrun#529",
+     "inkstone/Arcrun#472",
+     "inkstone/Arcrun#527",
+     "inkstone/Arcrun#521",
+     "inkstone/InkStoneCo#325"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "d7f956e3",
+      "subject": "Merge remote-tracking branch 'origin/main' into claude/529-allow-forms",
+      "tickets": []
+     },
+     {
+      "sha": "f6d8e336",
+      "subject": "#529: 重編 rag-ui 成品（source=12e0403，含 allow-forms）",
+      "tickets": [
+       "inkstone/Arcrun#529"
+      ]
+     },
+     {
+      "sha": "3ae238e9",
+      "subject": "#472: paper 0.5.1 版本號與說明（0.5.0 之後的修正要換版才裝得進去）",
+      "tickets": [
+       "inkstone/Arcrun#472"
+      ]
+     },
+     {
+      "sha": "8d047a7b",
+      "subject": "#472: paper 0.5.1 被叫工作流不存在時標真因（stage 實測發現）",
+      "tickets": [
+       "inkstone/Arcrun#472"
+      ]
+     },
+     {
+      "sha": "12e0403d",
+      "subject": "#529: Portal 內嵌 App 的 iframe sandbox 補 allow-forms，AHub 簽核框與所有 formDialog 才送得出去",
+      "tickets": [
+       "#529"
+      ]
+     },
+     {
+      "sha": "835ee8e5",
+      "subject": "#527: 發行簽章改成 arcrun-release-signer（私鑰只在 CF Secret、人不經手任何金鑰；呼叫方用本來就有的 uncle6 Cloudflare 憑證）",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "580d70ef",
+      "subject": "#527: 發行簽章端點（license-admin 代簽，私鑰只在 CF Secret、由 Worker 自己產生並寫入）；build-update 支援 --sign-url",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "a7fb8cde",
+      "subject": "#527: 重編 rag-ui 成品（source=前一筆，已併入 main 的 #521）",
+      "tickets": [
+       "inkstone/Arcrun#527",
+       "#521"
+      ]
+     },
+     {
+      "sha": "b6b430a5",
+      "subject": "Merge origin/main into arcrun-hand/526-lemonade（成品檔衝突先取 main 的，下一筆重編）",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "125ba778",
+      "subject": "#527: 地端換版說明（最後一次手動換，步驟實跑過）、發行金鑰說明",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "837ec57a",
+      "subject": "#527: 重編 rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "cd03b0d6",
+      "subject": "#527: 版本卡窄螢幕按鈕換行；地端換版說明與發行金鑰產生腳本",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "874a811f",
+      "subject": "#527: 重編 rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "d7ffa678",
+      "subject": "#527: Portal 版本卡加「上傳更新檔」（地端管理員，隨身碟情境）；驗收加真瀏覽器上傳（壞簽章被拒、好檔驗過後一鍵更新）",
+      "tickets": [
+       "inkstone/Arcrun#527"
+      ]
+     },
+     {
+      "sha": "f7ce0ea1",
+      "subject": "#325: 更新檔帶 KBDB 要連 migrations 一起、退回不卡在已結束的行程、驗收腳本（無外網實驗室）",
+      "tickets": [
+       "inkstone/InkStoneCo#325"
+      ]
+     },
+     {
+      "sha": "d6aed7f9",
+      "subject": "#325: 重編 rag-ui 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/InkStoneCo#325"
+      ]
+     },
+     {
+      "sha": "3deacde3",
+      "subject": "#325: Portal 版本卡地端字串縮短（過畫面字數預算）",
+      "tickets": [
+       "inkstone/InkStoneCo#325"
+      ]
+     },
+     {
+      "sha": "7cc900b6",
+      "subject": "#325: 地端更新檔（驗簽、備份、換版、退回）與 Portal 立即更新接上私有雲",
+      "tickets": [
+       "inkstone/InkStoneCo#325"
+      ]
+     },
+     {
+      "sha": "2e937a57",
+      "subject": "#521: 重編 cypher-executor／rag-ui／mcp 成品（source=前一筆）",
+      "tickets": [
+       "inkstone/Arcrun#521"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "1.4.307／小幫手 0.18.124／安裝器 1.0.108": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@12e0403d2943",
+   "machine": "b603c18c637e",
+   "ts": 1795756963009,
+   "queue": {
+    "status": "descendant",
+    "live": "12e0403d2943",
+    "carriedTickets": [
+     "inkstone/Arcrun#529",
+     "inkstone/Arcrun#472"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "02fc7631",
+      "subject": "#529: AHub 0.64.4／票地圖 0.9.20：留言送不出去（例如重複簽核被擋）的紅字也放在撰寫框上方，不再只在討論串最上面",
+      "tickets": [
+       "inkstone/Arcrun#529"
+      ]
+     },
+     {
+      "sha": "d7f956e3",
+      "subject": "Merge remote-tracking branch 'origin/main' into claude/529-allow-forms",
+      "tickets": []
+     },
+     {
+      "sha": "f6d8e336",
+      "subject": "#529: 重編 rag-ui 成品（source=12e0403，含 allow-forms）",
+      "tickets": [
+       "inkstone/Arcrun#529"
+      ]
+     },
+     {
+      "sha": "3ae238e9",
+      "subject": "#472: paper 0.5.1 版本號與說明（0.5.0 之後的修正要換版才裝得進去）",
+      "tickets": [
+       "inkstone/Arcrun#472"
+      ]
+     },
+     {
+      "sha": "8d047a7b",
+      "subject": "#472: paper 0.5.1 被叫工作流不存在時標真因（stage 實測發現）",
+      "tickets": [
+       "inkstone/Arcrun#472"
+      ]
+     }
+    ]
+   }
   }
  }
 }
