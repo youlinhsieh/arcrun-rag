@@ -18,6 +18,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +46,8 @@ async function main() {
 
   const source = resolve(arg('--source') || process.env.ARCRUN_SOURCE || resolve(REPO_ROOT, cfg.source.arcrunRepo));
   const buildScript = join(source, 'docker', 'private-cloud', 'build-update.mjs');
-  if (!existsSync(buildScript)) { console.error(`來源沒有 docker/private-cloud/build-update.mjs：${buildScript}`); return 2; }
+  // 有 --package（已打好簽好的更新檔）就不需要 Arcrun 來源：latest.json 由這裡照 build-update.mjs feed 的同一組欄位自己寫
+  if (!arg('--package') && !existsSync(buildScript)) { console.error(`來源沒有 docker/private-cloud/build-update.mjs：${buildScript}`); return 2; }
 
   const release = arg('--release') || JSON.parse(readFileSync(join(REPO_ROOT, 'installer', 'release-state.json'), 'utf8')).release;
   const ledger = readOnpremLedger(REPO_ROOT);
@@ -86,7 +88,13 @@ async function main() {
 
   // ② latest.json（url 指向公開網址；sha256／size 是這個檔實際的）
   const latest = join(work, 'latest.json');
-  execFileSync('node', [realpath(buildScript), 'feed', '--package', pkg, '--url', packageUrl(T.onprem, version), '--out', latest], { cwd: source, stdio: 'pipe' });
+  if (arg('--package')) {
+    const mf = JSON.parse(spawnSync('tar', ['-xzOf', pkg, 'manifest.json']).stdout.toString('utf8'));
+    const bytes = readFileSync(pkg);
+    writeFileSync(latest, JSON.stringify({ version: mf.version, url: packageUrl(T.onprem, version), sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, notes: mf.notes ?? [], released_at: mf.released_at }, null, 2));
+  } else {
+    execFileSync('node', [realpath(buildScript), 'feed', '--package', pkg, '--url', packageUrl(T.onprem, version), '--out', latest], { cwd: source, stdio: 'pipe' });
+  }
   const plan = planOnprem({ pkgPath: pkg, latestPath: latest, version });
 
   // ③ 放上去：更新檔 → 指標最後（cwd 用暫存目錄：r2 指令是帳號層級，不讀 installer 的 wrangler 設定）

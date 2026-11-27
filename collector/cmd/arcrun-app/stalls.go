@@ -425,3 +425,89 @@ func problemEventKey(host, folder, state, rawErr string) string {
 func fileEventKey(host, root, rel, rawErr string) string {
 	return buildEventKey(host, "file", filepath.Base(root)+"/"+filepath.ToSlash(rel), causeKeyOf(rawErr))
 }
+
+// ───────── inkstone/Arcrun#532：在 Portal 決定要不要通報 ─────────
+//
+// 小幫手每輪回報送件帳時，若有「問用戶要不要通報」的分組，就把「將寄出的內容」原文（consentPreviewText）
+// 與簽章一起送上去；Portal 把原文給用戶看，用戶按同意／不用了；決定隨下一次 folder-tree 回應回來，
+// 這裡執行：同意＝走既有的 StallPreview→ReportStall（同一條通道、同一份診斷），不同意＝DeclineStall。
+// 簽章對不上（問題在這之間變了）＝不寄，等下一輪用新的預覽再問一次。
+
+// consentPreviewText：給用戶看的、將寄出的內容（只有結構化事實）。診斷資料只講類別（跟桌面卡同一口徑）。簽章算在這份原文上。
+func consentPreviewText(g stallGroupWithAcct) string {
+	return stallReportText(g) + "\n\n" +
+		"一併寄出的診斷資料（只有狀態與統計數字，不含文件內容）：\n" +
+		"- 小幫手版本、這台電腦的同步引擎是否在跑、失敗原因的分類份數\n" +
+		fmt.Sprintf("- 「%s」這個知識庫在雲端的統計（例如庫數、資料筆數）；讀不到會照實註明\n", g.AccountName) +
+		"- 不會附上其他知識庫的任何資料"
+}
+
+// askedStallsForHost：這個知識庫現在「小幫手修不了、還在等用戶回答」的分組（排序固定）。
+func askedStallsForHost(cfg *directConfig, host string) []stallGroupWithAcct {
+	store := helpStore()
+	now := time.Now()
+	var out []stallGroupWithAcct
+	for _, g := range cachedStalls(cfg, false) {
+		if g.Host != host || collector.Diagnose(g.Kind, g.Count).Handling != collector.HandlingAsked {
+			continue
+		}
+		if e, ok := store.Lookup(g.Host, g.Kind, now); ok &&
+			(e.State == collector.HelpStateDeclined || e.State == collector.HelpStateReported) {
+			continue
+		}
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Fingerprint < out[j].Fingerprint })
+	return out
+}
+
+func consentPreview(host string) *collector.LedgerConsent {
+	cfg, err := loadCfg()
+	if err != nil {
+		return nil
+	}
+	gs := askedStallsForHost(cfg, host)
+	if len(gs) == 0 {
+		return nil
+	}
+	pv := consentPreviewText(gs[0])
+	return &collector.LedgerConsent{Fingerprint: gs[0].Fingerprint, SHA: collector.ConsentSHA(pv), Preview: pv}
+}
+
+// applyConsentDecision 執行用戶在 Portal 的決定。回 error＝沒執行成功（雲端的決定還在，下一輪再帶回來再試）。
+func applyConsentDecision(host string, d collector.ConsentDecision) error {
+	cfg, err := loadCfg()
+	if err != nil {
+		return err
+	}
+	var hit *stallGroupWithAcct
+	for _, g := range askedStallsForHost(cfg, host) {
+		if g.Fingerprint == d.Fingerprint {
+			g := g
+			hit = &g
+		}
+	}
+	if hit == nil {
+		return nil // 問題已經不在了（自己好了、或已回答過）：決定作廢，不是錯誤
+	}
+	a := &App{}
+	switch d.Decision {
+	case "dismiss":
+		return a.DeclineStall(d.Fingerprint)
+	case "agree":
+		// 簽章對不上＝用戶在 Portal 看到的不是現在要寄的那份 ⇒ 不寄（紅線：看到的就是寄出的）。
+		if collector.ConsentSHA(consentPreviewText(*hit)) != d.SHA {
+			return nil
+		}
+		if _, err := a.StallPreview(d.Fingerprint); err != nil {
+			return err
+		}
+		return a.ReportStall(d.Fingerprint)
+	}
+	return nil
+}
+
+func init() {
+	collector.ConsentPreviewHook = consentPreview
+	collector.ConsentDecisionHook = applyConsentDecision
+}

@@ -1207,7 +1207,24 @@
    "fingerprint": "23da903f3c65c7ff6743f4d9840f380079bcb7b1714391cebd360c50bc969a30",
    "built": "2026-11-27",
    "shipped": {
-    "stage": "2026-11-27T05:22:43.050Z"
+    "stage": "2026-11-27T05:22:43.050Z",
+    "prod": "2026-11-27T05:54:32.234Z"
+   }
+  },
+  "1.4.308": {
+   "commit": "0446971baa797fcd0dd24dbc66fadb854977ab13",
+   "fingerprint": "d1e83ae6c7ac7a9f449afbdc50426f8c4fb6cc454af87e809cfaf120ed518594",
+   "built": "2026-11-27",
+   "shipped": {
+    "stage": "2026-11-27T06:05:21.098Z"
+   }
+  },
+  "1.4.309": {
+   "commit": "0b9cf0ad5f1e075115a3a16ae250504d7155836a",
+   "fingerprint": "cf16d66ec6faa26b7f1f3d55b02b0877d772af5f16afe2d09822137ee8027d00",
+   "built": "2026-11-27",
+   "shipped": {
+    "stage": "2026-11-27T06:25:01.441Z"
    }
   }
  }

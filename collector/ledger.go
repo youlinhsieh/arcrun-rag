@@ -72,6 +72,53 @@ type LedgerSummary struct {
 	FixState   string            `json:"fix_state,omitempty"`   // trying｜cannot_fix｜asked｜reported
 	UserAction *LedgerUserAction `json:"user_action,omitempty"` // 只在用戶真的能動手
 	Report     *LedgerReport     `json:"report,omitempty"`      // 已通報：票號
+	// Consent＝fix_state=asked 時，「要寄出的內容」的預覽與簽章（inkstone/Arcrun#532）。
+	// Portal 把 Preview 原文給用戶看、用戶在 Portal 按同意／不用了；決定連同 SHA 回到小幫手，
+	// 簽章對得上（＝用戶看到的還是現在要寄的那一份）才寄。不帶文件內容、不帶完整路徑。
+	Consent *LedgerConsent `json:"consent,omitempty"`
+}
+
+// LedgerConsent：一份「等用戶決定要不要通報」的提問。
+type LedgerConsent struct {
+	Fingerprint string `json:"fingerprint"` // 哪一個停工分組（同 UIStall.Fingerprint）
+	SHA         string `json:"sha"`         // Preview 的簽章
+	Preview     string `json:"preview"`     // 給用戶看的、將寄出的內容
+}
+
+// ConsentDecision＝雲端回給小幫手的「用戶在 Portal 的決定」（folder-tree 回應的 consent 欄）。
+type ConsentDecision struct {
+	Fingerprint string `json:"fingerprint"`
+	SHA         string `json:"sha"`
+	Decision    string `json:"decision"` // agree｜dismiss
+}
+
+// 由 cmd/arcrun-app 接上（collector 套件不知道 App 的畫面與寄件通道，見 consent_hooks.go）。
+var (
+	// ConsentPreviewHook：host 這個知識庫現在有沒有一份要問用戶的通報？沒有回 nil。
+	ConsentPreviewHook func(host string) *LedgerConsent
+	// ConsentDecisionHook：雲端說用戶決定了；回 error 只記日誌，不影響同步。
+	ConsentDecisionHook func(host string, d ConsentDecision) error
+)
+
+// ParseConsentDecision 從 folder-tree 回應本文取出用戶的決定；沒有（或不合法）回 nil。
+func ParseConsentDecision(body string) *ConsentDecision {
+	var out struct {
+		Consent *ConsentDecision `json:"consent"`
+	}
+	if json.Unmarshal([]byte(body), &out) != nil || out.Consent == nil {
+		return nil
+	}
+	c := out.Consent
+	if c.Fingerprint == "" || c.SHA == "" || (c.Decision != "agree" && c.Decision != "dismiss") {
+		return nil
+	}
+	return c
+}
+
+// ConsentSHA＝預覽原文的簽章（雲端與小幫手各算各的、必須一致）。
+func ConsentSHA(preview string) string {
+	sum := sha256.Sum256([]byte(preview))
+	return hex.EncodeToString(sum[:8])
 }
 
 type LedgerUserAction struct {
@@ -250,5 +297,10 @@ func (c *DirectConfig) stampLedger(t FolderTree, entries map[string]*ManifestEnt
 	if c.Manifest != "" {
 		store = LoadHelpStore(HelpStatePath(c.Manifest))
 	}
-	return t.StampLedgerFor(entries, now, instanceHostOf(c.CypherURL), store)
+	host := instanceHostOf(c.CypherURL)
+	t = t.StampLedgerFor(entries, now, host, store)
+	if t.Ledger != nil && t.Ledger.FixState == "asked" && ConsentPreviewHook != nil {
+		t.Ledger.Consent = ConsentPreviewHook(host)
+	}
+	return t
 }

@@ -601,7 +601,7 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 	if tree.Ledger != nil {
 		body["ledger_summary"] = tree.Ledger
 	}
-	status, _, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
+	status, respBody, err := cfg.postJSON(stepFolderTree, cfg.folderTreeURL(), body)
 	res.HTTPStatus = status
 	if err != nil {
 		res.Status = "failed"
@@ -632,6 +632,13 @@ func syncFolderTree(cfg *DirectConfig, absRoot string, m *Manifest, tree FolderT
 		return res
 	}
 	res.Status = "ingested"
+	// inkstone/Arcrun#532：用戶在 Portal 決定了要不要通報——回應裡帶著，這裡交給 App 去執行。
+	if ConsentDecisionHook != nil {
+		if d := ParseConsentDecision(respBody); d != nil {
+			// 執行失敗＝沒蓋章，雲端的決定還在，下一次回報會再帶回來再試；不影響這次樹的結果。
+			_ = ConsentDecisionHook(instanceHostOf(cfg.CypherURL), *d)
+		}
+	}
 	m.FolderTreeHash = h
 	m.FolderTreeDaemonVersion = tree.DaemonVersion
 	if tree.Ledger != nil {

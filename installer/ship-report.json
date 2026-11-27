@@ -17744,7 +17744,7 @@
    }
   }
  },
- "1.4.306／小幫手 0.18.124／安裝器 1.0.108": {
+ "1.4.308／小幫手 0.18.124／安裝器 1.0.108": {
   "stage": {
    "results": [
     {
@@ -17853,7 +17853,7 @@
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
      "status": "skip",
-     "note": "線上已是 1.4.306／pin 35ca0ab／安裝器原始碼 7c1e2e3dc8e5 未變，且釘子沒動 ⇒ 不重複部署"
+     "note": "線上已是 1.4.308／pin 5d5154d／安裝器原始碼 7c1e2e3dc8e5 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -17882,8 +17882,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.108 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.108"
     },
     {
      "id": "release-check",
@@ -17900,175 +17900,63 @@
     {
      "id": "instance-update",
      "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
-     "status": "failed"
+     "status": "done",
+     "note": null
     },
     {
      "id": "front-door",
      "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "stage-record",
      "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "prod-record",
      "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
-     "status": "not-run"
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
     }
    ],
-   "sourceCommit": "Arcrun@12e0403d2943",
+   "sourceCommit": "Arcrun@eb216191f39c",
    "machine": "b603c18c637e",
-   "ts": 1795756177076,
+   "ts": 1795759521013,
    "queue": {
     "status": "descendant",
-    "live": "65a69e243fa6",
+    "live": "eb216191f39c",
     "carriedTickets": [
-     "inkstone/Arcrun#529",
-     "inkstone/Arcrun#472",
-     "inkstone/Arcrun#527",
-     "inkstone/Arcrun#521",
-     "inkstone/InkStoneCo#325"
+     "inkstone/Arcrun#427",
+     "inkstone/Arcrun#527"
     ],
     "carriedCommits": [
      {
-      "sha": "d7f956e3",
-      "subject": "Merge remote-tracking branch 'origin/main' into claude/529-allow-forms",
+      "sha": "0446971b",
+      "subject": "build(workers): 重編成品（源碼 eb216191，含 Arcrun#427 設計系統的 portal UI）",
+      "tickets": [
+       "inkstone/Arcrun#427"
+      ]
+     },
+     {
+      "sha": "f46e6eb1",
+      "subject": "Merge remote-tracking branch 'origin/main' into arcrun-hand/526-lemonade",
       "tickets": []
      },
      {
-      "sha": "f6d8e336",
-      "subject": "#529: 重編 rag-ui 成品（source=12e0403，含 allow-forms）",
-      "tickets": [
-       "inkstone/Arcrun#529"
-      ]
-     },
-     {
-      "sha": "3ae238e9",
-      "subject": "#472: paper 0.5.1 版本號與說明（0.5.0 之後的修正要換版才裝得進去）",
-      "tickets": [
-       "inkstone/Arcrun#472"
-      ]
-     },
-     {
-      "sha": "8d047a7b",
-      "subject": "#472: paper 0.5.1 被叫工作流不存在時標真因（stage 實測發現）",
-      "tickets": [
-       "inkstone/Arcrun#472"
-      ]
-     },
-     {
-      "sha": "12e0403d",
-      "subject": "#529: Portal 內嵌 App 的 iframe sandbox 補 allow-forms，AHub 簽核框與所有 formDialog 才送得出去",
-      "tickets": [
-       "#529"
-      ]
-     },
-     {
-      "sha": "835ee8e5",
-      "subject": "#527: 發行簽章改成 arcrun-release-signer（私鑰只在 CF Secret、人不經手任何金鑰；呼叫方用本來就有的 uncle6 Cloudflare 憑證）",
+      "sha": "a97558e3",
+      "subject": "#527: 正式簽章驗收（REAL=1）、照 README 換版的驗收腳本、換版說明對齊 install.sh（onprem.7 安裝包）",
       "tickets": [
        "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "580d70ef",
-      "subject": "#527: 發行簽章端點（license-admin 代簽，私鑰只在 CF Secret、由 Worker 自己產生並寫入）；build-update 支援 --sign-url",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "a7fb8cde",
-      "subject": "#527: 重編 rag-ui 成品（source=前一筆，已併入 main 的 #521）",
-      "tickets": [
-       "inkstone/Arcrun#527",
-       "#521"
-      ]
-     },
-     {
-      "sha": "b6b430a5",
-      "subject": "Merge origin/main into arcrun-hand/526-lemonade（成品檔衝突先取 main 的，下一筆重編）",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "125ba778",
-      "subject": "#527: 地端換版說明（最後一次手動換，步驟實跑過）、發行金鑰說明",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "837ec57a",
-      "subject": "#527: 重編 rag-ui 成品（source=前一筆）",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "cd03b0d6",
-      "subject": "#527: 版本卡窄螢幕按鈕換行；地端換版說明與發行金鑰產生腳本",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "874a811f",
-      "subject": "#527: 重編 rag-ui 成品（source=前一筆）",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "d7ffa678",
-      "subject": "#527: Portal 版本卡加「上傳更新檔」（地端管理員，隨身碟情境）；驗收加真瀏覽器上傳（壞簽章被拒、好檔驗過後一鍵更新）",
-      "tickets": [
-       "inkstone/Arcrun#527"
-      ]
-     },
-     {
-      "sha": "f7ce0ea1",
-      "subject": "#325: 更新檔帶 KBDB 要連 migrations 一起、退回不卡在已結束的行程、驗收腳本（無外網實驗室）",
-      "tickets": [
-       "inkstone/InkStoneCo#325"
-      ]
-     },
-     {
-      "sha": "d6aed7f9",
-      "subject": "#325: 重編 rag-ui 成品（source=前一筆）",
-      "tickets": [
-       "inkstone/InkStoneCo#325"
-      ]
-     },
-     {
-      "sha": "3deacde3",
-      "subject": "#325: Portal 版本卡地端字串縮短（過畫面字數預算）",
-      "tickets": [
-       "inkstone/InkStoneCo#325"
-      ]
-     },
-     {
-      "sha": "7cc900b6",
-      "subject": "#325: 地端更新檔（驗簽、備份、換版、退回）與 Portal 立即更新接上私有雲",
-      "tickets": [
-       "inkstone/InkStoneCo#325"
-      ]
-     },
-     {
-      "sha": "2e937a57",
-      "subject": "#521: 重編 cypher-executor／rag-ui／mcp 成品（source=前一筆）",
-      "tickets": [
-       "inkstone/Arcrun#521"
       ]
      }
     ]
    }
   }
  },
- "1.4.307／小幫手 0.18.124／安裝器 1.0.108": {
+ "1.4.309／小幫手 0.18.124／安裝器 1.0.108": {
   "stage": {
    "results": [
     {
@@ -18246,48 +18134,84 @@
      "note": "不是 prod 目標：不寫 prod 現況"
     }
    ],
-   "sourceCommit": "Arcrun@12e0403d2943",
+   "sourceCommit": "Arcrun@a765ea8ba693",
    "machine": "b603c18c637e",
-   "ts": 1795756963009,
+   "ts": 1795760701395,
    "queue": {
     "status": "descendant",
-    "live": "12e0403d2943",
+    "live": "eb216191f39c",
     "carriedTickets": [
-     "inkstone/Arcrun#529",
-     "inkstone/Arcrun#472"
+     "inkstone/Arcrun#533",
+     "inkstone/Arcrun#534",
+     "inkstone/Arcrun#532",
+     "inkstone/Arcrun#427",
+     "inkstone/Arcrun#527"
     ],
     "carriedCommits": [
      {
-      "sha": "02fc7631",
-      "subject": "#529: AHub 0.64.4／票地圖 0.9.20：留言送不出去（例如重複簽核被擋）的紅字也放在撰寫框上方，不再只在討論串最上面",
+      "sha": "0b9cf0ad",
+      "subject": "Merge origin/main into 533（AHub 版號取 0.66.0，changelog 併 0.65.1）",
       "tickets": [
-       "inkstone/Arcrun#529"
+       "inkstone/Arcrun#533"
       ]
      },
      {
-      "sha": "d7f956e3",
-      "subject": "Merge remote-tracking branch 'origin/main' into claude/529-allow-forms",
+      "sha": "84a87b2b",
+      "subject": "ahub-ui: 留言按送出先畫「送出中…」再等 AHub，成功換真留言、失敗還原文；一般留言不整頁重讀 (inkstone/Arcrun#533)",
+      "tickets": [
+       "inkstone/Arcrun#533"
+      ]
+     },
+     {
+      "sha": "c8c3deac",
+      "subject": "#534: AHub 0.65.1：signoff_status 認租戶層的同意（approved:<版>），開單與查簽核說同一句話；新寫的同意記票號與留言 id",
+      "tickets": [
+       "inkstone/Arcrun#534"
+      ]
+     },
+     {
+      "sha": "f4b038a4",
+      "subject": "#532: 併入 main 後重編 rag-ui 成品",
+      "tickets": [
+       "inkstone/Arcrun#532"
+      ]
+     },
+     {
+      "sha": "a765ea8b",
+      "subject": "merge origin/main into 532",
       "tickets": []
      },
      {
-      "sha": "f6d8e336",
-      "subject": "#529: 重編 rag-ui 成品（source=12e0403，含 allow-forms）",
+      "sha": "df1357f0",
+      "subject": "#532: 重編 cypher-executor／rag-ui 成品（source=67a2172）",
       "tickets": [
-       "inkstone/Arcrun#529"
+       "inkstone/Arcrun#532"
       ]
      },
      {
-      "sha": "3ae238e9",
-      "subject": "#472: paper 0.5.1 版本號與說明（0.5.0 之後的修正要換版才裝得進去）",
+      "sha": "67a21723",
+      "subject": "#532: Portal 上同意／不用了通報、提醒會過期",
       "tickets": [
-       "inkstone/Arcrun#472"
+       "inkstone/Arcrun#532"
       ]
      },
      {
-      "sha": "8d047a7b",
-      "subject": "#472: paper 0.5.1 被叫工作流不存在時標真因（stage 實測發現）",
+      "sha": "0446971b",
+      "subject": "build(workers): 重編成品（源碼 eb216191，含 Arcrun#427 設計系統的 portal UI）",
       "tickets": [
-       "inkstone/Arcrun#472"
+       "inkstone/Arcrun#427"
+      ]
+     },
+     {
+      "sha": "f46e6eb1",
+      "subject": "Merge remote-tracking branch 'origin/main' into arcrun-hand/526-lemonade",
+      "tickets": []
+     },
+     {
+      "sha": "a97558e3",
+      "subject": "#527: 正式簽章驗收（REAL=1）、照 README 換版的驗收腳本、換版說明對齊 install.sh（onprem.7 安裝包）",
+      "tickets": [
+       "inkstone/Arcrun#527"
       ]
      }
     ]
