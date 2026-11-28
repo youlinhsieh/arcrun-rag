@@ -266,6 +266,57 @@
           "kind": "updated"
         }
       ]
+    },
+    {
+      "version": "2026.11.27-042f0bd",
+      "target": "stage",
+      "at": "2026-11-27T16:27:19.817Z",
+      "ticket": null,
+      "previous": "2026.11.27-95227f2",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.69.1",
+          "to": "0.69.3",
+          "kind": "updated"
+        },
+        {
+          "id": "kanban",
+          "from": "0.9.27",
+          "to": "0.9.28",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.27-04824b5",
+      "target": "stage",
+      "at": "2026-11-27T17:16:40.978Z",
+      "ticket": null,
+      "previous": "2026.11.27-042f0bd",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.69.3",
+          "to": "0.70.0",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.27-45ba826",
+      "target": "stage",
+      "at": "2026-11-27T17:53:24.800Z",
+      "ticket": null,
+      "previous": "2026.11.27-04824b5",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.70.0",
+          "to": "0.70.1",
+          "kind": "updated"
+        }
+      ]
     }
   ]
 }
