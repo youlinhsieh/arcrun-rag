@@ -22678,5 +22678,274 @@
     ]
    }
   }
+ },
+ "1.4.328／小幫手 0.18.124／安裝器 1.0.111": {
+  "stage": {
+   "results": [
+    {
+     "id": "preflight",
+     "title": "對齊目標（打錯目標打不進去）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "unmerged-fixes",
+     "title": "點名已交回卻沒進這一版來源的分支（緊急或放太久的不處理就切不了版）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "public-docs",
+     "title": "掃公開樹：說明這一版的東西還成不成立（README／安裝手冊／Portal 導覽…）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-sync",
+     "title": "把本機最新已發佈的 daemon 產物搬進 bundle",
+     "status": "skip",
+     "note": "bundle 已委任 0.18.124；內容是否真的到位由下一站 daemon-check 逐檔查證"
+    },
+    {
+     "id": "daemon-check",
+     "title": "查證這一版的 daemon 真的在成品裡（逐檔算 sha256，不是比版號字串）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "daemon-source-check",
+     "title": "核對 changelog 宣告的那一版，成品就是照這份源碼打的（比指紋，不查歷史）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "fetch-artifacts",
+     "title": "向 Arcrun 取用編好的零件（這一站不編任何東西）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "no-local-build",
+     "title": "確認這些零件不是我們自己編的（D91：成品只有一個產地）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "parity",
+     "title": "核對 bundle 內容＝唯一真相源（stage 與 prod 因此必然一一對應）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "notes",
+     "title": "產生更新畫面那一行（來源＝changelog）",
+     "status": "skip",
+     "note": "已是最新：Mac 小幫手整理大 PDF 不再被系統中途砍掉（細節見說明文件）"
+    },
+    {
+     "id": "version",
+     "title": "算版本並過機械閘（內容一變版本一定變；跨目標共用同一個號碼）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs-changelog",
+     "title": "確認這版已經寫進說明文件（缺了就中止，不安靜跳過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "visa-gate",
+     "title": "海關：這一版有沒有有效的意圖完成簽證（只 prod 查；缺了退回並列出缺哪些票）",
+     "status": "skip",
+     "note": "stage 沒宣告 visaGate（不是 prod）：測試版不查簽證"
+    },
+    {
+     "id": "readme",
+     "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "commit",
+     "title": "把產物寫進 bundle repo 的版控",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "push",
+     "title": "推上 bundle repo",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "pin",
+     "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "deploy",
+     "title": "部署安裝器（帳號由登錄簿釘死）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "docs",
+     "title": "建＋部署說明文件站（並驗它真的是這份原始碼建的）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "mail-relay",
+     "title": "部署郵差（忘記密碼代寄），並驗證它真的接得起來",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "purge",
+     "title": "讓送貨管道拿到新版並確認它真的收斂了",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "verify",
+     "title": "驗收（用戶端視角，不是部署訊息）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-record",
+     "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "release-check",
+     "title": "回頭查證：每條版本線在產品 repo 都真的有版本發佈（不聽上一站說）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "user-path-update",
+     "title": "走使用者那條路更新 youlin（安裝頁認得已授權帳號＋Portal「立即更新」＋讀回版號與耗時）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "instance-update",
+     "title": "讓 youlin 實例真的換到這一版（acr update＋讀回 /health 版號與 commit）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "front-door",
+     "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "stage-record",
+     "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
+     "status": "done",
+     "note": null
+    },
+    {
+     "id": "prod-record",
+     "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
+    }
+   ],
+   "sourceCommit": "Arcrun@cb94a80e0304",
+   "machine": "b603c18c637e",
+   "ts": 1795825795841,
+   "queue": {
+    "status": "descendant",
+    "live": "0cf4d4e33dec",
+    "carriedTickets": [
+     "inkstone/Arcrun#567",
+     "inkstone/Arcrun#435",
+     "#297",
+     "inkstone/Arcrun#535"
+    ],
+    "carriedCommits": [
+     {
+      "sha": "86a9a666",
+      "subject": "build(workers): 重編 arcrun-cypher-executor（cb94a80e：Portal 斷言免等寫入、資產讀 502 修正）與 arcrun-kbdb 成品紀錄（inkstone/Arcrun#567）",
+      "tickets": [
+       "inkstone/Arcrun#567"
+      ]
+     },
+     {
+      "sha": "cb94a80e",
+      "subject": "perf(engine): Portal 斷言同一顆 isolate 第一次驗不等 KBDB 寫入；資產讀加入壞掉的那一趟時自己重讀 (inkstone/Arcrun#567)",
+      "tickets": [
+       "inkstone/Arcrun#567"
+      ]
+     },
+     {
+      "sha": "04f51c38",
+      "subject": "feat(ahub): 詞索引自己補完（0.70.1）——新票分診完背景叫補詞，一頁一頁接著跑，整輪確認後才切到索引 (inkstone/Arcrun#567)",
+      "tickets": [
+       "inkstone/Arcrun#567"
+      ]
+     },
+     {
+      "sha": "63099179",
+      "subject": "perf(ahub): 開票比對改走詞索引，讀取量不再隨票池長 (inkstone/Arcrun#567, 吸收 #435)",
+      "tickets": [
+       "inkstone/Arcrun#567",
+       "#435"
+      ]
+     },
+     {
+      "sha": "458bafb7",
+      "subject": "docs(ahub): 0.70.0 詞索引的 README 與 changelog——做法、補詞注意（limit≤20、502 重跑）、代價 (inkstone/Arcrun#435, #567)",
+      "tickets": [
+       "inkstone/Arcrun#435",
+       "inkstone/Arcrun#567"
+      ]
+     },
+     {
+      "sha": "19b142dd",
+      "subject": "feat(ahub): 開票比對再縮——用索引回傳的 record id 讀候選、查詞標題內文各自抽樣到 32 個、精排用全部詞與掃整池同門檻；開票路徑拿掉 tgate 判斷節點 (inkstone/Arcrun#567)",
+      "tickets": [
+       "inkstone/Arcrun#567"
+      ]
+     },
+     {
+      "sha": "9db27dea",
+      "subject": "feat(ahub): 詞索引比對與 #567 的共有詞門檻合流——抽樣查詞、門檻依抽樣比例縮放，索引模式重演 #297 四組仍全擋 (inkstone/Arcrun#435, #567)",
+      "tickets": [
+       "inkstone/Arcrun#567",
+       "#297",
+       "inkstone/Arcrun#435"
+      ]
+     },
+     {
+      "sha": "d167bfa3",
+      "subject": "wip(ahub): 反查詞數 60→16、加 kbdb rows_read 閘測試（gate 重跑中，未驗收） (inkstone/Arcrun#435)",
+      "tickets": [
+       "inkstone/Arcrun#435"
+      ]
+     },
+     {
+      "sha": "b0491a46",
+      "subject": "feat(ahub): 開票比對改用詞索引 dterms[]，讀取量與 repo 總票數脫鉤 (AHub 0.70.0, inkstone/Arcrun#435)",
+      "tickets": [
+       "inkstone/Arcrun#435"
+      ]
+     },
+     {
+      "sha": "a65d852d",
+      "subject": "build(workers): 重編 arcrun-rag-ui（#535 金鑰管理依服務分組）",
+      "tickets": [
+       "inkstone/Arcrun#535"
+      ]
+     }
+    ]
+   }
+  }
  }
 }

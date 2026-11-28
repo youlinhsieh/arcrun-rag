@@ -585,3 +585,4 @@
 | 2026-11-27 16:14:58 | stage | bundle 1.4.326；daemon 0.18.124；installer 1.0.111 | ✅ 放行 | — |
 | 2026-11-27 16:51:42 | stage | bundle 1.4.327；daemon 0.18.124；installer 1.0.111 | ✅ 放行 | — |
 | 2026-11-27 17:10:44 | stage | bundle 1.4.327；daemon 0.18.124；installer 1.0.111 | ✅ 放行 | — |
+| 2026-11-28 00:20:55 | stage | bundle 1.4.328；daemon 0.18.124；installer 1.0.111 | ✅ 放行 | — |
