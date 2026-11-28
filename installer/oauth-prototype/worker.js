@@ -300,8 +300,8 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@6414b98ac009094e7608d70a1752ffebff3ba1b6';
-const BUNDLE_BUILT = '2026-11-27'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@a0720c864596900b5b71be2cab43a42575c38b77';
+const BUNDLE_BUILT = '2026-11-28'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
 }
@@ -1805,6 +1805,13 @@ const GENERATION_CHECKS = [
       { kind: 'entries_column', name: 'fmt' },
       // idx_entries_tpl_member 刻意不列為必備（inkstone/Arcrun#481）：它是可重建的加速索引（D100），
       // 預算規則可能先跳過它；與 Arcrun kbdb/src/actions/schema-generation.ts 同步。
+    ] },
+  // 0018 樹節點欄位（D100 3.3，inkstone/Arcrun#550）：只加欄、不加索引。鏡射 Arcrun schema-generation.ts n:18
+  { n: 18, checks: [
+      { kind: 'entries_column', name: 'sort_key' },
+      { kind: 'entries_column', name: 'origin' },
+      { kind: 'entries_column', name: 'created_by' },
+      { kind: 'entries_column', name: 'perm_class' },
     ] },
 ];
 

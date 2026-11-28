@@ -16,7 +16,8 @@
     "0014_card_write_trim.sql",
     "0015_kind_is_template.sql",
     "0016_field_value_index.sql",
-    "0017_card_row.sql"
+    "0017_card_row.sql",
+    "0018_tree_node_fields.sql"
   ],
   "statements": [
     "CREATE TABLE IF NOT EXISTS entries (\n  id TEXT PRIMARY KEY,\n  content TEXT,\n  entry_type TEXT NOT NULL,\n  owner_id TEXT,                   \n  parent_id TEXT,\n  page_name TEXT,\n  refs_json TEXT DEFAULT '[]',\n  tags_json TEXT DEFAULT '[]',\n  task_status TEXT,\n  content_hash TEXT,\n  is_embedded INTEGER DEFAULT 0,\n  confidence REAL,\n  metadata_json TEXT,\n  created_at INTEGER DEFAULT (unixepoch()),\n  updated_at INTEGER DEFAULT (unixepoch())\n)",
@@ -156,7 +157,11 @@
     "ALTER TABLE templates ADD COLUMN card_state TEXT",
     "ALTER TABLE templates ADD COLUMN card_cursor TEXT",
     "ALTER TABLE templates ADD COLUMN card_verify_cursor TEXT",
-    "CREATE INDEX IF NOT EXISTS idx_entries_tpl_member ON entries(tpl_id, created_at) WHERE tpl_id IS NOT NULL"
+    "CREATE INDEX IF NOT EXISTS idx_entries_tpl_member ON entries(tpl_id, created_at) WHERE tpl_id IS NOT NULL",
+    "ALTER TABLE entries ADD COLUMN sort_key TEXT",
+    "ALTER TABLE entries ADD COLUMN origin TEXT",
+    "ALTER TABLE entries ADD COLUMN created_by TEXT",
+    "ALTER TABLE entries ADD COLUMN perm_class TEXT"
   ],
   "generationStarts": [
     0,
@@ -175,6 +180,7 @@
     54,
     61,
     122,
-    129
+    129,
+    138
   ]
 }
