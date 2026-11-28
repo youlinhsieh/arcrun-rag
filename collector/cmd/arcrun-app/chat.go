@@ -8,11 +8,11 @@ package main
 //  1. 問題只送**主帳號**（左欄第一個帳號）的 /portal/data/ask 一次。
 //  2. 左欄其他帳號：主帳號還沒連過才自動連（B 發唯讀金鑰 → A 收下），連過不重連；
 //     連結碼只在函式的區域變數裡，不進畫面、不進 log、不落地。
-//  3. 把回傳整理成畫面要的形狀；沒有有效 portal session 的帳號被標出來（不是整個失敗），
+//  3. 把回傳整理成畫面要的形狀；憑證失效的帳號被標出來（不是整個失敗），
 //     後端回錯就把白話錯誤交給畫面。
 //
-// 紅線：不輪詢（只有按「送出」才打網路）、密碼零落地（只用已存的 portal session）、
-// 不另造找卡／合併／第二套帳號連結。
+// 紅線：不輪詢（只有按「送出」才打網路）、**只用連線時拿到的那一把同步憑證**（kbdb_key，不過期；
+// 沒有密碼框、沒有第二套登入，inkstone/arcrun-rag#402）、不另造找卡／合併／第二套帳號連結。
 import (
 	"bytes"
 	"encoding/json"
@@ -51,7 +51,7 @@ type UIChatAccount struct {
 	Label  string `json:"label"`
 	OK     bool   `json:"ok"`
 	Count  int    `json:"count"`
-	// Reason：needs_login＝這台電腦沒有它的有效登入；link_failed＝連不進主帳號；其餘照雲端給的
+	// Reason：needs_reconnect＝這台電腦對它的連線憑證沒有或已失效；link_failed＝連不進主帳號；其餘照雲端給的
 	Reason string `json:"reason,omitempty"`
 	Detail string `json:"detail,omitempty"`
 }
@@ -61,9 +61,9 @@ type UIChatResult struct {
 	Model    string          `json:"model,omitempty"`
 	Cards    []UIChatCard    `json:"cards"`
 	Accounts []UIChatAccount `json:"accounts"`
-	// NeedsLogin＝主帳號本身沒有有效 session（畫面長登入框，不是紅字）。
-	NeedsLogin bool   `json:"needsLogin"`
-	Error      string `json:"error"`
+	// NeedsReconnect＝主帳號的連線憑證沒有或已失效（畫面請用戶重新連線，不是紅字、沒有密碼框）。
+	NeedsReconnect bool   `json:"needsReconnect"`
+	Error          string `json:"error"`
 }
 
 // AskLibraries 是首頁問答框「送出」的入口。
@@ -78,7 +78,7 @@ type chatLinkRow struct {
 	BaseURL string `json:"base_url"`
 }
 
-func chatBearer(base, method, path, session string, body any, timeout time.Duration) (int, []byte, error) {
+func chatBearer(base, method, path, key string, body any, timeout time.Duration) (int, []byte, error) {
 	var rd *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -90,7 +90,7 @@ func chatBearer(base, method, path, session string, body any, timeout time.Durat
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+session)
+	req.Header.Set("Authorization", "Bearer "+key)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -99,10 +99,6 @@ func chatBearer(base, method, path, session string, body any, timeout time.Durat
 
 func sameOrigin(a, b string) bool {
 	return strings.EqualFold(hostOf(a), hostOf(b))
-}
-
-func loginExpiredMsg(name string) string {
-	return "「" + name + "」的登入已過期，請輸入密碼登入一次"
 }
 
 // askCore＝AskLibraries 的本體（單測直接呼叫）。
@@ -124,20 +120,19 @@ func askCore(cfg *directConfig, question string, history []ChatTurn) UIChatResul
 		out.Error = "第一個知識庫沒有網址，請重新連線一次"
 		return out
 	}
-	if !sessionValid(primary) {
-		out.NeedsLogin = true
-		out.Error = loginExpiredMsg(pname)
+	if syncKey(primary) == "" {
+		out.NeedsReconnect = true
+		out.Error = reconnectMsg(pname)
 		return out
 	}
 
 	// ① 其他帳號：主帳號沒連過才連（主帳號已連的清單只問一次）
 	var skipped []UIChatAccount
 	if len(cfg.Accounts) > 1 {
-		linked, lerr := listPrimaryLinks(pbase, primary.PortalSession)
+		linked, lerr := listPrimaryLinks(pbase, syncKey(primary))
 		if lerr != nil && lerr.unauthorized {
-			clearSession(0)
-			out.NeedsLogin = true
-			out.Error = loginExpiredMsg(pname)
+			out.NeedsReconnect = true
+			out.Error = reconnectMsg(pname)
 			return out
 		}
 		for i := 1; i < len(cfg.Accounts); i++ {
@@ -153,15 +148,15 @@ func askCore(cfg *directConfig, question string, history []ChatTurn) UIChatResul
 			if hasLink(linked, acc.CypherURL) {
 				continue
 			}
-			if !sessionValid(acc) {
-				skipped = append(skipped, UIChatAccount{AccIdx: i, Label: name, Reason: "needs_login",
-					Detail: "這台電腦沒有「" + name + "」的有效登入，請輸入密碼登入一次"})
+			if syncKey(acc) == "" {
+				skipped = append(skipped, UIChatAccount{AccIdx: i, Label: name, Reason: "needs_reconnect",
+					Detail: reconnectMsg(name)})
 				continue
 			}
-			if msg, needLogin, why := linkAccount(pbase, primary.PortalSession, i, acc, name); msg != "" {
+			if msg, needReconnect, why := linkAccount(pbase, syncKey(primary), acc, name); msg != "" {
 				reason := "link_failed"
-				if needLogin {
-					reason = "needs_login"
+				if needReconnect {
+					reason = "needs_reconnect"
 				} else if why == "unreachable" || why == "timeout" {
 					reason = why // 主帳號的雲端連不到它（例如只開放公司網路）⇒ 之後由小幫手代查
 				}
@@ -175,16 +170,15 @@ func askCore(cfg *directConfig, question string, history []ChatTurn) UIChatResul
 	if len(history) > 0 {
 		payload["history"] = history
 	}
-	status, raw, err := chatBearer(pbase, http.MethodPost, "/portal/data/ask", primary.PortalSession, payload, chatTimeout)
+	status, raw, err := chatBearer(pbase, http.MethodPost, "/portal/data/ask", syncKey(primary), payload, chatTimeout)
 	if err != nil {
 		out.Error = err.Error()
 		out.Accounts = skipped
 		return out
 	}
 	if status == http.StatusUnauthorized {
-		clearSession(0)
-		out.NeedsLogin = true
-		out.Error = loginExpiredMsg(pname)
+		out.NeedsReconnect = true
+		out.Error = reconnectMsg(pname)
 		return out
 	}
 	var body struct {
@@ -254,13 +248,13 @@ type linkListErr struct {
 	unauthorized bool
 }
 
-func listPrimaryLinks(pbase, session string) ([]chatLinkRow, *linkListErr) {
-	status, raw, err := chatBearer(pbase, http.MethodGet, "/portal/data/links", session, nil, appReadTimeout)
+func listPrimaryLinks(pbase, key string) ([]chatLinkRow, *linkListErr) {
+	status, raw, err := chatBearer(pbase, http.MethodGet, "/portal/data/links", key, nil, appReadTimeout)
 	if err != nil {
 		return nil, &linkListErr{msg: err.Error()}
 	}
 	if status == http.StatusUnauthorized {
-		return nil, &linkListErr{msg: "登入已過期", unauthorized: true}
+		return nil, &linkListErr{msg: "連線憑證已失效", unauthorized: true}
 	}
 	if status != http.StatusOK {
 		return nil, &linkListErr{msg: appErrMessage(status, raw)}
@@ -285,15 +279,14 @@ func hasLink(rows []chatLinkRow, otherURL string) bool {
 
 // linkAccount：B（acc）發一把唯讀連結金鑰 → A（主帳號）收下。回傳 ("", false)＝成功。
 // 連結碼只存在這個函式內，不回傳、不寫 log。
-func linkAccount(pbase, psession string, idx int, acc accountCfg, name string) (msg string, needsLogin bool, reason string) {
-	status, raw, err := chatBearer(apiBaseOf(acc), http.MethodPost, "/portal/data/links/issue", acc.PortalSession,
+func linkAccount(pbase, pkey string, acc accountCfg, name string) (msg string, needsReconnect bool, reason string) {
+	status, raw, err := chatBearer(apiBaseOf(acc), http.MethodPost, "/portal/data/links/issue", syncKey(acc),
 		map[string]any{"label": "小幫手跨帳號問答"}, appReadTimeout)
 	if err != nil {
 		return "連不上「" + name + "」：" + err.Error(), false, ""
 	}
 	if status == http.StatusUnauthorized {
-		clearSession(idx)
-		return loginExpiredMsg(name), true, ""
+		return reconnectMsg(name), true, ""
 	}
 	var issued struct {
 		Code string `json:"code"`
@@ -301,7 +294,7 @@ func linkAccount(pbase, psession string, idx int, acc accountCfg, name string) (
 	if status != http.StatusOK || json.Unmarshal(raw, &issued) != nil || issued.Code == "" {
 		return "「" + name + "」不能被連結：" + appErrMessage(status, raw), false, ""
 	}
-	status, raw, err = chatBearer(pbase, http.MethodPost, "/portal/data/links", psession,
+	status, raw, err = chatBearer(pbase, http.MethodPost, "/portal/data/links", pkey,
 		map[string]any{"code": issued.Code, "label": name}, appReadTimeout)
 	if err != nil {
 		return err.Error(), false, ""
@@ -331,18 +324,17 @@ func proxyUnreachable(cfg *directConfig, question string, out *UIChatResult) {
 			continue
 		}
 		name := accountName(acc)
-		if !sessionValid(acc) {
-			x.Reason, x.Detail = "needs_login", "雲端連不到「"+name+"」，要由這台電腦代查，請輸入密碼登入一次"
+		if syncKey(acc) == "" {
+			x.Reason, x.Detail = "needs_reconnect", "雲端連不到「"+name+"」，要由這台電腦代查，但它的連線憑證太舊，請重新連線一次"
 			continue
 		}
-		status, raw, err := chatBearer(apiBaseOf(acc), http.MethodGet, "/portal/data/retrieve?q="+url.QueryEscape(question)+"&limit=5", acc.PortalSession, nil, appReadTimeout)
+		status, raw, err := chatBearer(apiBaseOf(acc), http.MethodGet, "/portal/data/retrieve?q="+url.QueryEscape(question)+"&limit=5", syncKey(acc), nil, appReadTimeout)
 		if err != nil {
 			x.Detail += "；這台電腦也連不上：" + err.Error()
 			continue
 		}
 		if status == http.StatusUnauthorized {
-			clearSession(x.AccIdx)
-			x.Reason, x.Detail = "needs_login", loginExpiredMsg(name)
+			x.Reason, x.Detail = "needs_reconnect", reconnectMsg(name)
 			continue
 		}
 		var b struct {

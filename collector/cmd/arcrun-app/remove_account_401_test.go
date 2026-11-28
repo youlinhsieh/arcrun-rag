@@ -16,7 +16,7 @@ func writeThreeAccountCfg(t *testing.T, retiringOnMiddle bool) {
 	t.Setenv("USERPROFILE", home)
 	mid := map[string]any{
 		"cypher_url": "https://b.example.workers.dev", "namespace": "nsb", "api_key": "kb",
-		"kbdb_key": "KBDB-B", "portal_session": "PS-B", "portal_session_exp": 123,
+		"kbdb_key": "KBDB-B",
 		"watch_folders": []string{"/kb/b"}, "libraries": map[string]string{"/kb/b": "libb"},
 	}
 	if retiringOnMiddle {

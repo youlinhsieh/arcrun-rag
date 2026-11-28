@@ -12,7 +12,8 @@ package main
 // 這組測試回答的是驗收條件 1 與 2 裡「機器答得出來」的那幾格：
 //   - 清單真的來自實例（兩條路都試過），桌面端沒有任何寫死清單
 //   - 「問不到」與「一個都沒裝」分得出來
-//   - session 過期會被清掉、且清單仍然看得到（退回 API key）
+//   - 憑證被 Portal 端點拒絕（太舊）時清單仍然看得到（退回舊的 /apps 路）；詳情／動作請用戶重新連線
+//   - 🔴 #402：只有 kbdb_key 一把憑證——沒有密碼框、沒有 portal_session、沒有 PortalLogin
 //   - 動作真的打到 /portal/data/apps/:id/action，白名單由實例裁決
 import (
 	"encoding/json"
@@ -56,9 +57,8 @@ func tempHome(t *testing.T) {
 
 // fakeInstance 是「一台裝了 App 系統的 Arcrun 實例」的最小替身。
 type fakeInstance struct {
-	// sessionToken＝目前有效的 session；空字串＝任何 Bearer 都算過期。
+	// sessionToken＝實例目前認得的同步憑證（kbdb_key，Arcrun#580）；空字串＝任何 Bearer 都不認。
 	sessionToken string
-	password     string
 	apiKey       string
 	// 收到的動作（給測試斷言用）
 	gotAction  string
@@ -76,21 +76,6 @@ func (f *fakeInstance) server(t *testing.T) *httptest.Server {
 	}
 	mux := http.NewServeMux()
 
-	// POST /portal/login（routes/portal.ts）
-	mux.HandleFunc("/portal/login", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Email, Password string }
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		if in.Password != f.password {
-			w.WriteHeader(401)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "email 或密碼錯誤"})
-			return
-		}
-		f.sessionToken = "sess-" + in.Email
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"success": true, "session_token": f.sessionToken, "session_expires_in": 604800,
-		})
-	})
-
 	// GET /apps（routes/apps.ts，X-Arcrun-API-Key）
 	mux.HandleFunc("/apps", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Arcrun-API-Key") != f.apiKey {
@@ -105,7 +90,7 @@ func (f *fakeInstance) server(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/portal/data/apps", func(w http.ResponseWriter, r *http.Request) {
 		if !f.authed(r) {
 			w.WriteHeader(401)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "session 無效或已過期"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "reconnect_required","code":"reconnect_required"})
 			return
 		}
 		if f.listStatus != 0 {
@@ -118,7 +103,7 @@ func (f *fakeInstance) server(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/portal/data/apps/", func(w http.ResponseWriter, r *http.Request) {
 		if !f.authed(r) {
 			w.WriteHeader(401)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "session 無效或已過期"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "reconnect_required","code":"reconnect_required"})
 			return
 		}
 		rest := strings.TrimPrefix(r.URL.Path, "/portal/data/apps/")
@@ -162,22 +147,22 @@ func (f *fakeInstance) authed(r *http.Request) bool {
 
 // ── 驗收條件 1：清單來自實例，兩條路都通 ────────────────────────────────
 
-func TestListApps_UsesPortalSessionWhenAvailable(t *testing.T) {
+func TestListApps_UsesPortalEndpointWithSyncKey(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "sess-a", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "sess-a", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
 	writeCfgWithAccount(t, srv.URL, accountCfg{
 		InstanceName: "我的庫", Email: "a@b.c", APIKey: "ns-test",
-		PortalSession: "sess-a", PortalSessionExp: 0,
+		KbdbKey: "sess-a",
 	})
 
 	got := (&App{}).ListApps(0)
 	if got.Error != "" {
 		t.Fatalf("不該有錯：%s", got.Error)
 	}
-	if got.Source != "session" {
-		t.Fatalf("該走 portal session，實際走 %q", got.Source)
+	if got.Source != "portal" {
+		t.Fatalf("該走 Portal 端點，實際走 %q", got.Source)
 	}
 	if len(got.Apps) != 2 || got.Apps[0].ID != "note" || got.Apps[0].Icon != "🗒️" || !got.Apps[0].HasUI {
 		t.Fatalf("清單沒有原樣接住實例的回應：%+v", got.Apps)
@@ -187,48 +172,48 @@ func TestListApps_UsesPortalSessionWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestListApps_FallsBackToApiKeyWithoutSession(t *testing.T) {
+func TestListApps_FallsBackToApiKeyWithoutSyncKey(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	// 完全沒有 session（＝剛升級上來、或從沒登入過）——九宮格照樣要看得到真資料
+	// 完全沒有 kbdb_key（＝舊版連的帳號）——九宮格照樣要看得到真資料
 	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test"})
 
 	got := (&App{}).ListApps(0)
 	if got.Error != "" || got.Source != "apikey" || len(got.Apps) != 2 {
-		t.Fatalf("沒有 session 時該退回 API key 並照樣列出來：%+v", got)
+		t.Fatalf("沒有憑證時該退回舊路 並照樣列出來：%+v", got)
 	}
 }
 
-func TestListApps_ExpiredSessionIsClearedAndListStillWorks(t *testing.T) {
+func TestListApps_StaleKeyFallsBackAndListStillWorks(t *testing.T) {
 	tempHome(t)
-	// 實例已經不認這張 session（f.sessionToken 與 config 裡那張不同）
-	fi := &fakeInstance{sessionToken: "sess-new", password: "pw", apiKey: "ns-test"}
+	// 實例已經不認這把憑證（f.sessionToken 與 config 裡那把不同）
+	fi := &fakeInstance{sessionToken: "sess-new", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
 	writeCfgWithAccount(t, srv.URL, accountCfg{
-		Email: "a@b.c", APIKey: "ns-test", PortalSession: "sess-old",
+		Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-old",
 	})
 
 	got := (&App{}).ListApps(0)
 	if got.Error != "" || got.Source != "apikey" || len(got.Apps) != 2 {
-		t.Fatalf("session 過期時清單仍該看得到（退回 API key）：%+v", got)
+		t.Fatalf("憑證太舊時清單仍該看得到（退回舊路）：%+v", got)
 	}
-	// 已知無效的 token 要被丟掉，否則下一次還會再撞一次 401
+	// 憑證只有 config 裡那一把：不准被清掉（清掉＝同步也斷）
 	cfg, _ := loadCfg()
-	if cfg.Accounts[0].PortalSession != "" {
-		t.Fatalf("過期的 session 沒有被清掉：%q", cfg.Accounts[0].PortalSession)
+	if cfg.Accounts[0].KbdbKey != "sess-old" {
+		t.Fatalf("憑證不該被動：%q", cfg.Accounts[0].KbdbKey)
 	}
 }
 
 // 🔴「問不到」不准偽裝成「一個都沒裝」——實例 5xx 時不准悄悄退回 API key 假裝正常。
 func TestListApps_InstanceErrorIsNotDisguisedAsEmpty(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "sess-a", password: "pw", apiKey: "ns-test", listStatus: 500}
+	fi := &fakeInstance{sessionToken: "sess-a", apiKey: "ns-test", listStatus: 500}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", PortalSession: "sess-a"})
+	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-a"})
 
 	got := (&App{}).ListApps(0)
 	if got.Error == "" {
@@ -251,14 +236,14 @@ func TestListApps_UnknownAccountSaysSo(t *testing.T) {
 
 func TestGetApp_ReturnsDetailWithUI(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "sess-a", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "sess-a", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", PortalSession: "sess-a"})
+	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-a"})
 
 	d := (&App{}).GetApp(0, "note")
-	if d.Error != "" || d.NeedsLogin {
-		t.Fatalf("不該有錯也不該要登入：%+v", d)
+	if d.Error != "" || d.NeedsReconnect {
+		t.Fatalf("不該有錯也不該要重新連線：%+v", d)
 	}
 	if !d.HasUI || d.UIHtml != "<div id=x>hi</div>" {
 		t.Fatalf("自帶畫面沒接住：%+v", d)
@@ -271,65 +256,63 @@ func TestGetApp_ReturnsDetailWithUI(t *testing.T) {
 	}
 }
 
-// 沒有 session ⇒ 回 NeedsLogin（要長登入框），不是回一句錯誤。
-// 這是刻意的：上游的 API key 面**沒有**詳情端點（routes/apps.ts 只有 install/list/delete），
-// 所以「看詳情」在協定上就只有 portal session 那一條路。
-func TestGetApp_WithoutSessionAsksForLoginNotError(t *testing.T) {
+// 沒有憑證／被實例拒絕 ⇒ 回 NeedsReconnect（畫面請用戶重新連線），沒有密碼框。
+// 這是刻意的：舊的 /apps 面**沒有**詳情端點，「看詳情」在協定上只有 Portal 端點那一條路。
+func TestGetApp_NoKeyOrRejectedAsksToReconnect(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "sess-new", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test"})
 
+	writeCfgWithAccount(t, srv.URL, accountCfg{InstanceName: "庫", Email: "a@b.c", APIKey: "ns-test"})
 	d := (&App{}).GetApp(0, "note")
-	if !d.NeedsLogin {
-		t.Fatalf("沒有 session 時該回 NeedsLogin：%+v", d)
+	if !d.NeedsReconnect || !strings.Contains(d.Error, "重新連線") {
+		t.Fatalf("沒有憑證時該請重新連線：%+v", d)
 	}
-	if d.Error != "" {
-		t.Fatalf("這不是錯誤，是還差一步：%q", d.Error)
+
+	writeCfgWithAccount(t, srv.URL, accountCfg{InstanceName: "庫", Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-old"})
+	d = (&App{}).GetApp(0, "note")
+	if !d.NeedsReconnect || strings.Contains(d.Error, "密碼") {
+		t.Fatalf("被實例拒絕（401）該請重新連線、且不提密碼：%+v", d)
 	}
-	if d.Email != "a@b.c" {
-		t.Fatalf("登入框要能預填帳號：%q", d.Email)
+	// 憑證不准被清掉
+	if cfg, _ := loadCfg(); cfg.Accounts[0].KbdbKey != "sess-old" {
+		t.Fatalf("憑證不該被動：%q", cfg.Accounts[0].KbdbKey)
 	}
 }
 
-func TestPortalLogin_StoresSessionNotPassword(t *testing.T) {
+// 驗收 1（#402）：config 裡沒有 portal_session，詳情／動作照常；舊 config 殘留的 portal_session 載入時被抹掉。
+func TestLegacyPortalSessionIsScrubbedAndKeyStillWorks(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "KEY-1", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test"})
-
-	if err := (&App{}).PortalLogin(0, "wrong"); err == nil {
-		t.Fatalf("密碼錯了應該要失敗")
-	}
-	if err := (&App{}).PortalLogin(0, "pw"); err != nil {
-		t.Fatalf("密碼對了卻失敗：%v", err)
-	}
-	raw, err := os.ReadFile(configPath())
-	if err != nil {
+	if err := os.MkdirAll(appDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// 🔴 密碼零落地：整份 config 裡不准出現密碼字串
-	if strings.Contains(string(raw), "pw\"") || strings.Contains(string(raw), "\"password\"") {
-		t.Fatalf("密碼被寫進 config 了：%s", raw)
+	legacy := `{"manifest":"` + filepath.Join(appDir(), "manifest.json") + `","accounts":[{"cypher_url":"` + srv.URL +
+		`","namespace":"ns-test","api_key":"ns-test","kbdb_key":"KEY-1","portal_session":"old-7day","portal_session_exp":1}]}`
+	if err := os.WriteFile(configPath(), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	cfg, _ := loadCfg()
-	if cfg.Accounts[0].PortalSession == "" || cfg.Accounts[0].PortalSessionExp == 0 {
-		t.Fatalf("session 沒有存起來：%+v", cfg.Accounts[0])
+	if d := (&App{}).GetApp(0, "note"); d.Error != "" || d.NeedsReconnect || !d.HasUI {
+		t.Fatalf("只有 kbdb_key 時詳情該照常：%+v", d)
 	}
-	// 存了 session 之後，詳情就拿得到了
-	if d := (&App{}).GetApp(0, "note"); d.NeedsLogin || d.Error != "" {
-		t.Fatalf("登入之後詳情還是拿不到：%+v", d)
+	raw, _ := os.ReadFile(configPath())
+	if strings.Contains(string(raw), "portal_session") {
+		t.Fatalf("舊的 portal_session 沒被抹掉：%s", raw)
+	}
+	if !strings.Contains(string(raw), `"kbdb_key": "KEY-1"`) {
+		t.Fatalf("kbdb_key 不該被動：%s", raw)
 	}
 }
 
 func TestRunAppAction_HitsInstanceAndCarriesPayload(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "sess-a", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "sess-a", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", PortalSession: "sess-a"})
+	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-a"})
 
 	out, err := (&App{}).RunAppAction(0, "note", "notes-create", `{"text":"嗨"}`)
 	if err != nil {
@@ -346,10 +329,10 @@ func TestRunAppAction_HitsInstanceAndCarriesPayload(t *testing.T) {
 // 白名單是**實例**裁決的（K6）——桌面端不複製一份判斷，只負責把實例的話原樣說出來。
 func TestRunAppAction_WhitelistIsDecidedByInstance(t *testing.T) {
 	tempHome(t)
-	fi := &fakeInstance{sessionToken: "sess-a", password: "pw", apiKey: "ns-test"}
+	fi := &fakeInstance{sessionToken: "sess-a", apiKey: "ns-test"}
 	srv := fi.server(t)
 	defer srv.Close()
-	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", PortalSession: "sess-a"})
+	writeCfgWithAccount(t, srv.URL, accountCfg{Email: "a@b.c", APIKey: "ns-test", KbdbKey: "sess-a"})
 
 	_, err := (&App{}).RunAppAction(0, "note", "rm-rf", "")
 	if err == nil {

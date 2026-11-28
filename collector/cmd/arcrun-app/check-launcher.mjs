@@ -103,12 +103,12 @@ window.go = { main: { App: {
   ListApps: async (i) => {
     window.__calls.push(['ListApps', i]);
     if (scenario === 'listerror') return { accIdx:i, account:'我的知識庫', apps:[], error:'連不上這個知識庫——請確認網路正常' };
-    if (scenario === 'noapps')    return { accIdx:i, account:'我的知識庫', apps:[], error:'', source:'session' };
-    return { accIdx:i, account:'我的知識庫', host:'demo', apps:APPS, error:'', source:'session' };
+    if (scenario === 'noapps')    return { accIdx:i, account:'我的知識庫', apps:[], error:'', source:'portal' };
+    return { accIdx:i, account:'我的知識庫', host:'demo', apps:APPS, error:'', source:'portal' };
   },
   GetApp: async (i, id) => {
     window.__calls.push(['GetApp', i, id]);
-    if (scenario === 'needlogin') return { id, name:'筆記', icon:'🗒️', needsLogin:true, email:'leo@example.com', workflows:[], actions:[] };
+    if (scenario === 'needlogin') return { id, name:'筆記', icon:'🗒️', needsReconnect:true, error:'「我的知識庫」需要重新連線一次（這台電腦的連線憑證已失效或太舊）', workflows:[], actions:[] };
     return DETAIL[id];
   },
   RunAppAction: async (i, id, action, payload) => {
@@ -116,7 +116,6 @@ window.go = { main: { App: {
     if (action !== 'notes-create' && action !== 'weekly-report') throw new Error('這個動作不在這個 App 的白名單內');
     return JSON.stringify({ ok:true, result:{ id:'blk_1', echo: JSON.parse(payload||'{}') } });
   },
-  PortalLogin: async (i, pw) => { window.__calls.push(['PortalLogin', i]); if (pw !== 'pw') throw new Error('email 或密碼錯誤'); },
   SyncNow: async () => {}, PickFolder: async () => '', AddFolder: async () => {}, RemoveFolder: async () => {},
   SetAI: async () => {}, OpenURL: () => { window.__calls.push(['OpenURL']); }, OpenLogFolder: async () => {},
   Connect: async () => {}, CheckUpdate: async () => ({ latest:'v0.18.34' }),
@@ -258,8 +257,8 @@ console.log('━━━ App 啟動器畫面驗收 ━━━');
   await toApps(page);
   await page.waitForSelector('.appgrid');
   await page.click('[data-appopen="note"]');
-  await page.waitForSelector('#apPw', { timeout: 5000 });
-  check(await page.inputValue('#apEmail') === 'leo@example.com', 'session 過期 → 長登入框並預填帳號');
+  await page.waitForSelector('[data-reconnect]', { timeout: 5000 });
+  check(await page.$('input[type=password]') === null, '#402：憑證失效 → 只有「重新連線」，沒有任何密碼框');
   await page.screenshot({ path: `${shots}/08-needlogin.png` });
   await ctx.close();
 }

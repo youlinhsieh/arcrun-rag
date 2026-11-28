@@ -9,8 +9,11 @@
 //	Authorization:    Bearer <key>
 //	key ＝ HMAC-SHA256(金鑰＝實例的 KBDB_INTERNAL_TOKEN, 訊息＝"kbdb-proxy-v1\n"+租戶名) 的小寫 hex
 //
-// 小幫手不會自己算（它沒有 KBDB_INTERNAL_TOKEN）：已存的 portal_session 直接可用（見下），或連線精靈 `POST /portal/daemon/config`
+// 小幫手不會自己算（它沒有 KBDB_INTERNAL_TOKEN）：連線精靈 `POST /portal/daemon/config`
 // 回的 `config.kbdb_key` 就是它，存進 config.json 的 `kbdb_key`。**不是使用者要自己設的金鑰**。
+//
+// 🔴 inkstone/arcrun-rag#402：**小幫手只有這一把憑證**（不過期）。同步、問答、App、跨帳號互連全用它，
+// 雲端 Portal 端點也直接認它（Arcrun#580）。曾經另有一把會 7 天過期的 portal_session，已整條拿掉。
 //
 // 為什麼是「登記簿」而不是每個呼叫點各傳一個參數：打雲端的呼叫點有十幾處，
 // 大多只拿到 apiKey 字串。key 與租戶一對一（key 由租戶名算出），所以以 apiKey 為鍵登記一次，
@@ -22,42 +25,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 var cypherKeys sync.Map // 租戶名（X-Arcrun-API-Key 的值，trim 後）→ kbdb_key
-
-// portal session 也是合法憑證（Arcrun#399 c1794481882638068：cypher 直接接受 Portal session token
-// 當 Bearer，只能代表該實例自己的租戶）。小幫手連線時已存 portal_session，所以舊連線升級上來
-// 不必重新輸密碼。優先序：kbdb_key（不會過期）→ 未過期的 portal session → 只帶租戶名。
-type cypherSession struct {
-	token string
-	exp   int64 // unix 秒；0＝不知道到期時間（照用，過期由雲端 401 回報）
-}
-
-var cypherSessions sync.Map // 租戶名 → cypherSession
-
-// RegisterCypherSession 登記租戶的 portal session。token 為空＝不動。
-func RegisterCypherSession(tenant, token string, exp int64) {
-	tenant, token = strings.TrimSpace(tenant), strings.TrimSpace(token)
-	if tenant == "" || token == "" {
-		return
-	}
-	cypherSessions.Store(tenant, cypherSession{token: token, exp: exp})
-}
-
-func cypherBearerFor(tenant string) string {
-	if k := CypherKeyFor(tenant); k != "" {
-		return k
-	}
-	if v, ok := cypherSessions.Load(strings.TrimSpace(tenant)); ok {
-		ss := v.(cypherSession)
-		if ss.exp == 0 || ss.exp > time.Now().Unix() {
-			return ss.token
-		}
-	}
-	return ""
-}
 
 // RegisterCypherKey 登記一個租戶的憑證。key 為空＝不動（保留既有登記，舊 config 沒這欄不會把它清掉）。
 func RegisterCypherKey(tenant, key string) {
@@ -84,7 +54,7 @@ func SetCypherAuth(req *http.Request, apiKey string) {
 	if req.Header.Get("Authorization") != "" {
 		return
 	}
-	if k := cypherBearerFor(apiKey); k != "" {
+	if k := CypherKeyFor(apiKey); k != "" {
 		req.Header.Set("Authorization", "Bearer "+k)
 	}
 }
@@ -97,7 +67,6 @@ func registerAccountKeys(c *DirectConfig) {
 			t = a.Namespace
 		}
 		RegisterCypherKey(t, a.KbdbKey)
-		RegisterCypherSession(t, a.PortalSession, a.PortalSessionExp)
 	}
 	t := c.APIKey
 	if strings.TrimSpace(t) == "" {

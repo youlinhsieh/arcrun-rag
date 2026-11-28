@@ -13,9 +13,10 @@
  */
 import { execFileSync } from 'node:child_process';
 
-/** 資料類路徑（前綴）。key＝怎麼送達：market＝市集上架線；pending＝資料類但軟更新匯入路徑還沒接，目前仍隨主程式帶。 */
+/** 資料類路徑（前綴）。key＝怎麼送達：market＝市集上架線；portal＝Portal 畫面包線；pending＝資料類但軟更新匯入路徑還沒接，目前仍隨主程式帶。 */
 export const SOFT_RULES = [
   { prefix: 'app-market/', via: 'market', why: 'App 與市集目錄（市集上架線）' },
+  { prefix: 'console-ui/public/', via: 'portal', why: 'Portal 畫面（畫面包線，ship-portal.mjs；用戶不必按「立即更新」，inkstone/arcrun-rag#398）' },
   { prefix: 'skills/', via: 'pending', why: 'skill（資料）' },
   { prefix: 'workflows/', via: 'pending', why: '內建工作流（資料；匯入路徑待接，見 ADR 後續）' },
   { prefix: 'docs/', via: 'none', why: '文件' },
@@ -39,7 +40,7 @@ export function classify(paths) {
   out.reason = out.hard.length
     ? `有 ${out.hard.length} 個路徑要換 worker／前端（例：${out.hard[0]}）`
     : pending.length ? `只有資料變，但「${pending[0].why}」的軟更新匯入路徑還沒接，今天仍隨主程式帶`
-    : out.soft.length ? '只有市集資料變——走市集上架線，不出主程式新版號' : '沒有需要送達的變更';
+    : out.soft.length ? '只有市集資料或 Portal 畫面變——走市集上架線／畫面包線（ship-market／ship-portal），不出主程式新版號' : '沒有需要送達的變更';
   return out;
 }
 

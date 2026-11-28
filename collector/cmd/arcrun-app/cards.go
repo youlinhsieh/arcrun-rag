@@ -30,9 +30,9 @@ type UICardsLibs struct {
 	AccIdx    int         `json:"accIdx"`
 	Libraries []UILibrary `json:"libraries"`
 	Note      string      `json:"note,omitempty"` // 雲端對「空」的說明（沒授權／還沒有內容…）
-	// NeedsLogin＝這台電腦沒有（或已過期）這個帳號的 portal session，畫面長登入框。
-	NeedsLogin bool   `json:"needsLogin"`
-	Error      string `json:"error"`
+	// NeedsReconnect＝這台電腦對這個帳號的連線憑證沒有或已失效，畫面請用戶重新連線（沒有密碼框）。
+	NeedsReconnect bool   `json:"needsReconnect"`
+	Error          string `json:"error"`
 }
 
 type UICardRow struct {
@@ -44,12 +44,12 @@ type UICardRow struct {
 }
 
 type UICardsCatalog struct {
-	AccIdx     int         `json:"accIdx"`
-	Library    string      `json:"library"`
-	Cards      []UICardRow `json:"cards"`
-	Total      int         `json:"total"` // 庫裡實際有幾張（超過 Cards 長度就是被截斷）
-	NeedsLogin bool        `json:"needsLogin"`
-	Error      string      `json:"error"`
+	AccIdx         int         `json:"accIdx"`
+	Library        string      `json:"library"`
+	Cards          []UICardRow `json:"cards"`
+	Total          int         `json:"total"` // 庫裡實際有幾張（超過 Cards 長度就是被截斷）
+	NeedsReconnect bool        `json:"needsReconnect"`
+	Error          string      `json:"error"`
 }
 
 type UICardView struct {
@@ -58,13 +58,13 @@ type UICardView struct {
 	PageName string   `json:"pageName"`
 	Blocks   []string `json:"blocks"` // 這張卡的每一段（照原稿順序）
 	// Origin＝原文在哪（設備／庫／路徑），雲端答不出就空字串，不編。
-	Origin     string `json:"origin"`
-	NeedsLogin bool   `json:"needsLogin"`
-	Error      string `json:"error"`
+	Origin         string `json:"origin"`
+	NeedsReconnect bool   `json:"needsReconnect"`
+	Error          string `json:"error"`
 }
 
-// cardsCall：用帳號 idx 自己的 session 打一次 GET。回 (status, body, needsLogin, errMsg)。
-// errMsg 非空＝畫面要顯示的白話錯誤；needsLogin＝要登入框而不是紅字。
+// cardsCall：用帳號 idx 的連線憑證打一次 GET。回 (status, body, needsReconnect, errMsg)。
+// errMsg 非空＝畫面要顯示的白話錯誤；needsReconnect＝畫面請用戶重新連線而不是紅字。
 func cardsCall(accIdx int, path string, q url.Values) (int, []byte, bool, string) {
 	cfg, _ := loadCfg()
 	acc, err := accountAt(cfg, accIdx)
@@ -76,20 +76,19 @@ func cardsCall(accIdx int, path string, q url.Values) (int, []byte, bool, string
 	if base == "" {
 		return 0, nil, false, "「" + name + "」沒有網址，請重新連線一次"
 	}
-	if !sessionValid(acc) {
-		return 0, nil, true, loginExpiredMsg(name)
+	if syncKey(acc) == "" {
+		return 0, nil, true, reconnectMsg(name)
 	}
 	full := path
 	if len(q) > 0 {
 		full += "?" + q.Encode()
 	}
-	status, raw, err := chatBearer(base, http.MethodGet, full, acc.PortalSession, nil, appReadTimeout)
+	status, raw, err := chatBearer(base, http.MethodGet, full, syncKey(acc), nil, appReadTimeout)
 	if err != nil {
 		return 0, nil, false, err.Error()
 	}
 	if status == http.StatusUnauthorized {
-		clearSession(accIdx)
-		return status, raw, true, loginExpiredMsg(name)
+		return status, raw, true, reconnectMsg(name)
 	}
 	return status, raw, false, ""
 }
@@ -99,7 +98,7 @@ func (a *App) ListCardLibraries(accIdx int) UICardsLibs {
 	out := UICardsLibs{AccIdx: accIdx, Libraries: []UILibrary{}}
 	status, raw, needs, msg := cardsCall(accIdx, "/portal/data/map", nil)
 	if msg != "" {
-		out.NeedsLogin, out.Error = needs, msg
+		out.NeedsReconnect, out.Error = needs, msg
 		return out
 	}
 	if status != http.StatusOK {
@@ -134,7 +133,7 @@ func (a *App) ListLibraryCards(accIdx int, library string) UICardsCatalog {
 	out := UICardsCatalog{AccIdx: accIdx, Library: library, Cards: []UICardRow{}}
 	status, raw, needs, msg := cardsCall(accIdx, "/portal/data/library-cards", url.Values{"library": {library}, "limit": {"200"}})
 	if msg != "" {
-		out.NeedsLogin, out.Error = needs, msg
+		out.NeedsReconnect, out.Error = needs, msg
 		return out
 	}
 	if status == http.StatusNotFound {
@@ -198,7 +197,7 @@ func (a *App) GetLibraryCard(accIdx int, library, pageName string) UICardView {
 	out := UICardView{AccIdx: accIdx, Library: library, PageName: pageName, Blocks: []string{}}
 	status, raw, needs, msg := cardsCall(accIdx, "/portal/data/card", url.Values{"library": {library}, "page_name": {pageName}})
 	if msg != "" {
-		out.NeedsLogin, out.Error = needs, msg
+		out.NeedsReconnect, out.Error = needs, msg
 		return out
 	}
 	if status == http.StatusNotFound {

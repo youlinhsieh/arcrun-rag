@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 type fakeChat struct {
@@ -84,7 +83,7 @@ func newFakeChat(t *testing.T, session string) *fakeChat {
 }
 
 func sessAcc(name, url, sess string) accountCfg {
-	return accountCfg{InstanceName: name, CypherURL: url, PortalSession: sess, PortalSessionExp: time.Now().Unix() + 3600}
+	return accountCfg{InstanceName: name, CypherURL: url, KbdbKey: sess}
 }
 
 func TestAsk_SingleAccountSendsOneAskAndMapsCards(t *testing.T) {
@@ -130,32 +129,32 @@ func TestAsk_AutoLinksOtherAccountOnceThenNeverAgain(t *testing.T) {
 	}
 }
 
-func TestAsk_AccountWithoutSessionIsFlaggedNotFatal(t *testing.T) {
+func TestAsk_AccountWithoutKeyIsFlaggedNotFatal(t *testing.T) {
 	tempHome(t)
 	a := newFakeChat(t, "sa")
 	b := newFakeChat(t, "sb")
 	cfg := &directConfig{Accounts: []accountCfg{sessAcc("A", a.server.URL, "sa"), {InstanceName: "B", CypherURL: b.server.URL}}}
 	r := askCore(cfg, "問", nil)
 	if r.Error != "" || r.Answer == "" {
-		t.Fatalf("沒 session 的帳號不該讓整個失敗: %+v", r)
+		t.Fatalf("沒憑證的帳號不該讓整個失敗: %+v", r)
 	}
 	var found bool
 	for _, x := range r.Accounts {
-		if x.AccIdx == 1 && x.Reason == "needs_login" && !x.OK && strings.Contains(x.Detail, "B") {
+		if x.AccIdx == 1 && x.Reason == "needs_reconnect" && !x.OK && strings.Contains(x.Detail, "B") {
 			found = true
 		}
 	}
 	if !found || b.issues != 0 {
-		t.Fatalf("要標出 B 需要登入: %+v issues=%d", r.Accounts, b.issues)
+		t.Fatalf("要標出 B 需要重新連線: %+v issues=%d", r.Accounts, b.issues)
 	}
 }
 
-func TestAsk_PrimaryWithoutSessionAsksForLogin(t *testing.T) {
+func TestAsk_PrimaryWithoutKeyAsksToReconnect(t *testing.T) {
 	tempHome(t)
 	a := newFakeChat(t, "sa")
 	cfg := &directConfig{Accounts: []accountCfg{{InstanceName: "A", CypherURL: a.server.URL}}}
 	r := askCore(cfg, "問", nil)
-	if !r.NeedsLogin || r.Error == "" || a.asks != 0 {
+	if !r.NeedsReconnect || !strings.Contains(r.Error, "重新連線") || strings.Contains(r.Error, "密碼") || a.asks != 0 {
 		t.Fatalf("%+v asks=%d", r, a.asks)
 	}
 }
@@ -177,5 +176,36 @@ func TestAsk_EmptyQuestionAndNoAccount(t *testing.T) {
 	}
 	if r := askCore(&directConfig{}, "x", nil); r.Error == "" {
 		t.Fatal("沒帳號要有提示")
+	}
+}
+
+// 驗收 1（#402）：主帳號 config 裡只有 kbdb_key、沒有 portal_session，問答與跨帳號互連照常；
+// 帶出去的 Bearer 就是那把 kbdb_key，沒有任何密碼框。
+func TestAsk_OnlySyncKeyIsEnough(t *testing.T) {
+	tempHome(t)
+	a := newFakeChat(t, "dk1.a")
+	b := newFakeChat(t, "dk1.b")
+	cfg := &directConfig{Accounts: []accountCfg{
+		{InstanceName: "A", CypherURL: a.server.URL, KbdbKey: "dk1.a"},
+		{InstanceName: "B", CypherURL: b.server.URL, KbdbKey: "dk1.b"}}}
+	r := askCore(cfg, "問", nil)
+	if r.Error != "" || r.NeedsReconnect || r.Answer == "" || a.asks != 1 || b.issues != 1 || a.saves != 1 {
+		t.Fatalf("只有 kbdb_key 問答與互連該照常：%+v asks=%d issues=%d saves=%d", r, a.asks, b.issues, a.saves)
+	}
+}
+
+// 驗收 2（#402）：雲端說這把憑證失效（401）⇒「需要重新連線」，不是「email 或密碼錯誤」／登入已過期。
+func TestAsk_RejectedKeySaysReconnectNotPassword(t *testing.T) {
+	tempHome(t)
+	a := newFakeChat(t, "dk1.new")
+	cfg := &directConfig{Accounts: []accountCfg{{InstanceName: "A", CypherURL: a.server.URL, KbdbKey: "dk1.revoked"}}}
+	r := askCore(cfg, "問", nil)
+	if !r.NeedsReconnect || !strings.Contains(r.Error, "重新連線") {
+		t.Fatalf("該請重新連線：%+v", r)
+	}
+	for _, bad := range []string{"密碼", "過期", "email"} {
+		if strings.Contains(r.Error, bad) {
+			t.Fatalf("不該提 %q：%s", bad, r.Error)
+		}
 	}
 }

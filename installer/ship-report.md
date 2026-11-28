@@ -1,8 +1,8 @@
-出貨報告　release 1.4.338／小幫手 0.18.124／安裝器 1.0.114　共 29 站（上次（1.4.337／小幫手 0.18.124／安裝器 1.0.114）29 站　無增減）
-來源（stage）＝Arcrun@2f5f2c5b3d23　｜　來源（prod）＝（未出）
+出貨報告　release 1.4.340／小幫手 0.18.124／安裝器 1.0.115　共 29 站（上次（1.4.339／小幫手 0.18.124／安裝器 1.0.114）29 站　無增減）
+來源（stage）＝Arcrun@9c046eba2758　｜　來源（prod）＝（未出）
 機器（stage）＝b603c18c637e　｜　機器（prod）＝（未出）
 
-🧾 stage 佇列：上一顆（線上當時）＝442a45b52b44；這版多帶 8 筆，票：inkstone/arcrun-rag#381 inkstone/Arcrun#141 inkstone/Arcrun#569
+🧾 stage 佇列：上一顆（線上當時）＝9dc518e5b1be；這版多帶 3 筆，票：inkstone/arcrun-rag#398 inkstone/Arcrun#569
 
 | 件次 | 項目 | stage | prod |
 | --- | --- | --- | --- |
@@ -44,8 +44,8 @@
    · stage｜visa-gate：stage 沒宣告 visaGate（不是 prod）：測試版不查簽證
    · stage｜readme：README 已是最新（零件清單與版本都沒變）
    · stage｜commit：工作區乾淨——這一版的產物已經在版控裡了
-   · stage｜pin：釘子沒動（built 2026-11-28）；安裝器原始碼指紋 8b9b9e7ec0f4（烙在 version.mjs，不寫這裡）
-   · stage｜deploy：線上已是 1.4.338／pin 440b31c／安裝器原始碼 8b9b9e7ec0f4 未變，且釘子沒動 ⇒ 不重複部署
+   · stage｜pin：釘子沒動（built 2026-11-28）；安裝器原始碼指紋 1be714a966b8（烙在 version.mjs，不寫這裡）
+   · stage｜deploy：線上已是 1.4.340／pin 71bb6a4／安裝器原始碼 1be714a966b8 未變，且釘子沒動 ⇒ 不重複部署
    · stage｜prod-record：不是 prod 目標：不寫 prod 現況
 
 件數：stage 29 站　｜　prod （未出）

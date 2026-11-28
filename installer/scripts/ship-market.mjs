@@ -14,11 +14,11 @@
  * 簽核對象是「市集版號」（例 2026.11.22-ab12cd3），不是主程式版號；簽核單內文用 renderDiff 的輸出。
  * 原則見 ADR 2026-11-22-market-line（InkStoneCo system-dev/docs/2-architecture/decisions/）。
  */
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   marketVersionOf, diffMarket, hasChanges, renderDiff, planMarket, publishMarket, assertMarketDeclared,
   readLiveMarket, verifyLiveMarket, appendMarketLedger, readMarketLedger,
@@ -49,16 +49,32 @@ async function main() {
   const feedScript = join(source, 'app-market', 'build-feed.mjs');
   if (!existsSync(feedScript)) { console.error(`來源沒有 app-market/build-feed.mjs：${feedScript}`); return 2; }
 
-  // ① 產出目錄與包（build-feed 靠 argv[1]＝真實路徑判斷是否直接執行，所以一律給 realpath）
+  // ① 產出目錄與包。
+  //   🔴 市集版號＝日期＋index.json 的雜湊，而 index.json／各包內含時間戳（feed-lib 的 exportedAt，沒給就用現在）。
+  //   以前每次跑都用「現在」⇒ 預演給人簽的版號與 --confirm 重新產的版號一定不同，prod 簽核閘永遠對不上（inkstone/Arcrun#579）。
+  //   現在時間戳固定取「來源 commit 的時間」⇒ 同一份來源，預演與 --confirm 得到同一個版號。
+  //   先跑 build-feed --check 守原有的閘（目錄與宣告對得上、code 節點棘輪），再用來源自己的 loadApps／buildFeed 產出。
+  const exportedAt = new Date(execFileSync('git', ['-C', source, 'show', '-s', '--format=%cI', 'HEAD'], { encoding: 'utf8' }).trim()).toISOString();
+  execFileSync('node', [realpathSync(feedScript), '--check'], { cwd: source, stdio: 'pipe' });
+  const feedMod = await import(pathToFileURL(realpathSync(feedScript)).href);
+  const feedLib = await import(pathToFileURL(join(dirname(realpathSync(feedScript)), 'feed-lib.mjs')).href);
+  const { apps, problems } = feedMod.loadApps(dirname(realpathSync(feedScript)));
+  if (problems.length) { console.error('目錄原稿有問題：\n' + problems.map((p) => '  - ' + p).join('\n')); return 1; }
   const feedDir = mkdtempSync(join(tmpdir(), 'market-feed-'));
-  execFileSync('node', [realpathSync(feedScript), '--out', feedDir], { cwd: source, stdio: 'pipe' });
+  const { files: feedFiles } = await feedLib.buildFeed(apps, { exportedAt });
+  for (const [rel, text] of Object.entries(feedFiles)) {
+    const fp = join(feedDir, rel);
+    mkdirSync(dirname(fp), { recursive: true });
+    writeFileSync(fp, text);
+  }
   const indexText = readFileSync(join(feedDir, 'index.json'), 'utf8');
   const index = JSON.parse(indexText);
+  if (index.generated_at !== exportedAt) { console.error(`來源的 buildFeed 沒採用固定時間戳（${index.generated_at} ≠ ${exportedAt}），版號不可重現，停。`); return 1; }
 
   // ② 跟線上現在那份比（從用戶會走的 /apps 讀）
   const live = await readLiveMarket({ installerBase: T.market.installerBase });
   const diff = diffMarket(live ? live.index : null, index);
-  const marketVersion = marketVersionOf(indexText);
+  const marketVersion = marketVersionOf(indexText, new Date(exportedAt));
   console.log(`市集上架線｜目標 ${targetName}｜${T.market.installerBase}/apps`);
   console.log(`線上現在：${live && live.pointer ? live.pointer.version : live ? '（還沒有市集指標；比較基準＝舊路目錄，即跟著零件包釘子走的那份）' : '（什麼都沒有，第一次上架）'}`);
   console.log(renderDiff(diff, marketVersion));

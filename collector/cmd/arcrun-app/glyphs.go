@@ -28,9 +28,9 @@ func fetchGlyphs(acc accountCfg) map[string]string {
 	}
 	var req *http.Request
 	switch {
-	case sessionValid(acc):
+	case syncKey(acc) != "":
 		req, _ = http.NewRequest(http.MethodGet, base+"/portal/data/apps/glyphs", nil)
-		req.Header.Set("Authorization", "Bearer "+acc.PortalSession)
+		portalBearer(req, acc)
 	case strings.TrimSpace(acc.APIKey) != "":
 		req, _ = http.NewRequest(http.MethodGet, base+"/apps/glyphs", nil)
 		collector.SetCypherAuth(req, acc.APIKey)

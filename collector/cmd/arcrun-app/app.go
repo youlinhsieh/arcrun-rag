@@ -64,7 +64,7 @@ type accountCfg struct {
 	Email        string   `json:"email,omitempty"`
 	CypherURL    string   `json:"cypher_url"`
 	// PortalURL＝這個帳號的「網頁（Portal）」網址，只有企業私有雲才會有（網頁與 API 不同埠，例：:8080 與 :8081）。
-	// 雲端帳號靠網址規則換算，不存。App 端獨有的欄位（collector 讀 config 時忽略，見下面 PortalSession 的說明）。
+	// 雲端帳號靠網址規則換算，不存。App 端獨有的欄位（collector 讀 config 時忽略）。
 	// inkstone/arcrun-rag#389：以前「開啟知識庫網頁」一律用 https://＋API 位址換算，私有雲會開到 https://主機:8081。
 	PortalURL    string   `json:"portal_url,omitempty"`
 	Namespace    string   `json:"namespace"`
@@ -77,20 +77,15 @@ type accountCfg struct {
 	//    凡是 collector 的 AccountConfig 有、而 App 會改到的欄位，兩份必須鏡像。
 	RetiringFolders []string `json:"retiring_folders,omitempty"`
 	Extractor       string   `json:"extractor,omitempty"`
-	// PortalSession／PortalSessionExp＝這台電腦對這個知識庫的 portal 登入憑證
-	// （arcrun-rag#137 App 啟動器用；App 詳情與動作只有 portal session 那條路有，
-	// 見 apps.go 檔頭）。**這是 session token 不是密碼**——密碼仍然零落地。
-	//
-	// 🔴 這兩欄是 App 端獨有的（collector 的 AccountConfig 沒有）：collector 讀 config
-	//    時會忽略不認得的欄位，所以加在這裡是安全的；反過來（collector 有而這裡沒有）
-	//    才是上面那條註解講的、會靜默掉欄位的方向。
 	// KbdbKey＝打雲端的 Bearer 憑證（inkstone/arcrun-rag#334；連線精靈從
 	// `POST /portal/daemon/config` 的 `config.kbdb_key` 取得）。
 	// 🔴 與 collector.AccountConfig.KbdbKey 鏡像：saveCfg 用本 struct 重新序列化 accounts，
 	//    少了這欄＝存一次檔就把憑證抹掉（t108 同款）。
-	KbdbKey          string `json:"kbdb_key,omitempty"`
-	PortalSession    string `json:"portal_session,omitempty"`
-	PortalSessionExp int64  `json:"portal_session_exp,omitempty"`
+	//
+	// 🔴 inkstone/arcrun-rag#402：**這是小幫手唯一的憑證**。同步、問答、App、跨帳號互連全用它
+	//    （雲端 Portal 端點直接認它，Arcrun#580）；以前另外存的 portal_session（7 天過期、要輸入密碼換）
+	//    整條拿掉，舊 config 殘留的欄位讀到就抹掉（scrubLegacyPortalSession）。
+	KbdbKey string `json:"kbdb_key,omitempty"`
 }
 
 type directConfig struct {
@@ -200,12 +195,15 @@ func loadCfg() (*directConfig, error) {
 			t = acc.Namespace
 		}
 		collector.RegisterCypherKey(t, acc.KbdbKey) // #334：App 這條線打雲端也帶 Bearer 憑證
-		collector.RegisterCypherSession(t, acc.PortalSession, acc.PortalSessionExp)
 	}
 	// 🔴 自我修復：舊版存出來的 config 可能少了 collector 的必填欄位。
 	//    只補進記憶體不夠——collector 讀的是**磁碟上那份**，所以要寫回去。
 	// 🔴 inkstone/arcrun-rag#58：同一次回寫順手把舊的明碼 LLM 金鑰抹掉。
 	scrubbed := scrubLegacyLLMKeys(c.raw)
+	if scrubLegacyPortalSession(c.raw) {
+		scrubbed = true
+		appLog("設定檔裡殘留舊的網頁登入票（portal_session），已抹除（小幫手只用同步憑證）")
+	}
 	if scrubbed {
 		appLog("設定檔裡殘留舊的 AI 金鑰欄位，已抹除（萃取改走雲端 AI，本機不再存金鑰）")
 	}
@@ -254,6 +252,27 @@ func scrubLegacyLLMKeys(raw map[string]any) bool {
 	return changed
 }
 
+// scrubLegacyPortalSession（inkstone/arcrun-rag#402）：把舊版存的 portal_session／portal_session_exp
+// 從每個帳號抹掉。小幫手不再有第二把憑證；留著一張到期的登入票沒有用處，只是多一個放在電腦上的 token。
+func scrubLegacyPortalSession(raw map[string]any) bool {
+	changed := false
+	if accs, ok := raw["accounts"].([]any); ok {
+		for _, a := range accs {
+			m, ok := a.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, k := range []string{"portal_session", "portal_session_exp"} {
+				if _, ok := m[k]; ok {
+					delete(m, k)
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
+}
+
 // fillRequired 補上 collector 的必填欄位，回報有沒有真的補過。
 //
 // 🔴 leo 2026-08-06 兩輪教訓：
@@ -287,6 +306,7 @@ func saveCfg(c *directConfig) error {
 	// 🔴 inkstone/arcrun-rag#58：萃取 AI 一律在雲端，本機不再存任何 LLM 金鑰。
 	// raw 是「原樣保留未宣告欄位」的容器，舊檔裡的明碼會從這裡**回流**——存檔前必須抹掉。
 	scrubLegacyLLMKeys(c.raw)
+	scrubLegacyPortalSession(c.raw)
 	// 🔴 2026-08-06 leo Windows 封測的真兇：`manifest` 是 collector 的**必填欄位**
 	//    （direct.go 的驗證：`if c.Manifest == "" { missing = append(missing, "manifest") }`），
 	//    而這支從來沒寫過它 ⇒ **全新安裝的機器**（config 從零長出來）永遠缺這一欄

@@ -86,21 +86,20 @@ func TestCards_BrowseLibrariesCatalogAndCard(t *testing.T) {
 	}
 }
 
-func TestCards_NoSessionAsksForLoginAndExpiredSessionIsCleared(t *testing.T) {
+func TestCards_NoKeyOrRejectedKeyAsksToReconnect(t *testing.T) {
 	tempHome(t)
 	srv := newFakeCards(t, "good")
 	saveAcc(t, accountCfg{InstanceName: "公司", CypherURL: srv.URL})
-	if r := (&App{}).ListCardLibraries(0); !r.NeedsLogin || r.Error == "" {
-		t.Fatalf("沒 session 要長登入框: %+v", r)
+	if r := (&App{}).ListCardLibraries(0); !r.NeedsReconnect || r.Error == "" {
+		t.Fatalf("沒憑證要請重新連線: %+v", r)
 	}
 	saveAcc(t, sessAcc("公司", srv.URL, "stale"))
 	r := (&App{}).ListLibraryCards(0, "公司庫")
-	if !r.NeedsLogin {
-		t.Fatalf("後端 401 要轉成要登入: %+v", r)
+	if !r.NeedsReconnect {
+		t.Fatalf("後端 401 要轉成請重新連線: %+v", r)
 	}
-	cfg, _ := loadCfg()
-	if cfg.Accounts[0].PortalSession != "" {
-		t.Fatal("無效 session 要丟掉")
+	if cfg, _ := loadCfg(); cfg.Accounts[0].KbdbKey != "stale" {
+		t.Fatal("憑證不能被清掉（清掉＝同步也斷）")
 	}
 }
 
@@ -162,7 +161,7 @@ func authWrap(h http.Handler, session string) http.Handler {
 	})
 }
 
-func TestAsk_ProxyNeedsLoginWhenNoSessionAndSkipsRevoked(t *testing.T) {
+func TestAsk_ProxyNeedsReconnectWhenNoKeyAndSkipsRevoked(t *testing.T) {
 	tempHome(t)
 	a := newFakeChat(t, "sa")
 	inner := newFakeCards(t, "sb")
@@ -181,8 +180,8 @@ func TestAsk_ProxyNeedsLoginWhenNoSessionAndSkipsRevoked(t *testing.T) {
 	cfg := &directConfig{Accounts: []accountCfg{sessAcc("A", a.server.URL, "sa"),
 		{InstanceName: "內網", CypherURL: inner.URL}, sessAcc("撤銷", inner.URL, "sb")}}
 	r := askCore(cfg, "問", nil)
-	if r.Accounts[1].Reason != "needs_login" {
-		t.Fatalf("沒 session 的連不到帳號要請登入: %+v", r.Accounts)
+	if r.Accounts[1].Reason != "needs_reconnect" {
+		t.Fatalf("沒憑證的連不到帳號要請重新連線: %+v", r.Accounts)
 	}
 	if r.Accounts[2].Reason != "revoked" || r.Accounts[2].OK {
 		t.Fatalf("被撤銷的連結不繞過: %+v", r.Accounts)

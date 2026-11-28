@@ -14,26 +14,20 @@ package main
 // 沒有任何預設清單、沒有快取到磁碟、沒有第二份 schema。
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// 為什麼是「兩條路」而不是一條（這是本票的規格判斷，理由寫在這裡不寫在票上）
+// 只有一把憑證（inkstone/arcrun-rag#402，leo 2026-11-28：「同一個軟體卻有兩套登入」）
 // ─────────────────────────────────────────────────────────────────────────────
-// 上游同一份安裝態有兩個對外面：
+// 小幫手連線時從實例拿到一把不會過期的同步憑證（`config.json` 的 `kbdb_key`，綁本人的 dk1）。
+// 雲端 Portal 端點（`/portal/data/*`）直接認它（Arcrun#580），所以九宮格、App 詳情、動作、問答、
+// 知識卡、跨帳號互連**全部用這一把**。
 //
-//	① `/portal/data/apps*`      認 **portal session**（Bearer）——Portal 那半走這條，
-//	   清單／詳情（含畫面 HTML）／動作三支齊全。
-//	② `/apps`                   認 **X-Arcrun-API-Key**（＝實例 namespace）——CLI／操盤 AI 走這條，
-//	   **只有清單**，沒有詳情、沒有動作。
+// 🔴 2026-08-24 #137 當時同步帶的只是租戶名、不是真憑證，所以借了網頁 Portal 的登入票
+//    （portal_session，7 天到期，過期就叫用戶輸入密碼）。#334 另造 kbdb_key 之後兩套並存，
+//    問答與 App 繼續用會過期的那把。現在整條拿掉：**沒有密碼框、沒有「登入已過期」**。
+//    唯一要用戶動手的情況＝這把憑證本身失效（帳號停用／被移出／憑證太舊）⇒ 畫面請他「重新連線」
+//    （連線精靈，密碼只在那一刻用來換憑證，不存檔）。
 //
-// 小幫手手上本來就有 ②的鑰匙（`config.json` 的 `api_key`，連線時實例自己下發的），
-// 但**沒有**①的 session（密碼刻意零落地，見 connect.go）。
-//
-// 所以：
-//   - **清單一律先走①、拿不到就退回②**。兩支回的都是 `summarizeApp` 的同一個形狀
-//     （id/name/icon/has_ui/version），所以九宮格**在完全沒登入的情況下也是真資料**。
-//   - **詳情與動作只有①有**，所以那兩件需要一次 portal 登入。連線精靈當下順手換一張
-//     session（`Connect` 已經有密碼在手，見 connect.go 的呼叫點），使用者通常不會再被問。
-//     session 過期（實例預設 7 天）才會在 App 頁上出現一次登入框。
-//
-// 🔴 密碼仍然零落地：存的是 session token，不是密碼（與 connect.go 同一條紅線）。
+// 清單另有一條舊路 `/apps`（X-Arcrun-API-Key，只有清單）：憑證太舊、Portal 端點不認時，
+// 清單照樣看得到，詳情與動作才提示重新連線。兩條路帶的是同一把憑證。
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // 不做輪詢
@@ -92,7 +86,7 @@ type UIAppList struct {
 	// Glyphs＝實例提供的圖示字形（代號→SVG 內層標記，24×24 描邊式）。實例沒有這支端點就是 nil，
 	// 畫面退回通用圖示——「拿得到就用，拿不到退回通用圖示」（inkstone/arcrun-rag#240 c18275）。
 	Glyphs map[string]string `json:"glyphs,omitempty"`
-	// Source＝這份清單是用哪把鑰匙問到的（"session"／"apikey"）。給診斷用，
+	// Source＝這份清單走的是哪條路（"portal"／"apikey"，帶的都是同一把憑證）。給診斷用，
 	// 畫面不依它分支——兩條路的內容是同一份安裝態。
 	Source string `json:"source"`
 }
@@ -114,11 +108,10 @@ type UIAppDetail struct {
 	UIHtml    string          `json:"uiHtml"`
 	Workflows []UIAppWorkflow `json:"workflows"`
 	Actions   []string        `json:"actions"`
-	// NeedsLogin＝這台機器沒有（或已過期）這個知識庫的 portal session。
-	// 不是錯誤，是「還差一步」——畫面要長出登入框，不是紅字。
-	NeedsLogin bool   `json:"needsLogin"`
-	Email      string `json:"email"` // 登入框預填（帳號本來就存在 config 裡）
-	Error      string `json:"error"`
+	// NeedsReconnect＝這台電腦對這個知識庫的連線憑證沒有或已失效（帳號停用／被移出／太舊）。
+	// 不是一般錯誤——畫面請用戶「重新連線」，不是紅字、也沒有密碼框。
+	NeedsReconnect bool   `json:"needsReconnect"`
+	Error          string `json:"error"`
 }
 
 // ── 內部：HTTP 小工具 ─────────────────────────────────────────────────────
@@ -162,104 +155,27 @@ func appErrMessage(status int, body []byte) string {
 	switch status {
 	case http.StatusNotFound:
 		return "這個知識庫還沒有 App 功能（實例版本較舊，更新後就會出現）"
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return "這個知識庫的登入已過期"
+	case http.StatusUnauthorized:
+		return "這個知識庫需要重新連線一次"
+	case http.StatusForbidden:
+		return "這個知識庫不允許這個動作"
 	}
 	return fmt.Sprintf("知識庫回了 HTTP %d", status)
 }
 
-// ── portal session（詳情與動作唯一的鑰匙）────────────────────────────────
+// ── 同步憑證（小幫手唯一的鑰匙）─────────────────────────────────────────
 
-// sessionValid：留 60 秒安全邊際，免得剛好在請求路上過期。
-func sessionValid(a accountCfg) bool {
-	return strings.TrimSpace(a.PortalSession) != "" &&
-		(a.PortalSessionExp == 0 || time.Now().Unix() < a.PortalSessionExp-60)
+// syncKey：這個帳號連線時拿到的憑證（kbdb_key）；空字串＝舊版連的帳號，要重新連線一次。
+func syncKey(a accountCfg) string { return strings.TrimSpace(a.KbdbKey) }
+
+// reconnectMsg：憑證沒有或被雲端認定失效時，畫面上唯一的話。不提密碼、不提過期。
+func reconnectMsg(name string) string {
+	return "「" + name + "」需要重新連線一次（這台電腦的連線憑證已失效或太舊）"
 }
 
-// portalLogin 用帳密換一張 portal session token。
-//
-// 🔴 這支是**唯一**碰密碼的地方，而且密碼只活在參數裡：換完就丟，不寫檔、不 log。
-func portalLogin(base, email, password string) (token string, expiresIn int64, err error) {
-	body, _ := json.Marshal(map[string]string{
-		"email":    strings.ToLower(strings.TrimSpace(email)),
-		"password": password,
-	})
-	req, err := http.NewRequest(http.MethodPost, base+"/portal/login", bytes.NewReader(body))
-	if err != nil {
-		return "", 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	status, raw, err := appDo(req, appReadTimeout)
-	if err != nil {
-		return "", 0, err
-	}
-	var out struct {
-		Success        bool   `json:"success"`
-		SessionToken   string `json:"session_token"`
-		SessionExpires int64  `json:"session_expires_in"`
-		Error          string `json:"error"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	if status != http.StatusOK || !out.Success || out.SessionToken == "" {
-		if strings.TrimSpace(out.Error) != "" {
-			return "", 0, errors.New(out.Error)
-		}
-		return "", 0, errors.New(appErrMessage(status, raw))
-	}
-	return out.SessionToken, out.SessionExpires, nil
-}
-
-// storeSession 把換到的 session 寫回設定（只存 token 與到期時間，不存密碼）。
-func storeSession(idx int, token string, expiresIn int64) error {
-	cfg, err := loadCfg()
-	if err != nil {
-		return err
-	}
-	if idx < 0 || idx >= len(cfg.Accounts) {
-		return errors.New("找不到這個知識庫")
-	}
-	cfg.Accounts[idx].PortalSession = token
-	if expiresIn > 0 {
-		cfg.Accounts[idx].PortalSessionExp = time.Now().Unix() + expiresIn
-	} else {
-		cfg.Accounts[idx].PortalSessionExp = 0
-	}
-	return saveCfg(cfg)
-}
-
-// clearSession 在實例說「這張 session 不算數」時把它丟掉。
-// 留著一張已知無效的 token 只會讓下一次再撞一次 401，然後畫面又閃一下錯誤。
-func clearSession(idx int) {
-	cfg, err := loadCfg()
-	if err != nil || idx < 0 || idx >= len(cfg.Accounts) {
-		return
-	}
-	if cfg.Accounts[idx].PortalSession == "" && cfg.Accounts[idx].PortalSessionExp == 0 {
-		return
-	}
-	cfg.Accounts[idx].PortalSession = ""
-	cfg.Accounts[idx].PortalSessionExp = 0
-	if err := saveCfg(cfg); err != nil {
-		appLog("清掉過期的知識庫登入失敗：%v", err)
-	}
-}
-
-// tryStoreSessionFromLogin 在連線精靈成功之後順手換一張 session（connect.go 呼叫）。
-// **失敗不算連線失敗**——沒有 session 只是「App 詳情要再登入一次」，
-// 而資料夾同步這條主線根本用不到它。
-func tryStoreSessionFromLogin(cfg *directConfig, idx int, email, password string) {
-	if idx < 0 || idx >= len(cfg.Accounts) {
-		return
-	}
-	token, exp, err := portalLogin(apiBaseOf(cfg.Accounts[idx]), email, password)
-	if err != nil {
-		appLog("連線成功但沒換到知識庫的 App 登入（不影響同步）：%v", err)
-		return
-	}
-	cfg.Accounts[idx].PortalSession = token
-	if exp > 0 {
-		cfg.Accounts[idx].PortalSessionExp = time.Now().Unix() + exp
-	}
+// portalGet／portalBearer：所有打 `/portal/data/*` 的請求都帶這一把。
+func portalBearer(req *http.Request, acc accountCfg) {
+	req.Header.Set("Authorization", "Bearer "+syncKey(acc))
 }
 
 // ── 前端呼叫的四支 ─────────────────────────────────────────────────────────
@@ -295,10 +211,10 @@ func (a *App) listAppsCore(accIdx int) UIAppList {
 		return out
 	}
 
-	// ① portal session（與 Portal 那半同一支端點、同一份權限）
-	if sessionValid(acc) {
+	// ① Portal 端點（與網頁那半同一支、同一份權限）
+	if syncKey(acc) != "" {
 		req, _ := http.NewRequest(http.MethodGet, base+"/portal/data/apps", nil)
-		req.Header.Set("Authorization", "Bearer "+acc.PortalSession)
+		portalBearer(req, acc)
 		status, raw, derr := appDo(req, appReadTimeout)
 		switch {
 		case derr != nil:
@@ -306,10 +222,10 @@ func (a *App) listAppsCore(accIdx int) UIAppList {
 			return out
 		case status == http.StatusOK:
 			out.Apps = parseAppList(raw)
-			out.Source = "session"
+			out.Source = "portal"
 			return out
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			clearSession(accIdx) // 過期了 ⇒ 掉到 ② 去，清單照樣看得到
+			// Portal 端點不認這把憑證（太舊）⇒ 掉到 ② 去，清單照樣看得到
 		default:
 			// 其他錯（例如 5xx）**不要**掉到 ②——那會把「實例出問題」偽裝成正常。
 			out.Error = appErrMessage(status, raw)
@@ -317,7 +233,7 @@ func (a *App) listAppsCore(accIdx int) UIAppList {
 		}
 	}
 
-	// ② 實例 API key（小幫手本來就有的那把；只有清單，沒有詳情／動作）
+	// ② 舊路 `/apps`（租戶名＋同一把憑證；只有清單，沒有詳情／動作）
 	if strings.TrimSpace(acc.APIKey) == "" {
 		out.Error = "這台電腦還沒有這個知識庫的鑰匙，請重新連線一次"
 		return out
@@ -327,6 +243,10 @@ func (a *App) listAppsCore(accIdx int) UIAppList {
 	status, raw, derr := appDo(req, appReadTimeout)
 	if derr != nil {
 		out.Error = derr.Error()
+		return out
+	}
+	if status == http.StatusUnauthorized {
+		out.Error = reconnectMsg(out.Account)
 		return out
 	}
 	if status != http.StatusOK {
@@ -367,10 +287,10 @@ func parseAppList(raw []byte) []UIApp {
 
 // GetApp 取一個 App 的詳情（自帶畫面／工作流清單／動作白名單）。
 //
-// 🔴 只有 portal session 這一條路——上游的 API key 面**沒有**詳情端點
+// 🔴 只有 Portal 端點這一條路——舊的 `/apps` 面**沒有**詳情端點
 //
-//	（`/apps` 只有列表；見 `cypher-executor/src/routes/apps.ts`）。
-//	所以沒有 session 時回 NeedsLogin，讓畫面長一次登入框，而不是回一句錯誤。
+//	（只有列表；見 `cypher-executor/src/routes/apps.ts`）。
+//	憑證沒有或被認定失效時回 NeedsReconnect，讓畫面請用戶重新連線，而不是回一句錯誤。
 func (a *App) GetApp(accIdx int, id string) UIAppDetail {
 	out := UIAppDetail{ID: id}
 	cfg, _ := loadCfg()
@@ -379,22 +299,20 @@ func (a *App) GetApp(accIdx int, id string) UIAppDetail {
 		out.Error = err.Error()
 		return out
 	}
-	out.Email = acc.Email
-	if !sessionValid(acc) {
-		out.NeedsLogin = true
+	if syncKey(acc) == "" {
+		out.NeedsReconnect, out.Error = true, reconnectMsg(accountName(acc))
 		return out
 	}
 	base := apiBaseOf(acc)
 	req, _ := http.NewRequest(http.MethodGet, base+"/portal/data/apps/"+urlPathEscape(id), nil)
-	req.Header.Set("Authorization", "Bearer "+acc.PortalSession)
+	portalBearer(req, acc)
 	status, raw, derr := appDo(req, appReadTimeout)
 	if derr != nil {
 		out.Error = derr.Error()
 		return out
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		clearSession(accIdx)
-		out.NeedsLogin = true
+	if status == http.StatusUnauthorized {
+		out.NeedsReconnect, out.Error = true, reconnectMsg(accountName(acc))
 		return out
 	}
 	if status != http.StatusOK {
@@ -445,8 +363,8 @@ func (a *App) RunAppAction(accIdx int, id, action, payloadJSON string) (string, 
 	if strings.TrimSpace(action) == "" {
 		return "", errors.New("沒有指定要做什麼")
 	}
-	if !sessionValid(acc) {
-		return "", errors.New("這個知識庫的登入已過期，請在畫面上重新登入一次")
+	if syncKey(acc) == "" {
+		return "", errors.New(reconnectMsg(accountName(acc)))
 	}
 	var payload any = map[string]any{}
 	if s := strings.TrimSpace(payloadJSON); s != "" {
@@ -461,40 +379,22 @@ func (a *App) RunAppAction(accIdx int, id, action, payloadJSON string) (string, 
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+acc.PortalSession)
+	portalBearer(req, acc)
 	status, raw, derr := appDo(req, appActionTimeout)
 	if derr != nil {
 		return "", derr
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		// 403 也可能是「這個動作不在白名單」——那句話由實例自己講，這裡照抄。
-		if status == http.StatusUnauthorized {
-			clearSession(accIdx)
-		}
+	if status == http.StatusUnauthorized {
+		return "", errors.New(reconnectMsg(accountName(acc)))
+	}
+	if status == http.StatusForbidden {
+		// 403 可能是「這個動作不在白名單」——那句話由實例自己講，這裡照抄。
 		return "", errors.New(appErrMessage(status, raw))
 	}
 	if status != http.StatusOK {
 		return "", errors.New(appErrMessage(status, raw))
 	}
 	return string(raw), nil
-}
-
-// PortalLogin 讓使用者在 App 頁上補一次登入（session 過期時）。
-// email 用 config 裡存的那個（就是他連線時用的帳號），只問密碼。
-func (a *App) PortalLogin(accIdx int, password string) error {
-	cfg, _ := loadCfg()
-	acc, err := accountAt(cfg, accIdx)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(acc.Email) == "" {
-		return errors.New("這個知識庫沒有記錄帳號，請用「新增知識庫帳號」重新連一次")
-	}
-	token, exp, err := portalLogin(apiBaseOf(acc), acc.Email, password)
-	if err != nil {
-		return err
-	}
-	return storeSession(accIdx, token, exp)
 }
 
 // urlPathEscape：App id 的字元集上游已限死 `^[a-z][a-z0-9_-]{0,63}$`，

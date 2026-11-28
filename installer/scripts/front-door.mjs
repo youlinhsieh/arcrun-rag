@@ -275,6 +275,37 @@ const CF_API = 'https://api.cloudflare.com/client/v4';
 const MINT_SECRET = 'MCP_STATIC_TOKEN';
 
 /**
+ * 讓 worker 的「最新上傳版本」就是「正在跑的部署」（inkstone/Arcrun#581）。
+ *
+ * 為什麼：1.4.337、1.4.339 兩次 stage 出貨，正門寫一次性 Secret 時都撞 CF 10215
+ * 「<script> 最新版本沒部署」，要靠人手動 `stage-deploy-artifacts.py arcrun-mcp --confirm` 補。
+ * 寫 Secret 會以「最新上傳的版本」為底；最新版本不是現行部署就被拒。⇒ 正門走之前自己先對齊，不靠人記得補。
+ *
+ * 讀不懂回應（形狀不對、API 失敗）＝不動作、如實回報 action:'unknown'，不擋也不猜——真有問題，後面寫 Secret 會自己報 10215。
+ * 只在「最新版本 ≠ 現行 100% 部署」時才部署；已對齊就什麼都不做（冪等）。
+ * @returns {Promise<{ action: 'aligned'|'deployed'|'unknown', detail: string }>}
+ */
+export async function ensureLatestDeployed({ accountId, cfToken, script = 'arcrun-mcp', fetchImpl = fetch }) {
+  const base = `${CF_API}/accounts/${accountId}/workers/scripts/${script}`;
+  const auth = { authorization: `Bearer ${cfToken}`, 'content-type': 'application/json' };
+  const get = (path) => fetchImpl(`${base}/${path}`, { headers: auth }).then((r) => r.json()).catch(() => null);
+  const [vers, deps] = await Promise.all([get('versions'), get('deployments')]);
+  const items = vers && vers.success && vers.result && Array.isArray(vers.result.items) ? vers.result.items : null;
+  const list = deps && deps.success && deps.result && Array.isArray(deps.result.deployments) ? deps.result.deployments : null;
+  if (!items || !items.length || !list || !list.length) return { action: 'unknown', detail: `${script}：讀不到版本／部署清單，不動作` };
+  const stamp = (v) => (v.metadata && v.metadata.created_on) || '';
+  const latest = [...items].sort((a, b) => (stamp(b) > stamp(a) ? 1 : stamp(b) < stamp(a) ? -1 : (b.number || 0) - (a.number || 0)))[0];
+  const live = [...list].sort((a, b) => ((b.created_on || '') > (a.created_on || '') ? 1 : -1))[0];
+  const full = (live.versions || []).find((x) => x.percentage === 100);
+  if (full && full.version_id === latest.id) return { action: 'aligned', detail: `${script}：最新版本已是現行部署（${String(latest.id).slice(0, 8)}）` };
+  const put = await fetchImpl(`${base}/deployments`, { method: 'POST', headers: auth,
+    body: JSON.stringify({ strategy: 'percentage', versions: [{ percentage: 100, version_id: latest.id }] }) })
+    .then((r) => r.json()).catch(() => null);
+  if (!put || !put.success) throw new Error(`${script} 的最新版本（${String(latest.id).slice(0, 8)}）不是現行部署，自動補部署也失敗（${JSON.stringify(put && put.errors || '連不上').slice(0, 160)}）`);
+  return { action: 'deployed', detail: `${script}：最新版本 ${String(latest.id).slice(0, 8)} 原本沒部署（現行是 ${full ? String(full.version_id).slice(0, 8) : '非 100%'}），已補部署` };
+}
+
+/**
  * 在執行當下現寫一把一次性的 MCP 連線憑證（只靠出貨環境已有的那把 Cloudflare 鑰匙，不要任何人另外放金鑰）。
  *
  * 做法（inkstone/Arcrun#461 總管裁定 c1794996907844366）：arcrun-mcp 的認證順序第 2 條是 CF Secret `MCP_STATIC_TOKEN`
@@ -305,6 +336,10 @@ export async function mintProbeCredential({ accountId, cfToken, script = 'arcrun
     put = await fetchImpl(base, { method: 'PUT', headers: auth, body: JSON.stringify({ name: MINT_SECRET, text: token, type: 'secret_text' }) })
       .then((r) => r.json()).catch(() => null);
     if (put && put.success) break;
+    if (i === 0 && put && (put.errors || []).some((e) => e.code === 10215)) {   // #581：最新版本沒部署——補部署再試
+      await ensureLatestDeployed({ accountId, cfToken, script, fetchImpl });
+      continue;
+    }
     const busy = put && (put.errors || []).some((e) => e.code === 11024);
     if (!busy) break;
     await sleep(3000);
@@ -340,6 +375,7 @@ export async function frontDoorStation({ cfg, env = process.env, confirm = false
   }
   if (!cf || !cf.token) throw new Error('正門拿不到出貨用的 Cloudflare 鑰匙（登錄簿 cloudflareCredentials 沒宣告 youlin 那把，或環境沒有值）');
   const namespace = env[cfg.namespaceEnv] || '';
+  const aligned = await ensureLatestDeployed({ accountId: cf.accountId, cfToken: cf.token, script: cfg.mcpWorker || 'arcrun-mcp', fetchImpl });
   const cred = await mint({ accountId: cf.accountId, cfToken: cf.token, script: cfg.mcpWorker || 'arcrun-mcp', mcpUrl: cfg.mcpUrl, fetchImpl });
   let r; let revokeErr = null;
   try {
@@ -347,7 +383,7 @@ export async function frontDoorStation({ cfg, env = process.env, confirm = false
   } finally {
     try { await cred.revoke(); } catch (e) { revokeErr = e; }   // 走完一定撤，不管成敗
   }
-  const lines = formatRings(r);
+  const lines = [...(aligned.action === 'unknown' ? [] : [`ℹ️ ${aligned.detail}`]), ...formatRings(r)];
   lines.push(revokeErr ? `❌ 一次性憑證沒撤掉：${revokeErr.message}` : '✅ 一次性憑證已撤（Secret 已刪）');
   if (revokeErr) throw new Error(`正門走完但一次性憑證沒撤乾淨：\n${lines.map((l) => `       ｜${l}`).join('\n')}`);
   if (!r.ok) throw new Error(`正門驗收未過——AI 從 MCP 走不通，**斷在${r.brokenAt}**：\n${lines.map((l) => `       ｜${l}`).join('\n')}`);

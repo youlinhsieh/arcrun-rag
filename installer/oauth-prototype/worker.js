@@ -300,7 +300,7 @@ const STALL_MS = 300000; // 5 分鐘
 // 對 @<commit> 則**永久不變、永不供舊**。⇒ 推 bundle 的收尾步驟＝
 //   ① cd bundles repo && git rev-parse HEAD ② 換掉下面這行 ③ 部署本 worker（見 install-flow-map §3.5）
 // **漏做 ②③ ＝ 用戶永遠拿舊版**，比 @main 更明確地壞 ⇒ 好處是「壞法可預測、驗一次就知道」。
-const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@a0720c864596900b5b71be2cab43a42575c38b77';
+const DEFAULT_BUNDLE_BASE = 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@84b8b9d63c7eae1560c4b6021d894ec3677c26e1';
 const BUNDLE_BUILT = '2026-11-28'; // manifest.built 鏡像（b1305e9），換 bundle 時和上行釘碼一起改
 function bundleBase(env) {
   return (env && env.BUNDLE_BASE ? String(env.BUNDLE_BASE) : DEFAULT_BUNDLE_BASE).replace(/\/+$/, '');
@@ -3868,6 +3868,9 @@ async function deployBundledWorker(env, token, accountId, entry, resources, inje
     // 讀值那半）。值＝這個環境（stage/prod/youlin-stage）自己的 installerOrigin(env)，
     // 跟 PORTAL_MAIL_RELAY_BASE 同一個模式——不新增第二個要維護的座標。
     ...(entry.name && entry.name.includes('cypher') ? { INSTALLER_ORIGIN: installerOrigin(env) } : {}),
+    // inkstone/arcrun-rag#398：UI worker 去哪看「Portal 畫面包」指標（只改畫面時不必重推 UI、用戶不必按更新）。
+    //   值＝這個環境自己的安裝站（與 INSTALLER_ORIGIN 同一份真相）；沒注入的舊實例＝照用內嵌畫面。
+    ...(entry.name === 'arcrun-rag-ui' ? { PORTAL_PACK_BASE: installerOrigin(env) } : {}),
     // t151：MCP 的租戶對齊。**這兩個不給就是「連得上但什麼都查不到」的假通**——
     // partner-auth.ts:60 的預設是 `MCP_OWNER_NAMESPACE || "leo"` ⇒ 用戶實例發出的 access token
     // 會綁在 namespace `leo` 這個分區，而他的卡片是寫在自己的租戶分區底下
@@ -6682,6 +6685,13 @@ export default {
       return appsHandle(request, env, pathname);
     }
 
+    // inkstone/arcrun-rag#398：Portal 畫面包（只改畫面不必按「立即更新」）。
+    //   `/portal/current.json`＝指標（{version,sha256,floor_bundle_version}），`/portal/packs/<版>.json`＝整份畫面。
+    //   用戶實例的 UI worker（env.PORTAL_PACK_BASE＝本站網址）每 60 秒看一次指標，換版就換上。家同市集（`market/portal/`）。
+    if (pathname === "/portal/current.json" || pathname.startsWith("/portal/packs/")) {
+      return portalPackHandle(request, env, pathname);
+    }
+
     if (!env.INSTALLER_KV) {
       return html(
         pageShell(
@@ -7151,6 +7161,22 @@ async function appsHandle(request, env, pathname) {
   }
   return new Response(JSON.stringify({ error: '這個安裝站沒有 App 市集目錄（沒綁 R2、也沒設 APP_FEED_BASE）' }),
     { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+}
+/** Portal 畫面包只開兩類 key：指標 `current.json`、包 `packs/<市集版號格式>.json`。其餘（含 ..）一律 404。 */
+function portalPackKeyAllowed(rel) {
+  if (rel.includes('..') || rel.includes('//')) return false;
+  return rel === 'current.json' || /^packs\/\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7}\.json$/.test(rel);
+}
+async function portalPackHandle(request, env, pathname) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+  }
+  const rel = pathname.replace(/^\/portal\//, '');
+  if (!portalPackKeyAllowed(rel)) return new Response('not found', { status: 404 });
+  const up = await marketRead(env, 'portal/' + rel);
+  if (!up) return new Response(JSON.stringify({ error: rel === 'current.json' ? '這個安裝站還沒有 Portal 畫面包（用戶照用內嵌的畫面）' : `Portal 畫面包 ${rel} 不存在` }), { status: 404, headers: { 'content-type': 'application/json; charset=utf-8' } });
+  if (up.status === 502) return new Response(JSON.stringify({ error: 'Portal 畫面包來源暫時讀不到' }), { status: 502, headers: { 'content-type': 'application/json; charset=utf-8' } });
+  return new Response(request.method === 'HEAD' ? null : up.body, { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': rel === 'current.json' ? 'no-cache' : 'public, max-age=31536000, immutable' } });
 }
 /** 地端更新檔只開兩類 key：指標 `latest.json`、更新檔 `<版本>.tgz`（版本格式＝引擎 updater 認的 1.4.296 或 1.4.296-onprem.1）。其餘（含 ..）一律 404。 */
 function onpremKeyAllowed(rel) {

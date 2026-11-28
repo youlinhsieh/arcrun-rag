@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-	"time"
 )
 
 func TestAskStageManual(t *testing.T) {
@@ -14,12 +13,12 @@ func TestAskStageManual(t *testing.T) {
 	if base == "" {
 		t.Skip("未設 ARCRUN_CHAT_STAGE_URL")
 	}
-	tok, exp, err := portalLogin(base, os.Getenv("ARCRUN_CHAT_EMAIL"), os.Getenv("ARCRUN_CHAT_PW"))
+	dc, err := fetchConfigByLogin(base, os.Getenv("ARCRUN_CHAT_EMAIL"), os.Getenv("ARCRUN_CHAT_PW"))
 	if err != nil {
-		t.Fatalf("登入: %v", err)
+		t.Fatalf("連線（領同步憑證）: %v", err)
 	}
 	cfg := &directConfig{Accounts: []accountCfg{{InstanceName: "youlin stage", CypherURL: base,
-		PortalSession: tok, PortalSessionExp: time.Now().Unix() + exp}}}
+		KbdbKey: dc.Config.KbdbKey}}}
 	q := os.Getenv("ARCRUN_CHAT_Q")
 	if q == "" {
 		q = "這個知識庫裡有哪些內容？"

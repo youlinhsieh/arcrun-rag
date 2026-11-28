@@ -211,10 +211,6 @@ func (a *App) Connect(portalURL, email, password string) error {
 			}
 			cfg.Accounts[i].Email = r.Config.Email
 			cfg.Accounts[i].InstanceName = r.Config.InstanceName
-			// arcrun-rag#137：密碼**此刻**還在手上，順手換一張 portal session，
-			// 之後 App 啟動器要看詳情／按動作就不必再問一次密碼。
-			// 換不到不算連線失敗（同步這條主線用不到它），見 apps.go。
-			tryStoreSessionFromLogin(cfg, i, r.Config.Email, password)
 			return saveCfg(cfg)
 		}
 	}
@@ -230,8 +226,6 @@ func (a *App) Connect(portalURL, email, password string) error {
 		APIKey:       r.Config.Namespace,
 		KbdbKey:      r.Config.KbdbKey,
 	})
-	// arcrun-rag#137：同上，順手換一張 portal session 給 App 啟動器用。
-	tryStoreSessionFromLogin(cfg, len(cfg.Accounts)-1, r.Config.Email, password)
 	if wasFirstEver {
 		// leo 2026-08-08：全新安裝自動裝一個「可刪除的預設庫」，讓使用者不必
 		// 自己選資料夾也能立刻看到「丟檔 → 知識卡 → 搜得到」整條路（見 default_library.go）。

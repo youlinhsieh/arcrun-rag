@@ -250,20 +250,20 @@ function chatBox(s) {
   if (chat.busy) out = `<div class="d one">查詢中…</div>`;
   else if (r) {
     const bad = (r.accounts || []).filter((x) => !x.ok);
-    const logins = r.needsLogin ? [{ accIdx: 0, label: ((s.accounts || [])[0] || {}).name || '' }]
-      : bad.filter((x) => x.reason === 'needs_login' && x.accIdx >= 0);
+    // #402：沒有密碼框。憑證失效的帳號只給一顆「重新連線」，開的是連線精靈（密碼只在那一刻用來換憑證）。
+    const recon = r.needsReconnect ? [{ accIdx: 0, label: ((s.accounts || [])[0] || {}).name || '' }]
+      : bad.filter((x) => x.reason === 'needs_reconnect' && x.accIdx >= 0);
     out = `
       ${r.answer ? `<pre class="chatans">${esc(r.answer)}</pre>` : ''}
-      ${r.error && !r.needsLogin ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}
+      ${r.error && !r.needsReconnect ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}
       ${(r.cards || []).length ? `<div class="chatsrc">${r.cards.map((c) => `
         <${c.accIdx >= 0 ? 'button' : 'span'} class="nm${c.cited ? ' cited' : ''}" title="${esc(c.excerpt || '')}"${c.accIdx >= 0 ? ` data-kcopen="${c.accIdx}|${esc(c.library)}|${esc(c.pageName)}"` : ''}>${c.n} · ${esc(c.account)} · ${esc(c.library)} · ${esc(c.pageName)}</${c.accIdx >= 0 ? 'button' : 'span'}>`).join('')}</div>` : ''}
       ${bad.length ? `<div class="chatsrc">${bad.map((x) => `<span class="nchip" title="${esc(x.detail || '')}">${esc(x.label)}<b>⚠</b></span>`).join('')}</div>` : ''}
       ${(r.accounts || []).filter((x) => x.reason === 'via_helper').map((x) => `<div class="d one">${esc(x.label)}：${esc(x.detail || '')}</div>`).join('')}
-      ${logins.map((x) => `
+      ${recon.map((x) => `
         <div class="chatlogin"><span class="nm">${esc(x.label)}</span>
-          <input type="password" class="chatpw" data-chatacc="${x.accIdx}" placeholder="密碼" aria-label="${esc(x.label)} 的密碼"/>
-          <button data-chatlogin="${x.accIdx}">登入</button></div>
-        ${r.needsLogin ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}`).join('')}`;
+          <button data-reconnect="${x.accIdx}">重新連線</button></div>
+        ${r.needsReconnect ? `<div class="err" role="alert">${esc(r.error)}</div>` : ''}`).join('')}`;
   }
   return `
     <section class="chat" aria-label="問答">
@@ -290,18 +290,6 @@ async function askChat() {
   }
   renderPage();
 }
-async function chatLogin(btn) {
-  const idx = Number(btn.dataset.chatlogin);
-  const pw = btn.closest('.chatlogin').querySelector('.chatpw');
-  btn.disabled = true;
-  try { await go.PortalLogin(idx, pw.value); await askChat(); }
-  catch (ex) {
-    btn.disabled = false;
-    if (chat.res) chat.res.error = errText(ex);
-    renderPage();
-  }
-}
-
 // 狀態列只放符號加數字，不放句子（#240 c18290，leo：「如果你裡面顯示了一句話就要檢討是否不需要這句話」）。
 // 符號的意思放在滑過去才出現的 title，版面上一個字都不佔。
 const SYM_SYNC = '<svg class="symic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/></svg>';
@@ -1316,22 +1304,10 @@ function kcOpenFromChat(idx, lib, name) {
   goPage('lib:' + idx);
   kcCard(idx, lib, name);
 }
-async function kcLogin(btn) {
-  const idx = Number(btn.dataset.kclogin);
-  const pw = btn.closest('.chatlogin').querySelector('.chatpw');
-  btn.disabled = true;
-  try { await go.PortalLogin(idx, pw.value); kcReload(idx); }
-  catch (ex) {
-    btn.disabled = false;
-    const c = kc[idx]; const r = c && (c[c.view]);
-    if (r) { r.error = errText(ex); renderPage(); }
-  }
-}
-function kcLoginBox(idx, a, r) {
+function kcReconnectBox(idx, a, r) {
   return `<div class="card"><div class="err" role="alert">${esc(r.error)}</div>
     <div class="chatlogin"><span class="nm">${esc(a.name)}</span>
-      <input type="password" class="chatpw" placeholder="密碼" aria-label="${esc(a.name)} 的密碼"/>
-      <button data-kclogin="${idx}">登入</button></div></div>`;
+      <button data-reconnect="${idx}">重新連線</button></div></div>`;
 }
 function tabCards(idx) {
   const a = (state.accounts || [])[idx] || { name: '' };
@@ -1340,7 +1316,7 @@ function tabCards(idx) {
   const cur = c[c.view];
   if (c.busy && !cur) return `<div class="card"><div class="d">…</div></div>`;
   if (!cur) return `<div class="card"><div class="d">…</div></div>`;
-  if (cur.needsLogin) return kcLoginBox(idx, a, cur);
+  if (cur.needsReconnect) return kcReconnectBox(idx, a, cur);
   if (cur.error) {
     return `<div class="card">${more('看不到知識卡', esc(cur.error))}<div class="acts"><button id="kcRetry">重試</button></div></div>`;
   }
@@ -1612,16 +1588,12 @@ function pageApp(accIdx, id) {
 
   if (!d) return `<div class="appview">${head('', id, '')}<div class="card"><div class="d">載入中…</div></div></div>`;
 
-  if (d.needsLogin) {
-    // session 過期／這台機器還沒換過 session。不是錯誤，是「還差一步」。
+  if (d.needsReconnect) {
+    // 連線憑證失效（帳號停用／被移出／太舊）。沒有密碼框，只給「重新連線」。
     return `<div class="appview">${head(d.icon, d.name, d.version)}
       <div class="card">
-        <h3 title="要打開 App 的畫面或執行它的動作，需要在這個知識庫登入一次；之後這台電腦會記住一段時間，同步不受影響">登入</h3>
-        <div class="field"><div class="lb">帳號</div>
-          <input type="text" id="apEmail" value="${esc(d.email || '')}" disabled/></div>
-        <div class="field"><div class="lb">密碼</div><input type="password" id="apPw"/></div>
-        <div class="err" id="apErr" style="display:none"></div>
-        <div class="acts"><button class="primary" id="apLogin">登入</button></div>
+        <div class="err" role="alert">${esc(d.error)}</div>
+        <div class="acts"><button class="primary" data-reconnect="${Number(page.split(':')[1])}">重新連線</button></div>
       </div></div>`;
   }
 
@@ -1836,14 +1808,13 @@ function wire(root) {
     cq.oninput = () => { chat.q = cq.value; };
     cq.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) askChat(); };
   }
-  all('[data-chatlogin]').forEach((b) => { b.onclick = () => chatLogin(b); });
+  all('[data-reconnect]').forEach((b) => { b.onclick = () => showConnect((state.accounts || [])[Number(b.dataset.reconnect)]); });
   all('[data-kcopen]').forEach((b) => {
     b.onclick = () => { const p = b.dataset.kcopen.split('|'); kcOpenFromChat(Number(p[0]), p[1], p.slice(2).join('|')); };
   });
   all('[data-kclib]').forEach((b) => { b.onclick = () => kcCatalog(Number(page.slice(4)), b.dataset.kclib); });
   all('[data-kccard]').forEach((b) => { b.onclick = () => kcCard(Number(page.slice(4)), b.dataset.kcl, b.dataset.kccard); });
   all('[data-kcback]').forEach((b) => { b.onclick = () => kcBack(Number(page.slice(4)), b.dataset.kcback); });
-  all('[data-kclogin]').forEach((b) => { b.onclick = () => kcLogin(b); });
   on('kcRetry', () => kcReload(Number(page.slice(4))));
   on('hLogs', () => go.OpenLogFolder());
   on('hLogs', () => go.OpenLogFolder());
@@ -1959,7 +1930,6 @@ function wire(root) {
   // 加裝 App 在知識庫網頁的 App 市集做，這裡不放說明，直接帶過去
   on('apAdd', () => { const a = (state.accounts || [])[Number(page.slice(4))]; if (a) go.OpenURL(libPortalURL(a)); });
   on('apReload', () => { const p = page.split(':'); loadAppDetail(Number(p[1]), p.slice(2).join(':')); });
-  on('apLogin', appLogin);
   all('[data-appopen]').forEach((b) => {
     b.onclick = () => goToApp(Number(b.dataset.appacc), b.dataset.appopen);
   });
@@ -1983,22 +1953,6 @@ function goToApp(accIdx, id) {
   page = 'app:' + accIdx + ':' + id;
   renderNav();
   loadAppDetail(accIdx, id);
-}
-
-async function appLogin() {
-  const accIdx = Number(page.split(':')[1]);
-  const id = page.split(':').slice(2).join(':');
-  const err = $('apErr');
-  const btn = $('apLogin');
-  if (btn) btn.disabled = true;
-  try {
-    await go.PortalLogin(accIdx, $('apPw').value);
-    if (btn) btn.disabled = false;
-    loadAppDetail(accIdx, id);
-  } catch (ex) {
-    if (btn) btn.disabled = false;
-    if (err) { err.textContent = String(ex); err.style.display = 'block'; }
-  }
 }
 
 // runAppAction：沒有自帶畫面的 App，那顆「現在執行」。
@@ -2200,13 +2154,15 @@ function renderCleanupPlan(plan) {
   return h;
 }
 
-function showConnect() {
+// acc＝重新連線時帶入的帳號（預填網址與 Email；只問密碼）。沒帶＝新增連線。
+function showConnect(acc) {
+  const re = acc && acc.host ? acc : null;
   openSheet(`
-    <h2>連線</h2>
+    <h2>${re ? '重新連線' : '連線'}</h2>
     <div class="field"><div class="lb">知識庫網址</div>
-      <input type="text" id="u" value="${esc(channelInfo.defaultConnect || '')}" placeholder="https://arcrun-cypher-executor.xxxx.workers.dev"/></div>
+      <input type="text" id="u" value="${esc(re ? libPortalURL(re) : (channelInfo.defaultConnect || ''))}" placeholder="https://arcrun-cypher-executor.xxxx.workers.dev"/></div>
     <div class="field"><div class="lb">Email</div>
-      <input type="text" id="e" placeholder="you@example.com"/></div>
+      <input type="text" id="e" value="${esc(re ? (re.email || '') : '')}" placeholder="you@example.com"/></div>
     <div class="field"><div class="lb">密碼</div><input type="password" id="p"/></div>
     <div class="err" id="err" style="display:none"></div>
     <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">連線</button></div>`,

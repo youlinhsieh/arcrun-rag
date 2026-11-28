@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { walkFrontDoor, frontDoorStation, mintProbeCredential, parseMcpBody, formatRings } from './front-door.mjs';
+import { walkFrontDoor, frontDoorStation, mintProbeCredential, ensureLatestDeployed, parseMcpBody, formatRings } from './front-door.mjs';
 
 const noSleepEarly = () => Promise.resolve();
 // ── 假的 MCP＋cypher：每一環都能個別弄斷 ─────────────────────────────────────
@@ -215,4 +215,74 @@ test('站表順序與 ship.mjs 步驟表一致（上一版只比集合，順序�
   const src = readFileSync(join(import.meta.dirname, 'ship.mjs'), 'utf8');
   const stepIds = [...src.matchAll(/^\{ id: '([a-z0-9-]+)', title:/gm)].map((m) => m[1]);
   assert.deepEqual(ids, stepIds);
+});
+
+// ── inkstone/Arcrun#581：最新版本沒部署（CF 10215）要自己補，不靠人 ──────────────
+function fakeVersionsApi({ latestId = 'v-new', liveId = 'v-old', failPost = false } = {}) {
+  const posts = [];
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url); const method = init.method || 'GET';
+    if (u.endsWith('/versions')) return Response.json({ success: true, result: { items: [
+      { id: 'v-old', number: 1, metadata: { created_on: '2026-11-28T10:00:00Z' } },
+      { id: latestId, number: 2, metadata: { created_on: '2026-11-28T11:00:00Z' } }] } });
+    if (u.endsWith('/deployments') && method === 'GET') return Response.json({ success: true, result: { deployments: [
+      { id: 'd1', created_on: '2026-11-28T10:30:00Z', versions: [{ version_id: liveId, percentage: 100 }] }] } });
+    if (u.endsWith('/deployments') && method === 'POST') {
+      posts.push(JSON.parse(init.body));
+      return failPost ? Response.json({ success: false, errors: [{ code: 1, message: 'no' }] }) : Response.json({ success: true, result: {} });
+    }
+    return Response.json({ success: false, errors: [] });
+  };
+  return { fetchImpl, posts };
+}
+const ens = (fetchImpl) => ensureLatestDeployed({ accountId: 'acc', cfToken: 't', script: 'arcrun-mcp', fetchImpl });
+
+test('補部署：最新版本不是現行部署 → 部署最新版本 100%', async () => {
+  const w = fakeVersionsApi();
+  const r = await ens(w.fetchImpl);
+  assert.equal(r.action, 'deployed');
+  assert.deepEqual(w.posts, [{ strategy: 'percentage', versions: [{ percentage: 100, version_id: 'v-new' }] }]);
+});
+
+test('補部署：已對齊 → 不動作（冪等）', async () => {
+  const w = fakeVersionsApi({ liveId: 'v-new' });
+  assert.equal((await ens(w.fetchImpl)).action, 'aligned');
+  assert.equal(w.posts.length, 0);
+});
+
+test('補部署：讀不懂回應 → unknown，不動作也不擋', async () => {
+  const r = await ens(async () => Response.json({ success: false }));
+  assert.equal(r.action, 'unknown');
+});
+
+test('補部署：補部署本身失敗 → throw（不安靜）', async () => {
+  await assert.rejects(ens(fakeVersionsApi({ failPost: true }).fetchImpl), /自動補部署也失敗/);
+});
+
+test('一次性憑證：PUT 撞 10215 → 補部署後重試成功', async () => {
+  const v = fakeVersionsApi();
+  const w = fakeWorldWithSecrets();
+  let putCount = 0;
+  const fx = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes('/versions') || u.includes('/deployments')) return v.fetchImpl(url, init);
+    if (u.includes('/secrets') && init.method === 'PUT' && putCount++ === 0) {
+      return Response.json({ success: false, errors: [{ code: 10215, message: 'latest version not deployed' }] });
+    }
+    return w.fetchImpl(url, init);
+  };
+  const cred = await mintProbeCredential({ accountId: 'acc', cfToken: 't', script: 'arcrun-mcp', mcpUrl: 'https://mcp.test', fetchImpl: fx, sleep: noSleep });
+  assert.ok(cred.token);
+  assert.equal(v.posts.length, 1, '撞 10215 後有補部署');
+  assert.equal(putCount, 2);
+});
+
+test('站：走正門前先對齊 arcrun-mcp 的部署（最新版本≠現行 → 補部署，輸出有一行說明）', async () => {
+  const v = fakeVersionsApi();
+  const w = fakeWorldWithSecrets();
+  const fx = async (url, init = {}) => (String(url).includes('/versions') || (String(url).includes('/deployments'))) ? v.fetchImpl(url, init) : w.fetchImpl(url, init);
+  const r = await frontDoorStation({ cfg, env: { FD_NS: 'ns' }, confirm: true, cf, fetchImpl: fx, mint: mintFor(fx) });
+  assert.equal(r.status, 'done');
+  assert.equal(v.posts.length, 1);
+  assert.ok(r.detail.some((l) => /已補部署/.test(l)));
 });

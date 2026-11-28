@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-	"time"
 )
 
 func TestCardsStageManual(t *testing.T) {
@@ -16,12 +15,12 @@ func TestCardsStageManual(t *testing.T) {
 		t.Skip("未設 ARCRUN_CHAT_STAGE_URL")
 	}
 	tempHome(t)
-	tok, exp, err := portalLogin(base, os.Getenv("ARCRUN_CHAT_EMAIL"), os.Getenv("ARCRUN_CHAT_PW"))
+	dc, err := fetchConfigByLogin(base, os.Getenv("ARCRUN_CHAT_EMAIL"), os.Getenv("ARCRUN_CHAT_PW"))
 	if err != nil {
-		t.Fatalf("登入: %v", err)
+		t.Fatalf("連線（領同步憑證）: %v", err)
 	}
 	if err := saveCfg(&directConfig{Accounts: []accountCfg{{InstanceName: "youlin stage", CypherURL: base,
-		PortalSession: tok, PortalSessionExp: time.Now().Unix() + exp}}}); err != nil {
+		KbdbKey: dc.Config.KbdbKey}}}); err != nil {
 		t.Fatal(err)
 	}
 	app := &App{}

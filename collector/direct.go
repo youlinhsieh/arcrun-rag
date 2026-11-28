@@ -53,11 +53,6 @@ type AccountConfig struct {
 	// `POST /portal/daemon/config` 回的 `config.kbdb_key`；舊版精靈連的帳號沒有這欄
 	// （相容期內只帶租戶名照通，重新連線一次就補上）。見 cypherauth.go。
 	KbdbKey      string            `json:"kbdb_key,omitempty"`
-	// PortalSession／PortalSessionExp＝App 連線時存的 portal 登入憑證（arcrun-rag#137，session token 不是密碼）。
-	// cypher 直接接受它當 Bearer（Arcrun#399 c1794481882638068）。App 是唯一寫入者；
-	// 這裡鏡像只為了 collector 回寫 config 時不把它抹掉。
-	PortalSession    string `json:"portal_session,omitempty"`
-	PortalSessionExp int64  `json:"portal_session_exp,omitempty"`
 	WatchFolders []string          `json:"watch_folders,omitempty"` // 此帳號看守的資料夾（多根）
 	Libraries    map[string]string `json:"libraries,omitempty"`     // 資料夾→庫對映（t52）
 	// RetiringFolders＝使用者已經按下「移除並收回雲端資料」、但雲端還沒撤乾淨的資料夾
@@ -3043,8 +3038,6 @@ func runDirect(args []string) int {
 	if *strict {
 		cfg.LintStrict = true // CLI 旗標覆蓋 config
 	}
-	// #390：連在公司那台的一般同仁，把整台租戶金鑰換成綁本人的憑證（換不到不擋啟動）。
-	upgradeMemberKeys(cfg, *configPath)
 	// #201：每一次被算進斷路器的失敗，當下就印一行帶時間的紀錄進 collector.log。
 	routeFailureLog = announceRouteFailure
 

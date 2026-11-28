@@ -149,33 +149,10 @@ func TestSetCypherAuth_各條打雲端的路對相容期已關的cypher都通(t 
 	}
 }
 
-// Arcrun#399 c1794481882638068：已存的 portal session 直接當 Bearer，舊連線不必重輸密碼。
-func TestSetCypherAuth_portal_session當憑證_kbdb_key優先_過期不帶(t *testing.T) {
+// inkstone/arcrun-rag#402：小幫手只有 kbdb_key 一把憑證。舊 config 殘留的 portal_session 讀到就忽略：
+// 不登記成 Bearer、collector 回寫時也不再保留。
+func TestLoadDirectConfig_殘留的portal_session被忽略(t *testing.T) {
 	resetCypherKeys()
-	cypherSessions.Range(func(k, _ any) bool { cypherSessions.Delete(k); return true })
-	auth := func() string {
-		r, _ := http.NewRequest("GET", "http://x/kbdb/entries", nil)
-		SetCypherAuth(r, t334Tenant)
-		return r.Header.Get("Authorization")
-	}
-	RegisterCypherSession(t334Tenant, "sess-1", time.Now().Unix()+3600)
-	if auth() != "Bearer sess-1" {
-		t.Fatalf("只有 session 時該帶 session，got %q", auth())
-	}
-	RegisterCypherKey(t334Tenant, t334Key)
-	if auth() != "Bearer "+t334Key {
-		t.Fatalf("有 kbdb_key 時優先，got %q", auth())
-	}
-	resetCypherKeys()
-	RegisterCypherSession(t334Tenant, "sess-old", time.Now().Unix()-10)
-	if auth() != "" {
-		t.Fatalf("session 已過期不該帶，got %q", auth())
-	}
-}
-
-func TestLoadDirectConfig_portal_session登記且回寫不被抹掉(t *testing.T) {
-	resetCypherKeys()
-	cypherSessions.Range(func(k, _ any) bool { cypherSessions.Delete(k); return true })
 	dir := t.TempDir()
 	man := filepath.Join(dir, "m.json")
 	exp := time.Now().Unix() + 3600
@@ -188,11 +165,13 @@ func TestLoadDirectConfig_portal_session登記且回寫不被抹掉(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Accounts[0].PortalSession != "sess-9" || cypherBearerFor(t334Tenant) != "sess-9" {
-		t.Fatalf("portal_session 沒讀進／沒登記：%+v", c.Accounts[0])
+	r, _ := http.NewRequest("GET", "http://x/kbdb/entries", nil)
+	SetCypherAuth(r, t334Tenant)
+	if got := r.Header.Get("Authorization"); got != "" {
+		t.Fatalf("沒有 kbdb_key 時不該憑空帶 portal_session，got %q", got)
 	}
 	out, _ := json.Marshal(c.Accounts[0])
-	if !strings.Contains(string(out), `"portal_session":"sess-9"`) {
-		t.Fatalf("collector 回寫時會抹掉 portal_session：%s", out)
+	if strings.Contains(string(out), `"portal_session"`) {
+		t.Fatalf("collector 回寫時不該再保留 portal_session：%s", out)
 	}
 }

@@ -28,9 +28,9 @@ func TestColleagueLive(t *testing.T) {
 	}
 	cfg, _ := loadCfg()
 	a := cfg.Accounts[0]
-	t.Logf("連線成功：cypher_url=%s session有=%v", a.CypherURL, sessionValid(a))
-	if !sessionValid(a) {
-		t.Fatalf("連線後沒有有效的 portal session，問答與看卡都登不進")
+	t.Logf("連線成功：cypher_url=%s 同步憑證有=%v", a.CypherURL, syncKey(a) != "")
+	if syncKey(a) == "" {
+		t.Fatalf("連線後沒有同步憑證（kbdb_key），問答與看卡都進不去")
 	}
 	dump := map[string]any{}
 	libs := app.ListCardLibraries(0)
