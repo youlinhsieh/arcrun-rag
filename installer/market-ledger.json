@@ -338,6 +338,93 @@
           "kind": "updated"
         }
       ]
+    },
+    {
+      "version": "2026.11.28-7828698",
+      "target": "stage",
+      "at": "2026-11-28T09:27:40.359Z",
+      "ticket": null,
+      "previous": "2026.11.28-de7361b",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.72.0",
+          "to": "0.74.0",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.28-c5dc00b",
+      "target": "stage",
+      "at": "2026-11-28T09:53:21.620Z",
+      "ticket": null,
+      "previous": "2026.11.28-7828698",
+      "changes": [
+        {
+          "id": "company_rules",
+          "from": "0.1.1",
+          "to": "0.1.2",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.28-cce1a34",
+      "target": "stage",
+      "at": "2026-11-28T10:05:43.135Z",
+      "ticket": null,
+      "previous": "2026.11.28-c5dc00b",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.74.0",
+          "to": "0.75.0",
+          "kind": "updated"
+        },
+        {
+          "id": "company_rules",
+          "from": "0.1.2",
+          "to": "0.1.1",
+          "kind": "downgraded"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.28-d5ba2f4",
+      "target": "stage",
+      "at": "2026-11-28T11:08:33.813Z",
+      "ticket": null,
+      "previous": "2026.11.28-cce1a34",
+      "changes": [
+        {
+          "id": "ahub",
+          "from": "0.75.0",
+          "to": "0.75.1",
+          "kind": "updated"
+        },
+        {
+          "id": "company_rules",
+          "from": "0.1.1",
+          "to": "0.1.3",
+          "kind": "updated"
+        }
+      ]
+    },
+    {
+      "version": "2026.11.28-6c9f5b6",
+      "target": "stage",
+      "at": "2026-11-28T11:09:20.572Z",
+      "ticket": null,
+      "previous": "2026.11.28-d5ba2f4",
+      "changes": [
+        {
+          "id": "company_rules",
+          "from": "0.1.3",
+          "to": "0.1.2",
+          "kind": "downgraded"
+        }
+      ]
     }
   ]
 }

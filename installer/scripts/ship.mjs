@@ -589,7 +589,7 @@ function publishToR2() {
   // 與零件包同一條路、同一個 commit 算出來——引擎一換版，目錄就跟著對。出版晚於零件包與指標都不影響用戶（目錄是獨立檔案）。
   const appDir = join(ctx.arcrunRepo, 'app-market');
   let feedLine = '市集目錄：來源沒有 app-market/，這次不更新 /apps';
-  if (T.market) {
+  if (marketOwnsApps(T)) {
     // inkstone/arcrun-rag#381：宣告了 market 的目標，市集有自己的上架線（installer/scripts/ship-market.mjs）、自己的版本與簽核；
     //   主程式出貨線不再帶 App 包與目錄——主程式出一班車，市集內容不變。
     feedLine = '市集目錄：本目標的市集走自己的上架線（ship-market.mjs），主程式出貨不帶、不動';
@@ -602,6 +602,15 @@ function publishToR2() {
     feedLine = `市集目錄：${f.count} 個 App 包＋index.json → ${f.indexUrl}`;
   }
   return [`帳號 ${T.dist.accountId}｜bucket ${T.dist.bucket}`, ...cred.lines, ...r.detail, feedLine, `最新版指標：${r.pointerUrl}`];
+}
+
+/**
+ * 市集上架線是否已接管 App 目錄（inkstone/arcrun-rag#381）。宣告了 market 且沒標 `mainShipCarriesApps` ＝已接管。
+ * `mainShipCarriesApps: true`＝「家建好了、第一次市集上架還沒做」的過渡期：主程式出貨照舊帶目錄，避免切換班車出完、
+ * 市集還空時 /apps 沒東西。第一次市集上架落帳後把這個旗標拿掉。
+ */
+function marketOwnsApps(T) {
+  return !!(T && T.market && T.market.mainShipCarriesApps !== true);
 }
 
 /**
@@ -2288,7 +2297,7 @@ const STEPS = [
   //   宣告了 dist 的目標（stage）目錄在 R2（push 站放），這裡不重複。
   //   只加不刪：舊版 App 包依版號命名、不可變，留著不會被「刪檔」閘擋；index.json 每次整份覆蓋。
   let appsLine = null;
-  if (!T.dist && !T.market) {
+  if (!T.dist && !marketOwnsApps(T)) {
     const appDir = join(ctx.arcrunRepo, 'app-market');
     if (existsSync(join(appDir, 'build-feed.mjs'))) {
       const feedDir = mkdtempSync(join(tmpdir(), 'app-feed-'));

@@ -2594,8 +2594,19 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 				var status int
 				var perr error
 				slices := planCardSlices(string(cardData), cardIdx, pageName, cloudHasSlicedNotes(cfg.CloudVersion))
+				if cfg.ForceSync {
+					m.ClearSentSlices(ev.Path) // #399：人按了「立刻同步」＝全部重來
+				}
 				for si, sl := range slices {
 					body := sl.body(cardBody)
+					// #399：上一輪已確定送達的後面幾段不再重寫（第一段永遠送，它是提交標記）。
+					memoKey := ""
+					if len(slices) > 1 && !sliceMemoDisabled {
+						memoKey = sliceMemoKey(cardBody, sl)
+						if m.SliceSent(ev.Path, memoKey, sl.Offset, now) {
+							continue
+						}
+					}
 					stateMu.Unlock() // #297：同上，等雲端時不握鎖
 					status, _, perr = cfg.postJSONAs(stepIngestCard.on(ev.Path), cfg.triggerURL(cfg.CardIngestWF), body,
 						ownFailPost)
@@ -2605,6 +2616,9 @@ func runDirectOnceRoot(cfg *DirectConfig, root string, dryRun bool, qs *quotaSta
 						// 它是不是那個「每次都超時」的段，只有帳本上寫出來才分辨得開。
 						perr = sliceTagged(perr, si+1, len(slices), sl)
 						break
+					}
+					if memoKey != "" && sl.Offset > 0 {
+						m.MarkSliceSent(ev.Path, memoKey, now) // #399：這一段確定送達了，下一輪不用再寫
 					}
 				}
 				res.HTTPStatus = status

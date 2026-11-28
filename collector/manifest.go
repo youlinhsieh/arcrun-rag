@@ -121,6 +121,10 @@ type ManifestEntry struct {
 	// 🔴 跨輪要記住的欄位，scan.go 的 carry 必須帶上。
 	PassageMode  bool `json:"passage_mode,omitempty"`
 	PassageCount int  `json:"passage_count,omitempty"`
+
+	// SentSlices＝大卡「分段送」走到一半時，已經確定送達雲端的後面幾段（inkstone/arcrun-rag#399）。
+	// 🔴 跨輪要記住的欄位，scan.go 的 carry 必須帶上。見 slicememo.go。
+	SentSlices *SentSlices `json:"sent_slices,omitempty"`
 }
 
 // IndexCardFail＝一張目錄卡送失敗的病歷。
@@ -342,6 +346,7 @@ func (m *Manifest) MarkIngestedBy(path, sourceHash string, at int64, extractor s
 	e.IngestedAt = at
 	e.ExtractedBy = extractor
 	e.TripletRev = currentTripletRev
+	e.SentSlices = nil // #399：整份送完（含最後送的第一段＝提交標記），分段記帳完成使命
 	// 成功即清掉失敗狀態（t195）：下次再壞會從第一階退避重新算起。
 	e.FailCount, e.LastFailAt, e.NextRetry = 0, 0, 0
 	e.LastError = ""

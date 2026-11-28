@@ -1178,6 +1178,7 @@ function libTabsHtml(a, idx) {
         <button role="tab" class="tab${k === cur ? ' on' : ''}" aria-selected="${k === cur}" data-libtab="${k}" title="${esc(label)}" aria-label="${esc(label)}">${TAB_ICONS[k]}${k === 'folders' ? `<span class="cnt">${(a.folders || []).length}</span>` : ''}</button>`).join('')}
       <span class="grow"></span>
       <button class="icbtn plain" data-portal="${esc(libPortalURL(a))}" title="開啟知識庫網頁" aria-label="開啟知識庫網頁">${IC_CLOUD}</button>
+      <button class="icbtn plain" data-rmacc="${idx}" title="移除這個知識庫帳號" aria-label="移除這個知識庫帳號">✕</button>
     </div>`;
 }
 
@@ -1929,6 +1930,7 @@ function wire(root) {
     b.onclick = () => go.OpenURL(installURLFor(b.dataset.updatekb));
   });
   all('[data-addto]').forEach((b) => { b.onclick = () => addFolder(Number(b.dataset.addto)); });
+  all('[data-rmacc]').forEach((b) => { b.onclick = () => confirmRemoveAccount(Number(b.dataset.rmacc)); });
   all('[data-rm]').forEach((b) => {
     b.onclick = () => confirmRemove(Number(b.dataset.acc), b.dataset.rm);
   });
@@ -2137,6 +2139,43 @@ function confirmRemove(accIdx, path) {
         const takedown = !mode || mode.value === 'takedown';
         await go.RemoveFolder(accIdx, path, takedown, box.checked); closeSheet();
         state = await go.GetState(); renderNav(); renderPage();
+      };
+    });
+}
+
+// inkstone/arcrun-rag#401：移除一個知識庫帳號（leo：「我想讓正式站的小幫手不掛 stage，但我無法從小幫手刪掉它」）。
+// 語意只有一個：這台電腦不再同步到它、問答也不再列它；那個知識庫裡已整理好的知識不動（要刪去它的網頁）。
+// 還有資料夾在「收回中」時不給移除——收回工作只存在這個帳號的設定裡，丟掉就沒人做完了。
+async function confirmRemoveAccount(accIdx) {
+  let plan = null, perr = '';
+  try { plan = await go.PlanAccountRemoval(accIdx); } catch (e) { perr = String(e); }
+  if (!plan) { openSheet(`<h2>移除知識庫</h2><p class="d">看不到這個知識庫的資料：${esc(perr)}</p><div class="acts"><button id="c1">關閉</button></div>`, () => { $('c1').onclick = closeSheet; }); return; }
+  if (plan.retiring > 0) {
+    openSheet(`
+      <h2>${esc(plan.name)}</h2>
+      <p class="d" id="rmaBlock">還有 ${plan.retiring} 個資料夾正在把雲端的資料收回，收完才能移除這個知識庫。</p>
+      <div class="acts"><button id="c1">知道了</button></div>`, () => { $('c1').onclick = closeSheet; });
+    return;
+  }
+  openSheet(`
+    <h2>移除 ${esc(plan.name)}</h2>
+    <p class="d">小幫手會停止同步到這個知識庫，問答也不再列它。</p>
+    <p class="d">這個知識庫裡已整理好的知識不受影響；要刪請到它的網頁。</p>
+    ${plan.folders ? `<p class="d">它的 ${plan.folders} 個資料夾不再被看守（硬碟上的檔案不動）。</p>` : ''}
+    ${plan.primary && plan.next ? `<p class="d">問答改用 ${esc(plan.next)}。</p>` : ''}
+    <div id="rmaErr" class="d" style="display:none"></div>
+    <div class="acts"><button id="c1">取消</button><button class="primary" id="c2">移除</button></div>`,
+    () => {
+      $('c1').onclick = closeSheet;
+      $('c2').onclick = async () => {
+        try { await go.RemoveAccount(accIdx); } catch (e) {
+          const out = $('rmaErr'); out.style.display = ''; out.textContent = String(e); return;
+        }
+        closeSheet();
+        // 帳號編號會往前補位：所有以編號記的畫面狀態都作廢
+        libTab = {}; appsCache = {}; reportedFiles = {}; chat.res = null;
+        state = await go.GetState();
+        page = 'home'; renderNav(); renderPage();
       };
     });
 }

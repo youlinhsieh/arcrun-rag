@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +61,10 @@ func startSupervisor() {
 	}
 	if _, err := os.Stat(cfg); err != nil {
 		appLog("尚未連上知識庫（沒有 %s），同步引擎先不啟動", cfg)
+		return
+	}
+	if c, lerr := loadCfg(); lerr == nil && c.noAccounts() {
+		appLog("沒有任何知識庫帳號，同步引擎先不啟動")
 		return
 	}
 	sup = supervisor.New(bin, cfg)
@@ -116,6 +121,11 @@ func restartWatch() {
 	}
 	sup.Stop()
 	if _, err := os.Stat(configPath()); err == nil {
+		// inkstone/arcrun-rag#401：帳號全被移除後不再拉起 collector（沒帳號它只會一直 exit 2）
+		if c, lerr := loadCfg(); lerr == nil && c.noAccounts() {
+			appLog("沒有任何知識庫帳號，同步引擎先不啟動")
+			return
+		}
 		sup.Start()
 	}
 }
@@ -235,4 +245,14 @@ func collectorSyncing() bool {
 		return false
 	}
 	return sup.Status().State == supervisor.StateSyncing
+}
+
+// noAccounts＝設定裡一個知識庫帳號都沒有（新制 accounts 空，且也沒有舊制頂層 cypher_url）。
+// 舊制單帳號 config 沒有 accounts 陣列、但 collector 讀得懂，不能被當成「沒帳號」。
+func (c *directConfig) noAccounts() bool {
+	if len(c.Accounts) > 0 {
+		return false
+	}
+	u, _ := c.raw["cypher_url"].(string)
+	return strings.TrimSpace(u) == ""
 }

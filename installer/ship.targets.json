@@ -551,6 +551,21 @@
         "waitMs": 20000,
         "maxTries": 4
       },
+      "market": {
+        "_": [
+          "inkstone/arcrun-rag#381：prod 市集的家＝uncle6 帳號專用 R2 `arcrun-market`（2026-11-28 建，私有）。宣告本欄＝prod 主程式出貨線（ship.mjs）從此不再帶 App 包、不再放 /apps 目錄；",
+          "App 新版改由 `node installer/scripts/ship-market.mjs --target prod --confirm --ticket <市集簽核單>` 上架（簽的是市集版號，沒簽不翻 market/current.json 指標）。",
+          "安裝站（install.arcrun.dev）以 R2 binding `MARKET`（wrangler.toml 頂層）直接讀，不開公開網域；publicBase 只是讀取端的對外說明網址（/apps 由安裝站代送）。",
+          "🔴 切換順序：本欄一生效，下一次 prod 主程式出貨就不再帶目錄——所以必須先「主程式切換版」上 prod（讓 /apps 認得 MARKET 指標），再做第一次 prod 市集上架；兩步各一張 AHub 簽核單。"
+        ],
+        "bucket": "arcrun-market",
+        "accountId": "58309bb90fd93ad6d0fe0aae99170e9d",
+        "publicBase": "https://install.arcrun.dev/apps",
+        "installerBase": "https://install.arcrun.dev",
+        "official": true,
+        "mainShipCarriesApps": true,
+        "mainShipCarriesApps_": "過渡旗標：prod 市集的家已建、安裝站還沒部署 MARKET binding、第一次 prod 市集上架還沒做——這段期間主程式出貨照舊帶 /apps 目錄（不留空窗）。第一次 ship-market --target prod --confirm 落帳後，把這兩行拿掉。"
+      },
       "onprem": {
         "_": [
           "inkstone/arcrun-rag#394（母票 inkstone/InkStoneCo#325）：官方地端更新檔，用戶的 Portal 抓 https://install.arcrun.dev/onprem/latest.json。",

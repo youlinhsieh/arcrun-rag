@@ -7078,13 +7078,18 @@ function appsKeyAllowed(key) {
 }
 /**
  * 市集上架線（inkstone/arcrun-rag#381）的讀取端。市集的家：`market/` 前綴——
- *   stage＝同一顆 R2（env.DIST）的 `market/`；prod＝`env.MARKET_BASE`（官方服務那一側，與零件包釘子無關）。
+ *   stage＝同一顆 R2（env.DIST）的 `market/`；prod＝`env.MARKET`（uncle6 專用 R2 binding，首選）或 `env.MARKET_BASE`（https 網址；兩者皆無＝沒有市集指標）；皆在官方服務那一側，與零件包釘子無關。
  *   `market/current.json` 指到「最後一次簽過的市集版」；目錄在 `market/index/<版>.json`，App 包在 `market/packages/`。
  * 回 null＝這個安裝站沒有市集指標（呼叫端退回舊路：跟著零件包釘子走）。
  * 有指標但取不到它指的檔＝誠實 404／502，不退回舊路（那會讓用戶看到另一份目錄）。
  */
 async function marketRead(env, rel) {
   const key = 'market/' + rel;
+  // prod：uncle6 帳號專用 R2 `arcrun-market`（私有 bucket、安裝站直接綁，不必開公開網域）。最優先。
+  if (env.MARKET) {
+    const o = await env.MARKET.get(key);
+    return o ? new Response(o.body, { status: 200 }) : null;
+  }
   if (env.MARKET_BASE && /^https:\/\//i.test(String(env.MARKET_BASE))) {
     const up = await fetch(`${String(env.MARKET_BASE).replace(/\/+$/, '')}/${rel}`, { headers: { accept: 'application/json' } });
     return up.ok ? up : (up.status === 404 ? null : new Response('upstream', { status: 502 }));

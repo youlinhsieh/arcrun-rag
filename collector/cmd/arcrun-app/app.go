@@ -296,7 +296,12 @@ func saveCfg(c *directConfig) error {
 	//    ——**「我這台好好的」正是這個 bug 能活到封測的原因**。
 	fillRequired(c.raw)
 
-	out, err := json.MarshalIndent(c.raw, "", "  ")
+	return writeRawCfg(c.raw)
+}
+
+// writeRawCfg 把 raw map 原樣寫回 config.json（0600）。
+func writeRawCfg(raw map[string]any) error {
+	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1236,6 +1241,86 @@ func (a *App) RemoveFolder(accIdx int, path string, takedown, cleanupLocal bool)
 		// 沿用既有的 sync-now 訊號檔，不新發明一套 IPC。
 		_ = a.SyncNow()
 	}
+	return nil
+}
+
+// AccountRemovalPlan＝按「移除這個知識庫」之前，前端要講清楚的事實。
+type AccountRemovalPlan struct {
+	Name     string `json:"name"`
+	Folders  int    `json:"folders"`  // 還在看守的資料夾數
+	Retiring int    `json:"retiring"` // 還在收回中的資料夾數（>0 ⇒ 不准移除）
+	Primary  bool   `json:"primary"`  // 是不是問答用的主帳號（第一個）
+	Next     string `json:"next"`     // 移除後接手當主帳號的名字（沒有＝空字串）
+}
+
+// PlanAccountRemoval 只讀：回答「移除這個知識庫帳號會怎樣」。
+func (a *App) PlanAccountRemoval(accIdx int) (*AccountRemovalPlan, error) {
+	cfg, err := loadCfg()
+	if err != nil {
+		return nil, err
+	}
+	if accIdx < 0 || accIdx >= len(cfg.Accounts) {
+		return nil, fmt.Errorf("找不到這個知識庫帳號")
+	}
+	acc := cfg.Accounts[accIdx]
+	p := &AccountRemovalPlan{
+		Name: accountName(acc), Folders: len(acc.WatchFolders),
+		Retiring: len(acc.RetiringFolders), Primary: accIdx == 0,
+	}
+	if accIdx == 0 && len(cfg.Accounts) > 1 {
+		p.Next = accountName(cfg.Accounts[1])
+	}
+	return p, nil
+}
+
+// RemoveAccount 把一個知識庫帳號從小幫手拿掉（inkstone/arcrun-rag#401）。
+//
+// leo 2026-11-28：「我想讓正式站的小幫手不掛 stage，但我無法從小幫手刪掉它」。
+// 語意＝**只停止這台電腦對它的同步與問答**；那個知識庫裡已整理好的知識一張都不動
+// （要刪請去它的網頁）——所以不排撤除。
+//
+// 三條底線：
+//  1. 🔴 **不重新序列化其他帳號**：直接在 raw 的 accounts 陣列上刪一筆再原樣寫回。
+//     saveCfg 會用 accountCfg 重新序列化整個陣列，struct 沒宣告的欄位（例如 libraries）
+//     就在那次存檔靜默消失（t108 同款），所以這裡刻意不走 saveCfg。
+//  2. 🔴 這個帳號底下還有「收回中」的資料夾 ⇒ 拒絕。收回工作只存在這一筆設定裡，
+//     丟掉它＝雲端那半的撤除永遠不會完成，卻沒有任何人說話。
+//  3. 移除第一個帳號後，原本第二個自然成為第一個（問答取 Accounts[0]，不需另外處理）；
+//     一個都不剩 ⇒ 看守停下、不重啟（collector 沒有帳號會一直 exit 2）。
+func (a *App) RemoveAccount(accIdx int) error {
+	cfg, err := loadCfg()
+	if err != nil {
+		return err
+	}
+	if accIdx < 0 || accIdx >= len(cfg.Accounts) {
+		return fmt.Errorf("找不到這個知識庫帳號")
+	}
+	if n := len(cfg.Accounts[accIdx].RetiringFolders); n > 0 {
+		return fmt.Errorf("這個知識庫還有 %d 個資料夾正在把雲端的資料收回，請等收完再移除", n)
+	}
+	if cfg.raw == nil {
+		cfg.raw = map[string]any{}
+	}
+	if rawAccs, ok := cfg.raw["accounts"].([]any); ok && len(rawAccs) == len(cfg.Accounts) {
+		kept := make([]any, 0, len(rawAccs)-1)
+		kept = append(kept, rawAccs[:accIdx]...)
+		kept = append(kept, rawAccs[accIdx+1:]...)
+		cfg.raw["accounts"] = kept
+	} else {
+		// 讀不到對得上的原始陣列（不該發生）⇒ 退回 struct 版，至少刪對那一筆
+		keep := append(append([]accountCfg{}, cfg.Accounts[:accIdx]...), cfg.Accounts[accIdx+1:]...)
+		b, _ := json.Marshal(keep)
+		var v any
+		_ = json.Unmarshal(b, &v)
+		cfg.raw["accounts"] = v
+	}
+	scrubLegacyLLMKeys(cfg.raw)
+	fillRequired(cfg.raw)
+	if err := writeRawCfg(cfg.raw); err != nil {
+		return err
+	}
+	appLog("已移除知識庫帳號 #%d（%s）", accIdx, accountName(cfg.Accounts[accIdx]))
+	restartWatch() // 沒有帳號時 restartWatch 只停不啟
 	return nil
 }
 

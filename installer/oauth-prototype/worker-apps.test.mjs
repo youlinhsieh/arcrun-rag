@@ -170,3 +170,32 @@ test('市集來源暫時壞掉（5xx）：502，不退回舊路（免得用戶�
     assert.equal((await call(e, '/apps/index.json')).status, 502);
   } finally { restore(); }
 });
+
+// inkstone/arcrun-rag#381：prod 市集的家＝uncle6 專用 R2（binding MARKET，私有 bucket，不開公開網域）。
+const MKT = {
+  'market/current.json': '{"version":"2026.11.28-abcdef0"}',
+  'market/index/2026.11.28-abcdef0.json': '{"schema":1,"apps":[{"id":"notes"}]}',
+  'market/packages/notes-1.5.0.json': '{"pkg":"notes"}',
+};
+test('prod：綁了 MARKET（R2）就讀 market/current.json 指的那版，不碰零件包釘子；/apps 網址不變', async () => {
+  let fetched = 0;
+  globalThis.fetch = async () => { fetched++; return new Response('x', { status: 500 }); };
+  try {
+    const e = { INSTALLER_KV: kv(), MARKET: fakeR2(MKT), BUNDLE_BASE: 'https://cdn.jsdelivr.net/gh/youlinhsieh/arcrun-rag-bundles@0376ecaabcdef' };
+    const c = await call(e, '/apps/current.json');
+    assert.equal(c.status, 200);
+    assert.equal((await c.json()).version, '2026.11.28-abcdef0');
+    const i = await call(e, '/apps/index.json');
+    assert.equal(i.status, 200);
+    assert.equal(i.headers.get('x-arcrun-market-version'), '2026.11.28-abcdef0');
+    assert.deepEqual(await i.json(), { schema: 1, apps: [{ id: 'notes' }] });
+    assert.equal((await call(e, '/apps/packages/notes-1.5.0.json')).status, 200);
+    assert.equal((await call(e, '/apps/packages/nope-1.0.0.json')).status, 404);
+    assert.equal(fetched, 0, '有 MARKET 就不該打任何外網');
+  } finally { restore(); }
+});
+test('prod：綁了 MARKET 但還沒有指標（空 bucket）＝照舊跟釘子走，/apps/current.json 誠實 404', async () => {
+  const e = { INSTALLER_KV: kv(), MARKET: fakeR2({}) };
+  const c = await call(e, '/apps/current.json');
+  assert.equal(c.status, 404);
+});

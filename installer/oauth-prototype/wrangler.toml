@@ -75,6 +75,13 @@ id = "2ff9a845e7f646dab7b1e3dd6707b77f"  # 就是原本的 prod INSTALLER_KV，�
 binding = "PEER_INSTALLER_KV_LEGACY"
 id = "750c23faf0794d3db317c32f596df9a9"  # 原本的 staging-INSTALLER_KV（prod 這邊當唯讀對照用）
 
+# inkstone/arcrun-rag#381：prod 市集的家＝uncle6 帳號專用 R2 `arcrun-market`（2026-11-28 已建，私有、不開公開網域）。
+#   安裝站直接綁（worker.js marketRead 的 env.MARKET），`/apps` 讀 `market/current.json` 指到的市集版；
+#   沒有指標（bucket 還空）＝照舊跟著零件包釘子走，行為一字不變。寫入只走 ship-market.mjs --target prod（要 AHub 簽核）。
+[[r2_buckets]]
+binding = "MARKET"
+bucket_name = "arcrun-market"
+
 # inkstone/arcrun-rag#394：官方地端更新檔 `https://install.arcrun.dev/onprem/latest.json`（worker.js `/onprem/*`＝onpremHandle）。
 # 🔴 prod 的家＝uncle6 帳號專用 R2 `arcrun-onprem`（ship-onprem.mjs --target prod 寫入，登錄簿 targets.prod.onprem）。
 #   **還沒綁**——故意不在這裡開 binding：bucket 不存在時 wrangler deploy 會整個失敗，會擋掉安裝器的正常 prod 出貨。
@@ -312,7 +319,7 @@ database_id = "56a1b001-fc33-48a1-a82f-e1483cca0bb4"
 [env.youlin-stage.vars]
 DEPLOY_ENV = "youlin-stage"
 DIST_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist"
-BUNDLE_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/5557776"
+BUNDLE_BASE = "https://arcrun-installer-youlin-stage.arcrun-yuga3bse.workers.dev/dist/bundle/440b31c"
 BUNDLE_BUILT = "2026-11-28"
 # inkstone/arcrun-rag#215：以前指回 uncle6 的 arcrun-landing-staging／arcrun-docs-staging
 # ——那正是本票要拔掉的依賴（youlin stage 讀 uncle6 的 worker，就不算「資料和帳號完全分開」）。

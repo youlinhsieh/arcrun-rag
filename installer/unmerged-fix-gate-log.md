@@ -2968,3 +2968,13 @@
 | 2026-11-28 09:06Z | stage | 點名 | t/arcrun-575 | c1795851343939559 已交回（0 天前） |
 | 2026-11-28 09:06Z | stage | 點名 | t/arcrun-576 | c1795851995995769 已交回（0 天前） |
 | 2026-11-28 09:06Z | stage | 點名 | t/arcrun-577 | c1795854588902289 已交回（0 天前） |
+| 2026-11-28 09:13Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 09:13Z | stage | 點名 | arcrun-hand/569-credential-connect | c1795854066063483 已交回（0 天前） |
+| 2026-11-28 09:32Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 09:33Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 09:35Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 10:19Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 10:20Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 10:30Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 10:47Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |
+| 2026-11-28 10:52Z | stage | 點名 | arcrun-hand/427-layout-skeleton | c1795759699036187 已交回（1 天前） |

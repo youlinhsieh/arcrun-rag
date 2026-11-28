@@ -278,6 +278,11 @@
    "repeat": true
   },
   {
+   "id": "acc.remove",
+   "sel": ".tabs [data-rmacc]",
+   "asks": "怎麼把這個知識庫帳號從小幫手拿掉"
+  },
+  {
    "id": "folder.bang",
    "sel": ".folder .bangbtn",
    "asks": "這個資料夾有新問題",
