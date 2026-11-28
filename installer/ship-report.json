@@ -23032,14 +23032,14 @@
     {
      "id": "readme",
      "title": "bundle repo 的 README 由零件清單算出來（不留會過期的手寫數字）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "README 已是最新（零件清單與版本都沒變）"
     },
     {
      "id": "commit",
      "title": "把產物寫進 bundle repo 的版控",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "工作區乾淨——這一版的產物已經在版控裡了"
     },
     {
      "id": "push",
@@ -23050,14 +23050,14 @@
     {
      "id": "pin",
      "title": "換安裝器釘子（真身是 wrangler.toml 的 vars）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "釘子沒動（built 2026-11-28）；安裝器原始碼指紋 0f806a62f68e（烙在 version.mjs，不寫這裡）"
     },
     {
      "id": "deploy",
      "title": "部署安裝器（帳號由登錄簿釘死）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "線上已是 1.4.329／pin 9441990／安裝器原始碼 0f806a62f68e 未變，且釘子沒動 ⇒ 不重複部署"
     },
     {
      "id": "docs",
@@ -23086,8 +23086,8 @@
     {
      "id": "release-record",
      "title": "在這個環境對應的 repo 留一份使用者點得到的版本發佈（每條版本線各一筆）",
-     "status": "done",
-     "note": null
+     "status": "skip",
+     "note": "⏭ 內部版本物件｜安裝器 1.0.111 已存在：https://arcrun-cypher-executor.leo21c.workers.dev/inkstone/arcrun-rag/releases/tag/installer-1.0.111"
     },
     {
      "id": "release-check",
@@ -23110,28 +23110,30 @@
     {
      "id": "front-door",
      "title": "正門：從 MCP 走一遍寫意圖到跑起一條工作流（任何一環斷＝這版不算 stage 驗過）",
-     "status": "failed"
+     "status": "done",
+     "note": null
     },
     {
      "id": "stage-record",
      "title": "把這一版寫進 AHub 的 stage 現況（只在出貨那一下寫一次）",
-     "status": "not-run"
+     "status": "done",
+     "note": null
     },
     {
      "id": "prod-record",
      "title": "把這一版寫進 AHub 的 prod 現況（出 prod 那一下寫一次）",
-     "status": "not-run"
+     "status": "skip",
+     "note": "不是 prod 目標：不寫 prod 現況"
     }
    ],
    "sourceCommit": "Arcrun@cc2252c41931",
    "machine": "b603c18c637e",
-   "ts": 1795831638693,
+   "ts": 1795832010432,
    "queue": {
     "status": "descendant",
-    "live": "cb94a80e0304",
+    "live": "cc2252c41931",
     "carriedTickets": [
-     "inkstone/Arcrun#543",
-     "inkstone/Arcrun#567"
+     "inkstone/Arcrun#543"
     ],
     "carriedCommits": [
      {
@@ -23139,20 +23141,6 @@
       "subject": "build(workers): 重編 arcrun-cypher-executor（cc2252c4：App 動作只讀精簡安裝態）(inkstone/Arcrun#543)",
       "tickets": [
        "inkstone/Arcrun#543"
-      ]
-     },
-     {
-      "sha": "cc2252c4",
-      "subject": "perf(engine): App 動作只讀精簡安裝態——AHub 那筆完整安裝態 563 KB，每個動作整筆讀＋parse，知識庫端 CPU 16～35 ms；精簡版 4 ms (inkstone/Arcrun#543)",
-      "tickets": [
-       "inkstone/Arcrun#543"
-      ]
-     },
-     {
-      "sha": "86a9a666",
-      "subject": "build(workers): 重編 arcrun-cypher-executor（cb94a80e：Portal 斷言免等寫入、資產讀 502 修正）與 arcrun-kbdb 成品紀錄（inkstone/Arcrun#567）",
-      "tickets": [
-       "inkstone/Arcrun#567"
       ]
      }
     ]

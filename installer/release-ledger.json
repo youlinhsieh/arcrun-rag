@@ -1333,6 +1333,14 @@
    "shipped": {
     "stage": "2026-11-28T00:29:55.880Z"
    }
+  },
+  "1.4.329": {
+   "commit": "e6389d1cf5deb8ae645e4ac55df32eb1c284dfff",
+   "fingerprint": "af38c0724c9050b19597f71701b269fa6153f2770146ad1e5bdcd9cb3f7e730c",
+   "built": "2026-11-28",
+   "shipped": {
+    "stage": "2026-11-28T02:13:30.465Z"
+   }
   }
  }
 }
